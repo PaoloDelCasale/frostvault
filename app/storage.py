@@ -39,7 +39,7 @@ from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
-from .i18n import DEFAULT_LOCALE, format_message_params, translate
+from .i18n import DEFAULT_LOCALE, format_message_params, parse_message_params, translate
 from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
@@ -2229,6 +2229,7 @@ def schedule_upload_retry(
     message_params: dict[str, Any] | None = None,
     retry_count: int,
     delay_seconds: int | None = None,
+    remediation_suspension: str | None = None,
 ) -> bool:
     delay = (
         int(delay_seconds)
@@ -2313,10 +2314,11 @@ def schedule_upload_retry(
             )
         if _claim_write_succeeded(result) and action == "upload":
             from .services import upload_remediation
-            upload_remediation.transition(connection, job_id, "retrying", timestamp)
+            upload_remediation.transition(connection, job_id, "retrying", timestamp, suspension=remediation_suspension)
             _dirty_job_protection(connection, job_id)
     updated = _claim_write_succeeded(result)
-    if updated:
+    if updated and not remediation_suspension:
+        # A wait for the Source Volume is not a retry of the transfer.
         _record_committed_job_counter("retries", action)
     return updated
 
@@ -2505,6 +2507,32 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
         with owned_connection(db()) as connection:
             notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=True, email=False, params={"path": job["path"], "reason": reason, "remedy": provenance.REMEDIES[reason]})
     notify()
+
+
+def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) -> bool:
+    """A refused S3 action for one file, while the bucket itself stays ready (#492).
+
+    The readiness probe never exercises HeadObject/GetObject/PutObject, so sending
+    such a 403 to the gate would reopen it at once and re-claim the Job forever. A
+    fresh probe decides: it fails -> installation-wide, the caller uses the gate;
+    it passes -> this Job fails with a named, actionable reason and the gate is not
+    touched. Reads leave a durable block (an upload or its proof is left to
+    reconcile); a refused write stored nothing and is journaled as a no-write
+    outcome, so the file is simply retried by the ordinary flow once fixed.
+    """
+    if job["action"] != "upload":
+        return False
+    from .services import upload_provenance as provenance
+    try:
+        reason = provenance.permission_denied_reason(exc, job["s3_bucket"])
+    except Exception:
+        return False
+    if reason is None:
+        return False
+    if reason != "write_permission_denied":
+        _record_upload_reconciliation_block(job, reason)
+    set_job(job["id"], "failed", str(provenance.UploadBlocked(reason)))
+    return True
 
 
 def purge_current_snapshot_superseded(
@@ -3613,6 +3641,8 @@ def process_upload(job: dict[str, Any]) -> None:
         return
     validate_cloud_vault(job)
     _require_upload_source_identity(job)
+    # The enrolled root was read again: an outage problem raised by a waiting Job ends.
+    _clear_source_volume_problem(job)
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
     from .services import upload_provenance as provenance
@@ -5219,6 +5249,82 @@ def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
         )
 
 
+# A Source Volume that stays unreadable is polled with backoff (not every cycle) and,
+# past this age, surfaced to the Owner with the reason ``source_volume_unavailable``.
+SOURCE_VOLUME_NOTIFY_AFTER_SECONDS = 10 * 60
+SOURCE_VOLUME_WAIT_KEY = "job.source_volume_waiting"
+SOURCE_VOLUME_PROBLEM = "source_volume_unavailable"
+
+
+def _source_volume_problem_key(vault_id: int) -> str:
+    return f"{SOURCE_VOLUME_PROBLEM}:{vault_id}"
+
+
+def _wait_for_source_volume(job: dict[str, Any]) -> None:
+    """Park a Job whose Source Volume cannot be read; never fail it (#486, #492).
+
+    An upload backs off exponentially (status ``retrying`` with ``retry_after``,
+    the failure retry budget untouched, the wait start and attempt kept in the
+    Job's own message parameters so it survives restarts) and, once the outage is
+    older than the threshold, opens one in-app problem per Vault with the reason
+    ``source_volume_unavailable``. Other actions keep the plain queued wait: their
+    states cannot be rescheduled without changing their lifecycle.
+    """
+    if not job.get("claim_token"):
+        return
+    if job["action"] != "upload":
+        set_job(job["id"], "queued", "Source Volume is unavailable; Job remains queued",
+                remediation_suspension=SOURCE_VOLUME_PROBLEM)
+        return
+    now = datetime.now(timezone.utc)
+    since, attempt = now, 0
+    if job.get("message_key") == SOURCE_VOLUME_WAIT_KEY:
+        params = parse_message_params(job.get("message_params"))
+        try:
+            parsed = datetime.fromisoformat(str(params.get("since")))
+            since = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            attempt = max(0, int(params.get("attempt") or 0))
+        except (TypeError, ValueError):
+            since, attempt = now, 0
+    attempt += 1
+    delay = upload_retry_delay_seconds(attempt)
+    parked = schedule_upload_retry(
+        job["id"], message_key=SOURCE_VOLUME_WAIT_KEY,
+        message_params={"since": since.isoformat(), "attempt": attempt, "seconds": delay},
+        retry_count=int(job.get("retry_count") or 0), delay_seconds=delay,
+        remediation_suspension=SOURCE_VOLUME_PROBLEM,
+    )
+    if parked and (now - since).total_seconds() >= SOURCE_VOLUME_NOTIFY_AFTER_SECONDS:
+        from .services import upload_provenance as provenance
+        @retry_database_unit
+        def notify() -> None:
+            with owned_connection(db()) as connection:
+                notification_service.set_problem(
+                    connection, key=_source_volume_problem_key(int(job["vault_id"])),
+                    event=SOURCE_VOLUME_PROBLEM, vault_id=int(job["vault_id"]), active=True, email=False,
+                    params={"vault": job.get("vault_name") or "", "reason": SOURCE_VOLUME_PROBLEM,
+                            "remedy": provenance.REMEDIES[SOURCE_VOLUME_PROBLEM]},
+                )
+        notify()
+
+
+def _clear_source_volume_problem(job: dict[str, Any]) -> None:
+    """The volume was read again: resolve the Vault's open problem, if any."""
+    key = _source_volume_problem_key(int(job["vault_id"]))
+    with db() as connection:
+        opened = connection.execute(
+            "SELECT 1 FROM notifications WHERE dedupe_key=%s AND problem_status='open' LIMIT 1", (key,),
+        ).fetchone()
+    if not opened:
+        return
+    @retry_database_unit
+    def resolve() -> None:
+        with owned_connection(db()) as connection:
+            notification_service.set_problem(connection, key=key, event=SOURCE_VOLUME_PROBLEM,
+                                             vault_id=int(job["vault_id"]), active=False, email=False)
+    resolve()
+
+
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
@@ -5250,13 +5356,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 # Release the short scheduler lease while the Source Volume is
                 # suspended.  Keeping it would make an unavailable local path
                 # look actively executed until expiry on every poll.
-                if job.get("claim_token"):
-                    set_job(
-                        job["id"],
-                        "queued",
-                        "Source Volume is unavailable; Job remains queued",
-                        remediation_suspension="source_volume_unavailable",
-                    )
+                _wait_for_source_volume(job)
                 # Restoring the expected mount is the only path back to local
                 # execution; no filesystem action is attempted here.
                 return False
@@ -5299,9 +5399,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         # A transient failure reading the enrolled root is not an identity
         # change (#486). Nothing was sent by this attempt; the journaled intent,
         # if any, reconciles on the next lease. Same wait as the pre-dispatch check.
-        if job.get("claim_token"):
-            set_job(job["id"], "queued", "Source Volume is unavailable; Job remains queued",
-                    remediation_suspension="source_volume_unavailable")
+        _wait_for_source_volume(job)
         return False
     except WorkerStopping:
         # Process shutdown is not an Owner cancellation or a failed upload.
@@ -5344,6 +5442,8 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                         remediation_suspension=exc.reason)
             return False
         if cloud_preflight_gate.is_readiness_error(exc):
+            if _fail_upload_on_permission_refusal(job, exc):
+                return True
             # This happens outside the rolled-back provider/catalog unit. Do not
             # consume a transfer retry or expose provider auth error payloads.
             cloud_preflight_gate.invalidate(db)

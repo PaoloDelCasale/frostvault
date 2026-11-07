@@ -29,6 +29,8 @@ TERMINAL_JOB_REASONS = frozenset({"owner_cancelled", "already_resolved"})
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",
+    "read_permission_denied": "S3 refused to read an object version of this file (HeadObject/GetObject), so its upload cannot be confirmed. Keep all copies, grant the archive IAM identity s3:GetObject and s3:GetObjectVersion on the bucket objects, then use Retry failed uploads.",
+    "write_permission_denied": "S3 refused to write this file (PutObject or a multipart request) although the bucket itself is reachable. Nothing was stored and the file stays unprotected. Grant the archive IAM identity s3:PutObject and s3:AbortMultipartUpload on the bucket objects, then use Retry failed uploads.",
     "list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep all copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads on the bucket, then use Retry failed uploads.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
     "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
@@ -96,23 +98,44 @@ _CREDENTIAL_CODES = frozenset({
     "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken",
     "TokenRefreshRequired", "InvalidClientTokenId", "UnrecognizedClientException",
 })
+# Which per-file reason names the S3 action the provider refused. The operation is
+# the botocore operation name carried by the ClientError, never the message text.
+_OPERATION_REASONS = {
+    **dict.fromkeys(("ListObjectVersions", "ListMultipartUploads", "ListObjects", "ListObjectsV2"), "list_permission_denied"),
+    **dict.fromkeys(("HeadObject", "GetObject", "GetObjectTagging"), "read_permission_denied"),
+    **dict.fromkeys(("PutObject", "CreateMultipartUpload", "UploadPart", "CompleteMultipartUpload",
+                     "AbortMultipartUpload"), "write_permission_denied"),
+    **dict.fromkeys(("DeleteObject", "DeleteObjects"), "cleanup_unavailable"),
+}
+# Refusals of these reasons describe an action that never reached the provider (or
+# whose outcome is already journaled): nothing about the file is left to reconcile.
+PERMISSION_REASONS = frozenset({"list_permission_denied", "read_permission_denied", "write_permission_denied"})
 
 
 def _guarded_listing(call: Any, bucket: str) -> Any:
     """Run a provider LIST and name why it failed.
 
-    A refused listing (any HTTP 403 that is not a credential error) is a
-    permission gap of this file's reconciliation, but only when the installation
-    itself is still ready: the readiness probe does not exercise these actions, so
-    letting the error reach the worker's readiness branch would reopen the gate and
-    re-claim the Job forever (#484). A fresh bucket probe tells the two apart:
-    probe fails -> the refusal is installation-wide, so it propagates to the
-    readiness gate (the Job stays queued); probe passes -> a per-file
-    ``list_permission_denied`` block that never touches the gate. Credential,
-    network and 5xx failures say nothing about the inventory and propagate to be
-    suspended/retried; anything else is an unconfirmed inventory. The block is
-    raised outside the ``except`` so it carries no chained provider error that
-    would be read as readiness.
+    Anything that is neither a permission refusal nor a transient provider fault is
+    an unconfirmed inventory (``inventory_changed``). See ``guarded`` for the
+    permission and transient handling shared with every other S3 action.
+    """
+    return guarded(call, bucket, default="list_permission_denied", unconfirmed="inventory_changed")
+
+
+def guarded(call: Any, bucket: str, *, default: str, unconfirmed: str | None = None) -> Any:
+    """Run a provider call; turn a per-file permission refusal into a named block.
+
+    A refused action (any HTTP 403 that is not a credential error) is a permission
+    gap of this file's work, but only when the installation itself is still ready:
+    the readiness probe does not exercise these actions, so letting the error reach
+    the worker's readiness branch would reopen the gate and re-claim the Job forever
+    (#484, #492). A fresh bucket probe tells the two apart: probe fails -> the
+    refusal is installation-wide, so it propagates to the readiness gate (the Job
+    stays queued); probe passes -> a per-file ``*_permission_denied`` block that
+    never touches the gate. Credential, network, throttling and 5xx failures say
+    nothing about the file and propagate to be suspended/retried. ``unconfirmed``
+    (listings only) names any other failure. The block is raised outside the
+    ``except`` so it carries no chained provider error that would be read as readiness.
     """
     reason: str | None
     try:
@@ -120,7 +143,10 @@ def _guarded_listing(call: Any, bucket: str) -> Any:
     except UploadBlocked:
         raise
     except Exception as exc:
-        reason = _listing_block_reason(exc, bucket)
+        reason = permission_denied_reason(exc, bucket, default=default)
+        if reason is None and unconfirmed is not None and not _is_provider_unreachable(exc) \
+                and not _refusals(exc):
+            reason = unconfirmed
         if reason is None:
             raise
     raise UploadBlocked(reason)
@@ -137,30 +163,39 @@ def _bucket_still_ready(bucket: str) -> bool:
         return False
 
 
-def _listing_block_reason(error: BaseException, bucket: str) -> str | None:
+def _refusals(error: BaseException) -> list[Any]:
     from .database_retry import exception_chain
     from botocore.exceptions import ClientError
-    refusals = [item for item in exception_chain(error) if isinstance(item, ClientError)
-                and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
-                     or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
-    if refusals:
-        if any(item.response.get("Error", {}).get("Code") in _CREDENTIAL_CODES for item in refusals):
-            return None
-        return "list_permission_denied" if _bucket_still_ready(bucket) else None
-    return None if _is_provider_unreachable(error) else "inventory_changed"
+    return [item for item in exception_chain(error) if isinstance(item, ClientError)
+            and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+                 or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
+
+
+def permission_denied_reason(error: BaseException, bucket: str, *, default: str | None = None) -> str | None:
+    """Per-file reason for a refused S3 action, or None when it is not one.
+
+    None means: not a refusal, a credential error, or a fresh bucket probe that
+    fails (the refusal is installation-wide) -- the caller then lets the error reach
+    the readiness gate unchanged. The reason follows the refused operation; an
+    operation not in the table uses ``default`` (None: the gate handles it).
+    """
+    refusals = _refusals(error)
+    if not refusals:
+        return None
+    if any(item.response.get("Error", {}).get("Code") in _CREDENTIAL_CODES for item in refusals):
+        return None
+    reason = next((_OPERATION_REASONS[item.operation_name] for item in refusals
+                   if item.operation_name in _OPERATION_REASONS), default)
+    if reason is None:
+        return None
+    return reason if _bucket_still_ready(bucket) else None
 
 
 def _is_provider_unreachable(error: BaseException) -> bool:
     """Credential, network and provider-side failures: retried or suspended, never a changed inventory."""
     from .cloud_preflight_gate import is_readiness_error
-    from .database_retry import exception_chain
-    from botocore.exceptions import BotoCoreError, ClientError, ConnectionError as BotoConnectionError
-    return is_readiness_error(error) or any(
-        isinstance(item, (BotoConnectionError, ConnectionError, TimeoutError))
-        or (isinstance(item, BotoCoreError) and "timeout" in type(item).__name__.lower())
-        or (isinstance(item, ClientError)
-            and item.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) in range(500, 600))
-        for item in exception_chain(error))
+    from .upload_retry import is_provider_transient
+    return is_readiness_error(error) or is_provider_transient(error)
 
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
