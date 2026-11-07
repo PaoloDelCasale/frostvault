@@ -43,18 +43,23 @@ def display_path(path: str) -> str:
 
 def resolve_stale_path_problems(
     connection: Any, *, event: str, vault_id: int, keep_paths: Collection[str],
+    keep_prefixes: Collection[str] = (),
 ) -> None:
-    """Close the path problems of one event that a complete walk no longer saw.
+    """Close the path problems of one event that a walk proved are gone.
 
-    ``keep_paths`` holds the displayed paths the same walk reported again. Only
-    a walk that covered the whole Vault may call this: it is the proof that the
-    cause of every other open problem has disappeared.
+    ``keep_paths`` holds the paths the same walk reported again (as shown to the
+    Owner). ``keep_prefixes`` holds folders the walk could not enter: a problem
+    below one of them is unknown, not resolved. The walk must have covered the
+    whole Vault apart from those folders.
     """
     stamp = now_iso()
     connection.execute(
         "UPDATE notifications SET problem_status='resolved', resolved_at=%s, "
         "read_at=COALESCE(read_at,%s) WHERE event=%s AND vault_id=%s "
         "AND problem_status='open' "
-        "AND NOT ((message_params::jsonb->>'path') = ANY(CAST(%s AS TEXT[])))",
-        (stamp, stamp, event, int(vault_id), list(keep_paths)),
+        "AND NOT ((message_params::jsonb->>'path') = ANY(CAST(%s AS TEXT[]))) "
+        "AND NOT EXISTS (SELECT 1 FROM unnest(CAST(%s AS TEXT[])) AS kept(prefix) "
+        "WHERE left(message_params::jsonb->>'path', length(kept.prefix) + 1) "
+        "= kept.prefix || '/')",
+        (stamp, stamp, event, int(vault_id), list(keep_paths), list(keep_prefixes)),
     )

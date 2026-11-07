@@ -16,7 +16,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import boto3
 import psycopg
@@ -37,6 +37,7 @@ from .services import source_layout
 from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
+from .services import watch_plan
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, translate
@@ -530,6 +531,11 @@ def _scan_tree(
     # catalog row can exist at or below such a path.
     unsupported_names: list[str] = []
     reported_unsupported: set[str] = set()
+    # What this walk could not observe, for the watcher and the problem closure.
+    unreadable_all: set[str] = set()
+    unreadable_directories: set[str] = set()
+    unsupported_all: set[str] = set()
+    unsupported_directories: set[str] = set()
 
     def _persisted_scan(vault_row: dict[str, Any]) -> bool:
         return "root_identity" in vault_row or "root_identity_version" in vault_row
@@ -612,17 +618,36 @@ def _scan_tree(
             scan_journal["incomplete"] = True
         # Defer DB writes until flush so a later echoed child can be hashed
         # outside a write transaction, even after an unreadable sibling.
-        unreadable_paths.append(entry.relative_to(root).as_posix())
+        relative = entry.relative_to(root).as_posix()
+        unreadable_paths.append(relative)
+        unreadable_all.add(relative)
 
-    def unsupported(entry: Path) -> None:
+    def failed_directory(entry: Path, error: OSError) -> None:
+        failed(entry, error)
+        unreadable_directories.add(entry.relative_to(root).as_posix())
+
+    unsupported_seen = False
+
+    def unsupported(entry: Path, is_directory: bool) -> None:
+        # A name that cannot be catalogued cannot be told apart from the old
+        # name it may have replaced (a rename, or a client with another
+        # charset): the rows under it must not become "missing". Like an
+        # unreadable path, it makes this observation incomplete (#494).
+        nonlocal unsupported_seen
+        unsupported_seen = True
+        if scan_journal is not None:
+            scan_journal["incomplete"] = True
         relative = entry.relative_to(root).as_posix()
         reported_unsupported.add(display_path(relative))
         unsupported_names.append(relative)
+        unsupported_all.add(relative)
+        if is_directory:
+            unsupported_directories.add(relative)
 
     with PinnedTree(root, subtree=subtree) as tree:
         if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
             raise _ScanRootMismatch("Vault root changed before traversal")
-        for entry, pinned_entry in tree.entries(on_error=failed, on_unsupported_name=unsupported):
+        for entry, pinned_entry in tree.entries(on_error=failed_directory, on_unsupported_name=unsupported):
             if is_restore_temporary_name(entry.name):
                 continue
             try:
@@ -652,6 +677,23 @@ def _scan_tree(
         tree.validate()
         flush()
         tree.validate()
+        found = watch_plan.UnobservedPaths(
+            unreadable=frozenset(unreadable_all),
+            unsupported=frozenset(unsupported_all),
+            directories=frozenset(unreadable_directories | unsupported_directories),
+        )
+        if subtree is None:
+            watch_plan.record_full_scan(vault_id, found)
+        else:
+            watch_plan.record_subtree_scan(
+                vault_id, subtree.relative_to(root).as_posix(), found,
+            )
+        if scan_journal is not None:
+            journal_paths = scan_journal.setdefault("unreadable_paths", set())
+            journal_paths.update(display_path(path) for path in unreadable_all)
+            scan_journal.setdefault("unreadable_directories", set()).update(
+                display_path(path) for path in unreadable_directories
+            )
         if subtree is None and not unreadable:
             # A complete walk of the whole root is the proof that every earlier
             # unsupported name is gone; a partial or incomplete walk proves nothing.
@@ -670,7 +712,8 @@ def _scan_tree(
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    if finalize_missing and not unreadable and safe_scan_result and (
+    incomplete = unreadable or unsupported_seen
+    if finalize_missing and not incomplete and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
         ArchiveCatalog(connection).mark_unseen_local_copies_missing(
@@ -683,7 +726,7 @@ def _scan_tree(
             connection.commit()
     completed_alias = (
         alias
-        if not unreadable and safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
+        if not incomplete and safe_scan_result and alias and source_layout.requires_full_local_scan(alias)
         else None
     )
     return count, completed_alias
@@ -1323,6 +1366,7 @@ def _collect_local_fingerprint_updates(
         except OSError:
             if scan_journal is not None:
                 scan_journal["incomplete"] = True
+                scan_journal.setdefault("unreadable_paths", set()).add(display_path(row["path"]))
             with db() as connection:
                 report_problem(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
@@ -1332,6 +1376,8 @@ def _collect_local_fingerprint_updates(
         except (ValueError, RuntimeError):
             if scan_journal is not None:
                 scan_journal["incomplete"] = True
+                # Not attributable to a path: no problem may be closed on this walk.
+                scan_journal["unattributed"] = True
             continue
         updates.append(
             {
@@ -1567,6 +1613,17 @@ def _verified_local_scan(
         # compare-and-swap predicates so watcher replacements win safely.
         updates = _collect_local_fingerprint_updates(vault, pinned_root, scan_journal=scan_journal)
         _apply_local_fingerprint_updates(vault, scan_id, updates)
+        if not scan_journal.get("unattributed"):
+            # Each unreadable path has its own entry: one that this walk and the
+            # hashing no longer found unreadable is closed by itself, whatever
+            # else is still unreadable. A path below a folder this walk could not
+            # enter stays open: its state is unknown, not repaired.
+            with db() as connection:
+                resolve_stale_path_problems(
+                    connection, event="file_unreadable", vault_id=int(vault["id"]),
+                    keep_paths=scan_journal.get("unreadable_paths", ()),
+                    keep_prefixes=scan_journal.get("unreadable_directories", ()),
+                )
 
         complete = not scan_journal.get("incomplete", False)
         alias = access.volume_alias
@@ -1850,7 +1907,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             else:
                 _record_scan_component_health(
                     vault_id, "source", ok=complete, verified=complete,
-                    error=None if complete else "Source scan incomplete: unreadable paths",
+                    error=None if complete else "Source scan incomplete: unreadable paths or unsupported names",
                     notify_problem=complete,
                 )
         else:
@@ -5531,6 +5588,7 @@ def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None
 
 def stop_background_executors() -> None:
     """Cancel queued work immediately, retaining running futures for draining."""
+    _shutdown_watcher_scan_executor()
     with _operation_lock:
         if _operation_executor is not None:
             _operation_executor.shutdown(wait=False, cancel_futures=True)
@@ -5834,6 +5892,26 @@ def queue_all_auto_uploads_once() -> int:
     return queued
 
 
+def scan_vaults_with_cloud_error() -> None:
+    """Scan the Vaults whose last cloud observation failed.
+
+    A failed listing leaves the cloud component in error until a scan lists S3
+    again; nothing else clears it. Once S3 is reachable again that scan is due.
+    """
+    with db() as connection:
+        vaults = connection.execute(
+            """
+            SELECT v.* FROM vaults v
+            JOIN vault_component_health h
+              ON h.vault_id=v.id AND h.component='cloud' AND h.last_error IS NOT NULL
+            WHERE v.enabled=TRUE AND v.decommission_state='active'
+            ORDER BY v.id
+            """
+        ).fetchall()
+    for vault in vaults:
+        scan_vault(vault)
+
+
 def reprobe_cloud_readiness_once() -> None:
     # Independent of scheduler capacity and maintenance scans. A blocked gate
     # must recover even if the Owner has since suspended all queued Vaults.
@@ -5844,12 +5922,18 @@ def reprobe_cloud_readiness_once() -> None:
             return
         if state['status'] == 'blocked' and not cloud_preflight_gate.probe_due(state, now):
             return
+        was_blocked = state['status'] == 'blocked'
         vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
     if vault:
         try:
             validate_cloud_vault(dict(vault))
         except cloud_preflight_gate.CloudPreflightBlocked:
-            pass
+            return
+        if was_blocked:
+            # S3 answers again (a corrected key, bucket or permission). Without a
+            # restart nothing else would list it again before the next periodic
+            # scan, and every Vault that failed on S3 would stay unconfirmed.
+            _submit_maintenance("cloud_recovery_scan", scan_vaults_with_cloud_error)
 
 
 async def cloud_preflight_loop() -> None:
@@ -5910,19 +5994,28 @@ def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> se
     return directories
 
 
-# A watcher that stopped is restarted after a growing pause; a run that stayed
-# up this long counts as healthy again and resets the pause.
+# A watcher that stopped is restarted after a growing pause. A run counts as
+# healthy again, and resets the pause, once it stayed up this long NOT counting
+# the time it spent in scans: a long scan must not hide a watcher that dies at
+# once.
 WATCHER_RESTART_BASE_SECONDS = 5
 WATCHER_RESTART_MAX_SECONDS = 300
 WATCHER_STABLE_SECONDS = 60
-# A watcher that cannot even register still has its Vault reconciled, at most
-# this often, so unreadable paths are named and the rest stays protected.
-WATCHER_FAILURE_SCAN_SECONDS = 300
-# An incomplete scan (unreadable paths) is repeated at this interval: nothing
-# watches an unreadable folder, so fixing its permissions raises no event.
-WATCHER_INCOMPLETE_RESCAN_SECONDS = 900
+# Whatever stops a watcher (a failure, a mount that comes back) loses events, so
+# the Vault is scanned again. Two such scans are never closer than this, so a
+# watcher that stops in a burst cannot turn into a burst of full scans.
+WATCHER_GAP_RESCAN_MIN_SECONDS = 300
+# While a scan names paths it could not observe, only those paths are looked at
+# this often; the full scan runs again as soon as one of them changed.
+WATCHER_RECHECK_SECONDS = 60
+# A scan that failed or could not reach S3 is repeated after this pause.
+WATCHER_SCAN_FAILED_SECONDS = 900
 WATCHER_SCAN_RETRY_SECONDS = 60
 WATCHER_SCAN_BUSY_SECONDS = 10
+# A watch batch that fails this many times in a row is dropped: the scan that
+# follows every restart covers what it contained, and a batch that can never be
+# applied must not keep the whole Vault from being observed.
+WATCHER_BATCH_MAX_FAILURES = 3
 
 
 def _flattened_exceptions(exc: BaseException) -> Iterator[BaseException]:
@@ -5934,7 +6027,7 @@ def _flattened_exceptions(exc: BaseException) -> Iterator[BaseException]:
 
 
 def _is_undecodable_path_error(exc: BaseException) -> bool:
-    """watchfiles raises this when an event names a path that is not UTF-8.
+    """watchfiles raises this when an event or a directory is not UTF-8.
 
     The native observer cannot represent such a path, so it stops. That is a
     property of the filename, not an internal failure of the watcher.
@@ -5946,27 +6039,64 @@ def _watcher_restart_delay(streak: int) -> float:
     return float(min(WATCHER_RESTART_MAX_SECONDS, WATCHER_RESTART_BASE_SECONDS * 2 ** max(0, streak - 1)))
 
 
-async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> float | None:
+class _WatcherScanOutcome(NamedTuple):
+    # Seconds until the Vault must be scanned again; None when reconciled.
+    retry_after: float | None = None
+    # The scan was complete except for paths it named: re-check only those.
+    recheck: bool = False
+
+
+_watcher_scan_pool: ThreadPoolExecutor | None = None
+_watcher_scan_pool_lock = threading.Lock()
+
+
+def _watcher_scan_executor() -> ThreadPoolExecutor:
+    """One thread for every paired scan: Vaults take turns, as in scan_all_vaults.
+
+    A dedicated pool keeps the long scans off the default executor, which the
+    watchers themselves and every request share.
+    """
+    global _watcher_scan_pool
+    with _watcher_scan_pool_lock:
+        if _watcher_scan_pool is None:
+            _watcher_scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="watcher-scan")
+        return _watcher_scan_pool
+
+
+def _shutdown_watcher_scan_executor() -> None:
+    global _watcher_scan_pool
+    with _watcher_scan_pool_lock:
+        pool, _watcher_scan_pool = _watcher_scan_pool, None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> _WatcherScanOutcome:
     """Run the full scan that a freshly registered watcher is paired with.
 
     Registration happens first, so anything that arrives during the scan is
-    seen by the watcher and anything older is seen by the scan. Returns the
-    delay before another scan is needed, or None when the Vault is reconciled.
+    seen by the watcher and anything older is seen by the scan.
     """
+    loop = asyncio.get_running_loop()
     try:
-        result = await asyncio.to_thread(scan_vault, vault)
+        result = await loop.run_in_executor(_watcher_scan_executor(), scan_vault, vault)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         worker_error_store.log_worker_error("source_watcher_scan", exc, int(vault["id"]))
-        return float(WATCHER_SCAN_RETRY_SECONDS)
+        return _WatcherScanOutcome(float(WATCHER_SCAN_RETRY_SECONDS))
     if result.get("already_running") or result.get("suspended"):
-        return float(WATCHER_SCAN_BUSY_SECONDS)
+        return _WatcherScanOutcome(float(WATCHER_SCAN_BUSY_SECONDS))
     if result.get("local_skipped"):
-        return float(WATCHER_SCAN_RETRY_SECONDS)
-    if result.get("local_incomplete") or int(result.get("local", 0)) < 0:
-        return float(WATCHER_INCOMPLETE_RESCAN_SECONDS)
-    return None
+        return _WatcherScanOutcome(float(WATCHER_SCAN_RETRY_SECONDS))
+    if int(result.get("local", 0)) < 0:
+        return _WatcherScanOutcome(float(WATCHER_SCAN_FAILED_SECONDS))
+    if result.get("local_incomplete"):
+        return _WatcherScanOutcome(recheck=True)
+    if int(result.get("cloud", 0)) < 0:
+        # The Vault was walked, but S3 could not be reached: it is not reconciled.
+        return _WatcherScanOutcome(float(WATCHER_SCAN_FAILED_SECONDS))
+    return _WatcherScanOutcome()
 
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
@@ -5974,13 +6104,36 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
     # Install the successor BEFORE draining/closing the old recursive observer:
     # subtree catch-up alone cannot repair unrelated sibling events in a gap.
     pending_reconcile: set[tuple[Change, str]] = set()
+    vault_id = int(vault["id"])
     loop = asyncio.get_running_loop()
+    # A new watcher task starts from what a scan finds, not from a past root.
+    watch_plan.forget(vault_id)
     # Every watcher run is paired with a scan once it is registered and healthy
     # (issues #496, #497): what happened before the watcher existed, or while it
-    # was down, is invisible to it. None means the Vault is reconciled.
+    # was down, is invisible to it. None means no full scan is due.
     next_scan_at: float | None = 0.0
+    # Due time of the cheap re-check of the paths the last scan could not observe.
+    recheck_at: float | None = None
     failure_streak = 0
-    last_failure_scan = float("-inf")
+    last_scan_end = float("-inf")
+    batch_failures = 0
+    # What the registered observer was built around; a change re-registers it.
+    registered_gaps = watch_plan.UnobservedPaths()
+
+    def schedule_gap_scan() -> None:
+        nonlocal next_scan_at
+        next_scan_at = max(loop.time(), last_scan_end + WATCHER_GAP_RESCAN_MIN_SECONDS)
+
+    async def reconcile() -> None:
+        nonlocal next_scan_at, recheck_at, last_scan_end, scan_seconds
+        began = loop.time()
+        outcome = await _reconcile_vault_after_watcher(vault)
+        last_scan_end = loop.time()
+        scan_seconds += last_scan_end - began
+        next_scan_at = None if outcome.retry_after is None else last_scan_end + outcome.retry_after
+        recheck_at = last_scan_end + WATCHER_RECHECK_SECONDS if outcome.recheck else None
+
+    scan_seconds = 0.0
     while True:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
@@ -6010,10 +6163,10 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         )
         if not access.local_operations_allowed:
             await asyncio.to_thread(
-                _record_scan_component_health, int(vault["id"]), "source",
+                _record_scan_component_health, vault_id, "source",
                 ok=False, error="Protection blocked: Source Volume unavailable",
             )
-            next_scan_at = 0.0
+            schedule_gap_scan()
             await asyncio.sleep(5)
             continue
         try:
@@ -6022,32 +6175,48 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                 raise PermissionError("Vault root is inaccessible")
         except OSError:
             await asyncio.to_thread(
-                _record_scan_component_health, int(vault["id"]), "source",
+                _record_scan_component_health, vault_id, "source",
                 ok=False, error="Protection blocked: Vault root inaccessible",
             )
-            next_scan_at = 0.0
+            schedule_gap_scan()
             await asyncio.sleep(5)
             continue
         recovered = False
+        applying = False
         started_at = loop.time()
+        scan_seconds = 0.0
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
+
             def new_observer():
-                return awatch(
-                    root,
+                nonlocal registered_gaps
+                gaps = watch_plan.unobserved(vault_id)
+                registered_gaps = gaps
+                options = dict(
                     watch_filter=_filesystem_watch_filter,
                     debounce=runtime.filesystem_watch_debounce_ms,
                     force_polling=settings.filesystem_watch_force_polling,
                     poll_delay_ms=runtime.filesystem_watch_poll_ms,
-                    recursive=True,
-                    # An unreadable subfolder must not stop the watcher of the
-                    # whole Vault. It is unwatched; the scan names it (#495).
+                    # A folder that cannot be entered must not stop the watcher
+                    # of the whole Vault (#495). The flag alone is not enough:
+                    # the native registration stops at the first such folder
+                    # and leaves its siblings unwatched, so the readable part
+                    # of the tree is registered around the known ones.
                     ignore_permission_denied=True,
                     # awatch is lazy: its first yield (including a timeout)
                     # is the registration barrier, for inotify AND polling.
                     yield_on_timeout=True,
                     rust_timeout=1000,
                 )
+                if not gaps.directories:
+                    return awatch(root, recursive=True, **options)
+                flat, recursive = watch_plan.watch_directories(root, gaps)
+                observers = []
+                if flat:
+                    observers.append(awatch(*flat, recursive=False, **options))
+                if recursive:
+                    observers.append(awatch(*recursive, recursive=True, **options))
+                return watch_plan.MergedWatch(observers)
 
             watcher = new_observer()
             successor = None
@@ -6063,7 +6232,10 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     # it needs no re-registration. Keep its original snapshot
                     # alive: a timeout is NOT a completed polling-cycle fence,
                     # so replacing it could lose pre-successor sibling changes.
-                    if (new_directories or rearm_required) and not settings.filesystem_watch_force_polling:
+                    if (
+                        (new_directories and not settings.filesystem_watch_force_polling)
+                        or rearm_required
+                    ):
                         successor = new_observer()
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.
@@ -6084,22 +6256,43 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                         # Reconcile only once every added subtree is covered by
                         # a registered successor, including additions made in
                         # the preceding handoff itself.
+                        applying = True
                         await asyncio.to_thread(_apply_watcher_changes, vault, pending_reconcile)
+                        applying = False
+                        batch_failures = 0
                         pending_reconcile = set()
                     if not recovered and not pending_reconcile and not rearm_required:
                         # First fully healthy cycle of this run: registration
                         # barrier passed and every pending change applied.
                         await asyncio.to_thread(
-                            _resolve_worker_error, "source_watcher", int(vault["id"]),
+                            _resolve_worker_error, "source_watcher", vault_id,
                         )
                         recovered = True
                     if (
-                        recovered and next_scan_at is not None
-                        and not pending_reconcile and not rearm_required
-                        and loop.time() >= next_scan_at
+                        recovered and not pending_reconcile and not rearm_required
+                        and next_scan_at is not None and loop.time() >= next_scan_at
                     ):
-                        delay = await _reconcile_vault_after_watcher(vault)
-                        next_scan_at = None if delay is None else loop.time() + delay
+                        recheck_at = None
+                        await reconcile()
+                    elif (
+                        recovered and not pending_reconcile and not rearm_required
+                        and recheck_at is not None and loop.time() >= recheck_at
+                    ):
+                        known = watch_plan.unobserved(vault_id)
+                        repaired = not await asyncio.to_thread(
+                            watch_plan.still_unobserved, root, known,
+                        )
+                        if repaired:
+                            await reconcile()
+                        else:
+                            recheck_at = loop.time() + WATCHER_RECHECK_SECONDS
+                    if (
+                        recovered and not rearm_required
+                        and watch_plan.unobserved(vault_id).directories != registered_gaps.directories
+                    ):
+                        # A permission was repaired, a name renamed, or a folder
+                        # turned out unreadable: register the tree again.
+                        rearm_required = True
             finally:
                 if successor is not None:
                     await successor.aclose()
@@ -6107,16 +6300,30 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            vault_id = int(vault["id"])
             now = loop.time()
-            # A run that stayed up is healthy; only quick repeated failures grow the pause.
-            failure_streak = 1 if now - started_at >= WATCHER_STABLE_SECONDS else failure_streak + 1
-            next_scan_at = 0.0
+            # Quick repeated failures grow the pause. Time spent scanning is not
+            # time the watcher stayed up.
+            uptime = now - started_at - scan_seconds
+            failure_streak = 1 if uptime >= WATCHER_STABLE_SECONDS else failure_streak + 1
+            schedule_gap_scan()
+            if applying and pending_reconcile:
+                batch_failures += 1
+                if batch_failures >= WATCHER_BATCH_MAX_FAILURES:
+                    worker_error_store.log_worker_error("source_watcher_batch_dropped", exc, vault_id)
+                    pending_reconcile = set()
+                    batch_failures = 0
             if _is_undecodable_path_error(exc):
                 # A filename that is not UTF-8 stopped the native observer and the
-                # events around it are lost: not an internal error. The scan that
-                # follows the restart names the path and catalogues the rest (#494).
+                # events around it are lost: not an internal error. The Vault is
+                # not confirmed until a scan has looked again; that scan names the
+                # path, and the restart registers the tree around a directory
+                # with such a name (#494).
                 worker_error_store.log_worker_error("source_watcher", exc, vault_id)
+                await asyncio.to_thread(
+                    _record_scan_component_health, vault_id, "source",
+                    ok=False, notify_problem=False,
+                    error="Source watcher stopped on a file name that is not valid UTF-8",
+                )
             else:
                 with status_lock:
                     status = runtime_status.setdefault(
@@ -6131,12 +6338,11 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     )
                 else:
                     await asyncio.to_thread(_report_worker_error, "source_watcher", exc, vault_id)
-            if not recovered and now - last_failure_scan >= WATCHER_FAILURE_SCAN_SECONDS:
+            if not recovered and next_scan_at is not None and loop.time() >= next_scan_at:
                 # The watcher could not even register, so no healthy run will
                 # trigger the scan. Reconcile anyway, rarely, so the unreadable
-                # path is named and the rest of the Vault stays protected.
-                last_failure_scan = now
-                await _reconcile_vault_after_watcher(vault)
+                # path is named and the next registration can avoid it.
+                await reconcile()
             await asyncio.sleep(_watcher_restart_delay(failure_streak))
 
 

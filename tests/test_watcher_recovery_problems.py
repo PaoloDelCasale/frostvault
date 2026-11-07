@@ -78,7 +78,7 @@ class RecoveryProblemTests(unittest.TestCase):
             ["dir-\\udcff", "non-utf8-\\udce9.txt"],
         )
         self.assertEqual({p["problem_status"] for p in problems}, {"open"})
-        # Not an unreadable path: no permission advice, and no incomplete scan.
+        # Not an unreadable path: no permission advice.
         self.assertEqual(self.problems("file_unreadable"), [])
 
         # Rescanning does not duplicate the problems.
@@ -154,6 +154,115 @@ class RecoveryProblemTests(unittest.TestCase):
         self.assertEqual(self.open_problem_count(), 1)
         storage._note_worker_ok("auto_upload_queue", 9)
         self.assertEqual(self.open_problem_count(), 0)
+
+    # --- review of PR #504 ------------------------------------------------
+
+    def copies(self):
+        with PostgresConnection(str(self.path)) as connection:
+            return {
+                row["path"]: row["presence"]
+                for row in connection.execute(
+                    """SELECT fp.path, lc.presence FROM local_copies lc
+                       JOIN file_paths fp ON fp.vault_file_id=lc.vault_file_id AND fp.valid_to IS NULL"""
+                ).fetchall()
+            }
+
+    def test_a_folder_renamed_to_an_unsupported_name_never_makes_its_files_missing(self):
+        from app.services.component_health import load_vault_health
+        from app.services.protection_states import observation_is_unconfirmed
+
+        raw = os.fsencode(self.root)
+        (self.root / "Foto").mkdir()
+        (self.root / "Foto" / "a.jpg").write_text("photo")
+        (self.root / "other.txt").write_text("other")
+        storage.scan_tree(self.vault, "first")
+        self.assertEqual(self.copies(), {"Foto/a.jpg": "present", "other.txt": "present"})
+
+        # Another client (or a remount with another charset) renames the folder.
+        os.rename(raw + b"/Foto", raw + b"/Fot\xf2")
+        journal = {}
+        storage.scan_tree(self.vault, "second", _scan_journal=journal)
+
+        # The old rows are not proven gone: they would otherwise look
+        # cloud-only and become deletable from the cloud.
+        self.assertEqual(self.copies(), {"Foto/a.jpg": "present", "other.txt": "present"})
+        self.assertTrue(journal["incomplete"])
+
+        # The Vault is not confirmed while that holds, so cloud deletion and
+        # local release stay closed (CloudDeletion refuses unconfirmed Vaults).
+        with (
+            patch("app.storage._validate_enrolled_scan_root"),
+            patch("app.storage.scan_cloud", return_value=0),
+        ):
+            result = storage.scan_vault(self.vault)
+        self.assertEqual(result.get("local_incomplete"), 1)
+        with PostgresConnection(str(self.path)) as connection:
+            health = load_vault_health(connection, 9)
+        self.assertTrue(health["source"]["last_error"])
+        self.assertTrue(observation_is_unconfirmed(health))
+
+        # Once the name is repaired the next complete scan decides again.
+        os.rename(raw + b"/Fot\xf2", raw + b"/Foto")
+        storage.scan_tree(self.vault, "third")
+        self.assertEqual(self.copies()["Foto/a.jpg"], "present")
+        os.unlink(self.root / "Foto" / "a.jpg")
+        storage.scan_tree(self.vault, "fourth")
+        self.assertEqual(self.copies()["Foto/a.jpg"], "missing")
+
+    def test_each_unreadable_path_closes_by_itself(self):
+        from app.services.problems import report_problem, resolve_stale_path_problems
+
+        with PostgresConnection(str(self.path)) as connection:
+            for path in ("kept/x", "gone/y", "below/hidden/z", "below"):
+                report_problem(connection, event="file_unreadable", vault_id=9, path=path)
+        with PostgresConnection(str(self.path)) as connection:
+            # "kept/x" is still unreadable and "below" could not be entered:
+            # what lies under it is unknown, not repaired.
+            resolve_stale_path_problems(
+                connection, event="file_unreadable", vault_id=9,
+                keep_paths={"kept/x", "below"}, keep_prefixes={"below"},
+            )
+        statuses = {json.loads(p["message_params"])["path"]: p["problem_status"]
+                    for p in self.problems("file_unreadable")}
+        self.assertEqual(statuses, {
+            "kept/x": "open", "gone/y": "resolved", "below/hidden/z": "open", "below": "open",
+        })
+
+    def test_a_corrected_s3_setup_scans_the_vaults_whose_cloud_check_failed(self):
+        from app.services.component_health import record_component_health
+
+        with PostgresConnection(str(self.path)) as connection:
+            connection.execute(
+                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'other', 'Other', %s, 'bucket', 'other')",
+                (str(self.root),),
+            )
+            record_component_health(connection, vault_id=9, component="cloud", ok=False, error="Cloud scan: denied")
+            record_component_health(connection, vault_id=10, component="cloud", ok=True)
+            connection.execute(
+                "INSERT INTO cloud_preflight_state(id, status, remediation, failure_count, next_probe_at) "
+                "VALUES (1, 'blocked', 'S3 access was refused', 3, '2000-01-01T00:00:00+00:00')"
+            )
+        with (
+            patch("app.storage.validate_cloud_vault") as validate,
+            patch("app.storage._submit_maintenance", side_effect=lambda name, func, *args: func(*args)),
+            patch("app.storage.scan_vault", return_value={}) as scan,
+        ):
+            storage.reprobe_cloud_readiness_once()
+        validate.assert_called_once()
+        self.assertEqual([call.args[0]["id"] for call in scan.call_args_list], [9])
+
+    def test_a_gate_that_was_never_blocked_scans_nothing(self):
+        from app.services.component_health import record_component_health
+
+        with PostgresConnection(str(self.path)) as connection:
+            record_component_health(connection, vault_id=9, component="cloud", ok=False, error="Cloud scan: denied")
+        with (
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage._submit_maintenance", side_effect=lambda name, func, *args: func(*args)),
+            patch("app.storage.scan_vault", return_value={}) as scan,
+        ):
+            storage.reprobe_cloud_readiness_once()
+        scan.assert_not_called()
 
 
 if __name__ == "__main__":

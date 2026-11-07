@@ -494,7 +494,7 @@ class UnsupportedNameWalkTests(unittest.TestCase):
             with PinnedTree(root) as tree:
                 for entry, _ in tree.entries(
                     on_error=lambda path, exc: failed.append(path),
-                    on_unsupported_name=unsupported.append,
+                    on_unsupported_name=lambda path, is_dir: unsupported.append(path),
                 ):
                     seen.append(entry.relative_to(root).as_posix())
             self.assertEqual(sorted(seen), ["docs", "docs/fine.txt", "ok.txt"])
@@ -504,7 +504,7 @@ class UnsupportedNameWalkTests(unittest.TestCase):
                 [b"dir-\\udcff", b"non-utf8-\\udce9.txt"],
             )
 
-    def test_scan_catalogues_the_rest_and_reports_each_name_once_without_incompleteness(self):
+    def test_scan_catalogues_the_rest_and_reports_each_name_once_but_is_not_complete(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = self.make_tree(Path(directory))
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
@@ -529,8 +529,14 @@ class UnsupportedNameWalkTests(unittest.TestCase):
                 sorted((p["event"], p["path"]) for p in problems),
                 [("file_name_unsupported", "dir-\udcff"), ("file_name_unsupported", "non-utf8-\udce9.txt")],
             )
-            # The catalog is still complete: nothing may be blocked or left unconfirmed.
-            self.assertNotIn("incomplete", journal)
+            # The names cannot be told apart from what they may have replaced,
+            # so nothing under them may be marked missing: the walk is incomplete.
+            self.assertTrue(journal["incomplete"])
+            self.assertEqual(
+                storage.watch_plan.unobserved(7).unsupported,
+                {"dir-\udcff", "non-utf8-\udce9.txt"},
+            )
+            self.assertEqual(storage.watch_plan.unobserved(7).directories, {"dir-\udcff"})
             # A complete walk of the whole root closes every other open problem.
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0]["event"], "file_name_unsupported")
@@ -604,6 +610,8 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
         stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
         stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+        stack.enter_context(patch("app.storage.WATCHER_GAP_RESCAN_MIN_SECONDS", 0.05))
+        stack.enter_context(patch("app.storage.WATCHER_RECHECK_SECONDS", 0.05))
         stack.enter_context(patch("app.storage.awatch", side_effect=make_observer))
         async def direct(function, *args, **kwargs):
             return function(*args, **kwargs)
@@ -700,7 +708,10 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await self.stop(task)
             self.report.assert_not_called()
-            self.health.assert_not_called()
+            # Not an internal error, but the Vault is no longer confirmed.
+            self.assertEqual(self.health.call_args.args[:2], (9402, "source"))
+            self.assertFalse(self.health.call_args.kwargs["ok"])
+            self.assertIn("UTF-8", self.health.call_args.kwargs["error"])
 
     async def test_other_watcher_failures_are_still_reported_and_followed_by_a_scan(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -723,14 +734,29 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("unreadable path", message)
             self.assertNotIn("root", message)
 
-    async def test_an_incomplete_scan_is_repeated_until_the_vault_is_readable(self):
+    async def test_an_incomplete_scan_rechecks_only_its_paths_until_one_is_repaired(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
-            stack.enter_context(patch("app.storage.WATCHER_INCOMPLETE_RESCAN_SECONDS", 0.05))
-            task = self.start(stack, directory, [self.quiet], [{"local_incomplete": 1}, {"local_incomplete": 1}, {}])
+            still = stack.enter_context(patch(
+                "app.storage.watch_plan.still_unobserved", side_effect=[True, True, False],
+            ))
+            task = self.start(stack, directory, [self.quiet], [{"local_incomplete": 1}, {}])
             try:
-                await self.settle(lambda: self.scan.call_count >= 3)
+                await self.settle(lambda: still.call_count >= 3)
+                await self.settle(lambda: self.scan.call_count >= 2)
                 await asyncio.sleep(0.3)
-                self.assertEqual(self.scan.call_count, 3, "a complete scan ends the repetition")
+                self.assertEqual(self.scan.call_count, 2, "a complete scan ends the checks")
+                self.assertEqual(still.call_count, 3)
+            finally:
+                await self.stop(task)
+
+    async def test_a_scan_that_could_not_reach_s3_is_not_a_reconciled_vault(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("app.storage.WATCHER_SCAN_FAILED_SECONDS", 0.05))
+            task = self.start(stack, directory, [self.quiet], [{"local": 3, "cloud": -1}, {"local": 3, "cloud": 3}])
+            try:
+                await self.settle(lambda: self.scan.call_count >= 2)
+                await asyncio.sleep(0.2)
+                self.assertEqual(self.scan.call_count, 2)
             finally:
                 await self.stop(task)
 

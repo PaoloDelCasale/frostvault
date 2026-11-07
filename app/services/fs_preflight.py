@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 
@@ -138,13 +138,14 @@ class PinnedTree:
 
     def entries(
         self, *, on_error: Callable[[Path, OSError], None],
-        on_unsupported_name: Callable[[Path], None] | None = None,
+        on_unsupported_name: Callable[[Path, bool], None] | None = None,
     ) -> Iterator[tuple[Path, Path]]:
         """Yield (logical path, descriptor path) for every storable entry.
 
-        A name that is not valid UTF-8 is handed to ``on_unsupported_name`` and
-        skipped together with its subtree: no catalog row can exist beneath a
-        path that cannot be stored, and the rest of the walk goes on.
+        A name that is not valid UTF-8 is handed to ``on_unsupported_name``
+        (with whether it is a directory) and skipped together with its subtree:
+        no catalog row can exist beneath a path that cannot be stored, and the
+        rest of the walk goes on.
         """
         def descend(fd: int, parts: tuple[str, ...]):
             logical = self.root.joinpath(*parts)
@@ -154,7 +155,10 @@ class PinnedTree:
                         self.validate_active()
                         if not is_storable_name(entry.name):
                             if on_unsupported_name is not None:
-                                on_unsupported_name(logical / entry.name)
+                                on_unsupported_name(
+                                    logical / entry.name,
+                                    entry.is_dir(follow_symlinks=False),
+                                )
                             continue
                         path = logical / entry.name
                         info = entry.stat(follow_symlinks=False)
@@ -189,17 +193,23 @@ class PinnedTree:
                 yield from descend(fd, parts)
                 return
             name = self.start[len(parts)]
-            try:
-                with _open_directory(fd, (name,)) as child:
-                    expected = _directory_identity(child)
-                    self.identities[parts + (name,)] = expected
-                    self.active.append((fd, name, expected))
-                    try:
-                        yield from start(child, parts + (name,))
-                    finally:
-                        self.active.pop()
-            except OSError as exc:
-                raise TreeIdentityChanged("Subtree component could not be pinned") from exc
+            with ExitStack() as stack:
+                try:
+                    child = stack.enter_context(_open_directory(fd, (name,)))
+                except PermissionError as exc:
+                    # A folder that appeared unreadable (created by another
+                    # user) is a named, unreadable path, not a replaced tree.
+                    on_error(self.root.joinpath(*parts, name), exc)
+                    return
+                except OSError as exc:
+                    raise TreeIdentityChanged("Subtree component could not be pinned") from exc
+                expected = _directory_identity(child)
+                self.identities[parts + (name,)] = expected
+                self.active.append((fd, name, expected))
+                try:
+                    yield from start(child, parts + (name,))
+                finally:
+                    self.active.pop()
 
         yield from start(self.fd, ())
 
