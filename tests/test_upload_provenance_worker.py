@@ -680,7 +680,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         original = self.queue(); self.run_job(original)
         with patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False,volume_health="missing")):
             resumed = self.resume()
-        self.assertEqual(self.row(resumed)["status"], "queued")
+        self.assertEqual(self.row(resumed)["status"], "retrying")
         self.assertIsNone(self.row(resumed)["archive_version_id"])
         self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
 
