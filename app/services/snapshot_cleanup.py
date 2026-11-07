@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from .database_retry import owned_connection, retry_database_unit
-from .cloud_preflight_gate import is_readiness_error
+from .cloud_preflight_gate import is_cold_storage_error, is_readiness_error
 from .upload_provenance import UploadBlocked, canonical, inventory, permission_denied_reason, provider_identity, target, require_target
 from .s3_copy import _delete_s3_version
 from .vault_paths import expected_cloud_key
@@ -269,7 +269,12 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
                 # probe still passes; otherwise it is installation-wide and must reach
                 # the readiness gate (#492). The block is raised outside the handler,
                 # unchained, so it is never read as a readiness error again.
-                unreadable = permission_denied_reason(exc, job["s3_bucket"], default="read_permission_denied")
+                if is_cold_storage_error(exc):
+                    # 403 InvalidObjectState: a version in cold storage needs an
+                    # explicit restore; the duplicate cannot be proven by GET.
+                    unreadable = "proof_unavailable"
+                else:
+                    unreadable = permission_denied_reason(exc, job["s3_bucket"], default="read_permission_denied")
                 if unreadable is None:
                     if is_readiness_error(exc):
                         raise

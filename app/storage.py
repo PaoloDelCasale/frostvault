@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import logging
 import os
 import random
 import stat
@@ -2520,7 +2521,9 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
     reconcile); a refused write stored nothing and is journaled as a no-write
     outcome, so the file is simply retried by the ordinary flow once fixed.
     """
-    if job["action"] != "upload":
+    if job["action"] != "upload" or cloud_preflight_gate.is_cold_storage_error(exc):
+        # A version in cold storage (403 InvalidObjectState) needs a restore, it is
+        # neither a missing permission nor a credential problem.
         return False
     from .services import upload_provenance as provenance
     try:
@@ -5325,6 +5328,43 @@ def _clear_source_volume_problem(job: dict[str, Any]) -> None:
     resolve()
 
 
+def sweep_source_volume_problems() -> int:
+    """Resolve ``source_volume_unavailable`` problems nothing keeps alive (#492).
+
+    The problem is opened by a waiting upload and normally closed by the next upload
+    that reads the root. It must not outlive its cause when that Job is cancelled or
+    closed, or when the root is readable again and the Vault has no other upload to
+    run: each scheduler cycle resolves a Vault's open problem when no upload of it
+    still waits for the volume, or when its enrolled root can be read again.
+    """
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT n.vault_id FROM notifications n WHERE n.event=%s AND n.problem_status='open' "
+            "AND n.vault_id IS NOT NULL", (SOURCE_VOLUME_PROBLEM,)).fetchall()
+        resolvable: list[int] = []
+        for row in rows:
+            vault = connection.execute("SELECT id,source_root FROM vaults WHERE id=%s", (row["vault_id"],)).fetchone()
+            waiting = connection.execute(
+                "SELECT 1 FROM jobs WHERE vault_id=%s AND action='upload' AND status IN ('queued','retrying') "
+                "AND message_key=%s LIMIT 1", (row["vault_id"], SOURCE_VOLUME_WAIT_KEY)).fetchone()
+            readable = False
+            if vault and waiting:
+                try:
+                    readable = bool(source_layout.vault_local_access(vault["source_root"]).local_operations_allowed)
+                except Exception:
+                    readable = False
+            if not vault or not waiting or readable:
+                resolvable.append(int(row["vault_id"]))
+    for vault_id in resolvable:
+        @retry_database_unit
+        def resolve() -> None:
+            with owned_connection(db()) as connection:
+                notification_service.set_problem(connection, key=_source_volume_problem_key(vault_id),
+                                                 event=SOURCE_VOLUME_PROBLEM, vault_id=vault_id, active=False, email=False)
+        resolve()
+    return len(resolvable)
+
+
 def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
@@ -5651,6 +5691,10 @@ def process_jobs_once(*, wait: bool = True) -> int:
     if shutdown_state.requested:
         return 0
     reconcile_interrupted_jobs()
+    try:
+        sweep_source_volume_problems()
+    except Exception:
+        logging.getLogger(__name__).warning("Source Volume problem sweep failed; retried next cycle")
     try:
         failed_count, failed_age = observe_failed_job_backlog()
         metrics_service.set_gauge("jobs_failed_backlog", float(failed_count))

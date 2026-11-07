@@ -91,10 +91,17 @@ never `inventory_changed`.
 
 An unreadable Source Volume root waits without spending the retry budget: the Job
 is rescheduled with exponential backoff (2 s doubling to 300 s) and its wait start
-is kept in its own message parameters. After 10 minutes one in-app problem per
-Vault with the reason `source_volume_unavailable` is shown; it resolves when a
-Job of the Vault reads the root again. Only uploads are rescheduled this way; other
-actions keep their plain queued wait.
+is kept in its own message parameters. At the first check after 10 minutes of
+outage (about 14 minutes with that backoff) one in-app problem per Vault with the
+reason `source_volume_unavailable` is shown. It resolves when a Job of the Vault
+reads the root again, and in every scheduler cycle when the Vault has no upload
+left waiting for the volume (cancelled, closed) or its root is readable again.
+Only uploads are rescheduled this way; other actions keep their plain queued wait.
+
+A 403 `InvalidObjectState` (a version in cold storage that needs an explicit
+restore) is not a permission refusal and not a readiness error: the exact-GET
+duplicate proof stays `proof_unavailable`, as before #492, and the gate is never
+involved.
 
 ## Assumptions
 

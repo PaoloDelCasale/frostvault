@@ -68,6 +68,46 @@ class TransientProviderFaultTests(unittest.TestCase):
         self.assertEqual(classify_upload_failure(client_error("AccessDenied", 403)), "permanent")
 
 
+    def test_a_structured_transient_fault_outranks_permanent_words_in_its_text(self):
+        error = client_error("SlowDown", 503, "ListObjectVersions")
+        error.args = ("An error occurred (SlowDown): access denied style text, not found, unauthorized",)
+        self.assertEqual(classify_upload_failure(error), "transient")
+        self.assertEqual(classify_upload_failure("Access denied"), "permanent")
+
+
+class ColdStorageTests(unittest.TestCase):
+    """403 InvalidObjectState is a version in cold storage, never a permission or readiness error."""
+
+    def cold(self, operation="GetObject"):
+        return client_error("InvalidObjectState", 403, operation)
+
+    def test_it_is_not_a_readiness_error_nor_a_permission_refusal(self):
+        self.assertTrue(cloud_preflight_gate.is_cold_storage_error(self.cold()))
+        self.assertFalse(cloud_preflight_gate.is_readiness_error(self.cold()))
+        self.assertTrue(cloud_preflight_gate.is_readiness_error(client_error("AccessDenied", 403, "GetObject")))
+        with probe(True):
+            self.assertIsNone(provenance.permission_denied_reason(self.cold(), "bucket", default="read_permission_denied"))
+        self.assertEqual(provenance._refusals(self.cold()), [])
+
+    def test_a_wrapped_cold_storage_error_is_recognised(self):
+        try:
+            try:
+                raise self.cold()
+            except ClientError as inner:
+                raise RuntimeError("read-back failed") from inner
+        except RuntimeError as outer:
+            self.assertTrue(cloud_preflight_gate.is_cold_storage_error(outer))
+            self.assertFalse(cloud_preflight_gate.is_readiness_error(outer))
+
+    def test_the_worker_handler_leaves_it_alone(self):
+        job = {"id": 7, "action": "upload", "s3_bucket": "bucket", "vault_id": 2, "vault_file_id": "f", "path": "a.txt"}
+        with probe(True), patch.object(storage, "_record_upload_reconciliation_block") as record, \
+                patch.object(storage, "set_job") as set_job:
+            self.assertFalse(storage._fail_upload_on_permission_refusal(job, self.cold()))
+        record.assert_not_called()
+        set_job.assert_not_called()
+
+
 class ListingFaultTests(unittest.TestCase):
     def listing(self, error):
         def call():

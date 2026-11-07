@@ -107,9 +107,6 @@ _OPERATION_REASONS = {
                      "AbortMultipartUpload"), "write_permission_denied"),
     **dict.fromkeys(("DeleteObject", "DeleteObjects"), "cleanup_unavailable"),
 }
-# Refusals of these reasons describe an action that never reached the provider (or
-# whose outcome is already journaled): nothing about the file is left to reconcile.
-PERMISSION_REASONS = frozenset({"list_permission_denied", "read_permission_denied", "write_permission_denied"})
 
 
 def _guarded_listing(call: Any, bucket: str) -> Any:
@@ -164,9 +161,16 @@ def _bucket_still_ready(bucket: str) -> bool:
 
 
 def _refusals(error: BaseException) -> list[Any]:
+    """Permission refusals in the error chain (HTTP 403 / AccessDenied).
+
+    ``InvalidObjectState`` is also a 403 but describes a cold-storage version that
+    needs an explicit restore, not a missing permission: it is never a refusal.
+    """
     from .database_retry import exception_chain
+    from .cloud_preflight_gate import COLD_STORAGE_CODES
     from botocore.exceptions import ClientError
     return [item for item in exception_chain(error) if isinstance(item, ClientError)
+            and item.response.get("Error", {}).get("Code") not in COLD_STORAGE_CODES
             and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
                  or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
 

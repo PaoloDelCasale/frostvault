@@ -143,10 +143,12 @@ def classify_upload_failure(message: str | BaseException) -> str:
     lowered = str(message or "").lower()
     if "changed since fingerprinting" in lowered:
         return "source_changed"
+    if isinstance(message, BaseException) and is_provider_transient(message):
+        # A structured provider fault outranks words in its text (an error message
+        # that happens to contain a permanent marker is still a transient fault).
+        return "transient"
     if any(marker in lowered for marker in _PERMANENT_UPLOAD_FAILURE_MARKERS):
         return "permanent"
-    if isinstance(message, BaseException) and is_provider_transient(message):
-        return "transient"
     if any(marker in lowered for marker in _TRANSIENT_UPLOAD_FAILURE_MARKERS):
         return "transient"
     return "permanent"

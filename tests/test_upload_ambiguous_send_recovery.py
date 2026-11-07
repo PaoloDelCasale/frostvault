@@ -5,6 +5,7 @@ leave a file in ``ambiguous_send`` forever, and a transient condition must not b
 reported as ``identity_changed``. TEST_POSTGRES_URL is mandatory (disposable PG16).
 """
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
@@ -438,6 +439,70 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.run_job(job)
         self.assert_keeper(job)
         self.assertEqual([n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"], ["resolved"])
+
+    def open_source_volume_problem(self):
+        """A waiting upload whose outage is older than the threshold: the Vault problem is open."""
+        import json
+        from datetime import datetime, timedelta, timezone
+        self.stable_content()
+        job = self.queue()
+        with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted")):
+            self.run_job(job)
+            params = json.loads(self.row(job)["message_params"])
+            old = (datetime.now(timezone.utc) - timedelta(seconds=storage.SOURCE_VOLUME_NOTIFY_AFTER_SECONDS + 60)).isoformat()
+            with self.db() as connection:
+                connection.execute("UPDATE jobs SET message_params=%s WHERE id=%s", (json.dumps({**params, "since": old}), job))
+            self.retry_is_due(job)
+            self.run_job(job)
+        self.assertEqual([n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"], ["open"])
+        return job
+
+    def source_volume_problem_status(self):
+        return [n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"]
+
+    def test_the_source_volume_problem_ends_when_its_waiting_job_is_cancelled(self):
+        job = self.open_source_volume_problem()
+        with patch("app.storage.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=False, volume_health="missing")):
+            self.assertEqual(storage.sweep_source_volume_problems(), 0, "an upload still waits for the volume")
+        self.assertEqual(self.source_volume_problem_status(), ["open"])
+        storage.cancel_jobs([job])
+        self.assertEqual(storage.sweep_source_volume_problems(), 1)
+        self.assertEqual(self.source_volume_problem_status(), ["resolved"])
+        self.assertEqual(storage.sweep_source_volume_problems(), 0)
+
+    def test_the_source_volume_problem_ends_when_the_root_is_readable_without_other_uploads(self):
+        self.open_source_volume_problem()
+        with patch("app.storage.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=False, volume_health="missing")):
+            self.assertEqual(storage.sweep_source_volume_problems(), 0)
+        self.assertEqual(self.source_volume_problem_status(), ["open"])
+        with patch("app.storage.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=True, volume_health="ok")):
+            self.assertEqual(storage.sweep_source_volume_problems(), 1)
+        self.assertEqual(self.source_volume_problem_status(), ["resolved"])
+
+    def test_a_cold_storage_403_on_the_historical_get_stays_proof_unavailable_and_never_reaches_the_gate(self):
+        # S3 answers 403 InvalidObjectState to the GET of an archived (Glacier) version.
+        from botocore.exceptions import ClientError
+        from app.services import cloud_preflight_gate
+        self.provider.add(KEY, fixtures.A, version="cold-orphan")
+        def archived(stage, **kwargs):
+            if stage == "get":
+                raise ClientError({"Error": {"Code": "InvalidObjectState", "Message": "provider text"},
+                                   "ResponseMetadata": {"HTTPStatusCode": 403}}, "GetObject")
+        self.provider.hook = archived
+        job = self.queue()
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(True):
+            self.run_job(job)
+        invalidate.assert_not_called()
+        row = self.row(job)
+        self.assertEqual(row["status"], "failed", row["message"])
+        self.assertEqual((self.provider.deletes, len(self.provider.objects)), (0, 2))
+        with self.db() as connection:
+            state = provenance.describe(connection, vault_id=2, path="report.txt")
+        self.assertEqual(state["reason"], "proof_unavailable")
+        self.assertIn("explicit restore", state["remedy"])
 
     def rearmed_then_stopped(self):
         """Absence is proven (intent re-armed, nothing sent), then the Job stops before sending."""
