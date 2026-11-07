@@ -105,8 +105,100 @@ class SelectFairJobsTests(unittest.TestCase):
                         job_priority({"action": "upload", "origin": "manual"}))
         self.assertLess(job_priority({"action": "upload", "origin": "manual"}),
                         job_priority({"action": "upload", "origin": "automatic"}))
-        self.assertEqual(job_priority({"action": "rename", "origin": "automatic"}),
+        self.assertEqual(job_priority({"action": "rename", "origin": "manual"}),
                          job_priority({"action": "free-space", "origin": "manual"}))
+        self.assertEqual(job_priority({"action": "cloud-purge", "origin": "stop-protection"}),
+                         job_priority({"action": "recover", "origin": "manual"}))
+
+    def test_automatic_free_space_never_outranks_a_manual_upload(self) -> None:
+        # Owner operations are what the Owner asked for; a cleanup the system
+        # admitted on its own ranks with automatic uploads (review of #503).
+        from app.services.job_scheduler import job_priority
+        self.assertGreater(job_priority({"action": "free-space", "origin": "automatic"}),
+                           job_priority({"action": "upload", "origin": "manual"}))
+        jobs = [
+            {"id": 1, "vault_id": 10, "action": "free-space", "origin": "automatic",
+             "requested_at": "2026-07-01T00:00:00+00:00"},
+            {"id": 2, "vault_id": 20, "action": "upload", "origin": "manual",
+             "requested_at": "2026-07-01T00:05:00+00:00"},
+        ]
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [2, 1])
+
+    def test_a_vault_with_running_jobs_yields_to_idle_vaults(self) -> None:
+        # Workers free up one at a time: with concurrency 1 the Vault that
+        # already runs a Job must not win every slot just because it is oldest.
+        def jobs():
+            return [
+                {"id": 1, "vault_id": 10, "action": "upload", "origin": "automatic",
+                 "requested_at": "2026-07-01T00:00:00+00:00"},
+                {"id": 2, "vault_id": 10, "action": "upload", "origin": "automatic",
+                 "requested_at": "2026-07-01T00:00:01+00:00"},
+                {"id": 3, "vault_id": 20, "action": "upload", "origin": "automatic",
+                 "requested_at": "2026-07-01T00:09:00+00:00"},
+            ]
+        first = select_fair_jobs(jobs(), limit=1, active_by_vault={10: 1})
+        self.assertEqual([job["id"] for job in first], [3])
+        # With both Vaults running one Job each the oldest wins again.
+        second = select_fair_jobs(jobs(), limit=1, active_by_vault={10: 1, 20: 1})
+        self.assertEqual([job["id"] for job in second], [1])
+
+    def test_single_slots_alternate_vaults_over_time(self) -> None:
+        remaining = [
+            {"id": index, "vault_id": 10 if index <= 6 else 20, "action": "upload",
+             "origin": "automatic", "requested_at": f"2026-07-01T00:00:{index:02d}+00:00"}
+            for index in range(1, 9)
+        ]
+        active = {10: 0, 20: 0}
+        order = []
+        while remaining:
+            pick = select_fair_jobs(remaining, limit=1, active_by_vault=active)[0]
+            order.append(pick["vault_id"])
+            remaining = [job for job in remaining if job["id"] != pick["id"]]
+            active[pick["vault_id"]] += 1
+            # Each job finishes before the next slot opens only half of the time.
+            if len(order) % 2 == 0:
+                active[order[-2]] -= 1
+                active[order[-1]] -= 1
+        self.assertEqual(order[:4], [10, 20, 10, 20])
+
+    def test_waiting_work_ages_up_one_tier_per_interval(self) -> None:
+        from datetime import datetime, timezone
+        from app.services.job_scheduler import AGING_SECONDS, effective_priority
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        waited = "2026-07-01T11:00:00+00:00"
+        self.assertEqual(effective_priority({"action": "upload", "origin": "manual", "requested_at": waited}, now), 0)
+        self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": waited}, now), 0)
+        recent = "2026-07-01T11:59:00+00:00"
+        self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": recent}, now), 2)
+        self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": recent}), 2)
+        self.assertGreater(AGING_SECONDS, 0)
+
+    def test_a_huge_owner_operation_cannot_stop_every_other_vaults_uploads(self) -> None:
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        jobs = [
+            {"id": index, "vault_id": 10, "action": "rename", "origin": "manual",
+             "requested_at": f"2026-07-01T11:00:{index:02d}+00:00"}
+            for index in range(1, 6)
+        ]
+        jobs.append({"id": 99, "vault_id": 20, "action": "upload", "origin": "manual",
+                     "requested_at": "2026-07-01T10:00:00+00:00"})
+        # Without aging every rename goes first; once the upload has waited,
+        # the Vaults alternate.
+        self.assertEqual(select_fair_jobs(jobs, limit=2)[0]["id"], 1)
+        aged = [job["id"] for job in select_fair_jobs(jobs, limit=2, now=now)]
+        self.assertIn(99, aged)
+
+    def test_an_owner_operation_still_beats_aged_uploads_of_its_own_vault(self) -> None:
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        jobs = [
+            {"id": 1, "vault_id": 10, "action": "upload", "origin": "automatic",
+             "requested_at": "2026-07-01T08:00:00+00:00"},
+            {"id": 2, "vault_id": 10, "action": "recover", "origin": "manual",
+             "requested_at": "2026-07-01T11:59:00+00:00"},
+        ]
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2, now=now)], [2, 1])
 
 
 class SchedulerFileIsolationTests(unittest.TestCase):
@@ -132,6 +224,7 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         }
         self.catalog = Mock()
         self.catalog.list_claimable_jobs.return_value = [self.missing, self.healthy]
+        self.catalog.active_job_counts.return_value = {}
         self.catalog.get_job_target.return_value = {"archive_version_id": None}
         self.catalog.claim_job.return_value = self.healthy
         self.enterContext(patch("app.storage.db", return_value=connection))

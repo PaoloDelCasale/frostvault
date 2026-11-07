@@ -380,9 +380,13 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     """Collapse a failure burst into one per-Vault problem instead of N rows.
 
     The first GROUP_THRESHOLD failures of a Vault inside the window keep their
-    own rows; the rest are counted by one open ``job_failed_group`` problem that
-    resolves itself once every folded failure is resolved or moot. A Job that
-    already has its own row is never folded (re-delivery stays idempotent).
+    own rows; later ones are counted by one ``job_failed_group`` problem. The
+    group only absorbs failures while the burst lasts: once no failure was folded
+    into it for GROUP_WINDOW_SECONDS it is closed to new failures (its key is
+    retired, it stays open until its own failures are resolved or moot) and a
+    later failure gets a notification of its own, or starts a new group if a new
+    burst is under way. A Job that already has its own row is never folded
+    (re-delivery stays idempotent).
     """
     recipients = _owner_recipients(connection)
     if not recipients:
@@ -397,25 +401,35 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         return False
     stamp = now_iso()
     cutoff = (datetime.fromisoformat(stamp) - timedelta(seconds=GROUP_WINDOW_SECONDS)).isoformat()
-    recent = connection.execute(
-        """
-        SELECT count(*) AS total FROM notifications
-        WHERE user_id=%s AND vault_id=%s AND event='job_failed'
-          AND problem_status='open' AND created_at >= %s
-        """,
-        (user_id, vault_id, cutoff),
-    ).fetchone()
     group_key = f"job_failed_group:{vault_id}"
     previous = connection.execute(
         "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
         (user_id, group_key),
     ).fetchone()
-    group_open = previous is not None and previous.get("problem_status") == "open"
-    if int(recent["total"] or 0) < GROUP_THRESHOLD and not group_open:
-        return False
     since = cutoff
-    if group_open:
-        since = str(parse_message_params(previous.get("message_params")).get("since") or cutoff)
+    if previous is not None:
+        old = parse_message_params(previous.get("message_params"))
+        last_folded = str(old.get("last") or old.get("since") or "")
+        if previous.get("problem_status") == "open" and last_folded >= cutoff:
+            since = str(old.get("since") or cutoff)
+        else:
+            # The burst is over: retire the group so it cannot absorb this failure.
+            connection.execute(
+                "UPDATE notifications SET dedupe_key=%s WHERE id=%s",
+                (f"{group_key}:{previous['id']}", previous["id"]),
+            )
+            previous = None
+    if previous is None:
+        recent = connection.execute(
+            """
+            SELECT count(*) AS total FROM notifications
+            WHERE user_id=%s AND vault_id=%s AND event='job_failed'
+              AND problem_status='open' AND created_at >= %s
+            """,
+            (user_id, vault_id, cutoff),
+        ).fetchone()
+        if int(recent["total"] or 0) < GROUP_THRESHOLD:
+            return False
     count = connection.execute(
         """
         SELECT count(*) AS total FROM jobs original
@@ -426,27 +440,19 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         """,
         (vault_id, since),
     ).fetchone()
-    params = {"count": int(count["total"] or 1), "since": since}
+    params = {"count": int(count["total"] or 1), "since": since, "last": stamp}
     item = enqueue_notification(
         connection, user_id=user_id, vault_id=vault_id, event="job_failed_group",
         title="", title_key="notification.job_failed_group.title",
         body_key="notification.job_failed_group.body", message_params=params,
         dedupe_key=group_key, channels=fixed_channels(),
     )
-    reopen = previous is not None and previous.get("problem_status") == "resolved"
     connection.execute(
         "UPDATE notifications SET problem_status='open', resolved_at=NULL, "
-        "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
-        "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
+        "message_params=%s, body=%s WHERE id=%s",
         (format_message_params(params), translate("notification.job_failed_group.body", **params),
-         reopen, reopen, stamp, item["id"]),
+         item["id"]),
     )
-    if reopen:
-        connection.execute(
-            "UPDATE notification_deliveries SET status='pending', attempt_count=0, "
-            "next_attempt_at=%s, last_error=NULL, updated_at=%s WHERE notification_id=%s",
-            (stamp, stamp, item["id"]),
-        )
     return True
 
 
@@ -712,6 +718,7 @@ def reconcile_problem_states(connection: Any) -> None:
                 WHERE original.vault_id=n.vault_id AND original.action='upload'
                   AND original.status='failed'
                   AND original.updated_at >= (n.message_params::jsonb->>'since')
+                  AND original.updated_at <= COALESCE(n.message_params::jsonb->>'last', '9999-12-31')
                   AND NOT EXISTS (SELECT 1 FROM notifications own
                                   WHERE own.job_id=original.id AND own.event='job_failed')
                   AND NOT ({RESOLUTION_SQL} OR {REMOVED_FILE_FAILURE_SQL})

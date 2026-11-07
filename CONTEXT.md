@@ -127,8 +127,10 @@ _Avoid_: Task, request
 
 **Scheduling Tier**:
 The order in which the worker serves runnable Jobs: Owner operations (restore,
-free-space, rename, storage-class, cloud purge), then manual uploads, then
-automatic uploads, with Vaults interleaved inside each tier.
+free-space, rename, storage-class, cloud purge) first, then uploads the Owner
+asked for, then anything admitted automatically (automatic uploads and cleanups).
+Vaults share the workers fairly inside a tier, and work that has waited long
+enough moves up a tier.
 _Avoid_: Priority queue, Lane
 
 **Removed File Closure**:

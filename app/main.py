@@ -2623,6 +2623,25 @@ class PendingUploadCancelAction(BaseModel):
     path: str = Field(default="", max_length=1024)
 
 
+# An upload that has not begun: waiting in the queue, never admitted to the
+# upload provenance machinery, nothing linked in the cloud, not part of a
+# remediation episode. Cancelling anything else could close an ambiguous send
+# for good (ADR-0024/0025), so it stays with the single-Job cancel and Resume.
+_UNSTARTED_UPLOAD_SQL = """
+    j.vault_id=%s AND j.action='upload'
+    AND j.status IN ('queued', 'retrying')
+    AND NOT COALESCE(j.upload_reconcile_only, FALSE)
+    AND j.archive_version_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_intents i
+                    WHERE i.vault_file_id=j.vault_file_id AND i.send_started AND NOT i.settled)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediations r
+                    WHERE r.vault_file_id=j.vault_file_id AND r.state NOT IN ('resolved', 'cancelled'))
+"""
+
+
 @app.post(
     "/api/upload/cancel-pending",
     response_model=response_model("JobCancelResponse"),
@@ -2633,36 +2652,28 @@ def cancel_pending_uploads(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    """Cancel every unfinished upload of the selected Vault, or of one folder.
+    """Cancel the uploads of the selected Vault (or one folder) that have not begun.
 
     One call replaces thousands of per-file cancels after a burst or a moved
-    folder (issue #493). An empty ``path`` means the whole Vault. Uploads that
-    already finished are untouched; in-flight ones stop at their next checkpoint.
-    A cancelled automatic upload is not re-queued until the file's content
-    changes, exactly like a single cancel.
+    folder (issue #493). An empty ``path`` means the whole Vault; a folder
+    matches itself and its descendants only (``foo`` never matches ``foobar``).
+    Only uploads that never started are cancelled: running or verifying ones,
+    reconcile-only attempts, jobs with a started or recorded send and jobs of a
+    remediation episode are left to their own cancel and Resume, so an ambiguous
+    send is never closed for good by a bulk action. A cancelled automatic upload
+    is not re-queued until the file's content changes, like a single cancel.
     """
     folder = normalize_directory(action.path, api=True)
     with db() as connection:
         connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        scope_sql, scope_params = "", []
         if folder:
-            rows = connection.execute(
-                """
-                SELECT id FROM jobs
-                WHERE vault_id=%s AND action='upload'
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                  AND (path=%s OR starts_with(path, %s))
-                """,
-                (vault["id"], folder, folder + "/"),
-            ).fetchall()
-        else:
-            rows = connection.execute(
-                """
-                SELECT id FROM jobs
-                WHERE vault_id=%s AND action='upload'
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                """,
-                (vault["id"],),
-            ).fetchall()
+            scope_sql = "AND (j.path=%s OR starts_with(j.path, %s))"
+            scope_params = [folder, folder + "/"]
+        rows = connection.execute(
+            f"SELECT j.id FROM jobs j WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
+            [vault["id"], *scope_params],
+        ).fetchall()
         job_ids = [int(row["id"]) for row in rows]
         if job_ids:
             _cancel_active_jobs(connection, vault, "upload", job_ids, user["id"])

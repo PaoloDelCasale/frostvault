@@ -60,7 +60,7 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
       {selected && <div className="mt-3 border-t border-line pt-2" data-testid="selected-vault-activity">
         <h3 className="break-words font-bold">{selected.vault_name}</h3>
         <Summary activity={selected} observedAt={data.observed_at} t={t} />
-        <Button variant="secondary" className="mt-2" disabled={cancelling} onClick={() => void cancelPending()}>{t("activity.cancel_pending")}</Button>
+        {selected.queued.files > 0 && <Button variant="secondary" className="mt-2" disabled={cancelling} onClick={() => void cancelPending()}>{t("activity.cancel_pending")}</Button>}
       </div>}
       {notice && <p className="mt-2 text-sm" role="status">{notice}</p>}
       {otherVaults.length > 0 && <details className="mt-3">

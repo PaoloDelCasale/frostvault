@@ -5618,7 +5618,7 @@
     },
     "/api/upload/cancel-pending": {
       "post": {
-        "description": "Cancel every unfinished upload of the selected Vault, or of one folder.\n\nOne call replaces thousands of per-file cancels after a burst or a moved\nfolder (issue #493). An empty ``path`` means the whole Vault. Uploads that\nalready finished are untouched; in-flight ones stop at their next checkpoint.\nA cancelled automatic upload is not re-queued until the file's content\nchanges, exactly like a single cancel.",
+        "description": "Cancel the uploads of the selected Vault (or one folder) that have not begun.\n\nOne call replaces thousands of per-file cancels after a burst or a moved\nfolder (issue #493). An empty ``path`` means the whole Vault; a folder\nmatches itself and its descendants only (``foo`` never matches ``foobar``).\nOnly uploads that never started are cancelled: running or verifying ones,\nreconcile-only attempts, jobs with a started or recorded send and jobs of a\nremediation episode are left to their own cancel and Resume, so an ambiguous\nsend is never closed for good by a bulk action. A cancelled automatic upload\nis not re-queued until the file's content changes, like a single cancel.",
         "operationId": "cancel_pending_uploads_api_upload_cancel_pending_post",
         "parameters": [
           {

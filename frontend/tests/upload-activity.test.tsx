@@ -71,6 +71,13 @@ describe("aggregate upload activity", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ path: "" });
   });
 
+  it("offers no cancel action when no upload is waiting", async () => {
+    const activity = empty(); activity.uploading = { files: 3, bytes: 30, transferred_bytes: 10 };
+    show(activity, 2);
+    await screen.findByTestId("selected-vault-activity");
+    expect(screen.queryByRole("button", { name: t("activity.cancel_pending") })).not.toBeInTheDocument();
+  });
+
   it("discloses stable files awaiting admission rather than promising transfer start", async () => {
     const activity = empty(); activity.queued.files = 7; activity.awaiting_admission_files = 7;
     show(activity);

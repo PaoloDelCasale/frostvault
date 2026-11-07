@@ -192,6 +192,12 @@ class AggregateDeadlockTests(unittest.TestCase):
             groups = connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed_group'").fetchone()['n']
             self.assertTrue(notifications.GROUP_THRESHOLD <= singles <= 16, singles)
             self.assertEqual(groups, 0 if singles == 16 else 1)
+            folded = 0
+            if groups:
+                from app.i18n import parse_message_params
+                row = connection.execute("SELECT message_params FROM notifications WHERE event='job_failed_group'").fetchone()
+                folded = int(parse_message_params(row['message_params'])['count'])
+            self.assertEqual(singles + folded, 16)
             self.assertEqual(connection.execute('SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()').fetchone()['deadlocks'],0)
         self.assertEqual(self.provider.puts,[])
 

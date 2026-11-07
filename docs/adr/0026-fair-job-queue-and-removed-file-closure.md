@@ -16,32 +16,48 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 
 ### Scheduling
 
-1. **Candidates are windowed per Vault.** `ArchiveCatalog.list_claimable_jobs`
-   takes the oldest runnable Jobs of *each* Vault (a lateral window), never one
-   window over all Vaults, and applies the exclusion list before the cut.
-2. **Scheduling tiers.** Non-upload Jobs (restore, free-space, rename,
-   storage-class, cloud purge) run before manual uploads, which run before
-   automatic uploads. Inside a tier Vaults are interleaved, oldest first. An
-   Owner operation therefore never waits behind a burst of automatic uploads.
-3. **Capacity first, lazily.** With no free operation slot nothing is read. The
-   automatic-upload stability fence is evaluated lazily, only for as many
-   candidates as there are free slots.
-4. **Deferral.** An automatic upload that is not runnable now (paused, unstable,
-   unreadable root, changed) is excluded from the candidate query for 15
-   seconds, in memory, keyed by database and Job id. A restart simply rechecks.
-   Nothing durable changes, so it cannot hide work for longer than the window.
+1. **Candidates are windowed per Vault and per tier.** `ArchiveCatalog.list_claimable_jobs`
+   takes the oldest runnable Jobs of *each Vault and scheduling tier* (a lateral
+   window with `row_number()`), never one window over all Vaults, and applies
+   the exclusion list before the cut. A flood of Owner operations in a Vault
+   therefore cannot hide that Vault's own uploads from the candidate set.
+2. **Scheduling tiers** (`job_scheduler.job_priority`, mirrored in SQL):
+   0 Owner operations (restore, free-space, rename, storage-class, cloud purge,
+   Stop Protection purges), 1 uploads the Owner asked for, 2 everything the
+   system admitted on its own (automatic uploads **and automatic free-space
+   cleanups**, which never outrank an Owner upload).
+3. **Aging.** Work that has waited 15 minutes moves up one tier (and one more per
+   further 15 minutes), so a huge Owner operation ("Move the whole Vault") cannot
+   stop every upload of every other Vault. Inside a Vault the original tier
+   still orders Jobs, so an Owner operation is never queued behind aged uploads
+   of its own Vault.
+4. **Fair sharing counts running work.** Inside a tier the next slot goes to the
+   Vault with the fewest running Jobs (live leases) plus Jobs already picked in
+   this pass, ties broken by the oldest waiting Job. With concurrency 1 and slots
+   freed one at a time, a Vault that already runs a Job yields to idle Vaults.
+5. **Capacity first, lazily.** With no free operation slot nothing is read. The
+   automatic-upload stability fence is evaluated lazily, only until the free slots
+   are filled.
+6. **Deferral with backoff and deeper scans.** An automatic upload that is not
+   runnable now (paused, excluded path, unstable, not a regular file, unreadable,
+   changed) is excluded from the candidate query, in memory, keyed by database
+   and Job id, for 15 s, doubling per recheck up to 2 minutes. When a window
+   yields no runnable Job the same tick reads the next window (at most 20
+   rounds), so any number of unrunnable Jobs ahead of a ready one no longer hides
+   it. Deferral is not durable: a restart simply rechecks.
 
 ### Removed files
 
-5. A Job whose Local Copy is **provably gone** (healthy enrolled root, ENOENT or
-   ENOTDIR, no linked Archive Version, no started send) is closed `cancelled`
-   with the message `job.upload_file_removed`; its remediation episode, if any,
-   ends as `cancelled` with reason `file_removed`. It is not a failure: no
-   `job_failed` notification, and an existing one resolves. Missing, offline or
-   replaced roots are never treated as a removed file.
-6. A file that reappears with different content is admitted again, because its
-   content observation postdates the cancelled Job.
-7. A Job that already holds a started send, a receipt or a linked version is
+7. A Job whose Local Copy is **provably gone** (healthy enrolled root checked
+   before *and after* the `ENOENT`, no linked Archive Version, no started send)
+   is closed `cancelled` with the message `job.upload_file_removed`; its
+   remediation episode, if any, ends as `cancelled` with reason `file_removed`.
+   The closure marks the Local Copy `missing` in the same transaction, so the
+   same bytes coming back (same size and mtime) open a new stability window and
+   are admitted again. It is not a failure: no `job_failed` notification, and an
+   existing one resolves. Missing, offline or replaced roots are never treated
+   as a removed file.
+8. A Job that already holds a started send, a receipt or a linked version is
    never closed from database state alone; it stays with the reconcile and
    remediation machinery. Known limit: if the file disappears after
    send-started was recorded and before the first S3 request, the Job ends
@@ -50,21 +66,32 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 
 ### Notifications
 
-8. More than ten upload failures of one Vault inside ten minutes fold into one
-   open `job_failed_group` problem with a count; the rest keep their own rows.
-   The group resolves itself once every folded failure is resolved or moot.
-   Failures whose linked episode ended as `file_removed` count as resolved.
+9. More than ten upload failures of one Vault inside ten minutes fold into one
+   `job_failed_group` problem with a count. The group is a rolling window: it
+   absorbs failures only while one was folded into it within the last ten
+   minutes. After that it is retired (it stays open until its own failures are
+   resolved or moot, judged on the failures between its `since` and `last`) and a
+   later failure gets a notification of its own, or starts a new group if a new
+   burst is under way. Failures whose linked episode ended as `file_removed`
+   count as resolved.
 
 ### Visibility and control
 
-9. A queue with runnable work, nothing running and no claim for five minutes is
-   **stalled**: gauge `queue_stalled`, informational `queue` object in `/ready`
-   (it never fails readiness), and an open `queue_stalled` problem. The alert
-   also fires when the queue is blocked by the S3 gate, which is accurate: it is
-   not moving.
-10. `POST /api/upload/cancel-pending` cancels every unfinished upload of a Vault
-    or of one folder in a single call, through the same cancel path as a single
-    Job. Cancelled automatic uploads are not re-queued until the content changes.
+10. A queue with **runnable** work (Jobs the worker has set aside as not
+    runnable are not counted), nothing running and no claim for five minutes is
+    **stalled**: gauge `queue_stalled`, informational `queue` object in `/ready`
+    (it never fails readiness), and an open `queue_stalled` problem whose text is
+    refreshed every minute. A claim does not resolve the problem: it resolves
+    after ten minutes without a stall, so a queue that alternates between
+    claiming and idling raises one problem, not one unread alert per cycle. The
+    alert also fires when the queue is blocked by the S3 gate, which is accurate:
+    it is not moving.
+11. `POST /api/upload/cancel-pending` cancels the uploads of a Vault or of one
+    folder (`foo` matches `foo/...`, never `foobar`) that **have not begun**:
+    queued or retrying, not reconcile-only, no bound upload intent, no started
+    send, no linked version, no remediation episode. Anything else keeps its own
+    cancel and Resume, so a bulk action can never close an ambiguous send for
+    good. Cancelled automatic uploads are not re-queued until the content changes.
 
 ## Not decided here
 

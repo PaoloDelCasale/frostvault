@@ -834,13 +834,16 @@ export interface paths {
         put?: never;
         /**
          * Cancel Pending Uploads
-         * @description Cancel every unfinished upload of the selected Vault, or of one folder.
+         * @description Cancel the uploads of the selected Vault (or one folder) that have not begun.
          *
          *     One call replaces thousands of per-file cancels after a burst or a moved
-         *     folder (issue #493). An empty ``path`` means the whole Vault. Uploads that
-         *     already finished are untouched; in-flight ones stop at their next checkpoint.
-         *     A cancelled automatic upload is not re-queued until the file's content
-         *     changes, exactly like a single cancel.
+         *     folder (issue #493). An empty ``path`` means the whole Vault; a folder
+         *     matches itself and its descendants only (``foo`` never matches ``foobar``).
+         *     Only uploads that never started are cancelled: running or verifying ones,
+         *     reconcile-only attempts, jobs with a started or recorded send and jobs of a
+         *     remediation episode are left to their own cancel and Resume, so an ambiguous
+         *     send is never closed for good by a bulk action. A cancelled automatic upload
+         *     is not re-queued until the file's content changes, like a single cancel.
          */
         post: operations["cancel_pending_uploads_api_upload_cancel_pending_post"];
         delete?: never;
