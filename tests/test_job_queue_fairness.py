@@ -230,12 +230,13 @@ class ClaimableWindowTests(QueueFixture):
 
 
 class RemovedFileTests(QueueFixture):
-    def run_once(self):
+    def run_once(self, *, only_removed=True):
         with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client") as client, \
                 patch("app.storage.upload_s3_file") as upload:
             claimed = storage.process_jobs_once()
-            client.assert_not_called()
-            upload.assert_not_called()
+            if only_removed:
+                client.assert_not_called()
+                upload.assert_not_called()
         return claimed
 
     def test_automatic_upload_of_a_removed_file_is_closed_not_failed(self):
@@ -262,9 +263,23 @@ class RemovedFileTests(QueueFixture):
         self.assertEqual(self.queue(2), 1)
         self.assertEqual(self.queue(3), 1)
         gone.unlink()
-        self.assertEqual(self.run_once(), 1)
-        self.assertEqual(self.run_once(), 1)
-        self.assertEqual({row["vault_id"]: row["status"] for row in self.jobs()}.get(2), "cancelled")
+        real_process_job = storage.process_job
+        reached = []
+
+        def process(job):
+            if job["vault_id"] == 3:
+                # The healthy Vault is dispatched; its upload is not exercised here.
+                reached.append(job["id"])
+                with self.db() as connection:
+                    connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (job["id"],))
+                return
+            real_process_job(job)
+
+        with patch("app.storage.process_job", side_effect=process):
+            self.assertEqual(self.run_once(only_removed=False), 1)
+            self.assertEqual(self.run_once(only_removed=False), 1)
+        self.assertEqual(len(reached), 1)
+        self.assertEqual({row["vault_id"]: row["status"] for row in self.jobs()}[2], "cancelled")
 
     def test_unreadable_root_is_not_treated_as_a_removed_file(self):
         target = self.write(2, "keep.jpg")
@@ -326,7 +341,15 @@ class FailureGroupingTests(QueueFixture):
     def test_group_resolves_when_every_folded_failure_is_moot(self):
         self.fail_jobs(notifications.GROUP_THRESHOLD + 5)
         with self.db() as connection:
-            connection.execute("UPDATE jobs SET status='cancelled' WHERE status='failed'")
+            # The files are gone and none of the failures reached the cloud.
+            connection.execute(
+                """
+                INSERT INTO local_copies(vault_file_id, presence, file_type, size, mtime_ns,
+                                         last_seen_at, observed_at)
+                SELECT vault_file_id, 'missing', 'regular', 1, 1, %s, %s FROM jobs
+                """,
+                (self.clock.isoformat(), self.clock.isoformat()),
+            )
             notifications.reconcile_problem_states(connection)
             states = connection.execute(
                 "SELECT event, problem_status FROM notifications"

@@ -187,7 +187,11 @@ class AggregateDeadlockTests(unittest.TestCase):
             maintenance.result(timeout=30)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT count(*) n FROM jobs WHERE status='failed' AND terminal_notification_status='done'").fetchone()['n'],16)
-            self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],16)
+            # A burst beyond GROUP_THRESHOLD folds into one per-Vault group (#499).
+            singles = connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n']
+            groups = connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed_group'").fetchone()['n']
+            self.assertTrue(notifications.GROUP_THRESHOLD <= singles <= 16, singles)
+            self.assertEqual(groups, 0 if singles == 16 else 1)
             self.assertEqual(connection.execute('SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()').fetchone()['deadlocks'],0)
         self.assertEqual(self.provider.puts,[])
 
