@@ -18,6 +18,28 @@ from ..i18n import catalog as locale_catalog
 from ..i18n import format_message_params, parse_message_params, translate
 
 
+# Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
+# into one open "job_failed_group" problem instead of one row per file (#499).
+GROUP_THRESHOLD = 10
+GROUP_WINDOW_SECONDS = 600
+
+# SQL (alias ``original`` = a failed upload Job): the file no longer exists and
+# the Job never reached the cloud, so the failure has nothing left to protect.
+# Failures that left a materialized fact (linked version, started send, a
+# remediation episode) are excluded: they stay open until reconciled.
+REMOVED_FILE_FAILURE_SQL = """(
+    original.action='upload' AND original.status='failed'
+    AND original.archive_version_id IS NULL
+    AND EXISTS (SELECT 1 FROM local_copies lc
+                WHERE lc.vault_file_id=original.vault_file_id AND lc.presence='missing')
+    AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs ib
+                    JOIN upload_intents i ON i.id=ib.intent_id
+                    WHERE ib.job_id=original.id AND i.send_started)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=original.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=original.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.job_id=original.id)
+)"""
+
 DELIVERY_TIMEOUT_SECONDS = 10.0
 DELIVERY_RETRY_CAP_SECONDS = 300
 _logger = logging.getLogger(__name__)
@@ -297,6 +319,8 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     if not recovery and not (job["action"] == "upload" and job["status"] == "failed"):
         return 0
     event = ("recovery_completed" if job["status"] == "completed" else "recovery_failed") if recovery else "job_failed"
+    if event == "job_failed" and _fold_into_failure_group(connection, job):
+        return 0
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
     params = {"action": str(job["action"]), "path": str(job["path"])}
@@ -334,7 +358,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
         if event == "job_failed":
             # Late outbox delivery must materialize already-resolved history,
             # never reopen an exact target completed by remediation.
-            from .upload_remediation import RESOLUTION_SQL
+            from .upload_remediation import CLOSED_SQL as RESOLUTION_SQL
             connection.execute(
                 f"""UPDATE notifications n SET
                     problem_status=CASE WHEN {RESOLUTION_SQL} THEN 'resolved'
@@ -350,6 +374,80 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
         if existing is None:
             enqueued += 1
     return enqueued
+
+
+def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
+    """Collapse a failure burst into one per-Vault problem instead of N rows.
+
+    The first GROUP_THRESHOLD failures of a Vault inside the window keep their
+    own rows; the rest are counted by one open ``job_failed_group`` problem that
+    resolves itself once every folded failure is resolved or moot. A Job that
+    already has its own row is never folded (re-delivery stays idempotent).
+    """
+    recipients = _owner_recipients(connection)
+    if not recipients:
+        return False
+    vault_id = int(job["vault_id"])
+    user_id = int(recipients[0]["user_id"])
+    own = connection.execute(
+        "SELECT 1 FROM notifications WHERE user_id=%s AND dedupe_key=%s",
+        (user_id, f"job:{int(job['id'])}:job_failed"),
+    ).fetchone()
+    if own is not None:
+        return False
+    stamp = now_iso()
+    cutoff = (datetime.fromisoformat(stamp) - timedelta(seconds=GROUP_WINDOW_SECONDS)).isoformat()
+    recent = connection.execute(
+        """
+        SELECT count(*) AS total FROM notifications
+        WHERE user_id=%s AND vault_id=%s AND event='job_failed'
+          AND problem_status='open' AND created_at >= %s
+        """,
+        (user_id, vault_id, cutoff),
+    ).fetchone()
+    group_key = f"job_failed_group:{vault_id}"
+    previous = connection.execute(
+        "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
+        (user_id, group_key),
+    ).fetchone()
+    group_open = previous is not None and previous.get("problem_status") == "open"
+    if int(recent["total"] or 0) < GROUP_THRESHOLD and not group_open:
+        return False
+    since = cutoff
+    if group_open:
+        since = str(parse_message_params(previous.get("message_params")).get("since") or cutoff)
+    count = connection.execute(
+        """
+        SELECT count(*) AS total FROM jobs original
+        WHERE original.vault_id=%s AND original.action='upload'
+          AND original.status='failed' AND original.updated_at >= %s
+          AND NOT EXISTS (SELECT 1 FROM notifications own
+                          WHERE own.job_id=original.id AND own.event='job_failed')
+        """,
+        (vault_id, since),
+    ).fetchone()
+    params = {"count": int(count["total"] or 1), "since": since}
+    item = enqueue_notification(
+        connection, user_id=user_id, vault_id=vault_id, event="job_failed_group",
+        title="", title_key="notification.job_failed_group.title",
+        body_key="notification.job_failed_group.body", message_params=params,
+        dedupe_key=group_key, channels=fixed_channels(),
+    )
+    reopen = previous is not None and previous.get("problem_status") == "resolved"
+    connection.execute(
+        "UPDATE notifications SET problem_status='open', resolved_at=NULL, "
+        "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
+        "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
+        (format_message_params(params), translate("notification.job_failed_group.body", **params),
+         reopen, reopen, stamp, item["id"]),
+    )
+    if reopen:
+        connection.execute(
+            "UPDATE notification_deliveries SET status='pending', attempt_count=0, "
+            "next_attempt_at=%s, last_error=NULL, updated_at=%s WHERE notification_id=%s",
+            (stamp, stamp, item["id"]),
+        )
+    return True
 
 
 def enqueue_archive_version_missing(
@@ -598,7 +696,7 @@ def reconcile_problem_states(connection: Any) -> None:
     uploads. A newer queued/failed upload, or successful content B, proves nothing
     about failed snapshot A. Reading remains independent of resolution.
     """
-    from .upload_remediation import RESOLUTION_SQL
+    from .upload_remediation import CLOSED_SQL as RESOLUTION_SQL
     connection.execute(f"""
         UPDATE notifications n SET problem_status='resolved', resolved_at=%s,
             read_at=COALESCE(read_at,%s)
@@ -608,7 +706,15 @@ def reconcile_problem_states(connection: Any) -> None:
                 WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
             )) OR (n.event='job_failed' AND EXISTS (
                 SELECT 1 FROM jobs original WHERE original.id=n.job_id
-                  AND {RESOLUTION_SQL}
+                  AND ({RESOLUTION_SQL} OR {REMOVED_FILE_FAILURE_SQL})
+            )) OR (n.event='job_failed_group' AND NOT EXISTS (
+                SELECT 1 FROM jobs original
+                WHERE original.vault_id=n.vault_id AND original.action='upload'
+                  AND original.status='failed'
+                  AND original.updated_at >= (n.message_params::jsonb->>'since')
+                  AND NOT EXISTS (SELECT 1 FROM notifications own
+                                  WHERE own.job_id=original.id AND own.event='job_failed')
+                  AND NOT ({RESOLUTION_SQL} OR {REMOVED_FILE_FAILURE_SQL})
             )) OR (n.event='file_unreadable' AND (
                 EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
                         AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)

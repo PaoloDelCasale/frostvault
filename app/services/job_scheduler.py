@@ -11,18 +11,60 @@ from collections import defaultdict, deque
 from typing import Any, Mapping, Sequence
 
 
+USER_OPERATION_PRIORITY = 0
+MANUAL_UPLOAD_PRIORITY = 1
+AUTOMATIC_UPLOAD_PRIORITY = 2
+
+
+def job_priority(job: Mapping[str, Any]) -> int:
+    """Scheduling tier: lower runs first (ADR-0026, issue #500).
+
+    Everything that is not an upload (restore, free-space, rename, storage-class,
+    cloud purge) outranks uploads, so a restore never waits behind a burst of
+    thousands of small automatic uploads. An upload the Owner asked for outranks
+    one the watcher admitted on its own.
+    """
+    if job.get("action") != "upload":
+        return USER_OPERATION_PRIORITY
+    if job.get("origin") == "automatic":
+        return AUTOMATIC_UPLOAD_PRIORITY
+    return MANUAL_UPLOAD_PRIORITY
+
+
 def select_fair_jobs(
     jobs: Sequence[Mapping[str, Any]],
     *,
     limit: int,
 ) -> list[Mapping[str, Any]]:
-    """Interleave Jobs so each Vault gets a turn before any Vault gets a second.
+    """Order Jobs by tier, then interleave Vaults inside each tier.
 
-    Within a Vault, older ``requested_at`` values win. Across Vaults, the Vault
-    whose next Job is oldest is served first on each round. This keeps the
-    schedule deterministic and prevents a busy Vault from starving others when
-    the worker concurrency budget is smaller than the queue.
+    A lower ``job_priority`` tier is always served before a higher one. Inside a
+    tier each Vault gets a turn before any Vault gets a second; within a Vault,
+    older ``requested_at`` values win. Across Vaults, the Vault whose next Job
+    is oldest is served first on each round. This keeps the schedule
+    deterministic and prevents a busy Vault from starving others when the
+    worker concurrency budget is smaller than the queue.
     """
+    if limit <= 0 or not jobs:
+        return []
+    tiers: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for job in jobs:
+        tiers[job_priority(job)].append(job)
+    selected: list[Mapping[str, Any]] = []
+    for tier in sorted(tiers):
+        selected.extend(
+            _interleave_vaults(tiers[tier], limit=limit - len(selected))
+        )
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _interleave_vaults(
+    jobs: Sequence[Mapping[str, Any]],
+    *,
+    limit: int,
+) -> list[Mapping[str, Any]]:
     if limit <= 0 or not jobs:
         return []
 

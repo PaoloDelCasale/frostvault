@@ -32,7 +32,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def stable_content(self):
         # Content stability is exercised elsewhere; here the file is old enough.
-        self.enterContext(patch("app.storage._automatic_upload_ready", return_value=True))
+        self.enterContext(patch("app.storage._automatic_upload_state", return_value="ready"))
 
     def retry_is_due(self, job):
         with self.db() as connection:

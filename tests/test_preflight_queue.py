@@ -179,12 +179,15 @@ class PreflightQueueTests(unittest.TestCase):
             with self.db() as c:
                 c.execute("UPDATE jobs SET status='completed' WHERE id=%s", (job['id'],))
         with patch('app.storage.validate_cloud_vault'), patch('app.storage.process_job', side_effect=finish):
-            self.assertEqual(storage.process_jobs_once(), 1)
+            # The removed copy is still dispatched, but only so its worker can
+            # close it as a removed file (#493, #499): it never starves the
+            # healthy Vault and consumes no retry budget.
+            self.assertEqual(storage.process_jobs_once(), 2)
             self.assertEqual(storage.process_jobs_once(), 0)
-        self.assertEqual(processed, healthy)
+        self.assertEqual(sorted(processed), sorted([*healthy, *missing]))
         with self.db() as c:
-            row = c.execute("SELECT status,retry_count,claim_token FROM jobs WHERE id=%s", (missing[0],)).fetchone()
-            self.assertEqual(row, {'status': 'queued', 'retry_count': 0, 'claim_token': None})
+            row = c.execute("SELECT retry_count FROM jobs WHERE id=%s", (missing[0],)).fetchone()
+            self.assertEqual(row, {'retry_count': 0})
 
     def test_sixteen_simultaneous_auth_failures_wait_and_promptly_invalidate_ready(self):
         with self.db() as c:

@@ -2893,35 +2893,62 @@ class ArchiveCatalog:
         now: str,
         restore_due_before: str,
         limit: int,
+        per_vault_limit: int | None = None,
+        exclude_job_ids: Sequence[int] = (),
     ) -> list[dict[str, Any]]:
-        """Load scheduler candidates using the shared claimability definition."""
+        """Load scheduler candidates using the shared claimability definition.
+
+        The window is taken **per Vault** (``per_vault_limit``, default
+        ``limit``), never over the whole installation: a Vault holding thousands
+        of older Jobs, or Jobs the worker cannot run, must not push every other
+        Vault's work out of the candidate set (issues #493, #500). Inside a
+        Vault, Jobs are ordered by scheduling tier (user operations, manual
+        uploads, automatic uploads) and then by age, matching
+        ``job_scheduler.job_priority``. ``exclude_job_ids`` removes candidates
+        the worker already found not runnable *before* the window is cut.
+        """
         if limit <= 0:
             return []
+        window = int(per_vault_limit) if per_vault_limit else int(limit)
         predicate, params = self._claimable_job_predicate_sql(
             prefix="j.",
             now=now,
             restore_due_before=restore_due_before,
         )
+        excluded = [int(job_id) for job_id in exclude_job_ids]
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.decommission_state
-            FROM jobs j
-            JOIN vaults v ON v.id=j.vault_id
+            FROM vaults v
+            CROSS JOIN LATERAL (
+                SELECT j.*
+                FROM jobs j
+                WHERE j.vault_id=v.id
+                  AND (
+                        (v.enabled=TRUE AND v.decommission_state='active'
+                         AND j.origin IN ('manual','automatic'))
+                     OR (v.decommission_state='decommissioning'
+                         AND j.origin='stop-protection' AND j.action='cloud-purge')
+                  )
+                  AND ({predicate})
+                  AND j.id <> ALL(%s::bigint[])
+                ORDER BY CASE WHEN j.action<>'upload' THEN 0
+                              WHEN j.origin<>'automatic' THEN 1
+                              ELSE 2 END ASC,
+                         j.requested_at ASC, j.id ASC
+                LIMIT {window}
+            ) j
             WHERE v.relocation_state='ready'
-              AND (
-                    (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin IN ('manual','automatic'))
-                 OR (v.decommission_state='decommissioning'
-                     AND j.origin='stop-protection' AND j.action='cloud-purge')
-              )
-              AND ({predicate})
-            ORDER BY j.requested_at ASC, j.id ASC
+            ORDER BY CASE WHEN j.action<>'upload' THEN 0
+                          WHEN j.origin<>'automatic' THEN 1
+                          ELSE 2 END ASC,
+                     j.requested_at ASC, j.id ASC
             LIMIT {int(limit)}
             """,
-            params,
+            [*params, excluded],
         ).fetchall()
 
     @staticmethod
