@@ -42,7 +42,8 @@ class _UploadClient:
                  check_active: Callable[[], None] = lambda: None,
                  max_bandwidth: int | None = None,
                  on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
-                 write_client: Any = None) -> None:
+                 write_client: Any = None,
+                 on_multipart: Callable[[str, str], None] | None = None) -> None:
         self.client = client
         self.write_client = write_client if write_client is not None else client
         if isinstance(self.write_client, BaseClient) and self.write_client.meta.config.retries.get("total_max_attempts") != 1:
@@ -51,6 +52,7 @@ class _UploadClient:
         self.check_active = check_active
         self.max_bandwidth = max_bandwidth
         self.on_acknowledged = on_acknowledged
+        self.on_multipart = on_multipart
         self.response: dict[str, Any] | None = None
         self.pending: dict[str, Any] | None = None
 
@@ -137,6 +139,20 @@ class _UploadClient:
             kwargs["ChecksumType"] = "COMPOSITE"
         result = self.write_client.create_multipart_upload(**kwargs)
         self.pending = {"Bucket": kwargs["Bucket"], "Key": kwargs["Key"], "UploadId": result["UploadId"]}
+        if self.on_multipart is not None:
+            # Journaled BEFORE s3transfer receives the id, hence before any part:
+            # an interrupted upload can later abort exactly this UploadId (#491).
+            # If it cannot be journaled the upload must not continue untraceable.
+            try:
+                self.on_multipart("created", result["UploadId"])
+            except BaseException:
+                try:
+                    self.abort_multipart_upload(**self.pending)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Incomplete multipart abort failed; lifecycle cleanup is required"
+                    )
+                raise
         return result
 
     def complete_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
@@ -150,8 +166,12 @@ class _UploadClient:
             for part, checksum in zip(parts, self.snapshot.part_checksums):
                 part["ChecksumSHA256"] = checksum
         response = self.write_client.complete_multipart_upload(**kwargs)
+        upload_id = kwargs.get("UploadId")
         self.pending = None
-        return self._acknowledge(response)
+        try:
+            return self._acknowledge(response)
+        finally:
+            self._journal_closed(upload_id)
 
     def abort_multipart_upload(self, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -163,7 +183,18 @@ class _UploadClient:
                 raise
             result = {}
         self.pending = None
+        self._journal_closed(kwargs.get("UploadId"))
         return result
+
+    def _journal_closed(self, upload_id: Any) -> None:
+        # The provider no longer holds it. A failure here only leaves the row open,
+        # which the next reconciliation resolves by listing; never fail the upload.
+        if self.on_multipart is None or not upload_id:
+            return
+        try:
+            self.on_multipart("closed", str(upload_id))
+        except Exception:
+            logging.getLogger(__name__).warning("Multipart journal close failed; reconciliation will resolve it")
 
 
 class _Progress(BaseSubscriber):
@@ -182,6 +213,7 @@ def upload_file(
     metadata: dict[str, str] | None = None,
     on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
     write_client: Any = None,
+    on_multipart: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """Return the upload response or fail closed, aborting incomplete multipart.
 
@@ -213,7 +245,7 @@ def upload_file(
             raise RuntimeError("Local file changed since fingerprinting")
     facade = _UploadClient(client, snapshot=snapshot, check_active=check_active,
                            max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged,
-                           write_client=write_client)
+                           write_client=write_client, on_multipart=on_multipart)
     config = TransferConfig(max_bandwidth=max_bandwidth, preferred_transfer_client="classic")
     if snapshot is not None:
         config.multipart_threshold = MULTIPART_THRESHOLD

@@ -3288,6 +3288,7 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         snapshot=job.get("_upload_snapshot"),
         metadata=job.get("_upload_metadata"),
         on_acknowledged=job.get("_on_upload_acknowledged"),
+        on_multipart=job.get("_on_upload_multipart"),
     )
     reporter.flush()
     return response
@@ -3562,6 +3563,7 @@ def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> 
         connection = catalog.connection
         stamp = now_iso()
         provenance.record_no_write(connection, job, intent, provenance.ABSENT_OPERATION, stamp)
+        provenance.close_multiparts(connection, intent["id"], stamp)
         connection.execute("UPDATE upload_intents SET blocked_reason=NULL WHERE id=%s", (intent["id"],))
         connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
         upload_remediation.release_for_rearm(connection, job, intent["id"], stamp)
@@ -3607,7 +3609,12 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
             # VERSION baseline remains immutable, including cleanup-only retries.
             return
         try:
-            response = provenance.reconcile(client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"))
+            with db() as connection:
+                owned = provenance.open_multiparts(connection, intent["id"])
+            response = provenance.reconcile(
+                client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"),
+                owned_multiparts=owned,
+                on_multipart_aborted=lambda upload_id: provenance.close_multipart(db, intent["id"], upload_id, now_iso()))
         except provenance.ProvenAbsent:
             # Complete S3 reads prove the journaled send never landed (#484):
             # close the intent as a definitive no-write outcome and let this
@@ -3865,9 +3872,17 @@ def process_upload(job: dict[str, Any]) -> None:
                 def acknowledge(response: dict[str, Any]) -> None:
                     provenance.append_receipt(db, intent["id"], response, now_iso())
 
+                def journal_multipart(event: str, upload_id: str) -> None:
+                    # "created" commits before s3transfer sees the UploadId (#491).
+                    if event == "created":
+                        provenance.journal_multipart(db, intent["id"], upload_id, now_iso())
+                    else:
+                        provenance.close_multipart(db, intent["id"], upload_id, now_iso())
+
                 transfer_job = {**job, "_upload_snapshot": snapshot, "_upload_provider": provider,
                                 "_upload_metadata": {provenance.TOKEN_KEY: intent["token"]},
-                                "_on_upload_acknowledged": acknowledge}
+                                "_on_upload_acknowledged": acknowledge,
+                                "_on_upload_multipart": journal_multipart}
                 try:
                     response = upload_s3_file(transfer_job, source=source, key=key)
                 except BaseException as exc:
