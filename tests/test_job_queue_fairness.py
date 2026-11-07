@@ -220,9 +220,12 @@ class ClaimableWindowTests(QueueFixture):
                 vault_id=2, path="manual.jpg", action="upload", requested_by=1,
                 requested_at=self.clock.isoformat(), group_id="manual", is_directory=False,
             )
+        # The window is cut per Vault and per tier: the manual upload is its
+        # own tier, so older automatic ones can never push it out of the window.
         rows = self.candidates(limit=10, per_vault_limit=2)
         self.assertEqual(rows[0]["id"], manual[0])
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(sum(1 for row in rows if row["origin"] == "automatic"), 2)
 
     def test_excluded_jobs_are_removed_before_the_window_is_cut(self):
         for index in range(4):
@@ -568,9 +571,9 @@ class RemovedFileTests(QueueFixture):
         stamp = self.clock.isoformat()
         with self.db() as connection:
             connection.execute(
-                "INSERT INTO upload_remediations(id,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
+                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
                 "size,state,phase,due_at,current_job_id,created_at,updated_at) "
-                "VALUES ('episode-1',2,%s,%s,'{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
+                "VALUES ('episode-1','key-episode-1',2,%s,%s,'{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
                 (job["vault_file_id"], f"intent-{job['id']}", stamp, job["id"], stamp, stamp),
             )
             connection.execute(
@@ -600,9 +603,9 @@ class RemovedFileTests(QueueFixture):
         stamp = self.clock.isoformat()
         with self.db() as connection:
             connection.execute(
-                "INSERT INTO upload_remediations(id,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
+                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
                 "size,state,phase,reason,due_at,created_at,updated_at) "
-                "VALUES ('episode-2',2,%s,%s,'{}','read_back',1,'cancelled','verification','file_removed',%s,%s,%s)",
+                "VALUES ('episode-2','key-episode-2',2,%s,%s,'{}','read_back',1,'cancelled','verification','file_removed',%s,%s,%s)",
                 (job["vault_file_id"], f"intent-{job['id']}", stamp, stamp, stamp),
             )
             connection.execute(
@@ -829,9 +832,9 @@ class CancelPendingHttpTests(QueueFixture):
                 (file_id, ids["other/c.jpg"], stamp),
             )
             connection.execute(
-                "INSERT INTO upload_remediations(id,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
+                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
                 "size,state,phase,due_at,current_job_id,created_at,updated_at) "
-                "VALUES ('ep-1',2,%s,'ep-intent','{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
+                "VALUES ('ep-1','key-ep-1',2,%s,'ep-intent','{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
                 (file_id, stamp, ids["other/c.jpg"], stamp, stamp),
             )
             connection.execute(
