@@ -3550,6 +3550,19 @@ def _close_removed_upload(job: dict[str, Any]) -> bool:
     )
 
 
+@retry_database_unit
+def _upload_catalog_unit(
+    job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any],
+) -> Any:
+    """One owned, replayable transaction; callbacks must contain DB work only."""
+    from .services import upload_provenance as provenance
+    with owned_connection(db()) as connection:
+        # Same Vault-first lock order as admission/cleanup; this is DB-only.
+        provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
+        ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
+        return mutation(ArchiveCatalog(connection))
+
+
 def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], response: dict[str, Any]) -> str:
     from .services import upload_provenance as provenance
     _require_upload_source_identity(job)
