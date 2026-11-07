@@ -38,7 +38,9 @@ A refused abort is a per-file `abort_permission_denied` block through the same f
 bucket probe as every other S3 action (ADR-0025, #492): probe failing -> readiness
 gate; passing -> the file is blocked and the gate is untouched. Its remedy says that
 the incomplete parts are still stored (unlike `write_permission_denied`, where
-nothing was). The journaled row stays open.
+nothing was). The journaled row stays open. The same reason is reported when a
+refused write (UploadPart, Complete) is followed by a refused cleanup abort: the
+write stored nothing, the parts remain (no durable block; the lifecycle reaps them).
 
 ## Alternatives considered
 
@@ -59,6 +61,8 @@ nothing was). The journaled row stays open.
   is lost: the UploadId is unknown to the application, so it cannot be journaled or
   aborted.
 - Downgrade of the migration is refused only while an open row belongs to an intent
-  that still owes reconciliation (send started, not settled): the journal is then
-  the only proof that allows an exact abort. Rows of settled or never-sent intents
-  are dropped with the table.
+  that still owes reconciliation (send started, not settled, not cancelled): the
+  journal is then the only proof that allows an exact abort. Rows of settled or
+  never-sent intents are dropped with the table, and so are those of a cancelled
+  intent: it can never be resumed (its original or a bound Job was cancelled), so
+  its multipart upload is left to the bucket lifecycle (7 days).

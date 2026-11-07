@@ -55,6 +55,8 @@ class _UploadClient:
         self.on_multipart = on_multipart
         self.response: dict[str, Any] | None = None
         self.pending: dict[str, Any] | None = None
+        # The last abort the provider refused: the incomplete parts are still stored.
+        self.abort_error: ClientError | None = None
 
     def _acknowledge(self, response: dict[str, Any]) -> dict[str, Any]:
         # Raw response identity is available before cancellation/proof/HEAD or
@@ -180,9 +182,11 @@ class _UploadClient:
             # Completion may have succeeded but its response was interrupted.
             # Never delete a completed object to compensate an ambiguous result.
             if exc.response.get("Error", {}).get("Code") != "NoSuchUpload":
+                self.abort_error = exc
                 raise
             result = {}
         self.pending = None
+        self.abort_error = None
         self._journal_closed(kwargs.get("UploadId"))
         return result
 
@@ -197,6 +201,14 @@ class _UploadClient:
             self.on_multipart("closed", str(upload_id))
         except Exception:
             logging.getLogger(__name__).warning("Multipart journal close failed; reconciliation will resolve it")
+
+
+def abort_refused(error: BaseException | None) -> bool:
+    """An AbortMultipartUpload the provider refused for permission (403/AccessDenied)."""
+    if not isinstance(error, ClientError):
+        return False
+    return (error.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+            or error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)
 
 
 class _Progress(BaseSubscriber):
@@ -334,6 +346,10 @@ def upload_file(
             # shutdown joins in-flight requests: their acknowledgments can arrive
             # AFTER cancellation was raised. Attach the final receipt only now,
             # keeping the original exception object and retry classification.
+            if failure is not None and abort_refused(facade.abort_error):
+                # The write failed AND the cleanup abort was refused: whatever the
+                # worker reports for the failure, the incomplete parts remain stored.
+                failure.upload_abort_refused = True
             if failure is not None and facade.response is not None:
                 failure.upload_response = dict(facade.response)
             elif snapshot is not None and isinstance(failure, ClientError):

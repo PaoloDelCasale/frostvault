@@ -2541,7 +2541,12 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
         return False
     if reason is None:
         return False
-    if reason != "write_permission_denied":
+    if reason == "write_permission_denied" and getattr(exc, "upload_abort_refused", False):
+        # The write was refused AND so was the cleanup abort: nothing was committed,
+        # but the incomplete parts are still stored. Say so (no durable block: the
+        # intent journaled the no-write outcome, the bucket lifecycle reaps the parts).
+        reason = "abort_permission_denied"
+    if reason not in {"write_permission_denied", "abort_permission_denied"}:
         _record_upload_reconciliation_block(job, reason)
     set_job(job["id"], "failed", str(provenance.UploadBlocked(reason)))
     return True

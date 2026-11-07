@@ -215,6 +215,22 @@ class WorkerRefusalTests(unittest.TestCase):
                 self.assertTrue(handled)
                 record.assert_called_once_with(self.job, "read_permission_denied")
 
+    def test_a_refused_write_followed_by_a_refused_abort_names_the_abort(self):
+        error = client_error("AccessDenied", 403, "UploadPart")
+        error.upload_abort_refused = True
+        handled, record, set_job = self.run_refusal(error)
+        self.assertTrue(handled)
+        record.assert_not_called()
+        message = set_job.call_args.args[2]
+        self.assertIn("abort_permission_denied", message)
+        self.assertIn("s3:AbortMultipartUpload", message)
+        self.assertNotIn("Nothing was stored", message)
+
+    def test_a_refused_write_alone_still_says_nothing_was_stored(self):
+        handled, record, set_job = self.run_refusal(client_error("AccessDenied", 403, "UploadPart"))
+        self.assertTrue(handled)
+        self.assertIn("write_permission_denied", set_job.call_args.args[2])
+
     def test_an_installation_wide_refusal_is_left_to_the_gate(self):
         handled, record, set_job = self.run_refusal(client_error("AccessDenied", 403, "PutObject"), ready=False)
         self.assertFalse(handled)

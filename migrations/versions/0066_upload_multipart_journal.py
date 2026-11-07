@@ -30,10 +30,14 @@ def downgrade():
     # An open row of an intent that is still owed reconciliation (send started, not
     # settled) is the only proof that lets the application abort its incomplete
     # multipart upload exactly. Rows of settled or never-sent intents carry no
-    # obligation and are dropped with the table.
+    # obligation, and neither do those of a cancelled intent (its original or a bound
+    # Job was cancelled): it can never be resumed, so nothing could use the row.
     pending = op.get_bind().execute(sa.text(
         "SELECT 1 FROM upload_multiparts m JOIN upload_intents i ON i.id = m.intent_id "
-        "WHERE m.state = 'open' AND i.send_started AND NOT i.settled LIMIT 1")).first()
+        "WHERE m.state = 'open' AND i.send_started AND NOT i.settled "
+        "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = i.original_job_id AND j.status = 'cancelled') "
+        "AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b JOIN jobs j ON j.id = b.job_id "
+        "WHERE b.intent_id = i.id AND j.status = 'cancelled') LIMIT 1")).first()
     if pending:
         raise RuntimeError("Abort or reconcile open multipart uploads of interrupted uploads before downgrade")
     op.drop_index("upload_multiparts_open_idx", table_name="upload_multiparts")

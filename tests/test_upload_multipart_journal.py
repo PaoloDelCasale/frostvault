@@ -57,6 +57,27 @@ class MultipartFacadeJournalTests(unittest.TestCase):
             facade.abort_multipart_upload(Bucket=BUCKET, Key=KEY, UploadId="up-1")
         self.assertEqual(events, [("created", "up-1")])
 
+    def test_a_refused_abort_is_remembered_until_an_abort_succeeds(self):
+        from app.services.s3_upload import abort_refused
+        events = []
+        client, facade = self.facade(events)
+        facade.create_multipart_upload(Bucket=BUCKET, Key=KEY)
+        client.abort_multipart_upload.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPStatusCode": 403}}, "AbortMultipartUpload")
+        with self.assertRaises(ClientError):
+            facade.abort_multipart_upload(Bucket=BUCKET, Key=KEY, UploadId="up-1")
+        self.assertTrue(abort_refused(facade.abort_error))
+        client.abort_multipart_upload.side_effect = None
+        facade.abort_multipart_upload(Bucket=BUCKET, Key=KEY, UploadId="up-1")
+        self.assertIsNone(facade.abort_error)
+
+    def test_only_a_permission_refusal_counts_as_a_refused_abort(self):
+        from app.services.s3_upload import abort_refused
+        self.assertFalse(abort_refused(None))
+        self.assertFalse(abort_refused(RuntimeError("x")))
+        self.assertFalse(abort_refused(ClientError({"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}}, "AbortMultipartUpload")))
+        self.assertTrue(abort_refused(ClientError({"Error": {"Code": "403"}, "ResponseMetadata": {"HTTPStatusCode": 403}}, "AbortMultipartUpload")))
+
     def test_an_unjournaled_upload_is_aborted_at_once_and_never_continues(self):
         def journal(event, upload_id):
             raise RuntimeError("database lost")
