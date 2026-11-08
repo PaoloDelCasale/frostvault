@@ -2541,7 +2541,12 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
         return False
     if reason is None:
         return False
-    if reason != "write_permission_denied":
+    if reason == "write_permission_denied" and getattr(exc, "upload_abort_refused", False):
+        # The write was refused AND so was the cleanup abort: nothing was committed,
+        # but the incomplete parts are still stored. Say so (no durable block: the
+        # intent journaled the no-write outcome, the bucket lifecycle reaps the parts).
+        reason = "abort_permission_denied"
+    if reason not in {"write_permission_denied", "abort_permission_denied"}:
         _record_upload_reconciliation_block(job, reason)
     set_job(job["id"], "failed", str(provenance.UploadBlocked(reason)))
     return True
@@ -3300,6 +3305,7 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         snapshot=job.get("_upload_snapshot"),
         metadata=job.get("_upload_metadata"),
         on_acknowledged=job.get("_on_upload_acknowledged"),
+        on_multipart=job.get("_on_upload_multipart"),
     )
     reporter.flush()
     return response
@@ -3544,6 +3550,9 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
         catalog.set_upload_snapshot(job["id"], snapshot_json=intent["snapshot_json"])
         catalog.link_job_version(job["id"], recorded)
         catalog.connection.execute("UPDATE upload_intents SET archive_version_id=%s WHERE id=%s AND (archive_version_id IS NULL OR archive_version_id=%s)", (recorded, intent["id"], recorded))
+        # The version exists (e.g. Complete reached S3 but its response was lost): the
+        # multipart upload is no longer an obligation of this intent (#491).
+        provenance.close_multiparts(catalog.connection, intent["id"], stamp)
         # A scan may have observed this exact write before its receipt was
         # published. Only this owner/intent-fenced publication promotes its
         # observation ordering; generic discovery never grants current trust.
@@ -3574,6 +3583,7 @@ def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> 
         connection = catalog.connection
         stamp = now_iso()
         provenance.record_no_write(connection, job, intent, provenance.ABSENT_OPERATION, stamp)
+        provenance.close_multiparts(connection, intent["id"], stamp)
         connection.execute("UPDATE upload_intents SET blocked_reason=NULL WHERE id=%s", (intent["id"],))
         connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
         upload_remediation.release_for_rearm(connection, job, intent["id"], stamp)
@@ -3619,7 +3629,12 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
             # VERSION baseline remains immutable, including cleanup-only retries.
             return
         try:
-            response = provenance.reconcile(client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"))
+            with db() as connection:
+                owned = provenance.open_multiparts(connection, intent["id"])
+            response = provenance.reconcile(
+                client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"),
+                owned_multiparts=owned,
+                on_multipart_aborted=lambda upload_id: provenance.close_multipart(db, intent["id"], upload_id, now_iso()))
         except provenance.ProvenAbsent:
             # Complete S3 reads prove the journaled send never landed (#484):
             # close the intent as a definitive no-write outcome and let this
@@ -3877,9 +3892,17 @@ def process_upload(job: dict[str, Any]) -> None:
                 def acknowledge(response: dict[str, Any]) -> None:
                     provenance.append_receipt(db, intent["id"], response, now_iso())
 
+                def journal_multipart(event: str, upload_id: str) -> None:
+                    # "created" commits before s3transfer sees the UploadId (#491).
+                    if event == "created":
+                        provenance.journal_multipart(db, intent["id"], upload_id, now_iso())
+                    else:
+                        provenance.close_multipart(db, intent["id"], upload_id, now_iso())
+
                 transfer_job = {**job, "_upload_snapshot": snapshot, "_upload_provider": provider,
                                 "_upload_metadata": {provenance.TOKEN_KEY: intent["token"]},
-                                "_on_upload_acknowledged": acknowledge}
+                                "_on_upload_acknowledged": acknowledge,
+                                "_on_upload_multipart": journal_multipart}
                 try:
                     response = upload_s3_file(transfer_job, source=source, key=key)
                 except BaseException as exc:

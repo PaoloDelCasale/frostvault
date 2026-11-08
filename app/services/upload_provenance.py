@@ -31,6 +31,7 @@ REMEDIES = {
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",
     "read_permission_denied": "S3 refused to read an object version of this file (HeadObject/GetObject), so its upload cannot be confirmed. Keep all copies, grant the archive IAM identity s3:GetObject and s3:GetObjectVersion on the bucket objects, then use Retry failed uploads.",
     "write_permission_denied": "S3 refused to write this file (PutObject or a multipart request) although the bucket itself is reachable. Nothing was stored and the file stays unprotected. Grant the archive IAM identity s3:PutObject and s3:AbortMultipartUpload on the bucket objects, then use Retry failed uploads.",
+    "abort_permission_denied": "S3 refused to abort an incomplete multipart upload left by an interrupted upload of this file, so absence cannot be proven. The incomplete parts are still stored (and billed) until aborted. Keep all copies, grant the archive IAM identity s3:AbortMultipartUpload on the bucket objects, then use Retry failed uploads; otherwise the bucket lifecycle reaps them after 7 days.",
     "list_permission_denied": "S3 refused to list object versions or incomplete multipart uploads for this file, so reconciliation cannot see what was sent. Keep all copies, grant the archive IAM identity s3:ListBucketVersions and s3:ListBucketMultipartUploads on the bucket, then use Retry failed uploads.",
     "ambiguous_receipt": "Keep all copies. Inspect exact versions with authorized S3 tools; do not choose latest or delete by token.",
     "inventory_changed": "Keep all copies. The exact cloud inventory changed or could not be confirmed; this does not by itself identify an external writer. Check listing permissions and any other S3 activity, then use Retry failed uploads to retry exact reconciliation when the namespace is stable.",
@@ -103,8 +104,8 @@ _CREDENTIAL_CODES = frozenset({
 _OPERATION_REASONS = {
     **dict.fromkeys(("ListObjectVersions", "ListMultipartUploads", "ListObjects", "ListObjectsV2"), "list_permission_denied"),
     **dict.fromkeys(("HeadObject", "GetObject", "GetObjectTagging"), "read_permission_denied"),
-    **dict.fromkeys(("PutObject", "CreateMultipartUpload", "UploadPart", "CompleteMultipartUpload",
-                     "AbortMultipartUpload"), "write_permission_denied"),
+    **dict.fromkeys(("PutObject", "CreateMultipartUpload", "UploadPart", "CompleteMultipartUpload"), "write_permission_denied"),
+    "AbortMultipartUpload": "abort_permission_denied",
     **dict.fromkeys(("DeleteObject", "DeleteObjects"), "cleanup_unavailable"),
 }
 
@@ -264,6 +265,8 @@ def _settle_unstarted(connection: Any, file_id: str, *, keep_intent_id: str | No
         if receipt(connection, row["id"]) is not None:
             raise UploadBlocked("ambiguous_receipt")
         connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started", (row["id"],))
+        from datetime import datetime, timezone
+        close_multiparts(connection, row["id"], datetime.now(timezone.utc).isoformat())
 
 
 def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> None:
@@ -322,6 +325,39 @@ def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp:
     text = canonical(allowed)
     with owned_connection(db()) as connection:
         connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
+
+
+@retry_database_unit
+def journal_multipart(db: Any, intent_id: str, upload_id: str, timestamp: str) -> None:
+    """Record an UploadId this intent created, BEFORE its first part is sent (#491).
+
+    This row is the only authority to abort a multipart upload later: the provider
+    listing alone cannot say whose it is. Own connection, committed on return.
+    """
+    with owned_connection(db()) as connection:
+        connection.execute("INSERT INTO upload_multiparts(intent_id,upload_id,created_at) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, upload_id, timestamp))
+
+
+@retry_database_unit
+def close_multipart(db: Any, intent_id: str, upload_id: str, timestamp: str) -> None:
+    """The provider no longer holds this UploadId (completed or aborted)."""
+    with owned_connection(db()) as connection:
+        connection.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s WHERE intent_id=%s AND upload_id=%s AND state='open'", (timestamp, intent_id, upload_id))
+
+
+def close_multiparts(connection: Any, intent_id: str, timestamp: str) -> None:
+    """DB-only: the intent no longer owes the provider an abort.
+
+    Called when complete reads proved absence, when reconciliation published the
+    version it found (a Complete whose response was lost), and when the intent is
+    settled. A closed row means "no live obligation", not "the provider is clean":
+    an orphan the abort never reached is reaped by the bucket lifecycle.
+    """
+    connection.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s WHERE intent_id=%s AND state='open'", (timestamp, intent_id))
+
+
+def open_multiparts(connection: Any, intent_id: str) -> list[str]:
+    return [r["upload_id"] for r in connection.execute("SELECT upload_id FROM upload_multiparts WHERE intent_id=%s AND state='open' ORDER BY created_at,upload_id", (intent_id,)).fetchall()]
 
 
 def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any],
@@ -386,7 +422,8 @@ def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
 
 
 def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
-              check_active: Any) -> dict[str, Any]:
+              check_active: Any, *, owned_multiparts: Any = (),
+              on_multipart_aborted: Any = None) -> dict[str, Any]:
     pinned = json.loads(intent["target_json"])
     if provider_identity(client) != pinned["provider"]:
         raise UploadBlocked("identity_changed")
@@ -413,7 +450,7 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
         raise UploadBlocked("ambiguous_receipt")
     if not matches:
         if saved is None and first == before:
-            _prove_absent(client, pinned, before, check_active)
+            _prove_absent(client, pinned, before, check_active, owned_multiparts, on_multipart_aborted)
         raise UploadBlocked("ambiguous_send")
     version, head = matches[0]
     if (version in before["versions"] or first["markers"] != before["markers"]
@@ -458,8 +495,32 @@ def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
             kwargs.pop("UploadIdMarker")
 
 
+def _abort_owned_multiparts(client: Any, pinned: dict[str, Any], found: list[str],
+                            owned: Any, check_active: Any, on_aborted: Any) -> None:
+    """Abort exactly the UploadIds this intent journaled; never any other.
+
+    An incomplete multipart for the key whose UploadId this intent did not journal
+    (another writer, an older release, an unjournaled crash window) is untraceable:
+    it is left alone and keeps the proof of absence closed (#491, ADR-0029).
+    """
+    from botocore.exceptions import ClientError
+    for upload_id in found:
+        if upload_id not in owned:
+            continue
+        check_active()
+        try:
+            guarded(lambda: client.abort_multipart_upload(Bucket=pinned["bucket"], Key=pinned["key"], UploadId=upload_id),
+                    pinned["bucket"], default="abort_permission_denied")
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "NoSuchUpload":
+                raise
+        if on_aborted is not None:
+            on_aborted(upload_id)
+
+
 def _prove_absent(client: Any, pinned: dict[str, Any], before: dict[str, Any],
-                  check_active: Any) -> None:
+                  check_active: Any, owned_multiparts: Any = (),
+                  on_multipart_aborted: Any = None) -> None:
     """Raise ProvenAbsent only when S3 positively shows that nothing landed.
 
     Callers already read two equal complete listings that equal the pinned
@@ -471,7 +532,14 @@ def _prove_absent(client: Any, pinned: dict[str, Any], before: dict[str, Any],
     active operation, and an intent receipt (even partial) is never ignored.
     """
     check_active()
-    if _incomplete_uploads(client, pinned["bucket"], pinned["key"]):
+    found = _incomplete_uploads(client, pinned["bucket"], pinned["key"])
+    owned = frozenset(owned_multiparts)
+    if found and owned.intersection(found):
+        _abort_owned_multiparts(client, pinned, found, owned, check_active, on_multipart_aborted)
+        check_active()
+        # Whatever the exact abort did not remove is not provably this intent's.
+        found = _incomplete_uploads(client, pinned["bucket"], pinned["key"])
+    if found:
         raise UploadBlocked("ambiguous_send")
     check_active()
     if inventory(client, pinned["bucket"], pinned["key"]) != before:

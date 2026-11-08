@@ -111,8 +111,8 @@ involved.
   `ListObjectVersions` / `ListMultipartUploads`) can prove absence wrongly. Such
   providers must not be relied on for this decision.
 - A multipart orphan above the single-PUT threshold keeps `ambiguous_send` until
-  its lifecycle abort (7 days) or an exact abort of its UploadId, tracked
-  separately.
+  its lifecycle abort (7 days) or the exact abort of its journaled UploadId
+  ([ADR-0029](0029-exact-abort-of-an-interrupted-multipart-upload.md)).
 
 ## Consequences
 

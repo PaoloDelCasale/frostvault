@@ -353,6 +353,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
             for k, v in absent:
                 connection.execute("UPDATE snapshot_cleanup_proofs SET deleted_at=COALESCE(deleted_at,%s) WHERE vault_file_id=%s AND bucket=%s AND provider=%s AND object_key=%s AND version_id=%s", (worker.now_iso(), job["vault_file_id"], job["s3_bucket"], provider, k, v))
             connection.execute("UPDATE snapshot_cleanup_inventories SET completed_at=COALESCE(completed_at,%s) WHERE job_id=%s", (worker.now_iso(),batch["job_id"]))
+            connection.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s WHERE state='open' AND intent_id IN (SELECT id FROM upload_intents WHERE archive_version_id=%s AND vault_file_id=%s)", (worker.now_iso(), keeper_id, job["vault_file_id"]))
             connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE archive_version_id=%s AND vault_file_id=%s", (keeper_id, job["vault_file_id"]))
             connection.execute("DELETE FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (job["vault_file_id"],))
     persist_purge()
