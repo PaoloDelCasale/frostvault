@@ -5,6 +5,7 @@ leave a file in ``ambiguous_send`` forever, and a transient condition must not b
 reported as ``identity_changed``. TEST_POSTGRES_URL is mandatory (disposable PG16).
 """
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
@@ -180,9 +181,10 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "transient stat failure")):
             self.assertFalse(self.run_job(job))
         row = self.row(job)
-        self.assertEqual(row["status"], "queued", row["message"])
+        self.assertEqual((row["status"], row["retry_count"], row["message_key"]), ("retrying", 0, "job.source_volume_waiting"), row["message"])
         self.assertEqual(self.notification_events(), [])
         self.assertEqual(self.provider.puts, 0)
+        self.retry_is_due(job)
         self.run_job(job)
         self.assert_keeper(job)
 
@@ -199,10 +201,11 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         with patch("app.storage._require_upload_source_identity", side_effect=flaky):
             self.assertFalse(self.run_job(job))
         row = self.row(job)
-        self.assertEqual(row["status"], "queued", row["message"])
+        self.assertEqual((row["status"], row["retry_count"]), ("retrying", 0), row["message"])
         self.assertTrue(self.intent()["send_started"])
         self.assertEqual(self.provider.puts, 0)
         self.assertEqual(self.notification_events(), [])
+        self.retry_is_due(job)
         self.run_job(job)
         self.assert_keeper(job)
         self.assertEqual(self.provider.puts, 1)
@@ -298,6 +301,223 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.retry_is_due(resumed)
         self.run_job(resumed)
         self.assert_keeper(resumed)
+
+    def resume_ambiguous(self, *, foreign_version=False):
+        """An ambiguous send is resumed by Retry failed uploads; returns the resumed Job."""
+        self.stable_content()
+        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        if foreign_version:
+            # Something is listed for the key, so reconciliation must HEAD it.
+            self.provider.add(KEY, b"another writer", {})
+        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        return max(j["id"] for j in self.jobs())
+
+    def test_403_on_the_version_head_blocks_the_file_when_the_bucket_is_still_ready(self):
+        # #492 F4: the readiness probe never exercises HeadObject, so sending this
+        # refusal to the gate would reopen it at once and re-claim the Job forever.
+        from app.services import cloud_preflight_gate
+        resumed = self.resume_ambiguous(foreign_version=True)
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(True), \
+                patch.object(self.provider, "head_object", side_effect=self.denied(operation="HeadObject")):
+            self.run_job(resumed)
+        invalidate.assert_not_called()
+        row = self.row(resumed)
+        self.assertEqual(row["status"], "failed", row["message"])
+        self.assertIn("read_permission_denied", row["message"])
+        self.assertIn("s3:GetObjectVersion", row["message"])
+        self.assertNotIn("S3 readiness", row["message"])
+        self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT reason FROM snapshot_reconciliation_blocks").fetchone()["reason"], "read_permission_denied")
+            self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
+
+    def test_403_on_the_version_head_goes_to_the_gate_when_the_probe_fails(self):
+        from app.services import cloud_preflight_gate
+        resumed = self.resume_ambiguous(foreign_version=True)
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(False), \
+                patch.object(self.provider, "head_object", side_effect=self.denied(operation="HeadObject")):
+            self.run_job(resumed)
+        invalidate.assert_called_once()
+        self.assertNotEqual(self.row(resumed)["status"], "failed", self.row(resumed)["message"])
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+
+    def test_403_on_the_put_fails_only_that_file_with_the_missing_permission(self):
+        from app.services import cloud_preflight_gate
+        self.stable_content()
+        refusal = self.denied(operation="PutObject")
+        refusal.upload_no_write_operation = "PutObject"
+        def refuse(stage, **kwargs):
+            if stage == "before_put":
+                raise refusal
+        self.provider.hook = refuse
+        job = self.queue()
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(True):
+            self.run_job(job)
+        invalidate.assert_not_called()
+        row = self.row(job)
+        self.assertEqual(row["status"], "failed", row["message"])
+        self.assertIn("write_permission_denied", row["message"])
+        self.assertIn("s3:PutObject", row["message"])
+        self.assertEqual(self.provider.puts, 0)
+        # Nothing was stored: the refusal is journaled, no durable reconciliation block remains.
+        self.assertFalse(self.intent()["send_started"])
+        with self.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
+        self.provider.hook = lambda *args, **kwargs: None
+        retried = self.queue_fresh()
+        self.run_job(retried)
+        self.assertEqual(self.row(retried)["status"], "completed", self.row(retried)["message"])
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_403_on_the_put_goes_to_the_gate_when_the_probe_fails(self):
+        from app.services import cloud_preflight_gate
+        self.stable_content()
+        refusal = self.denied(operation="PutObject")
+        refusal.upload_no_write_operation = "PutObject"
+        def refuse(stage, **kwargs):
+            if stage == "before_put":
+                raise refusal
+        self.provider.hook = refuse
+        job = self.queue()
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(False):
+            self.run_job(job)
+        invalidate.assert_called_once()
+        self.assertNotEqual(self.row(job)["status"], "failed", self.row(job)["message"])
+
+    def test_throttling_timeouts_and_non_http_answers_on_a_listing_are_retried(self):
+        # #492 F7: transient provider answers are retried with backoff, never a changed inventory.
+        from botocore.exceptions import HTTPClientError
+        from botocore.parsers import ResponseParserError
+        resumed = self.resume_ambiguous()
+        errors = [self.denied("SlowDown", 429), self.denied("RequestTimeout", 400, "ListMultipartUploads"),
+                  ResponseParserError("Unable to parse response"), HTTPClientError(error="connection closed")]
+        for error in errors:
+            with self.subTest(error=repr(error)):
+                with patch.object(self.provider, "list_object_versions", side_effect=error):
+                    self.run_job(resumed)
+                row = self.row(resumed)
+                self.assertEqual(row["status"], "retrying", row["message"])
+                with self.db() as connection:
+                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+                self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
+                self.retry_is_due(resumed)
+        self.run_job(resumed)
+        self.assert_keeper(resumed)
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_an_unreadable_root_backs_off_then_notifies_and_recovers_on_its_own(self):
+        # #492: a persistently unreadable root waits with backoff, then becomes visible.
+        import json
+        from datetime import datetime, timedelta, timezone
+        self.stable_content()
+        job = self.queue()
+        unreadable = patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted"))
+        with unreadable:
+            self.run_job(job)
+            row = self.row(job)
+            self.assertEqual((row["status"], row["retry_count"], row["message_key"]), ("retrying", 0, "job.source_volume_waiting"))
+            first = json.loads(row["message_params"])
+            self.assertEqual(first["attempt"], 1)
+            self.assertGreater(datetime.fromisoformat(row["retry_after"]), datetime.now(timezone.utc))
+            self.assertNotIn("source_volume_unavailable", [n["event"] for n in self.notification_events()])
+            self.retry_is_due(job)
+            self.run_job(job)
+            second = json.loads(self.row(job)["message_params"])
+            self.assertEqual((second["attempt"], second["since"]), (2, first["since"]))
+            # The outage is now older than the threshold.
+            old = (datetime.now(timezone.utc) - timedelta(seconds=storage.SOURCE_VOLUME_NOTIFY_AFTER_SECONDS + 60)).isoformat()
+            with self.db() as connection:
+                connection.execute("UPDATE jobs SET message_params=%s WHERE id=%s", (json.dumps({**second, "since": old}), job))
+            self.retry_is_due(job)
+            self.run_job(job)
+        opened = [n for n in self.notification_events() if n["event"] == "source_volume_unavailable"]
+        self.assertEqual([n["problem_status"] for n in opened], ["open"])
+        self.assertEqual(self.row(job)["retry_count"], 0)
+        self.retry_is_due(job)
+        self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual([n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"], ["resolved"])
+
+    def open_source_volume_problem(self):
+        """A waiting upload whose outage is older than the threshold: the Vault problem is open."""
+        import json
+        from datetime import datetime, timedelta, timezone
+        self.stable_content()
+        job = self.queue()
+        with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted")):
+            self.run_job(job)
+            params = json.loads(self.row(job)["message_params"])
+            old = (datetime.now(timezone.utc) - timedelta(seconds=storage.SOURCE_VOLUME_NOTIFY_AFTER_SECONDS + 60)).isoformat()
+            with self.db() as connection:
+                connection.execute("UPDATE jobs SET message_params=%s WHERE id=%s", (json.dumps({**params, "since": old}), job))
+            self.retry_is_due(job)
+            self.run_job(job)
+        self.assertEqual([n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"], ["open"])
+        return job
+
+    def source_volume_problem_status(self):
+        return [n["problem_status"] for n in self.notification_events() if n["event"] == "source_volume_unavailable"]
+
+    def test_the_source_volume_problem_ends_when_its_waiting_job_is_cancelled(self):
+        job = self.open_source_volume_problem()
+        with self.unreadable_root():
+            self.assertEqual(storage.sweep_source_volume_problems(), 0, "an upload still waits for the volume")
+        self.assertEqual(self.source_volume_problem_status(), ["open"])
+        storage.cancel_jobs([job])
+        self.assertEqual(storage.sweep_source_volume_problems(), 1)
+        self.assertEqual(self.source_volume_problem_status(), ["resolved"])
+        self.assertEqual(storage.sweep_source_volume_problems(), 0)
+
+    def unreadable_root(self):
+        """A healthy mount whose enrolled root cannot be observed (ENOENT/EIO/ESTALE)."""
+        return patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "stale file handle"))
+
+    def test_the_sweep_does_not_flap_the_problem_while_the_root_stays_unobservable(self):
+        # vault_local_access passes, but the upload keeps waiting because the root identity
+        # cannot be read: the sweep must apply the same criterion or the notice would be
+        # resolved and re-opened (read_at cleared) every cycle.
+        job = self.open_source_volume_problem()
+        with self.unreadable_root():
+            for _ in range(3):
+                self.assertEqual(storage.sweep_source_volume_problems(), 0)
+            self.assertEqual(self.source_volume_problem_status(), ["open"])
+            self.retry_is_due(job)
+            self.run_job(job)
+        self.assertEqual(self.source_volume_problem_status(), ["open"], "one notice, never re-opened")
+        self.assertEqual(self.row(job)["message_key"], "job.source_volume_waiting")
+
+    def test_the_source_volume_problem_ends_when_the_root_is_readable_without_other_uploads(self):
+        self.open_source_volume_problem()
+        with patch("app.storage.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=False, volume_health="missing")):
+            self.assertEqual(storage.sweep_source_volume_problems(), 0)
+        self.assertEqual(self.source_volume_problem_status(), ["open"])
+        self.assertEqual(storage.sweep_source_volume_problems(), 1)
+        self.assertEqual(self.source_volume_problem_status(), ["resolved"])
+
+    def test_a_cold_storage_403_on_the_historical_get_stays_proof_unavailable_and_never_reaches_the_gate(self):
+        # S3 answers 403 InvalidObjectState to the GET of an archived (Glacier) version.
+        from botocore.exceptions import ClientError
+        from app.services import cloud_preflight_gate
+        self.provider.add(KEY, fixtures.A, version="cold-orphan")
+        def archived(stage, **kwargs):
+            if stage == "get":
+                raise ClientError({"Error": {"Code": "InvalidObjectState", "Message": "provider text"},
+                                   "ResponseMetadata": {"HTTPStatusCode": 403}}, "GetObject")
+        self.provider.hook = archived
+        job = self.queue()
+        with patch.object(cloud_preflight_gate, "invalidate") as invalidate, self.bucket_probe(True):
+            self.run_job(job)
+        invalidate.assert_not_called()
+        row = self.row(job)
+        self.assertEqual(row["status"], "failed", row["message"])
+        self.assertEqual((self.provider.deletes, len(self.provider.objects)), (0, 2))
+        with self.db() as connection:
+            state = provenance.describe(connection, vault_id=2, path="report.txt")
+        self.assertEqual(state["reason"], "proof_unavailable")
+        self.assertIn("explicit restore", state["remedy"])
 
     def rearmed_then_stopped(self):
         """Absence is proven (intent re-armed, nothing sent), then the Job stops before sending."""
@@ -409,13 +629,14 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted yet")):
             self.run_job(resumed)
         row = self.row(resumed)
-        self.assertEqual(row["status"], "queued", row["message"])
+        self.assertEqual(row["status"], "retrying", row["message"])
         self.assertNotIn("identity_changed", row["message"])
         self.assertEqual(self.episode()["current_job_id"], resumed)
-        self.assertNotEqual(self.episode()["state"], "blocked")
+        self.assertEqual((self.episode()["state"], self.episode()["reason"]), ("suspended", "source_volume_unavailable"))
         with self.db() as connection:
             self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
         self.assertEqual([n["event"] for n in self.notification_events()], before)
+        self.retry_is_due(resumed)
         self.run_job(resumed)
         self.assert_keeper(resumed)
         self.assertEqual(self.episode()["state"], "resolved")

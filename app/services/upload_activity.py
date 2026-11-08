@@ -6,51 +6,13 @@ Only SQL aggregates cross the service boundary (O(Vaults), not O(files/Jobs)).
 """
 from __future__ import annotations
 
-import fnmatch
 from datetime import datetime, timezone
 from typing import Any
 
-from .operation_policies import AUTO_UPLOAD_EXCLUSIONS, get_policy
+from .operation_policies import get_policy
+from .upload_path_rules import eligibility_sql as _eligibility_sql, path_pattern as _path_pattern  # noqa: F401
 
 STAGES = ("stability_wait", "queued", "uploading", "verifying")
-
-
-def _glob_body(pattern: str) -> str:
-    # Python's atomic groups are an optimization, not part of the glob language.
-    # PostgreSQL ARE supports noncapturing groups and a leading (?s) flag.
-    return fnmatch.translate(pattern)[4:-3].replace("(?>", "(?:")
-
-
-def _path_pattern(pattern: str) -> str:
-    body = _glob_body(pattern)
-    alternatives = [f"^(?:{body})$"]
-    if "**" in pattern and pattern.endswith("/**"):
-        # _path_matches treats this prefix literally, even if it contains '*'.
-        import re
-        alternatives.append(f"^{re.escape(pattern[:-3])}(?:/|$)")
-    if pattern.startswith("**/"):
-        alternatives.append(f"(?:^|/)(?:{_glob_body(pattern[3:])})$")
-    return "(?s)(?:" + "|".join(alternatives) + ")"
-
-
-def _eligibility_sql(policy: Any) -> tuple[str, list[str]]:
-    """Informational projection of the admission path rules, parametrized AREs."""
-    clauses: list[str] = []
-    params: list[str] = []
-    def match(pattern: str) -> str:
-        regex = _path_pattern(pattern)
-        params.append(regex)
-        if "**" in pattern:
-            return "fp.path ~ %s"
-        params.append(regex)
-        return ("(fp.path ~ %s OR EXISTS (SELECT 1 FROM unnest(string_to_array(fp.path,'/')) "
-                "AS parts(part) WHERE part ~ %s))")
-
-    if policy.include_globs:
-        clauses.append("(" + " OR ".join(match(pattern) for pattern in policy.include_globs) + ")")
-    for pattern in (*AUTO_UPLOAD_EXCLUSIONS, *policy.exclude_globs):
-        clauses.append("NOT (" + match(pattern) + ")")
-    return " AND ".join(clauses), params
 
 
 def _empty() -> dict[str, Any]:

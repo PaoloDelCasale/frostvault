@@ -10,10 +10,11 @@ const STATES: BadgeState[] = [
   "restoring",
   "missing",
   "unsupported",
+  "excluded",
 ];
 
 describe("Badge", () => {
-  it("renders a text label for each of the seven states, not just a colour class", () => {
+  it("renders a text label for each of the states, not just a colour class", () => {
     for (const state of STATES) {
       const { unmount } = render(<Badge state={state} />);
       expect(screen.getByText(BADGE_STATE_LABELS[state])).toBeInTheDocument();

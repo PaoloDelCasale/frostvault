@@ -36,6 +36,12 @@ describe("deliberate file Details", () => {
     await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
     expect(calls.some((url) => url.startsWith("/api/upload?"))).toBe(false);
   });
+  it("explains an excluded file as neither pending nor a problem", async () => {
+    setup("excluded", true);
+    await screen.findByText("essential.protection: state.excluded");
+    expect(screen.getByText("essential.excluded_help")).toBeInTheDocument();
+    expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
+  });
   it("loads paginated targeted history and bidirectional links outside recent50", async () => {
     const calls = setup("protected",true);
     const user = userEvent.setup();

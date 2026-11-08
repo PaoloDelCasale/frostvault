@@ -50,9 +50,23 @@ def dispatch_ready(state: dict[str, Any], now: datetime) -> bool:
             and not probe_due(state, now))
 
 
+# S3 answers HTTP 403 ``InvalidObjectState`` to a GET of a version in cold storage
+# (Glacier / Deep Archive) that was not restored. It is the object's state, not a
+# credential or permission problem: it never reaches the readiness gate.
+COLD_STORAGE_CODES = frozenset({'InvalidObjectState'})
+
+
+def is_cold_storage_error(error: BaseException) -> bool:
+    return any(isinstance(item, ClientError)
+               and item.response.get('Error', {}).get('Code') in COLD_STORAGE_CODES
+               for item in exception_chain(error))
+
+
 def is_readiness_error(error: BaseException) -> bool:
     """Only structured provider auth failures, including SDK/service wrappers."""
-    return any(isinstance(item, ClientError) and (
+    return any(isinstance(item, ClientError)
+               and item.response.get('Error', {}).get('Code') not in COLD_STORAGE_CODES
+               and (
         item.response.get('Error', {}).get('Code') in {
             'InvalidAccessKeyId', 'SignatureDoesNotMatch', 'AccessDenied',
             'AccessDeniedException', 'ExpiredToken', 'InvalidToken', 'TokenRefreshRequired',
