@@ -11,7 +11,7 @@ bucket lifecycle reaped it (7 days).
 The upload facade journals every `UploadId` the intent's own
 `CreateMultipartUpload` returned, **before** s3transfer receives it (so before any
 part): table `upload_multiparts(intent_id, upload_id, state open|closed)`,
-migration `0066_upload_multipart_journal`. If the id cannot be journaled, the
+migration `0067_upload_multipart_journal`. If the id cannot be journaled, the
 just-created upload is aborted and the upload fails; it never continues
 untraceable. The row is closed when the upload completes or the facade's abort
 succeeds (or answers `NoSuchUpload`). A failure to close only leaves the row open.

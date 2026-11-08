@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0066_upload_multipart_journal"
-down_revision = "0065_upload_remediation"
+revision = "0067_upload_multipart_journal"
+down_revision = "0066_excluded_state"
 branch_labels = None
 depends_on = None
 
