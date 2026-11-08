@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import stat
 import threading
 import time
@@ -96,7 +97,7 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import PinnedTree, TreeIdentityChanged, inspect_entry
+from .services.fs_preflight import PinnedTree, TreeIdentityChanged, inspect_entry, removal_is_unproven
 from .services.problems import display_path, report_problem, resolve_stale_path_problems
 from .services.local_files import (
     hash_stable_regular_file,
@@ -919,6 +920,11 @@ def _apply_filesystem_changes(
 
             if entry.exists():
                 # Directory metadata changes do not alter catalogued files.
+                continue
+            if removal_is_unproven(root, entry.parent.resolve() / entry.name):
+                # Possibly renamed to a name that cannot be catalogued: not a
+                # removal until a scan says so (and that scan is incomplete
+                # while the name exists, so nothing becomes missing).
                 continue
             access = source_layout.vault_local_access(vault["source_root"])
             alias = access.volume_alias
@@ -6035,6 +6041,29 @@ def _is_undecodable_path_error(exc: BaseException) -> bool:
     return any("Unable to decode path" in str(inner) for inner in _flattened_exceptions(exc))
 
 
+_DENIED_WATCH_PATH = re.compile(r"IO error for operation on (.+?): Permission denied")
+
+
+def _watcher_denied_directories(exc: BaseException, root: Path) -> set[str]:
+    """Folders a failed observer named as not enterable, relative to ``root``.
+
+    The polling backend ignores ``ignore_permission_denied`` for a folder that
+    appears unreadable while it runs, and stops. Registering around the folder
+    at the restart keeps it from stopping again before a scan has named it.
+    """
+    found: set[str] = set()
+    for inner in _flattened_exceptions(exc):
+        for match in _DENIED_WATCH_PATH.finditer(str(inner)):
+            path = Path(match.group(1))
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative != "." and path.is_dir():
+                found.add(relative)
+    return found
+
+
 def _watcher_restart_delay(streak: int) -> float:
     return float(min(WATCHER_RESTART_MAX_SECONDS, WATCHER_RESTART_BASE_SECONDS * 2 ** max(0, streak - 1)))
 
@@ -6268,6 +6297,10 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                             _resolve_worker_error, "source_watcher", vault_id,
                         )
                         recovered = True
+                    if recheck_at is None and watch_plan.unobserved(vault_id):
+                        # A batch or a failed observer found a gap outside a
+                        # full scan: its repair raises no event either.
+                        recheck_at = loop.time() + WATCHER_RECHECK_SECONDS
                     if (
                         recovered and not pending_reconcile and not rearm_required
                         and next_scan_at is not None and loop.time() >= next_scan_at
@@ -6312,6 +6345,9 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     worker_error_store.log_worker_error("source_watcher_batch_dropped", exc, vault_id)
                     pending_reconcile = set()
                     batch_failures = 0
+            denied = await asyncio.to_thread(_watcher_denied_directories, exc, root)
+            if denied:
+                watch_plan.note_unreadable_directories(vault_id, denied)
             if _is_undecodable_path_error(exc):
                 # A filename that is not UTF-8 stopped the native observer and the
                 # events around it are lost: not an internal error. The Vault is
@@ -6323,6 +6359,16 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                     _record_scan_component_health, vault_id, "source",
                     ok=False, notify_problem=False,
                     error="Source watcher stopped on a file name that is not valid UTF-8",
+                )
+            elif denied:
+                # A folder that cannot be entered appeared (the polling backend
+                # stops on it): a path problem, not an internal error. The restart
+                # registers around it and the next scan names it (#495).
+                worker_error_store.log_worker_error("source_watcher", exc, vault_id)
+                await asyncio.to_thread(
+                    _record_scan_component_health, vault_id, "source",
+                    ok=False, notify_problem=False,
+                    error="Source watcher stopped on a folder it may not read",
                 )
             else:
                 with status_lock:

@@ -157,7 +157,8 @@ and nothing is deleted from the cloud. Because fixing permissions raises no
 event, FrostVault looks at the reported paths once a minute and scans as soon as
 one is readable; the problem then closes by itself, path by path. (With
 `FILESYSTEM_WATCH_FORCE_POLLING=true` the same plan is used, so the poller never
-lists a folder it may not read.)
+lists a folder it may not read; a folder that becomes unreadable during the
+watch stops the poller once, and the restart registers around it.)
 
 A file or folder name that is not valid UTF-8 (typical of old archives or SMB/NFS
 shares with another encoding) cannot be catalogued or become a cloud key. It is
@@ -167,8 +168,10 @@ everything beneath it, which is not watched in real time either. Because such a
 name may be the new name of something that was catalogued under a different
 text, the Vault stays `unconfirmed` while it exists and no file is marked missing:
 the other files are still uploaded, but no local space is freed and nothing is
-deleted from the cloud. Rename it (from a client that shows the real name); the
-problem closes at the first scan that no longer finds it.
+deleted from the cloud. A file the watcher sees disappear next to such a name is
+not marked missing either: it may only have been renamed. Rename it (from a
+client that shows the real name); the problem closes at the first scan that no
+longer finds it.
 
 Every healthy watcher start (a new Vault, a restart, or a return after a failure
 or after the Vault folder came back) is followed by a full scan, so files that

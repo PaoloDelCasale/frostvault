@@ -15,7 +15,7 @@ from unittest.mock import patch
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.services import notifications, source_layout
+from app.services import notifications, source_layout, vault_relocation
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 
 
@@ -190,6 +190,12 @@ class RecoveryProblemTests(unittest.TestCase):
 
         # The Vault is not confirmed while that holds, so cloud deletion and
         # local release stay closed (CloudDeletion refuses unconfirmed Vaults).
+        # scan_vault reloads the row: enrol the root as a real Vault has it.
+        with PostgresConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE vaults SET root_identity=%s, root_identity_version=%s WHERE id=9",
+                (vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION),
+            )
         with (
             patch("app.storage._validate_enrolled_scan_root"),
             patch("app.storage.scan_cloud", return_value=0),

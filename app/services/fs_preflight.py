@@ -22,6 +22,31 @@ def is_storable_name(name: str) -> bool:
     return True
 
 
+def removal_is_unproven(root: Path, path: Path) -> bool:
+    """Whether a path that no longer exists may only have been renamed away.
+
+    A rename to a name that is not valid UTF-8 (another client, a remount with
+    another charset) looks like a removal: the new name is never catalogued.
+    The nearest existing folder above the path is listed; if it holds such a
+    name, or cannot be listed at all, the removal is not proven and the path
+    must not become missing. The scan that follows decides, and it treats the
+    same name as an incomplete observation (#494).
+    """
+    directory = path.parent
+    while directory == root or root in directory.parents:
+        try:
+            names = os.listdir(directory)
+        except (FileNotFoundError, NotADirectoryError):
+            if directory == root:
+                return True
+            directory = directory.parent
+            continue
+        except OSError:
+            return True
+        return any(not is_storable_name(name) for name in names)
+    return True
+
+
 def inspect_entry(path: Path) -> tuple[str, os.stat_result] | None:
     """Classify without following symlinks; prove regular files can be opened.
 

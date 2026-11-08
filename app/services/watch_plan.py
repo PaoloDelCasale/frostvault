@@ -87,6 +87,20 @@ def record_subtree_scan(vault_id: int, subtree: str, found: UnobservedPaths) -> 
         _state[int(vault_id)] = old.without(subtree).merged(found)
 
 
+def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> None:
+    """A failed observer named folders it could not enter: avoid them now.
+
+    The next scan still decides; this only spares the restart from failing on
+    the same folder before that scan has run.
+    """
+    added = frozenset(directories)
+    if not added:
+        return
+    with _lock:
+        old = _state.get(int(vault_id), UnobservedPaths())
+        _state[int(vault_id)] = old.merged(UnobservedPaths(added, frozenset(), added))
+
+
 def forget(vault_id: int) -> None:
     with _lock:
         _state.pop(int(vault_id), None)

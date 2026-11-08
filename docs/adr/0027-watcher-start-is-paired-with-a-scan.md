@@ -41,7 +41,12 @@ Vault `unconfirmed` and its notifications open until a scan happens to run.
    fails on an undecodable directory, the scan that follows the failure names it
    and the next start registers around it. With `FILESYSTEM_WATCH_FORCE_POLLING`
    the same plan applies, since the plan never lists a folder the poller would
-   fail on.
+   fail on. The poller, unlike the native observer, stops when a folder it may
+   not read appears during the watch; the folder named by that error is added to
+   the plan at once, so the restart registers around it before any scan, and the
+   stop is recorded as a `source` health error, not an internal error. A gap found
+   outside a full scan (by a batch or a failed observer) is re-checked once a
+   minute like one a scan reported, so its repair registers the tree again.
 4. **A name that is not valid UTF-8 is its own problem, `file_name_unsupported`,
    and the Vault stays unconfirmed while it exists.** It cannot be stored in the
    catalog nor become a cloud key, so scans skip it with everything beneath it and
@@ -59,8 +64,11 @@ Vault `unconfirmed` and its notifications open until a scan happens to run.
    observer stops on such a name, before the scan has run. A complete walk of the
    whole Vault closes the unsupported-name problems it no longer sees; the
    `file_unreadable` problems are closed one by one, except those below a folder
-   the walk could not enter. Consequence for #503 (`_upload_source_confirmed_removed`,
-   not on this branch): a file renamed to an unsupported name must never read as
+   the walk could not enter. The watcher applies the same rule to a deleted
+   path: it does not become missing while the nearest existing folder above it
+   holds a name that is not valid UTF-8, or cannot be listed, because the path
+   may only have been renamed to it; the scan decides. Consequence for #503
+   (`_upload_source_confirmed_removed`, not on this branch): a file renamed to an unsupported name must never read as
    "removed" from a missing row alone. It does not, because no row goes missing
    while the walk is incomplete; the check must keep requiring a complete walk.
 5. **Restarts back off, and scans after a stop are rate-limited.** The pause after

@@ -18,6 +18,7 @@ import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
+import unittest.mock
 from unittest.mock import patch
 
 from watchfiles import Change, awatch
@@ -280,6 +281,137 @@ class UnreadableFolderLifecycleTests(Harness):
             await self.settle(lambda: str(root / "a2" / "after.txt") in self.applied_paths())
         finally:
             await self.stop(task)
+
+
+class FolderCreatedUnreadableDuringTheWatchTests(Harness):
+    """Review bug 2, end to end: the #495 ``mkdir`` while the watcher runs."""
+
+    def subtree_scanning_apply(self, root: Path):
+        """Stand-in batch that records a new folder as a real subtree walk does."""
+        def apply(vault, changes):
+            self.applied.append(set(changes))
+            for change, value in changes:
+                path = Path(value)
+                if change != Change.added or not path.is_dir():
+                    continue
+                relative = path.relative_to(root).as_posix()
+                try:
+                    os.scandir(path).close()
+                    found = watch_plan.UnobservedPaths()
+                except PermissionError:
+                    found = watch_plan.UnobservedPaths(
+                        frozenset({relative}), frozenset(), frozenset({relative}),
+                    )
+                watch_plan.record_subtree_scan(VAULT_ID, relative, found)
+            return 1
+
+        self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=apply))
+
+    async def run_lifecycle(self, root: Path):
+        (root / "a").mkdir()
+        scan = self.scanning(root)
+        self.subtree_scanning_apply(root)
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scan.call_count >= 1 and self.resolve.call_count >= 1)
+            registrations = len(self.registrations)
+            # As another user (root) would create it: not enterable.
+            os.mkdir(root / "late", 0o000)
+            await self.settle(lambda: watch_plan.unobserved(VAULT_ID).directories == {"late"})
+            await self.settle(lambda: len(self.registrations) > registrations)
+            (root / "a" / "still.txt").write_text("x")
+            await self.settle(lambda: str(root / "a" / "still.txt") in self.applied_paths())
+            # Repairing it raises no event: the re-check of the named path
+            # notices, the Vault is scanned and the tree registered as a whole.
+            scans = scan.call_count
+            (root / "late").chmod(0o755)
+            await self.settle(lambda: scan.call_count > scans)
+            await self.settle(lambda: self.registrations[-1] == (str(root),))
+            (root / "late" / "inside.txt").write_text("x")
+            await self.settle(lambda: str(root / "late" / "inside.txt") in self.applied_paths())
+        finally:
+            await self.stop(task)
+
+    @NOT_ROOT
+    async def test_native_observer_registers_around_it_and_again_after_the_repair(self):
+        await self.run_lifecycle(self.make_root())
+        self.report.assert_not_called()
+
+    @NOT_ROOT
+    async def test_polling_observer_that_stops_on_it_restarts_around_it(self):
+        self.stack.enter_context(patch(
+            "app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True),
+        ))
+        await self.run_lifecycle(self.make_root())
+        # Not an internal error: the path is the problem, and a scan names it.
+        self.report.assert_not_called()
+        errors = [c.kwargs.get("error", "") for c in self.health.call_args_list if not c.kwargs.get("ok", True)]
+        self.assertIn("Source watcher stopped on a folder it may not read", errors)
+
+
+class RemovalOnlyWhenProvenTests(RealTreeCase):
+    """Review bug 5 in the watcher path: a rename to a name that cannot be
+    catalogued is not a removal."""
+
+    def apply(self, root: Path, changes):
+        catalog = SimpleNamespace(mark_local_path_missing=unittest.mock.Mock(), observe_local_copy=unittest.mock.Mock())
+        with ExitStack() as stack:
+            connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            stack.enter_context(patch("app.storage.ArchiveCatalog", return_value=catalog))
+            stack.enter_context(patch("app.storage.record_catalog_revision"))
+            stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
+            stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
+                local_operations_allowed=True, volume_alias=None, volume_health="healthy",
+            )))
+            storage.apply_filesystem_changes({"id": VAULT_ID, "source_root": str(root)}, changes)
+        return [call.kwargs["path"] for call in catalog.mark_local_path_missing.call_args_list]
+
+    def test_a_folder_renamed_to_an_undecodable_name_is_not_missing(self):
+        root = self.make_root()
+        (root / "Foto").mkdir()
+        (root / "Foto" / "a.jpg").write_text("x")
+        os.rename(os.fsencode(root / "Foto"), os.fsencode(root) + b"/Fot\xf2")
+        removed = self.apply(root, {(Change.deleted, str(root / "Foto")), (Change.deleted, str(root / "Foto" / "a.jpg"))})
+        self.assertEqual(removed, [])
+
+    def test_a_file_renamed_to_an_undecodable_name_deep_down_is_not_missing(self):
+        root = self.make_root()
+        (root / "x" / "y").mkdir(parents=True)
+        (root / "x" / "y" / "doc.txt").write_text("x")
+        os.rename(os.fsencode(root / "x" / "y" / "doc.txt"), os.fsencode(root / "x" / "y") + b"/d\xf2c.txt")
+        self.assertEqual(self.apply(root, {(Change.deleted, str(root / "x" / "y" / "doc.txt"))}), [])
+
+    def test_a_real_removal_is_still_missing(self):
+        root = self.make_root()
+        (root / "keep").mkdir()
+        (root / "gone").mkdir()
+        (root / "gone" / "a.txt").write_text("x")
+        (root / "file.txt").write_text("x")
+        shutil.rmtree(root / "gone")
+        os.unlink(root / "file.txt")
+        removed = self.apply(root, {
+            (Change.deleted, str(root / "gone" / "a.txt")),
+            (Change.deleted, str(root / "gone")),
+            (Change.deleted, str(root / "file.txt")),
+        })
+        self.assertEqual(sorted(removed), ["file.txt", "gone", "gone/a.txt"])
+
+    def test_an_undecodable_name_elsewhere_does_not_hide_a_removal(self):
+        root = self.make_root()
+        (root / "a").mkdir()
+        (root / "b").mkdir()
+        (root / "b" / "old.txt").write_text("x")
+        os.mkdir(os.fsencode(root / "a") + b"/Fot\xf2")
+        os.unlink(root / "b" / "old.txt")
+        self.assertEqual(self.apply(root, {(Change.deleted, str(root / "b" / "old.txt"))}), ["b/old.txt"])
+
+    @NOT_ROOT
+    def test_a_removal_below_a_folder_that_cannot_be_listed_is_not_proven(self):
+        root = self.make_root()
+        (root / "locked").mkdir()
+        (root / "locked").chmod(0o300)  # enterable, not listable
+        self.assertEqual(self.apply(root, {(Change.deleted, str(root / "locked" / "gone.txt"))}), [])
 
 
 class UndecodableDirectoryTests(Harness):
