@@ -28,9 +28,11 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
    cleanups**, which never outrank an Owner upload).
 3. **Aging.** Work that has waited 15 minutes moves up one tier (and one more per
    further 15 minutes), so a huge Owner operation ("Move the whole Vault") cannot
-   stop every upload of every other Vault. Inside a Vault the original tier
-   still orders Jobs, so an Owner operation is never queued behind aged uploads
-   of its own Vault.
+   stop every upload of every other Vault. Aging promotes a *Vault's turn*, not
+   single Jobs: a Vault competes with the best effective tier among its waiting
+   Jobs, and inside a Vault the original tier still orders Jobs, so neither an
+   Owner operation nor an Owner upload is ever queued behind aged automatic
+   work of its own Vault.
 4. **Fair sharing counts running work.** Inside a tier the next slot goes to the
    Vault with the fewest running Jobs (live leases) plus Jobs already picked in
    this pass, ties broken by the oldest waiting Job. With concurrency 1 and slots
@@ -67,13 +69,15 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 ### Notifications
 
 9. More than ten upload failures of one Vault inside ten minutes fold into one
-   `job_failed_group` problem with a count. The group is a rolling window: it
-   absorbs failures only while one was folded into it within the last ten
-   minutes. After that it is retired (it stays open until its own failures are
-   resolved or moot, judged on the failures between its `since` and `last`) and a
-   later failure gets a notification of its own, or starts a new group if a new
-   burst is under way. Failures whose linked episode ended as `file_removed`
-   count as resolved.
+   `job_failed_group` problem with a count. The group absorbs a failure only
+   while the Vault is still in a burst (more than ten failures in the last ten
+   minutes) and it folded a failure within the last ten minutes. Otherwise it
+   is retired (it stays open until its own failures are resolved or moot,
+   judged on the failures between its `since` and `last`) and the failure gets
+   a notification of its own, so a slow trickle of real failures after a burst
+   is never hidden; a new burst starts a new group that does not re-count the
+   retired one. Failures whose linked episode ended as `file_removed` count as
+   resolved.
 
 ### Visibility and control
 

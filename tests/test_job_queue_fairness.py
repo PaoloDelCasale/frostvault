@@ -468,6 +468,47 @@ class RemovedFileTests(QueueFixture):
         self.assertEqual(len(reached), 1)
         self.assertEqual({row["vault_id"]: row["status"] for row in self.jobs()}[2], "cancelled")
 
+    def queue_manual(self, name):
+        with self.db() as connection:
+            ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+                vault_id=2, path=name, action="upload", requested_by=1,
+                requested_at=self.clock.isoformat(), group_id=f"manual-{name}", is_directory=False,
+            )
+        return ids[0]
+
+    def test_manual_upload_of_a_removed_file_is_closed_after_proof_of_absence(self):
+        # The worker's own error path: the file vanished after the claim, the
+        # root is healthy and nothing was sent, so the closure is proven.
+        target = self.write(2, "manual-gone.jpg")
+        job_id = self.queue_manual("manual-gone.jpg")
+        target.unlink()
+        self.assertEqual(self.run_once(), 1)
+        job = {row["id"]: row for row in self.jobs(2)}[job_id]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["message_key"], "job.upload_file_removed")
+        with self.db() as connection:
+            failures = connection.execute(
+                "SELECT count(*) AS n FROM notifications WHERE event='job_failed'"
+            ).fetchone()["n"]
+            presence = connection.execute(
+                "SELECT presence FROM local_copies lc JOIN jobs j ON j.vault_file_id=lc.vault_file_id "
+                "WHERE j.id=%s", (job_id,),
+            ).fetchone()["presence"]
+        self.assertEqual(failures, 0)
+        self.assertEqual(presence, "missing")
+
+    def test_manual_upload_is_not_closed_when_the_root_is_lost_after_enoent(self):
+        # The ENOENT is real, but the root fails the second check (an unmount
+        # racing the stat): the absence of the file is not proven.
+        target = self.write(2, "manual-keep.jpg")
+        job_id = self.queue_manual("manual-keep.jpg")
+        target.unlink()
+        with patch("app.storage._enrolled_root_still_healthy", return_value=False):
+            self.run_once()
+        job = {row["id"]: row for row in self.jobs(2)}[job_id]
+        self.assertNotEqual(job["status"], "cancelled")
+        self.assertNotEqual(job["message_key"], "job.upload_file_removed")
+
     def test_unreadable_root_is_not_treated_as_a_removed_file(self):
         target = self.write(2, "keep.jpg")
         self.advance(300)
@@ -604,19 +645,24 @@ class RemovedFileTests(QueueFixture):
         with self.db() as connection:
             connection.execute(
                 "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
-                "size,state,phase,reason,due_at,created_at,updated_at) "
-                "VALUES ('episode-2','key-episode-2',2,%s,%s,'{}','read_back',1,'cancelled','verification','file_removed',%s,%s,%s)",
+                "size,state,phase,due_at,created_at,updated_at) "
+                "VALUES ('episode-2','key-episode-2',2,%s,%s,'{}','read_back',1,'queued','verification',%s,%s,%s)",
                 (job["vault_file_id"], f"intent-{job['id']}", stamp, stamp, stamp),
             )
             connection.execute(
                 "INSERT INTO upload_remediation_originals(original_job_id,remediation_id,vault_file_id,vault_id) "
                 "VALUES (%s,'episode-2',%s,2)", (job["id"], job["vault_file_id"]),
             )
+            # The failure is notified while its episode is still open...
             connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (job["id"],))
             notifications.enqueue_job_terminal_notification(connection, job_id=job["id"])
             before = connection.execute(
                 "SELECT problem_status FROM notifications WHERE event='job_failed'"
             ).fetchone()["problem_status"]
+            # ...and the episode later ends because the file is gone.
+            connection.execute(
+                "UPDATE upload_remediations SET state='cancelled', reason='file_removed' WHERE id='episode-2'"
+            )
             notifications.reconcile_problem_states(connection)
             after = connection.execute(
                 "SELECT problem_status FROM notifications WHERE event='job_failed'"
@@ -690,14 +736,29 @@ class FailureGroupingTests(QueueFixture):
         self.assertEqual(len(current), 1)
         self.assertEqual(self.group_count(current[0]), 3)
 
-    def test_group_keeps_absorbing_while_the_burst_continues_past_one_window(self):
+    def test_group_keeps_absorbing_while_the_burst_rate_holds_past_one_window(self):
         self.fail_jobs(notifications.GROUP_THRESHOLD + 2)
         for _ in range(2):
             self.advance(notifications.GROUP_WINDOW_SECONDS * 2 // 3)
-            self.fail_jobs(1)
+            self.fail_jobs(notifications.GROUP_THRESHOLD + 1)
         groups = self.rows("job_failed_group")
         self.assertEqual(len(groups), 1)
-        self.assertEqual(self.group_count(groups[0]), 4)
+        self.assertEqual(self.group_count(groups[0]), 2 + 2 * (notifications.GROUP_THRESHOLD + 1))
+        self.assertEqual(len(self.rows("job_failed")), notifications.GROUP_THRESHOLD)
+
+    def test_a_slow_trickle_after_the_burst_is_not_absorbed(self):
+        self.fail_jobs(notifications.GROUP_THRESHOLD + 5)
+        self.advance(notifications.GROUP_WINDOW_SECONDS * 2 // 3)
+        self.fail_jobs(1)  # still inside the burst's window: folded
+        self.advance(notifications.GROUP_WINDOW_SECONDS * 2 // 3)
+        self.fail_jobs(1)  # the burst is over: a real failure of its own
+        groups = self.rows("job_failed_group")
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(self.group_count(groups[0]), 6)
+        self.assertNotEqual(groups[0]["dedupe_key"], "job_failed_group:2")  # retired
+        singles = self.rows("job_failed")
+        self.assertEqual(len(singles), notifications.GROUP_THRESHOLD + 1)
+        self.assertEqual(singles[-1]["problem_status"], "open")
 
     def test_group_resolves_when_every_folded_failure_is_moot(self):
         self.fail_jobs(notifications.GROUP_THRESHOLD + 5)

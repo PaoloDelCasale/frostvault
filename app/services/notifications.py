@@ -379,14 +379,16 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
 def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     """Collapse a failure burst into one per-Vault problem instead of N rows.
 
-    The first GROUP_THRESHOLD failures of a Vault inside the window keep their
-    own rows; later ones are counted by one ``job_failed_group`` problem. The
-    group only absorbs failures while the burst lasts: once no failure was folded
-    into it for GROUP_WINDOW_SECONDS it is closed to new failures (its key is
-    retired, it stays open until its own failures are resolved or moot) and a
-    later failure gets a notification of its own, or starts a new group if a new
-    burst is under way. A Job that already has its own row is never folded
-    (re-delivery stays idempotent).
+    A burst is more than GROUP_THRESHOLD failed uploads of one Vault inside the
+    last GROUP_WINDOW_SECONDS. The first GROUP_THRESHOLD keep their own rows;
+    later ones are counted by one ``job_failed_group`` problem, and only while
+    the burst rate holds. When a failure arrives and the Vault is no longer in a
+    burst, the group is retired (its key is freed; it stays open until its own
+    failures, between its ``since`` and ``last``, are resolved or moot) and the
+    failure gets a notification of its own. A failure that arrives after the
+    group went quiet for a whole window never joins it: a new burst starts a new
+    group. A Job that already has its own row is never folded (re-delivery
+    stays idempotent).
     """
     recipients = _owner_recipients(connection)
     if not recipients:
@@ -402,6 +404,15 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     stamp = now_iso()
     cutoff = (datetime.fromisoformat(stamp) - timedelta(seconds=GROUP_WINDOW_SECONDS)).isoformat()
     group_key = f"job_failed_group:{vault_id}"
+    burst = connection.execute(
+        """
+        SELECT count(*) AS total FROM jobs
+        WHERE vault_id=%s AND action='upload' AND status='failed'
+          AND updated_at >= %s
+        """,
+        (vault_id, cutoff),
+    ).fetchone()
+    in_burst = int(burst["total"] or 0) > GROUP_THRESHOLD
     previous = connection.execute(
         "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
         (user_id, group_key),
@@ -410,7 +421,7 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     if previous is not None:
         old = parse_message_params(previous.get("message_params"))
         last_folded = str(old.get("last") or old.get("since") or "")
-        if previous.get("problem_status") == "open" and last_folded >= cutoff:
+        if in_burst and previous.get("problem_status") == "open" and last_folded >= cutoff:
             since = str(old.get("since") or cutoff)
         else:
             # The burst is over: retire the group so it cannot absorb this failure.
@@ -419,6 +430,8 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
                 (f"{group_key}:{previous['id']}", previous["id"]),
             )
             previous = None
+    if not in_burst:
+        return False
     if previous is None:
         recent = connection.execute(
             """
@@ -430,6 +443,19 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         ).fetchone()
         if int(recent["total"] or 0) < GROUP_THRESHOLD:
             return False
+        # A new group never re-counts failures a retired group already holds.
+        retired = connection.execute(
+            """
+            SELECT message_params FROM notifications
+            WHERE user_id=%s AND vault_id=%s AND event='job_failed_group'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, vault_id),
+        ).fetchone()
+        if retired is not None:
+            retired_last = str(parse_message_params(retired.get("message_params")).get("last") or "")
+            if retired_last > since:
+                since = retired_last
     count = connection.execute(
         """
         SELECT count(*) AS total FROM jobs original

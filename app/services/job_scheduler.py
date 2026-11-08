@@ -7,7 +7,7 @@ deterministic so tests can pin fairness without racing a thread pool.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -69,48 +69,40 @@ def select_fair_jobs(
 ) -> list[Mapping[str, Any]]:
     """Order Jobs by tier, then share the workers fairly between Vaults.
 
-    A lower effective tier is always served before a higher one. Inside a tier
-    the next Job always goes to the Vault with the fewest Jobs already running
-    (``active_by_vault``) plus Jobs picked in this call, ties broken by the
-    oldest waiting Job. A busy Vault therefore cannot starve the others even
-    when workers free up one at a time. Inside one Vault, the original tier and
-    then the oldest ``requested_at`` win. The result is deterministic.
+    Inside one Vault Jobs always run in their original tier order (Owner
+    operations, then Owner uploads, then automatic work), oldest first: aging
+    never lets an automatic upload overtake an Owner request of its own Vault.
+    Across Vaults, each Vault competes with its best *effective* tier, i.e. the
+    lowest ``effective_priority`` among its waiting Jobs, so aging promotes a
+    Vault's turn and a huge Owner operation elsewhere cannot starve it. Among
+    Vaults on the same tier the next Job goes to the Vault with the fewest Jobs
+    already running (``active_by_vault``) plus Jobs picked in this call, ties
+    broken by the oldest waiting Job. A busy Vault therefore cannot starve the
+    others even when workers free up one at a time. The result is deterministic.
     """
     if limit <= 0 or not jobs:
         return []
     active = dict(active_by_vault or {})
-    tiers: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
-    for job in jobs:
-        tiers[effective_priority(job, now)].append(job)
-    selected: list[Mapping[str, Any]] = []
-    for tier in sorted(tiers):
-        picked = _interleave_vaults(tiers[tier], limit=limit - len(selected), active=active)
-        selected.extend(picked)
-        if len(selected) >= limit:
-            break
-    return selected
-
-
-def _job_order(job: Mapping[str, Any]) -> tuple[int, str, int]:
-    return (job_priority(job), str(job.get("requested_at") or ""), int(job.get("id") or 0))
-
-
-def _interleave_vaults(
-    jobs: Sequence[Mapping[str, Any]],
-    *,
-    limit: int,
-    active: dict[Any, int],
-) -> list[Mapping[str, Any]]:
-    if limit <= 0 or not jobs:
-        return []
-
-    by_vault: dict[Any, deque[Mapping[str, Any]]] = defaultdict(deque)
+    by_vault: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
     for job in sorted(jobs, key=_job_order):
         by_vault[item_vault_id(job)].append(job)
+    # best[v][i]: the best effective tier among the Jobs of Vault v from index i on.
+    best: dict[Any, list[int]] = {}
+    for vault_id, queue in by_vault.items():
+        suffix = [0] * len(queue)
+        running = None
+        for index in range(len(queue) - 1, -1, -1):
+            tier = effective_priority(queue[index], now)
+            running = tier if running is None else min(running, tier)
+            suffix[index] = running
+        best[vault_id] = suffix
+    position = {vault_id: 0 for vault_id in by_vault}
 
-    def vault_key(vault_id: Any) -> tuple[int, str, int, str]:
-        head = by_vault[vault_id][0]
+    def vault_key(vault_id: Any) -> tuple[int, int, str, int, str]:
+        index = position[vault_id]
+        head = by_vault[vault_id][index]
         return (
+            best[vault_id][index],
             int(active.get(vault_id, 0)),
             str(head.get("requested_at") or ""),
             int(head.get("id") or 0),
@@ -118,14 +110,19 @@ def _interleave_vaults(
         )
 
     selected: list[Mapping[str, Any]] = []
-    while len(selected) < limit and by_vault:
-        vault_id = min(by_vault, key=vault_key)
-        selected.append(by_vault[vault_id].popleft())
-        # Counted for later tiers too: this Vault now has one more Job running.
+    while len(selected) < limit and position:
+        vault_id = min(position, key=vault_key)
+        selected.append(by_vault[vault_id][position[vault_id]])
+        position[vault_id] += 1
+        # This Vault now has one more Job running.
         active[vault_id] = int(active.get(vault_id, 0)) + 1
-        if not by_vault[vault_id]:
-            del by_vault[vault_id]
+        if position[vault_id] >= len(by_vault[vault_id]):
+            del position[vault_id]
     return selected
+
+
+def _job_order(job: Mapping[str, Any]) -> tuple[int, str, int]:
+    return (job_priority(job), str(job.get("requested_at") or ""), int(job.get("id") or 0))
 
 
 def item_vault_id(job: Mapping[str, Any]) -> Any:

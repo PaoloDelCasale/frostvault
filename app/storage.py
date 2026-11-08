@@ -6663,7 +6663,7 @@ async def background_loop() -> None:
     last_backup_verify = marks["backup_verify"]
     try:
         while True:
-            queued_count = 0
+            runnable_count = 0
             runtime = settings
             health_service.mark_worker_heartbeat()
             metrics_service.set_gauge("worker_up", 1)
@@ -6745,9 +6745,11 @@ async def background_loop() -> None:
                     pass
                 metrics_service.set_gauge("worker_up", 0)
             batch_size = max(10, runtime.operation_concurrency * 10)
+            # Poll fast only for work the worker can start now: Jobs set aside as
+            # not runnable must not keep the loop spinning every 100 ms (#493).
             delay = (
                 0.1
-                if queued_count >= batch_size
+                if runnable_count >= batch_size
                 else min(
                     NOTIFICATION_MAX_LATENCY_SECONDS,
                     max(0.1, float(runtime.queue_poll_interval or 2)),

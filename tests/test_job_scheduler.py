@@ -200,6 +200,38 @@ class SelectFairJobsTests(unittest.TestCase):
         ]
         self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2, now=now)], [2, 1])
 
+    def test_aged_automatic_uploads_never_overtake_an_owner_upload_of_their_vault(self) -> None:
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        jobs = [
+            {"id": 1, "vault_id": 10, "action": "upload", "origin": "automatic",
+             "requested_at": "2026-07-01T08:00:00+00:00"},
+            {"id": 2, "vault_id": 10, "action": "upload", "origin": "manual",
+             "requested_at": "2026-07-01T11:59:00+00:00"},
+            {"id": 3, "vault_id": 10, "action": "free-space", "origin": "automatic",
+             "requested_at": "2026-07-01T07:00:00+00:00"},
+        ]
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=3, now=now)], [2, 3, 1])
+
+    def test_aging_promotes_a_vaults_turn_against_other_vaults(self) -> None:
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        jobs = [
+            {"id": 1, "vault_id": 10, "action": "rename", "origin": "manual",
+             "requested_at": "2026-07-01T11:59:00+00:00"},
+            {"id": 2, "vault_id": 10, "action": "rename", "origin": "manual",
+             "requested_at": "2026-07-01T11:59:01+00:00"},
+            # Vault 20: a fresh manual upload heads a long-waiting automatic one.
+            {"id": 3, "vault_id": 20, "action": "upload", "origin": "manual",
+             "requested_at": "2026-07-01T11:58:00+00:00"},
+            {"id": 4, "vault_id": 20, "action": "upload", "origin": "automatic",
+             "requested_at": "2026-07-01T09:00:00+00:00"},
+        ]
+        # Without aging Vault 10's Owner operations come first.
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [1, 2])
+        # Vault 20 has waited long enough: the Vaults alternate, each in its own order.
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=4, now=now)], [3, 1, 4, 2])
+
 
 class SchedulerFileIsolationTests(unittest.TestCase):
     """A stale local candidate must not starve runnable Jobs in other Vaults."""
