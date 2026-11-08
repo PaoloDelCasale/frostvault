@@ -72,6 +72,37 @@ retry and sweep queues so it cannot starve live episodes. The ordinary upload th
 later protects the file resolves it, and its original failure notifications, once
 that upload has completed with its exact cleanup postcondition.
 
+## Follow-up (#492)
+
+The same rule now covers every S3 action of an upload, not only the two listings.
+A non-credential HTTP 403 on `HeadObject`/`GetObject` of an exact version or on
+`PutObject`/multipart requests first runs the fresh bucket probe: failing -> the
+readiness gate (the Job stays queued); passing -> a per-file block named after the
+refused action (`read_permission_denied`, `write_permission_denied`; deletes keep
+`cleanup_unavailable`) that never touches the gate. A refused write stored nothing
+(journaled as a no-write outcome) and leaves no reconciliation block: the Job
+fails with the missing permission and the ordinary retry applies once fixed. The
+reason follows the botocore operation name, never the message.
+
+Throttling (429, `SlowDown`), 408/400 `RequestTimeout`, 5xx, transport faults and
+answers that are not a well-formed S3 response are "provider unreachable" for
+the proof of absence and for the Job: retried with the existing bounded backoff,
+never `inventory_changed`.
+
+An unreadable Source Volume root waits without spending the retry budget: the Job
+is rescheduled with exponential backoff (2 s doubling to 300 s) and its wait start
+is kept in its own message parameters. At the first check after 10 minutes of
+outage (about 14 minutes with that backoff) one in-app problem per Vault with the
+reason `source_volume_unavailable` is shown. It resolves when a Job of the Vault
+reads the root again, and in every scheduler cycle when the Vault has no upload
+left waiting for the volume (cancelled, closed) or its root is readable again.
+Only uploads are rescheduled this way; other actions keep their plain queued wait.
+
+A 403 `InvalidObjectState` (a version in cold storage that needs an explicit
+restore) is not a permission refusal and not a readiness error: the exact-GET
+duplicate proof stays `proof_unavailable`, as before #492, and the gate is never
+involved.
+
 ## Assumptions
 
 - **Strong list consistency.** The proof reads S3 listings and treats two equal
