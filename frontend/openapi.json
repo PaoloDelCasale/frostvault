@@ -3111,7 +3111,7 @@
       },
       "VaultFileListItem": {
         "additionalProperties": true,
-        "description": "Vault File protection observation: pending, protected, problem, unconfirmed or cloud_only. Restore progress is independent.",
+        "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only or excluded (skipped by automatic upload, never pending). Restore progress is independent.",
         "properties": {
           "availability": {
             "type": [

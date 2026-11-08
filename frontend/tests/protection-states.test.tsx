@@ -8,7 +8,7 @@ import { itemStateBadge } from "@/pages/archive/protectionLabel";
 const translations: Record<string, string> = {
   "state.pending": "In attesa", "state.protected": "Protetto",
   "state.problem": "Problema", "state.unconfirmed": "Non accertato",
-  "state.cloud_only": "Solo cloud",
+  "state.cloud_only": "Solo cloud", "state.excluded": "Escluso",
   "state.last_known": "Ultimo stato noto: {state} ({date})",
   "state.previous_snapshot_protected": "Versione precedente protetta",
 };
@@ -20,10 +20,18 @@ function file(state: string): ArchiveListItem {
 }
 
 describe("protection-state labels", () => {
-  it.each(["pending", "protected", "problem", "unconfirmed", "cloud_only"])("renders %s with a localized textual label", (state) => {
+  it.each(["pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded"])("renders %s with a localized textual label", (state) => {
     const badge = itemStateBadge(file(state), t);
     render(<Badge state={badge.state} label={badge.label} />);
     expect(screen.getByText(translations[`state.${state}`])).toBeInTheDocument();
+  });
+
+  it("keeps an excluded file distinguishable from a pending one", () => {
+    const excluded = itemStateBadge(file("excluded"), t);
+    const pending = itemStateBadge(file("pending"), t);
+    expect(excluded.state).toBe("excluded");
+    expect(excluded.label).not.toBe(pending.label);
+    expect(excluded.label).toBe("Escluso");
   });
 
   it("keeps last evidence and its date visible when the volume is absent", () => {

@@ -1,6 +1,7 @@
 """Five protection observations; PostgreSQL parity runs only in PR CI."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from collections import Counter
@@ -12,7 +13,10 @@ from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.main import list_files, stats
 from app.services import directory_aggregates as aggregates
-from app.services.protection_states import aggregate_state, observation_is_unconfirmed, project_file
+from app.services.protection_states import (
+    STATES, aggregate_state, observation_is_unconfirmed, project_file, state_sql,
+)
+from app.services.upload_path_rules import inline_eligibility_sql
 from app.services.source_layout import VaultLocalAccess
 
 
@@ -48,6 +52,40 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertEqual(aggregate_state({'problem': 1, 'unconfirmed': 100}), 'problem')
         self.assertEqual(aggregate_state({'cloud_only': 2}), 'cloud_only')
 
+    def test_excluded_never_outranks_actionable_states_and_is_reported_alone(self):
+        self.assertEqual(aggregate_state({'excluded': 18, 'protected': 3}), 'protected')
+        self.assertEqual(aggregate_state({'excluded': 18, 'cloud_only': 1}), 'cloud_only')
+        self.assertEqual(aggregate_state({'excluded': 18, 'pending': 1}), 'pending')
+        self.assertEqual(aggregate_state({'excluded': 18, 'problem': 1}), 'problem')
+        self.assertEqual(aggregate_state({'excluded': 18}), 'excluded')
+        self.assertIn('excluded', STATES)
+
+    def test_state_sql_embeds_fixed_and_vault_rules_as_safe_literals(self):
+        from app.services.operation_policies import OperationPolicy
+        fixed = state_sql()
+        self.assertIn("THEN 'excluded'", fixed)
+        self.assertNotIn('%s', fixed)
+        self.assertIn(inline_eligibility_sql(None), fixed)
+        for pattern in ('._', 'DS_Store', 'Thumbs'):
+            self.assertIn(pattern, fixed)
+        policy = OperationPolicy(include_globs=("it's/**",), exclude_globs=("100%*.raw",))
+        sql = state_sql(policy)
+        # Driver placeholders stay exact: no stray %s from a pattern, % doubled.
+        self.assertNotIn('%s', sql)
+        self.assertIn('100%%', sql)
+        self.assertIn("it''s", sql)
+
+    def test_excluded_keeps_the_previous_cloud_copy_indication(self):
+        result = project_file({'protection_state': 'excluded', 'integrity': 'verified', 'availability': 'available'})
+        self.assertTrue(result['previous_snapshot_protected'])
+        self.assertEqual(result['state'], 'excluded')
+        self.assertFalse(project_file({'protection_state': 'excluded'})['previous_snapshot_protected'])
+        unknown = {'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'present',
+                   'matched_archive_version_id': None, 'archive_version_id': 'v1',
+                   'local_sha256': 'b', 'version_sha256': 'a'}
+        self.assertEqual(project_file({**unknown, 'path_excluded': True})['last_known_state'], 'excluded')
+        self.assertEqual(project_file(unknown)['last_known_state'], 'pending')
+
     def test_only_failed_observation_requests_make_protection_unknown(self):
         self.assertFalse(observation_is_unconfirmed({'audit': {'healthy': False}}))
         for component in ('source', 'cloud', 'audit'):
@@ -73,8 +111,8 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
-    def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True):
-        path = f'photos/{name}.jpg'
+    def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True, path=None):
+        path = path or f'photos/{name}.jpg'
         file_id = None
         if local:
             file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type='regular', size=12, mtime_ns=1, observed_at='2026-11-03T10:00:00Z')
@@ -114,6 +152,119 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+
+    def test_default_excluded_files_have_their_own_state_and_do_not_block_protection(self):
+        # #498: macOS metadata is skipped by automatic upload, so it is neither
+        # pending work nor a reason for the Vault to stay unprotected.
+        self.seed('protected', archive=True, verified=True)
+        for name in ('._photo.jpg', '.DS_Store', 'sub/._deep'):
+            self.seed(name, path=f'photos/{name}')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        expected = {'protected': 1, 'excluded': 3}
+        summary = self.catalog.summary(9)
+        self.assertEqual(summary['states'], expected)
+        self.assertEqual(summary['protection_state'], 'protected')
+        folder = self.catalog.list_files_page(9)['items'][0]
+        self.assertEqual(folder['state_counts'], expected)
+        self.assertEqual(folder['state'], 'protected')
+        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='pending')['total'], 0)
+        # Two excluded files sit directly in photos/, the third in its sub-folder.
+        page = self.catalog.list_files_page(9, directory='photos', state='excluded')
+        self.assertEqual([item['type'] for item in page['items']], ['directory', 'file', 'file'])
+        self.assertTrue(all(item['state'] == 'excluded' for item in page['items'] if item['type'] == 'file'))
+        page = self.catalog.list_files_page(9, directory='photos', state='protected')
+        self.assertEqual(page['total'], 1)
+        self.assertEqual(self.catalog.list_files_page(9, search='ds_store', state='excluded')['total'], 1)
+        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+            payload = stats({'id': 9, 'source_root': '/source'})
+        self.assertEqual(payload['states'], expected)
+        self.assertEqual(payload['protection_state'], 'protected')
+        # Rollups and file queries agree, and a real pending file still counts.
+        self.seed('waiting')
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos')
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.summary(9)['protection_state'], 'pending')
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {**expected, 'pending': 1})
+
+    def test_only_excluded_files_are_reported_excluded_and_a_manual_upload_protects_them(self):
+        file_id, _ = self.seed('._only', path='._only')
+        self.assertEqual(self.catalog.summary(9)['states'], {'excluded': 1})
+        self.assertEqual(self.catalog.summary(9)['protection_state'], 'excluded')
+        row = self.catalog.list_file_rows(9)[0]
+        self.assertEqual(row['state'], 'excluded')
+        # Manual operations stay explicit: the file remains uploadable...
+        self.assertTrue(row['upload_eligible'])
+        # ...and once verified in the cloud it is Protected like any other file.
+        version = self.catalog.record_archive_version(vault_id=9, path='._only', object_key='files/._only', provider_version_id='m', size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
+        self.connection.execute("UPDATE archive_versions SET integrity='verified', availability='available', plaintext_sha256=%s WHERE id=%s", ('a' * 64, version))
+        self.catalog.set_local_fingerprint(vault_id=9, path='._only', plaintext_sha256='a' * 64, matched_archive_version_id=version)
+        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1})
+
+    def test_vault_exclusion_globs_define_excluded_and_removing_them_restores_pending(self):
+        from app.services.operation_policies import OperationPolicy, set_policy
+        self.seed('keep')
+        self.seed('raw', path='photos/shot.raw')
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 2})
+        set_policy(self.connection, 9, OperationPolicy(exclude_globs=('*.raw',)))
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['items'][0]['path'], 'photos/shot.raw')
+        set_policy(self.connection, 9, OperationPolicy(include_globs=('keep*',)))
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        set_policy(self.connection, 9, OperationPolicy())
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 2})
+
+    def test_excluded_does_not_mask_problems_and_keeps_the_previous_cloud_copy_visible(self):
+        failed_id, _ = self.seed('._failed', path='photos/._failed')
+        self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/._failed', 'upload', 'failed', '2026-11-03', '2026-11-03')", (failed_id,))
+        conflict_id, version = self.seed('._held', path='photos/._held', archive=True, verified=True, match=False)
+        self.connection.execute('UPDATE local_copies SET cloud_only_version_id=%s WHERE vault_file_id=%s', (version, conflict_id))
+        # Changed after a verified upload, then excluded: the current bytes are not
+        # in the cloud (Excluded is not "safe"), but the older copy stays indicated.
+        self.seed('._stale', path='photos/._stale', archive=True, verified=True, match=False)
+        # Availability unknown wins over the rule, yet the last known state is Excluded.
+        self.seed('._unknown', path='photos/._unknown', archive=True, verified=True, availability='unknown', match=False)
+        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'excluded': 1, 'unconfirmed': 1})
+        rows = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        stale = rows['photos/._stale']
+        self.assertEqual(stale['state'], 'excluded')
+        self.assertTrue(stale['previous_snapshot_protected'])
+        self.assertFalse(stale['cleanup_eligible'])
+        unknown = rows['photos/._unknown']
+        self.assertEqual((unknown['state'], unknown['last_known_state']), ('unconfirmed', 'excluded'))
+        self.assertEqual(rows['photos/._failed']['state'], 'problem')
+
+    def test_a_stored_unsupported_glob_cannot_break_classification_or_rebuilds(self):
+        # Saved before the glob was validated (or by hand): it must never reach
+        # PostgreSQL as an invalid regular expression (#498 review).
+        self.seed('keep')
+        self.seed('._meta', path='photos/._meta')
+        self.connection.execute(
+            "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
+            "VALUES (9, TRUE, 300, '[]', %s)", (json.dumps(["[z-a]*", "a\u0000b", "[a-z[:digit:]]*", "*a" * 6500 + "*"]),))
+        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos')
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['total'], 1)
+
+    def test_global_maintenance_skips_a_failing_vault_and_keeps_its_marks(self):
+        self.connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'other', 'Other', '/other', 'bucket', 'other')")
+        for vault_id in (9, 10):
+            aggregates.request_vault_rebuild(self.connection, vault_id)
+        real = aggregates.flush_directory_aggregates
+
+        def flaky(connection, *, vault_id):
+            if vault_id == 9:
+                connection.execute("SELECT 'x' ~ '[[:alpha:'")  # a genuine PostgreSQL regex error
+            return real(connection, vault_id=vault_id)
+
+        with patch.object(aggregates, 'flush_directory_aggregates', side_effect=flaky):
+            totals = aggregates.process_directory_aggregate_maintenance(connection=self.connection, publish=False)
+        self.assertEqual((totals['skipped_vaults'], totals['vaults']), (1, 1))
+        status = {row['vault_id']: row['status'] for row in self.connection.execute('SELECT vault_id, status FROM directory_aggregate_status').fetchall()}
+        self.assertEqual(status, {9: 'rebuild_required', 10: 'ready'})
 
     def test_absent_volume_api_is_unconfirmed_without_catalog_or_cloud_mutation(self):
         _, version = self.seed('protected', archive=True, verified=True)
@@ -190,6 +341,26 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual(evidence(), before)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) AS n FROM directory_aggregates').fetchone()['n'], 0)
         self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
+        self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 1)
+
+    def test_excluded_migration_roundtrip_only_discards_the_disposable_rollups(self):
+        from tests.postgres import run_alembic
+        self.seed('protected', archive=True, verified=True)
+        self.seed('._meta', path='photos/._meta')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                  for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
+        result = run_alembic(self.path, '0065_upload_remediation', 'downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 0)
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'protected': 1, 'excluded': 1})
+        after = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in before}
+        self.assertEqual(after, before)
 
     def test_failed_upload_mismatch_conflict_and_unverified_are_not_protected(self):
         failed_id, _ = self.seed('failed')
