@@ -62,6 +62,7 @@ class GlobTranslationTests(unittest.TestCase):
     def test_long_globs_are_refused_when_new_and_ignored_when_stored(self):
         long_glob = '*a' * (MAX_GLOB_LENGTH // 2) + '*'
         validate_glob('*a' * (MAX_GLOB_LENGTH // 2))
+        validate_glob('**/' + '*a' * ((MAX_GLOB_LENGTH - 6) // 2) + '/**')
         with self.assertRaises(UnsafeGlob):
             validate_glob(long_glob)
         with self.assertRaises(UnsafeGlob):

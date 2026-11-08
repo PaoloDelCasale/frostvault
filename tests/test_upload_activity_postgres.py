@@ -120,7 +120,9 @@ class UploadActivityPostgresTests(unittest.TestCase):
                         # Set contents that look like regex syntax outside a set.
                         '[(?>]x', '[(?!)]x', '[(?:]x', '(?>x)*',
                         # The longest accepted glob must stay within PostgreSQL's regex limits.
-                        '*a' * 512, 'a?*' * 340, '*[ab]' * 204]:
+                        '*a' * 512, 'a?*' * 340, '*[ab]' * 204, '*[!a]' * 204, '*?' * 512,
+                        # "**/" and "/**" repeat the body in three alternatives.
+                        '**/' + '*a' * 509 + '/**']:
             policy = OperationPolicy(include_globs=(pattern,))
             sql, params = _eligibility_sql(policy)
             for path in paths:
