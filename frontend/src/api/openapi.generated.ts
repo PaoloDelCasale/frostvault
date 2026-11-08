@@ -823,6 +823,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upload/cancel-pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Pending Uploads
+         * @description Cancel the uploads of the selected Vault (or one folder) that have not begun.
+         *
+         *     One call replaces thousands of per-file cancels after a burst or a moved
+         *     folder (issue #493). An empty ``path`` means the whole Vault; a folder
+         *     matches itself and its descendants only (``foo`` never matches ``foobar``).
+         *     Only uploads that never started are cancelled: running or verifying ones,
+         *     reconcile-only attempts, jobs with a started or recorded send and jobs of a
+         *     remediation episode are left to their own cancel and Resume, so an ambiguous
+         *     send is never closed for good by a bulk action. A cancelled automatic upload
+         *     is not re-queued until the file's content changes, like a single cancel.
+         */
+        post: operations["cancel_pending_uploads_api_upload_cancel_pending_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/upload/reconcile": {
         parameters: {
             query?: never;
@@ -1799,6 +1828,14 @@ export interface components {
             stability_seconds: number;
             /** Upload Verification */
             upload_verification?: ("s3_checksum" | "read_back") | null;
+        };
+        /** PendingUploadCancelAction */
+        PendingUploadCancelAction: {
+            /**
+             * Path
+             * @default
+             */
+            path: string;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -3593,6 +3630,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_pending_uploads_api_upload_cancel_pending_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PendingUploadCancelAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };

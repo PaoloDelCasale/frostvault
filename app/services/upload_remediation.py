@@ -39,6 +39,19 @@ RESOLUTION_SQL = """EXISTS (
       AND (original.archive_version_id IS NULL OR original.archive_version_id=r.archive_version_id)
       AND (original.upload_plaintext_sha256 IS NULL OR original.upload_plaintext_sha256=r.expected_sha256)
 )"""
+# An episode closed because the file no longer exists (#499): nothing is left to
+# protect, so its original failures stop being open problems.
+FILE_REMOVED_SQL = """EXISTS (
+    SELECT 1 FROM (
+        SELECT remediation_id,original_job_id FROM upload_remediation_originals
+        UNION ALL
+        SELECT remediation_id,job_id AS original_job_id FROM upload_remediation_jobs
+    ) o
+    JOIN upload_remediations r ON r.id=o.remediation_id
+    WHERE o.original_job_id=original.id AND r.state='cancelled' AND r.reason='file_removed'
+)"""
+# Either way the original failure no longer needs the Owner's attention.
+CLOSED_SQL = f"({RESOLUTION_SQL} OR {FILE_REMOVED_SQL})"
 # SQL twin of ``_void`` (alias ``r``): such episodes can never admit a Job, so
 # every bounded queue must exclude them or they would starve live episodes.
 VOID_SQL = """(r.intent_id IS NOT NULL
@@ -348,7 +361,8 @@ def resolve_void(connection: Any, job_id: int, stamp: str) -> None:
     _invalidate(connection, row["vault_id"], stamp)
 
 
-def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspension: str | None = None) -> None:
+def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspension: str | None = None,
+               closing_reason: str | None = None) -> None:
     """Called in the authoritative Job transaction before notifications."""
     row = connection.execute("""SELECT r.* FROM upload_remediations r
         JOIN upload_remediation_jobs b ON b.remediation_id=r.id WHERE b.job_id=%s""", (job_id,)).fetchone()
@@ -384,7 +398,7 @@ def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspens
         block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (row["vault_file_id"],)).fetchone()
         state,reason = "blocked",block["reason"] if block else "retry_budget_exhausted" if job["retry_count"] >= 8 else "operation_failed"
     elif status == "cancelled":
-        state,reason = "cancelled","owner_cancelled"
+        state,reason = "cancelled","file_removed" if closing_reason == "file_removed" else "owner_cancelled"
     elif suspension and status in {"queued","retrying"}:
         state,reason = "suspended",suspension
     elif status == "retrying":
@@ -392,7 +406,9 @@ def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspens
     elif status in {"uploading","verifying"}:
         state,reason = "queued",None
     if row["state"] == "cancelled" and status != "completed":
-        state,reason = "cancelled","owner_cancelled"
+        # An episode closed as file_removed keeps that cause; an Owner cancel
+        # stays an Owner cancel.
+        state,reason = "cancelled","file_removed" if "file_removed" in (row["reason"], closing_reason) else "owner_cancelled"
     connection.execute("""UPDATE upload_remediations SET state=%s,phase=%s,reason=%s,retry_count=GREATEST(retry_count,%s),
         due_at=%s,updated_at=%s,archive_version_id=COALESCE(archive_version_id,%s),
         resolved_by_job_id=CASE WHEN %s THEN COALESCE(resolved_by_job_id,%s) ELSE resolved_by_job_id END,

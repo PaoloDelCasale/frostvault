@@ -2897,42 +2897,88 @@ class ArchiveCatalog:
         """
         return predicate, [*params, now, now, now]
 
+    # SQL twin of ``job_scheduler.job_priority`` (alias ``j``): 0 Owner
+    # operations, 1 uploads the Owner asked for, 2 anything admitted automatically.
+    _SCHEDULING_TIER_SQL = (
+        "CASE WHEN j.origin='automatic' THEN 2 WHEN j.action<>'upload' THEN 0 ELSE 1 END"
+    )
+
     def list_claimable_jobs(
         self,
         *,
         now: str,
         restore_due_before: str,
         limit: int,
+        per_vault_limit: int | None = None,
+        exclude_job_ids: Sequence[int] = (),
     ) -> list[dict[str, Any]]:
-        """Load scheduler candidates using the shared claimability definition."""
+        """Load scheduler candidates using the shared claimability definition.
+
+        The window is taken **per Vault and per scheduling tier**
+        (``per_vault_limit``, default ``limit``), never over the whole
+        installation: a Vault holding thousands of older Jobs, or Jobs the worker
+        cannot run, must not push every other Vault's work (or its own uploads
+        behind a flood of Owner operations) out of the candidate set (issues
+        #493, #500). Tiers match ``job_scheduler.job_priority``. ``exclude_job_ids`` removes candidates
+        the worker already found not runnable *before* the window is cut.
+        """
         if limit <= 0:
             return []
+        window = int(per_vault_limit) if per_vault_limit else int(limit)
         predicate, params = self._claimable_job_predicate_sql(
             prefix="j.",
             now=now,
             restore_due_before=restore_due_before,
         )
+        excluded = [int(job_id) for job_id in exclude_job_ids]
+        tier = self._SCHEDULING_TIER_SQL
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
                    v.s3_prefix,
                    v.uuid AS vault_uuid, v.name AS vault_name,
                    v.decommission_state
-            FROM jobs j
-            JOIN vaults v ON v.id=j.vault_id
+            FROM vaults v
+            CROSS JOIN LATERAL (
+                SELECT ranked.* FROM (
+                    SELECT j.*,
+                           row_number() OVER (
+                               PARTITION BY {tier}
+                               ORDER BY j.requested_at ASC, j.id ASC
+                           ) AS tier_rank
+                    FROM jobs j
+                    WHERE j.vault_id=v.id
+                      AND (
+                            (v.enabled=TRUE AND v.decommission_state='active'
+                             AND j.origin IN ('manual','automatic'))
+                         OR (v.decommission_state='decommissioning'
+                             AND j.origin='stop-protection' AND j.action='cloud-purge')
+                      )
+                      AND ({predicate})
+                      AND j.id <> ALL(%s::bigint[])
+                ) ranked
+                WHERE ranked.tier_rank <= {window}
+            ) j
             WHERE v.relocation_state='ready'
-              AND (
-                    (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin IN ('manual','automatic'))
-                 OR (v.decommission_state='decommissioning'
-                     AND j.origin='stop-protection' AND j.action='cloud-purge')
-              )
-              AND ({predicate})
-            ORDER BY j.requested_at ASC, j.id ASC
+            ORDER BY {tier} ASC,
+                     j.requested_at ASC, j.id ASC
             LIMIT {int(limit)}
             """,
-            params,
+            [*params, excluded],
         ).fetchall()
+
+    def active_job_counts(self, *, now: str) -> dict[int, int]:
+        """Jobs currently holding a live lease, per Vault (scheduler fairness)."""
+        rows = self.connection.execute(
+            """
+            SELECT vault_id, count(*) AS total FROM jobs
+            WHERE claim_token IS NOT NULL AND claim_expires_at > %s
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            GROUP BY vault_id
+            """,
+            (now,),
+        ).fetchall()
+        return {int(row["vault_id"]): int(row["total"]) for row in rows}
 
     @staticmethod
     def _claim_is_available(row: dict[str, Any], *, now: str) -> bool:
@@ -3210,8 +3256,12 @@ class ArchiveCatalog:
         *,
         now: str,
         restore_due_before: str,
+        exclude_job_ids: Sequence[int] = (),
     ) -> int:
         """Count runnable, currently unleased queued Job rows.
+
+        ``exclude_job_ids`` leaves out Jobs the worker already found not
+        runnable right now, so they are not reported as work that should move.
 
         This is intentionally a backlog metric, not a concurrency-limited
         scheduler batch.  Leased work and stale intermediate states are absent;
@@ -3235,8 +3285,9 @@ class ArchiveCatalog:
                      AND j.origin='stop-protection' AND j.action='cloud-purge')
               )
               AND ({predicate})
+              AND j.id <> ALL(%s::bigint[])
             """,
-            params,
+            [*params, [int(job_id) for job_id in exclude_job_ids]],
         ).fetchone()
         return int(row["total"] or 0) if row is not None else 0
 

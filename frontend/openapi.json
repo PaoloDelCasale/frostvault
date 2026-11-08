@@ -2037,6 +2037,19 @@
         "title": "OperationPolicyUpdate",
         "type": "object"
       },
+      "PendingUploadCancelAction": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "title": "PendingUploadCancelAction",
+        "type": "object"
+      },
       "ReauthRequest": {
         "properties": {
           "password": {
@@ -5601,6 +5614,64 @@
           }
         },
         "summary": "Cancel Upload"
+      }
+    },
+    "/api/upload/cancel-pending": {
+      "post": {
+        "description": "Cancel the uploads of the selected Vault (or one folder) that have not begun.\n\nOne call replaces thousands of per-file cancels after a burst or a moved\nfolder (issue #493). An empty ``path`` means the whole Vault; a folder\nmatches itself and its descendants only (``foo`` never matches ``foobar``).\nOnly uploads that never started are cancelled: running or verifying ones,\nreconcile-only attempts, jobs with a started or recorded send and jobs of a\nremediation episode are left to their own cancel and Resume, so an ambiguous\nsend is never closed for good by a bulk action. A cancelled automatic upload\nis not re-queued until the file's content changes, like a single cancel.",
+        "operationId": "cancel_pending_uploads_api_upload_cancel_pending_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingUploadCancelAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCancelResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "The logical path is empty, absolute, or traverses outside the Vault"
+          }
+        },
+        "summary": "Cancel Pending Uploads"
       }
     },
     "/api/upload/reconcile": {

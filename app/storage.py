@@ -82,7 +82,8 @@ from .services.vault_paths import (
     is_restore_temporary_name,
 )
 from .services.database_retry import (
-    is_retryable_transaction_error, owned_connection, retry_database_unit,
+    exception_chain, is_retryable_transaction_error, owned_connection,
+    retry_database_unit,
 )
 from .services.upload_retry import (
     UPLOAD_RETRY_MAX_ATTEMPTS,
@@ -2111,6 +2112,7 @@ def set_job(
     message_key: str | None = None,
     message_params: dict[str, Any] | None = None,
     remediation_suspension: str | None = None,
+    remediation_reason: str | None = None,
 ) -> bool:
     """Persist a state transition without letting a cancelled/lost claim win.
 
@@ -2135,7 +2137,7 @@ def set_job(
         # FK KEY SHARE locks (Owner episode -> Vault vs Vault -> Owner).
         connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
         current = connection.execute(
-            "SELECT status, action FROM jobs WHERE id=%s",
+            "SELECT status, action, vault_id, path FROM jobs WHERE id=%s",
             (job_id,),
         ).fetchone()
         if current is not None:
@@ -2203,8 +2205,19 @@ def set_job(
         updated = _claim_write_succeeded(result)
         if updated and action == "upload":
             from .services import upload_remediation
-            upload_remediation.transition(connection, job_id, status, timestamp, suspension=remediation_suspension)
+            upload_remediation.transition(
+                connection, job_id, status, timestamp,
+                suspension=remediation_suspension, closing_reason=remediation_reason,
+            )
             _dirty_job_protection(connection, job_id)
+            if remediation_reason == "file_removed" and current is not None:
+                # Record the absence with the closure: if the same bytes come back
+                # the presence change re-opens the stability window and the
+                # cancelled Job no longer blocks re-admission (review of #503).
+                ArchiveCatalog(connection).mark_local_path_missing(
+                    vault_id=int(current["vault_id"]), path=current["path"],
+                    observed_at=timestamp,
+                )
         if updated and status in {"completed", "failed"}:
             notification_service.enqueue_job_terminal_notification_best_effort(
                 connection, job_id=job_id
@@ -3465,41 +3478,68 @@ def _complete_verified_upload(
     set_job(job["id"], "completed", message_key="job.upload_verified")
 
 
+UPLOAD_READY = "ready"
+UPLOAD_SOURCE_REMOVED = "removed"
+UPLOAD_NOT_READY = "wait"
+
+
+class UploadSourceRemoved(RuntimeError):
+    """The Local Copy of an upload no longer exists, so there is nothing to send.
+
+    Raised only where no cloud write could have started for the Job. It closes
+    the Job as a removed file instead of a failure (issue #499, ADR-0026).
+    """
+
+
 @retry_database_unit
-def _automatic_upload_ready(job: dict[str, Any]) -> bool:
+def _automatic_upload_state(job: dict[str, Any]) -> str:
     """Recheck suspension and stability when a queued automatic upload starts.
 
     Queue time is not authority to upload later edits. Linked versions must
     finish verification/reconciliation even if automation was subsequently paused.
+
+    Returns ``UPLOAD_READY``, ``UPLOAD_SOURCE_REMOVED`` (the enrolled root is
+    healthy and the file is gone: the Job can be closed, issues #493/#499) or
+    ``UPLOAD_NOT_READY`` (paused, unstable, unreadable or changed: keep waiting).
     """
     with owned_connection(db()) as connection:
         target = ArchiveCatalog(connection).get_job_target(job["id"])
         if target and target.get("archive_version_id"):
-            return True
+            return UPLOAD_READY
         from .services import upload_provenance as provenance
         admitted = provenance.load_for_job(connection, job["id"])
         if admitted and admitted["send_started"]:
-            return True
+            return UPLOAD_READY
         policy = get_policy(connection, int(job["vault_id"]))
         vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
         if not vault or not vault["enabled"] or not policy.auto_upload:
-            return False
+            return UPLOAD_NOT_READY
         if vault["source_root"] != job["source_root"]:
-            return False
+            return UPLOAD_NOT_READY
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
-            return False
+            return UPLOAD_NOT_READY
         if not auto_upload_path_is_included(job["path"], policy) or not target:
-            return False
+            return UPLOAD_NOT_READY
+        try:
+            # A disappeared or unreadable root is not a removed file.
+            _validate_enrolled_scan_root(vault)
+        except (OSError, ValueError, RuntimeError):
+            return UPLOAD_NOT_READY
         try:
             # Files can disappear, lose access or be replaced after admission.
             # Suspend only this candidate; no DB work belongs in this catch.
-            _validate_enrolled_scan_root(vault)
             source = safe_local_path(job["source_root"], job["path"])
             stat_result = source.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            # An unmount racing the stat also looks like ENOENT: only a root that
+            # is still the enrolled one afterwards proves the file itself is gone.
+            if not _enrolled_root_still_healthy(vault):
+                return UPLOAD_NOT_READY
+            return UPLOAD_SOURCE_REMOVED
         except (OSError, ValueError, RuntimeError):
-            return False
+            return UPLOAD_NOT_READY
         if not stat.S_ISREG(stat_result.st_mode):
-            return False
+            return UPLOAD_NOT_READY
         if (stat_result.st_size, stat_result.st_mtime_ns) != (
             target["local_size"], target["local_mtime_ns"]
         ):
@@ -3507,12 +3547,76 @@ def _automatic_upload_ready(job: dict[str, Any]) -> bool:
                 vault_id=int(job["vault_id"]), path=job["path"], file_type="regular",
                 size=stat_result.st_size, mtime_ns=stat_result.st_mtime_ns, observed_at=now_iso(),
             )
-            return False
-        return file_is_stable(
+            return UPLOAD_NOT_READY
+        stable = file_is_stable(
             mtime_ns=stat_result.st_mtime_ns, now=datetime.fromisoformat(now_iso()),
             stability_seconds=policy.stability_seconds,
             content_observed_at=target["content_observed_at"],
         )
+        return UPLOAD_READY if stable else UPLOAD_NOT_READY
+
+
+def _automatic_upload_ready(job: dict[str, Any]) -> bool:
+    """Boolean view of ``_automatic_upload_state`` for callers that only gate."""
+    return _automatic_upload_state(job) == UPLOAD_READY
+
+
+def _enrolled_root_still_healthy(vault: Mapping[str, Any]) -> bool:
+    """True when the enrolled Source Volume is still reachable and unchanged."""
+    try:
+        if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+            return False
+        _validate_enrolled_scan_root(vault)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
+@retry_database_unit
+def _upload_source_confirmed_removed(job: dict[str, Any]) -> bool:
+    """True only when no cloud write can be owed and the file is provably gone.
+
+    The enrolled root must be healthy (an unmounted or replaced root is not a
+    removed file), the path must raise ENOENT/ENOTDIR, and the Job must hold no
+    linked Archive Version and no started send: a started send may already have
+    reached S3 and stays with the reconcile/remediation machinery (ADR-0025).
+    """
+    from .services import upload_provenance as provenance
+    with owned_connection(db()) as connection:
+        target = ArchiveCatalog(connection).get_job_target(job["id"])
+        if target and target.get("archive_version_id"):
+            return False
+        admitted = provenance.load_for_job(connection, job["id"])
+        if admitted and admitted["send_started"]:
+            return False
+        vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+    if not vault or vault["source_root"] != job.get("source_root", vault["source_root"]):
+        return False
+    if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+        return False
+    try:
+        _validate_enrolled_scan_root(vault)
+        source = safe_local_path(vault["source_root"], job["path"])
+        source.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return _enrolled_root_still_healthy(vault)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return False
+
+
+def _close_removed_upload(job: dict[str, Any]) -> bool:
+    """Close an upload whose file is gone: a stopped outcome, not a failure.
+
+    The Job ends ``cancelled`` with its own message, so no ``job_failed``
+    notification is produced and a linked remediation episode ends as
+    ``file_removed``. A file that reappears with different content is admitted
+    again by the watcher (its content observation postdates this Job).
+    """
+    return set_job(
+        job["id"], "cancelled", message_key="job.upload_file_removed",
+        remediation_reason="file_removed",
+    )
 
 
 @retry_database_unit
@@ -3663,9 +3767,14 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
 
 def process_upload(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Upload stopped")
-    if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
-        set_job(job["id"], "queued", "Automatic upload waits for enabled protection and stable content")
-        return
+    if job.get("origin") == "automatic":
+        state = _automatic_upload_state(job)
+        if state == UPLOAD_SOURCE_REMOVED:
+            _close_removed_upload(job)
+            return
+        if state != UPLOAD_READY:
+            set_job(job["id"], "queued", "Automatic upload waits for enabled protection and stable content")
+            return
     validate_cloud_vault(job)
     _require_upload_source_identity(job)
     # The enrolled root was read again: an outage problem raised by a waiting Job ends.
@@ -3692,7 +3801,7 @@ def process_upload(job: dict[str, Any]) -> None:
     if job.get("upload_reconcile_only") and not linked_version_id:
         raise provenance.UploadBlocked("ambiguous_send")
     if not local_present and not linked_version_id:
-        raise RuntimeError("The file is no longer available in the source folder")
+        raise UploadSourceRemoved("The file is no longer available in the source folder")
     if not linked_version_id and linked_target and linked_target.get(
         "cloud_only_version_id"
     ):
@@ -3744,7 +3853,7 @@ def process_upload(job: dict[str, Any]) -> None:
     try:
         if not linked_version_id:
             if not local_present:
-                raise RuntimeError(
+                raise UploadSourceRemoved(
                     "The file is no longer available in the source folder"
                 )
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
@@ -3758,9 +3867,14 @@ def process_upload(job: dict[str, Any]) -> None:
             ensure_job_active(job["id"], "Upload claim was lost")
             # Preflight and hashing can take time. A watcher edit in between
             # must earn a fresh stability window before the first cloud write.
-            if job.get("origin") == "automatic" and not _automatic_upload_ready(job):
-                set_job(job["id"], "queued", "Automatic upload waits for stable content")
-                return
+            if job.get("origin") == "automatic":
+                state = _automatic_upload_state(job)
+                if state == UPLOAD_SOURCE_REMOVED:
+                    _close_removed_upload(job)
+                    return
+                if state != UPLOAD_READY:
+                    set_job(job["id"], "queued", "Automatic upload waits for stable content")
+                    return
 
         version_id: str
         target: dict[str, Any]
@@ -5284,6 +5398,14 @@ def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
         )
 
 
+def _is_source_removal_error(exc: BaseException) -> bool:
+    """ENOENT-class errors and ``UploadSourceRemoved``, anywhere in the chain."""
+    for error in exception_chain(exc):
+        if isinstance(error, (UploadSourceRemoved, FileNotFoundError, NotADirectoryError)):
+            return True
+    return False
+
+
 # A Source Volume that stays unreadable is polled with backoff (not every cycle) and,
 # past this age, surfaced to the Owner with the reason ``source_volume_unavailable``.
 SOURCE_VOLUME_NOTIFY_AFTER_SECONDS = 10 * 60
@@ -5541,6 +5663,15 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             else:
                 set_job(job['id'], job['status'], 'S3 readiness blocked; Job remains queued', **_keep_wait_state(job))
             return False
+        if job["action"] == "upload" and _is_source_removal_error(exc):
+            # A file that vanished before any cloud write is not a failed upload
+            # (#499). Anything that could have reached S3 is never closed here.
+            try:
+                removed = _upload_source_confirmed_removed(job)
+            except Exception:
+                removed = False
+            if removed and _close_removed_upload(job):
+                return True
         message = str(exc)
         failure_kind = (
             classify_upload_failure(exc) if job["action"] == "upload" else ""
@@ -5726,6 +5857,129 @@ async def drain_background_executors(timeout: float = WORKER_DRAIN_SECONDS) -> b
     return not pending
 
 
+# Automatic uploads that cannot run now (paused, unstable, unreadable, changed)
+# are left out of the candidate query for a while, with a growing delay, so a
+# permanently unrunnable Job (excluded path, not a regular file, EACCES) is
+# rechecked ever more rarely and never keeps hiding the Jobs queued behind it.
+# In memory on purpose: a restart simply rechecks them; the durable Job is untouched.
+UPLOAD_DEFER_SECONDS = 15.0
+UPLOAD_DEFER_MAX_SECONDS = 120.0
+_DEFER_FORGET_SECONDS = 900.0
+_DEFER_LIMIT = 50000
+# Candidate-scan rounds per scheduler tick: each round reads the next window of
+# every Vault after setting aside the Jobs found not runnable in the previous one.
+MAX_SCAN_ROUNDS = 20
+_deferred_jobs: dict[tuple[str, int], tuple[float, int]] = {}
+_deferred_lock = threading.Lock()
+
+
+def _database_scope(connection: Any) -> str:
+    """Identify the database a Job id belongs to (ids restart per database)."""
+    return str(getattr(getattr(connection, "info", None), "dbname", ""))
+
+
+def _defer_job(scope: str, job_id: int, *, seconds: float | None = None) -> None:
+    with _deferred_lock:
+        _, attempts = _deferred_jobs.get((scope, job_id), (0.0, 0))
+        delay = (
+            seconds if seconds is not None
+            else min(UPLOAD_DEFER_SECONDS * (2 ** min(attempts, 10)), UPLOAD_DEFER_MAX_SECONDS)
+        )
+        if len(_deferred_jobs) >= _DEFER_LIMIT and (scope, job_id) not in _deferred_jobs:
+            oldest = sorted(_deferred_jobs, key=lambda key: _deferred_jobs[key][0])
+            for stale in oldest[: _DEFER_LIMIT // 10]:
+                _deferred_jobs.pop(stale, None)
+        _deferred_jobs[(scope, job_id)] = (time.monotonic() + delay, attempts + 1)
+
+
+def _clear_deferral(scope: str, job_id: int) -> None:
+    with _deferred_lock:
+        _deferred_jobs.pop((scope, job_id), None)
+
+
+def _deferred_job_ids(scope: str) -> list[int]:
+    """Job ids currently set aside; long-expired entries (and their backoff) are forgotten."""
+    current = time.monotonic()
+    with _deferred_lock:
+        for key in [k for k, (until, _) in _deferred_jobs.items() if until + _DEFER_FORGET_SECONDS <= current]:
+            _deferred_jobs.pop(key, None)
+        return [job_id for (key_scope, job_id), (until, _) in _deferred_jobs.items()
+                if key_scope == scope and until > current]
+
+
+# A queue with runnable work, nothing running and no claim for this long is
+# stalled: report it instead of looking healthy while it does not move (#493).
+QUEUE_STALL_SECONDS = 300.0
+
+
+class _QueueProgress:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_progress = time.monotonic()
+
+    def note_progress(self) -> None:
+        with self._lock:
+            self._last_progress = time.monotonic()
+
+    def evaluate(self, queued: int, active: int, *, now: float | None = None) -> tuple[bool, float]:
+        """Return ``(stalled, seconds_without_progress)`` for the current queue."""
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            if queued <= 0 or active > 0:
+                # Nothing waiting, or work is running: that is progress.
+                self._last_progress = current
+                return False, 0.0
+            idle = max(0.0, current - self._last_progress)
+        return idle >= QUEUE_STALL_SECONDS, idle
+
+
+_queue_progress = _QueueProgress()
+# The Owner-facing problem is not resolved by a single claim: it stays open
+# until the queue has moved without a stall for this long, and its text is
+# refreshed while it lasts. A queue that alternates between a claim and five
+# idle minutes therefore raises one problem, not one unread alert per cycle.
+QUEUE_STALL_RECOVERY_SECONDS = 600.0
+QUEUE_STALL_REFRESH_SECONDS = 60.0
+_queue_problem_open: bool | None = None
+_queue_last_stalled_at = 0.0
+_queue_problem_updated_at = 0.0
+
+
+def observe_queue_stall(queued: int, *, now: float | None = None) -> bool:
+    """Surface a queue that has runnable work but does not advance.
+
+    ``queued`` counts only Jobs the worker could actually start: Jobs it has set
+    aside as not runnable (paused, unstable, unreadable) are not work waiting to
+    move, so a Vault of permanently unrunnable files is not a stalled queue.
+    """
+    global _queue_problem_open, _queue_last_stalled_at, _queue_problem_updated_at
+    current = time.monotonic() if now is None else now
+    stalled, idle = _queue_progress.evaluate(queued, _active_operation_count(), now=current)
+    metrics_service.set_gauge("queue_stalled", 1.0 if stalled else 0.0)
+    metrics_service.set_gauge("queue_stalled_seconds", idle if stalled else 0.0)
+    health_service.set_queue_status(stalled=stalled, queued=queued, idle_seconds=idle if stalled else 0.0)
+    if stalled:
+        _queue_last_stalled_at = current
+    open_problem = _queue_problem_open
+    if stalled and (not open_problem or current - _queue_problem_updated_at >= QUEUE_STALL_REFRESH_SECONDS):
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key="queue_stalled", event="queue_stalled", active=True,
+                params={"count": queued, "minutes": int(idle // 60)}, email=False,
+            )
+        _queue_problem_open, _queue_problem_updated_at = True, current
+    elif not stalled and (
+        open_problem is None
+        or (open_problem and current - _queue_last_stalled_at >= QUEUE_STALL_RECOVERY_SECONDS)
+    ):
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key="queue_stalled", event="queue_stalled", active=False, email=False,
+            )
+        _queue_problem_open = False
+    return stalled
+
+
 def process_jobs_once(*, wait: bool = True) -> int:
     """Claim and dispatch one fair, concurrency-bounded scheduler batch.
 
@@ -5752,74 +6006,113 @@ def process_jobs_once(*, wait: bool = True) -> int:
         )
     except Exception:
         pass
-    now = now_iso()
-    current = datetime.now(timezone.utc)
-    with db() as connection:
-        runtime = _runtime_settings()
-        restore_due_before = _restore_due_before(runtime, current=current)
-        # Over-fetch candidates so fair interleave can still fill the concurrency
-        # budget when one Vault dominates the oldest requested_at values.
-        batch_size = max(10, int(runtime.operation_concurrency) * 10)
-        candidates = ArchiveCatalog(connection).list_claimable_jobs(
-            now=now,
-            restore_due_before=restore_due_before,
-            limit=batch_size,
-        )
-        preflight = cloud_preflight_gate.snapshot(connection)
-        preflight_wait = ((preflight['status'] == 'blocked' and
-                           not cloud_preflight_gate.probe_due(preflight, current))
-                          or (not wait and not cloud_preflight_gate.dispatch_ready(preflight, current)))
-        eligible_candidates: list[dict[str, Any]] = []
-        seen_purge_groups: set[tuple[int, str]] = set()
-        for row in candidates:
-            job = dict(row)
-            vault_id = int(job["vault_id"])
-            # Only handlers which call validate_cloud_vault are gated; this
-            # does not stop local catalog scans, notifications or heartbeat.
-            if preflight_wait and job["action"] in {"upload", "recover", "rename", "free-space", "storage-class", "cloud-purge"}:
-                continue
-            if vault_relocation.local_work_suspended({"id": vault_id}):
-                continue
-            if (
-                job.get("origin") != "stop-protection"
-                and protection_stop_service.local_work_suspended(job)
-            ):
-                continue
-            if job["action"] == "cloud-purge":
-                if not job.get("group_id"):
-                    continue
-                purge_group = (vault_id, str(job["group_id"]))
-                if purge_group in seen_purge_groups:
-                    continue
-                seen_purge_groups.add(purge_group)
-            eligible_candidates.append(job)
-
-    # Preserve the automatic-upload stability/suspension fence before preflight,
-    # even when an SMB edit has not reached the watcher/catalog yet.
-    eligible_candidates = [job for job in eligible_candidates
-        if job['action'] != 'upload' or job.get('origin') != 'automatic'
-        or _automatic_upload_ready(job)]
-    # The durable ready cache may belong to a previous deployment's credentials.
-    # Probe outside the candidate transaction BEFORE acquiring any Job lease.
-    # The live non-waiting scheduler never performs provider I/O: the dedicated
-    # readiness loop proves startup/expiry while heartbeat/delivery keep moving.
-    if eligible_candidates and wait:
-        try:
-            validate_cloud_vault(eligible_candidates[0])
-        except cloud_preflight_gate.CloudPreflightBlocked:
-            return 0
-
+    runtime = _runtime_settings()
     concurrency = int(runtime.operation_concurrency)
+    # Capacity first: with every worker busy nothing can start, so reading and
+    # rechecking candidates would only burn database and CPU every tick (#500).
     if wait:
         available_slots = concurrency
     else:
         available_slots = max(0, concurrency - _active_operation_count())
         if available_slots <= 0:
             return 0
-    selected = select_fair_jobs(
-        eligible_candidates,
-        limit=available_slots,
-    )
+    now = now_iso()
+    current = datetime.now(timezone.utc)
+    try:
+        scheduler_clock: datetime | None = datetime.fromisoformat(now)
+    except ValueError:
+        scheduler_clock = None
+    # The window is cut per Vault and tier, after excluding candidates this
+    # worker recently found not runnable, so neither a burst in one Vault nor a
+    # stuck head of the queue can hide other Vaults' work (#493, #500).
+    window = max(10, concurrency * 2)
+    ready_candidates: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    seen_purge_groups: set[tuple[int, str]] = set()
+    scope = ""
+    for _scan_round in range(MAX_SCAN_ROUNDS):
+        with db() as connection:
+            scope = _database_scope(connection)
+            catalog = ArchiveCatalog(connection)
+            candidates = [
+                row for row in catalog.list_claimable_jobs(
+                    now=now,
+                    restore_due_before=_restore_due_before(runtime, current=current),
+                    limit=max(10, concurrency * 10) * 8,
+                    per_vault_limit=window,
+                    exclude_job_ids=_deferred_job_ids(scope),
+                )
+                if int(row["id"]) not in seen_ids
+            ]
+            if not candidates:
+                break
+            seen_ids.update(int(row["id"]) for row in candidates)
+            if _scan_round == 0:
+                active_by_vault = catalog.active_job_counts(now=now)
+                preflight = cloud_preflight_gate.snapshot(connection)
+                preflight_wait = ((preflight['status'] == 'blocked' and
+                                   not cloud_preflight_gate.probe_due(preflight, current))
+                                  or (not wait and not cloud_preflight_gate.dispatch_ready(preflight, current)))
+            eligible_candidates: list[dict[str, Any]] = []
+            for row in candidates:
+                job = dict(row)
+                vault_id = int(job["vault_id"])
+                # Only handlers which call validate_cloud_vault are gated; this
+                # does not stop local catalog scans, notifications or heartbeat.
+                if preflight_wait and job["action"] in {"upload", "recover", "rename", "free-space", "storage-class", "cloud-purge"}:
+                    continue
+                if vault_relocation.local_work_suspended({"id": vault_id}):
+                    continue
+                if (
+                    job.get("origin") != "stop-protection"
+                    and protection_stop_service.local_work_suspended(job)
+                ):
+                    continue
+                if job["action"] == "cloud-purge":
+                    if not job.get("group_id"):
+                        continue
+                    purge_group = (vault_id, str(job["group_id"]))
+                    if purge_group in seen_purge_groups:
+                        continue
+                    seen_purge_groups.add(purge_group)
+                eligible_candidates.append(job)
+
+        # Fair order first (Owner operations, then manual and automatic work,
+        # Vaults served by how little they already run), then recheck lazily and
+        # only as many candidates as there are free slots. An automatic upload
+        # that cannot run now is deferred with a growing delay, and the next
+        # round looks further down the queue instead of stopping at the head.
+        ordered = select_fair_jobs(
+            eligible_candidates, limit=len(eligible_candidates),
+            active_by_vault=active_by_vault, now=scheduler_clock,
+        )
+        deferred_now = 0
+        for job in ordered:
+            if len(ready_candidates) >= available_slots or shutdown_state.requested:
+                break
+            if job['action'] == 'upload' and job.get('origin') == 'automatic':
+                # The stability/suspension fence precedes preflight, even when an
+                # SMB edit has not reached the watcher/catalog yet. A removed file
+                # is still dispatched: its worker closes the Job (#493, #499).
+                if _automatic_upload_state(job) == UPLOAD_NOT_READY:
+                    _defer_job(scope, int(job["id"]))
+                    deferred_now += 1
+                    continue
+                _clear_deferral(scope, int(job["id"]))
+            ready_candidates.append(job)
+        if len(ready_candidates) >= available_slots or shutdown_state.requested or not deferred_now:
+            break
+    # The durable ready cache may belong to a previous deployment's credentials.
+    # Probe outside the candidate transaction BEFORE acquiring any Job lease.
+    # The live non-waiting scheduler never performs provider I/O: the dedicated
+    # readiness loop proves startup/expiry while heartbeat/delivery keep moving.
+    if ready_candidates and wait:
+        try:
+            validate_cloud_vault(ready_candidates[0])
+        except cloud_preflight_gate.CloudPreflightBlocked:
+            return 0
+
+    selected = ready_candidates
     claimed_jobs: list[dict[str, Any]] = []
     for job in selected:
         if shutdown_state.requested:
@@ -5879,17 +6172,26 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     if job_id in _operation_futures and not _operation_futures[job_id].done():
                         continue
                     _operation_futures[job_id] = executor.submit(process_job, job)
+    if claimed_jobs:
+        _queue_progress.note_progress()
     return len(claimed_jobs)
 
 
-def claimable_queue_depth() -> int:
-    """Return the actual unleased runnable backlog for the ``queue_depth`` gauge."""
+def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
+    """Return the actual unleased runnable backlog for the ``queue_depth`` gauge.
+
+    ``exclude_deferred`` leaves out Jobs the worker set aside as not runnable
+    right now: the stall detector counts only work that should be moving.
+    """
     timestamp = now_iso()
     with db() as connection:
         runtime = _runtime_settings()
         return ArchiveCatalog(connection).claimable_queue_depth(
             now=timestamp,
             restore_due_before=_restore_due_before(runtime),
+            exclude_job_ids=(
+                _deferred_job_ids(_database_scope(connection)) if exclude_deferred else ()
+            ),
         )
 
 
@@ -6554,7 +6856,7 @@ async def background_loop() -> None:
     last_backup_verify = marks["backup_verify"]
     try:
         while True:
-            queued_count = 0
+            runnable_count = 0
             runtime = settings
             health_service.mark_worker_heartbeat()
             metrics_service.set_gauge("worker_up", 1)
@@ -6575,6 +6877,10 @@ async def background_loop() -> None:
                 # intermediate Jobs with expired leases are a separate series.
                 queued_count = await asyncio.to_thread(claimable_queue_depth)
                 metrics_service.set_gauge("queue_depth", float(queued_count))
+                runnable_count = await asyncio.to_thread(
+                    claimable_queue_depth, exclude_deferred=True
+                )
+                await asyncio.to_thread(observe_queue_stall, runnable_count)
                 stuck_count, stuck_age = await asyncio.to_thread(
                     observe_stuck_lease_jobs
                 )
@@ -6632,9 +6938,11 @@ async def background_loop() -> None:
                     pass
                 metrics_service.set_gauge("worker_up", 0)
             batch_size = max(10, runtime.operation_concurrency * 10)
+            # Poll fast only for work the worker can start now: Jobs set aside as
+            # not runnable must not keep the loop spinning every 100 ms (#493).
             delay = (
                 0.1
-                if queued_count >= batch_size
+                if runnable_count >= batch_size
                 else min(
                     NOTIFICATION_MAX_LATENCY_SECONDS,
                     max(0.1, float(runtime.queue_poll_interval or 2)),

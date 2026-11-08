@@ -14,6 +14,23 @@ _worker_heartbeat_at: float | None = None
 WORKER_STALE_SECONDS = 120.0
 
 
+_queue_status: dict[str, Any] = {"stalled": False, "queued": 0, "seconds_without_progress": 0.0}
+
+
+def set_queue_status(*, stalled: bool, queued: int, idle_seconds: float) -> None:
+    """Record whether the Job queue has work but is not advancing (issue #493)."""
+    with _lock:
+        _queue_status.update(
+            stalled=bool(stalled), queued=int(queued),
+            seconds_without_progress=round(float(idle_seconds), 1),
+        )
+
+
+def queue_status() -> dict[str, Any]:
+    with _lock:
+        return dict(_queue_status)
+
+
 def mark_worker_heartbeat(now: float | None = None) -> None:
     """Record that the background worker loop is alive."""
     global _worker_heartbeat_at
@@ -62,4 +79,7 @@ def readiness_report() -> dict[str, Any]:
     return {
         "status": "ready" if all(checks.values()) else "not_ready",
         "checks": checks,
+        # Informational only: a stalled queue must be visible without turning a
+        # healthy process into a failing container health check.
+        "queue": queue_status(),
     }

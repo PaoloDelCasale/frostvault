@@ -57,6 +57,27 @@ describe("aggregate upload activity", () => {
     expect(within(selected).getByText("13 files uploading")).toBeVisible();
     expect(screen.queryByText(t("activity.by_vault"))).not.toBeInTheDocument();
   });
+  it("cancels every pending upload of the selected Vault in one confirmed request", async () => {
+    const activity = empty(); activity.queued = { files: 4292, bytes: 4292, transferred_bytes: 0 };
+    const { fetch } = show(activity, 2);
+    fetch.mockImplementation(async (input) => String(input).startsWith("/api/upload/cancel-pending")
+      ? jsonResponse({ message: "x", cancelled_count: 4292 })
+      : jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: activity, vaults: [{ ...activity, vault_id: 2, vault_name: "V" }] }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await userEvent.setup().click(await screen.findByRole("button", { name: t("activity.cancel_pending") }));
+    expect(await screen.findByText(t("activity.cancel_pending_done", { count: 4292 }))).toBeVisible();
+    const call = fetch.mock.calls.find(([url]) => String(url).startsWith("/api/upload/cancel-pending"));
+    expect(call?.[0]).toBe("/api/upload/cancel-pending?vault_id=2");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ path: "" });
+  });
+
+  it("offers no cancel action when no upload is waiting", async () => {
+    const activity = empty(); activity.uploading = { files: 3, bytes: 30, transferred_bytes: 10 };
+    show(activity, 2);
+    await screen.findByTestId("selected-vault-activity");
+    expect(screen.queryByRole("button", { name: t("activity.cancel_pending") })).not.toBeInTheDocument();
+  });
+
   it("discloses stable files awaiting admission rather than promising transfer start", async () => {
     const activity = empty(); activity.queued.files = 7; activity.awaiting_admission_files = 7;
     show(activity);

@@ -2547,53 +2547,139 @@ def cancel_job_group(
         job_ids = [int(row["id"]) for row in rows]
         if not job_ids:
             raise HTTPException(409, "The operation is no longer running")
-        automatic_cleanup_rows = []
-        if job_action == "free-space":
-            automatic_cleanup_rows = connection.execute(
-                """
-                SELECT id, path, requested_by, archive_version_id
-                FROM jobs
-                WHERE vault_id=%s AND group_id=%s AND action='free-space'
-                  AND origin='automatic'
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                """,
-                (vault["id"], group_id),
-            ).fetchall()
-        cancel_jobs(job_ids)
-        placeholders = ", ".join(["%s"] * len(job_ids))
-        connection.execute(
-            f"""
-            UPDATE jobs
-            SET status='cancelled',
-                message=%s,
-                message_key=%s,
-                message_params=%s,
-                updated_at=%s
-            WHERE id IN ({placeholders})
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            """,
-            [message, message_key, "{}", now_iso(), *job_ids],
-        )
-        if job_action == "upload":
-            from .services import upload_remediation
-            for job_id in job_ids:
-                upload_remediation.transition(connection, job_id, "cancelled", now_iso())
-        # Do not clear archive_versions.restore_state on recover cancel:
-        # RestoreObject cannot be cancelled after AWS accepts it, and a later
-        # recover must be able to resume polling (REQ-030 / BUG-018).
-        for row in automatic_cleanup_rows:
-            audit_event_store.record_audit_event(
-                connection,
-                event="local_cleanup.cancelled",
-                actor_user_id=actor_user_id,
-                vault_id=vault["id"],
-                job_id=int(row["id"]),
-                outcome="cancelled",
-                path=row["path"],
-                archive_version_id=row["archive_version_id"],
-            )
+        _cancel_active_jobs(connection, vault, job_action, job_ids, actor_user_id)
     return {
         "message": message,
+        "cancelled_count": len(job_ids),
+    }
+
+
+def _cancel_active_jobs(
+    connection: Any,
+    vault: dict[str, Any],
+    job_action: str,
+    job_ids: list[int],
+    actor_user_id: int,
+) -> None:
+    """Cancel already-selected non-terminal Jobs; the caller holds the Vault lock."""
+    message_keys = {
+        "upload": "job.upload_stopped",
+        "recover": "job.recovery_stopped",
+        "free-space": "job.cleanup_stopped",
+        "rename": "job.rename_stopped",
+        "cloud-purge": "job.cloud_purge_stopped",
+        "storage-class": "job.storage_class_stopped",
+    }
+    message_key = message_keys[job_action]
+    message = translate(message_key, locale=DEFAULT_LOCALE)
+    automatic_cleanup_rows = []
+    if job_action == "free-space":
+        automatic_cleanup_rows = connection.execute(
+            """
+            SELECT id, path, requested_by, archive_version_id
+            FROM jobs
+            WHERE vault_id=%s AND id = ANY(%s) AND action='free-space'
+              AND origin='automatic'
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (vault["id"], job_ids),
+        ).fetchall()
+    cancel_jobs(job_ids)
+    connection.execute(
+        """
+        UPDATE jobs
+        SET status='cancelled',
+            message=%s,
+            message_key=%s,
+            message_params=%s,
+            updated_at=%s
+        WHERE id = ANY(%s)
+          AND status NOT IN ('completed', 'failed', 'cancelled')
+        """,
+        [message, message_key, "{}", now_iso(), job_ids],
+    )
+    if job_action == "upload":
+        from .services import upload_remediation
+        for job_id in job_ids:
+            upload_remediation.transition(connection, job_id, "cancelled", now_iso())
+    # Do not clear archive_versions.restore_state on recover cancel:
+    # RestoreObject cannot be cancelled after AWS accepts it, and a later
+    # recover must be able to resume polling (REQ-030 / BUG-018).
+    for row in automatic_cleanup_rows:
+        audit_event_store.record_audit_event(
+            connection,
+            event="local_cleanup.cancelled",
+            actor_user_id=actor_user_id,
+            vault_id=vault["id"],
+            job_id=int(row["id"]),
+            outcome="cancelled",
+            path=row["path"],
+            archive_version_id=row["archive_version_id"],
+        )
+
+
+class PendingUploadCancelAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(default="", max_length=1024)
+
+
+# An upload that has not begun: waiting in the queue, never admitted to the
+# upload provenance machinery, nothing linked in the cloud, not part of a
+# remediation episode. Cancelling anything else could close an ambiguous send
+# for good (ADR-0024/0025), so it stays with the single-Job cancel and Resume.
+_UNSTARTED_UPLOAD_SQL = """
+    j.vault_id=%s AND j.action='upload'
+    AND j.status IN ('queued', 'retrying')
+    AND NOT COALESCE(j.upload_reconcile_only, FALSE)
+    AND j.archive_version_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_intents i
+                    WHERE i.vault_file_id=j.vault_file_id AND i.send_started AND NOT i.settled)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediations r
+                    WHERE r.vault_file_id=j.vault_file_id AND r.state NOT IN ('resolved', 'cancelled'))
+"""
+
+
+@app.post(
+    "/api/upload/cancel-pending",
+    response_model=response_model("JobCancelResponse"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def cancel_pending_uploads(
+    action: PendingUploadCancelAction,
+    user: dict[str, Any] = Depends(current_user),
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """Cancel the uploads of the selected Vault (or one folder) that have not begun.
+
+    One call replaces thousands of per-file cancels after a burst or a moved
+    folder (issue #493). An empty ``path`` means the whole Vault; a folder
+    matches itself and its descendants only (``foo`` never matches ``foobar``).
+    Only uploads that never started are cancelled: running or verifying ones,
+    reconcile-only attempts, jobs with a started or recorded send and jobs of a
+    remediation episode are left to their own cancel and Resume, so an ambiguous
+    send is never closed for good by a bulk action. A cancelled automatic upload
+    is not re-queued until the file's content changes, like a single cancel.
+    """
+    folder = normalize_directory(action.path, api=True)
+    with db() as connection:
+        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        scope_sql, scope_params = "", []
+        if folder:
+            scope_sql = "AND (j.path=%s OR starts_with(j.path, %s))"
+            scope_params = [folder, folder + "/"]
+        rows = connection.execute(
+            f"SELECT j.id FROM jobs j WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
+            [vault["id"], *scope_params],
+        ).fetchall()
+        job_ids = [int(row["id"]) for row in rows]
+        if job_ids:
+            _cancel_active_jobs(connection, vault, "upload", job_ids, user["id"])
+    return {
+        "message": translate("job.upload_stopped", locale=DEFAULT_LOCALE),
         "cancelled_count": len(job_ids),
     }
 

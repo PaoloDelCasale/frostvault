@@ -59,6 +59,7 @@ export type NotificationReadAction = components["schemas"]["NotificationReadActi
 export type NotificationsResponse = components["schemas"]["NotificationsResponse"];
 export type OperationPolicy = components["schemas"]["OperationPolicy"];
 export type OperationPolicyUpdate = components["schemas"]["OperationPolicyUpdate"];
+export type PendingUploadCancelAction = components["schemas"]["PendingUploadCancelAction"];
 export type ReauthRequest = components["schemas"]["ReauthRequest"];
 export type RecoverApproveAction = components["schemas"]["RecoverApproveAction"];
 export type RecoverEstimateRequest = components["schemas"]["RecoverEstimateRequest"];

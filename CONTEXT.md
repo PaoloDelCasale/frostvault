@@ -132,6 +132,25 @@ A queued or running operation targeting one stable Vault File and, when known,
 one exact Archive Version.
 _Avoid_: Task, request
 
+**Scheduling Tier**:
+The order in which the worker serves runnable Jobs: Owner operations (restore,
+free-space, rename, storage-class, cloud purge) first, then uploads the Owner
+asked for, then anything admitted automatically (automatic uploads and cleanups).
+Vaults share the workers fairly inside a tier, and work that has waited long
+enough moves up a tier.
+_Avoid_: Priority queue, Lane
+
+**Removed File Closure**:
+The outcome of an upload whose Local Copy is provably gone before any cloud
+write: the Job ends cancelled as a removed file, not failed, and raises no
+failure notification.
+_Avoid_: File missing error, Orphan job
+
+**Stalled Queue**:
+A queue with runnable Jobs, nothing running and no claim for five minutes.
+Reported as a metric, an informational readiness field and a problem.
+_Avoid_: Deadlock, Hang
+
 **Cost Estimate**:
 An approximate storage or restore cost computed from the AWS list prices bundled
 for the configured region. Prices are not editable and are never an AWS bill.
