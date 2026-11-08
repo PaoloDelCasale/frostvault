@@ -109,9 +109,20 @@ class UploadActivityPostgresTests(unittest.TestCase):
     def test_postgres_regex_path_rules_match_real_admission_rules(self):
         paths = ['a.jpg', 'photos/a.jpg', 'photos/sub/a.jpg', 'a/b/c', 'x/a/b/c/y',
                  'foo', 'x/foo/y', '.DS_Store', 'x/._foo', 'a\nb.jpg', 'a[1].jpg',
-                 'foo/a/bar/x', 'x/foo/a/bar/x', 'foo.lock/a.jpg']
+                 'foo/a/bar/x', 'x/foo/a/bar/x', 'foo.lock/a.jpg',
+                 # A Linux name may contain a backslash; admission reads it as a separator.
+                 'foo\\._bar', 'a\\b.jpg', ':', 'a1', ']', '[', '>x', ':x', '(x', '?x']
         for pattern in ['*.jpg', 'photos/**', '**/*.jpg', '**/a/b/**', 'a*b*c',
-                        'foo*bar', 'foo', '?', '[!x]*', 'a[[]1].jpg']:
+                        'foo*bar', 'foo', '?', '[!x]*', 'a[[]1].jpg',
+                        # Sets PostgreSQL would read as classes/collations unless escaped (#498).
+                        '[a-z[:digit:]]*', '[[:alpha:]]*', '[[.a.]]*', '[[=a=]]*', '[]abc]*',
+                        '[ab', "it's/**", '100%*.raw',
+                        # Set contents that look like regex syntax outside a set.
+                        '[(?>]x', '[(?!)]x', '[(?:]x', '(?>x)*',
+                        # The longest accepted glob must stay within PostgreSQL's regex limits.
+                        '*a' * 512, 'a?*' * 340, '*[ab]' * 204, '*[!a]' * 204, '*?' * 512,
+                        # "**/" and "/**" repeat the body in three alternatives.
+                        '**/' + '*a' * 509 + '/**']:
             policy = OperationPolicy(include_globs=(pattern,))
             sql, params = _eligibility_sql(policy)
             for path in paths:

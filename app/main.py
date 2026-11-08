@@ -78,6 +78,7 @@ from .services import metadata_backups as metadata_backup_service
 from .services import recovery_kit as recovery_kit_service
 from .services import metrics as metrics_service
 from .services import notifications as notification_service
+from .services.directory_aggregates import request_vault_rebuild
 from .services.shutdown import shutdown_state
 from .services.catalog_event_stream import (
     coalesced_catchup_signal,
@@ -1450,7 +1451,7 @@ def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
         catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
         rows = connection.execute(catalog._file_row_select_sql([
             "vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'", "fp.path=%s",
-        ]), (vault["id"], path)).fetchall()
+        ], vault["id"]), (vault["id"], path)).fetchall()
         items = catalog._materialize_file_items(vault["id"], rows, name_from_path=True)
         if not items:
             raise HTTPException(404, "Vault File not found")
@@ -2990,9 +2991,14 @@ def update_vault_operation_policy(
             # Independent panels must never replay a stale local-release value
             # when saving upload rules. Serialize read/merge/write per Vault.
             connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
-            values = get_policy(connection, vault["id"]).as_dict()
+            before = get_policy(connection, vault["id"])
+            values = before.as_dict()
             values.update(action.model_dump(exclude_unset=True))
             stored = set_policy(connection, vault["id"], OperationPolicy(**values))
+            if (before.include_globs, before.exclude_globs) != (stored.include_globs, stored.exclude_globs):
+                # Excluded is derived from these globs (#498); refresh the
+                # durable directory rollups, never the catalog evidence.
+                request_vault_rebuild(connection, vault["id"])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except LookupError as exc:

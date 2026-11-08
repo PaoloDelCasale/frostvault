@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from . import notifications as inbox
 from .operation_policies import auto_upload_path_is_included, file_is_stable, get_policy
-from .protection_states import LATEST_JOIN_SQL, PROTECTED_SQL, STATE_SQL, STATES, VISIBLE_SQL
+from .protection_states import LATEST_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql
 
 _last_maintenance = 0.0
 
@@ -134,8 +134,10 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
         unknown = (not vault_local_access(vault["source_root"]).local_operations_allowed
                    or observation_is_unconfirmed(health))
         counts = dict.fromkeys(STATES, 0)
+        state_expression = state_sql(get_policy(connection, vault["id"]))
         for row in connection.execute(f"""
-            SELECT {STATE_SQL} AS state, count(*) AS total FROM vault_files vf
+            SELECT {state_expression} AS state, count(*) AS total FROM vault_files vf
+            JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {LATEST_JOIN_SQL}
             WHERE vf.vault_id=%s AND vf.status='active' AND {VISIBLE_SQL} GROUP BY 1
         """, (vault["id"],)).fetchall():

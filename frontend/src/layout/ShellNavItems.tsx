@@ -13,7 +13,7 @@ export function ShellNavItems({ capabilities, handlers, t, onNavigate, problemCo
       <span className="min-w-0 flex-1 truncate">{vault.name}</span>{problemCounts[vault.id] ? <span className="text-[var(--state-missing-fg)]" aria-label={`${problemCounts[vault.id]} ${shellLabel(t, "essential.problems", "Problems")}`}>● {problemCounts[vault.id]}</span> : null}
     </Button>)}
     <h2 className="mt-4 px-2 text-xs font-bold uppercase text-muted">{shellLabel(t, "essential.show", "Show")}</h2>
-    {[["", "essential.all", "All files"], ["cloud_only", "state.cloud_only", "Cloud only"], ["pending", "state.pending", "Pending"], ["problem", "state.problem", "Problems"]].map(([value, key, fallback]) => <Button key={value} variant="ghost" className="min-h-11 justify-start" aria-pressed={filter === value} onClick={() => run(() => handlers?.onFilterChange?.(value))}>{shellLabel(t, key, fallback)}</Button>)}
+    {[["", "essential.all", "All files"], ["cloud_only", "state.cloud_only", "Cloud only"], ["pending", "state.pending", "Pending"], ["excluded", "state.excluded", "Excluded"], ["problem", "state.problem", "Problems"]].map(([value, key, fallback]) => <Button key={value} variant="ghost" className="min-h-11 justify-start" aria-pressed={filter === value} onClick={() => run(() => handlers?.onFilterChange?.(value))}>{shellLabel(t, key, fallback)}</Button>)}
     <Button variant="secondary" className="mt-4 min-h-11 justify-start" onClick={() => run(handlers?.onGeneral)}>{shellLabel(t, "essential.general", "General")}</Button>
   </div>;
 }

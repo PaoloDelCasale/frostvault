@@ -51,7 +51,7 @@ Search remains global across every file in the selected vault.
 - New vaults can use an empty managed root or adopt any existing directory
   under a Source Volume that does not overlap another vault root.
 - The file browser is home: a sidebar lists protected folders, All / Cloud only /
-  Pending / Problems filters and **General**. Home reopens the last-used Vault at
+  Pending / Excluded / Problems filters and **General**. Home reopens the last-used Vault at
   its root; search matches name/path across all protected folders and preserves
   Vault identity even for identical paths. Folder rows show protection counts.
 - Selection offers only **Recover**, **Free space now** and single-file **Details**.
@@ -68,7 +68,7 @@ Search remains global across every file in the selected vault.
 
 ## Automatic protection
 
-Browsing and statistics use five **protection states**, not copy-presence labels:
+Browsing and statistics use six **protection states**, not copy-presence labels:
 
 - **Pending**: new or changed local content not yet verified. A retained verified
   previous snapshot is indicated separately; it does not protect the new bytes.
@@ -81,10 +81,18 @@ Browsing and statistics use five **protection states**, not copy-presence labels
   date remain visible; absence of a volume never turns files into Cloud only.
 - **Cloud only**: no Local Copy is present and the retained cloud snapshot is
   verified and available. Recovery progress is independent of protection state.
+- **Excluded**: a present Local Copy that automatic upload deliberately skips:
+  the fixed noise exclusions (`._*`, `.DS_Store`, `Thumbs.db`, `*.lock`, `*-wal`,
+  `*-journal`) or the Vault's own include/exclude globs. It is not pending work
+  and does not count against the Vault's protection, but its current content is
+  not expected to be in the cloud (an older verified copy is still indicated).
+  A Problem, an unconfirmed observation or a verified cloud copy of the same
+  bytes (Protected) take precedence. Manual upload requests stay explicit.
 
-Folders show counts for all five states; Vault statistics use the same derivation.
+Folders show counts for all six states; Vault statistics use the same derivation.
 The aggregate headline prioritizes Problem, Unconfirmed, Pending, Protected, then
-Cloud only (empty Vaults have no headline state). **Protection suspended** is a
+Cloud only; Excluded appears as the headline only when nothing else is present
+(empty Vaults have no headline state). **Protection suspended** is a
 separate per-Vault flag: pausing uploads does not invalidate already verified
 content. None of these display states authorizes deleting a Local Copy or cloud
 content; operation-specific safety checks remain mandatory.
@@ -730,7 +738,7 @@ marked read automatically, and pending email for them is not sent. A recurrence
 reopens the problem and notifies once again.
 
 A **weekly summary** is both an inbox item and optional email (the first runs on
-startup, then at most once every seven days). It includes all five protection
+startup, then at most once every seven days). It includes all six protection
 state counts, per-Vault last successful scan/audit and suspension, the last
 verified metadata backup (or an explicit unknown date), open problems, files and
 space freed and blocked cleanups over the last seven days, and the estimated

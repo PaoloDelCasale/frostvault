@@ -295,6 +295,9 @@ class UploadRemediationTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT state,reason FROM upload_remediations").fetchone(),{"state":"suspended","reason":"source_volume_unavailable"})
         self.assertEqual(remediation.sweep(self.db),0)
         self.file.unlink()
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT status,retry_count FROM jobs WHERE id=%s",(resumed,)).fetchone(),{"status":"retrying","retry_count":0})
+            connection.execute("UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE id=%s",(resumed,))
         self.run_job(resumed)
         self.assert_keeper(resumed)
         self.assertEqual(self.provider.puts,1)

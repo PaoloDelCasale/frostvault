@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import psycopg
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    BotoCoreError, ClientError, ConnectionError as BotoConnectionError, HTTPClientError, IncompleteReadError,
+)
+from botocore.parsers import ResponseParserError
 from .database_retry import exception_chain, is_retryable_transaction_error
 
 
@@ -53,6 +56,39 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
     "unavailable",
     "verification stream length",
 )
+
+
+# Provider answers that say "not now", never "no": throttling, request timeouts
+# and server-side faults. Matching is structural (HTTP status / error code), never
+# on message text, so a permission or content problem cannot be mistaken for one.
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_TRANSIENT_ERROR_CODES = frozenset({
+    "SlowDown", "Throttling", "ThrottlingException", "ThrottledException", "TooManyRequestsException",
+    "RequestLimitExceeded", "RequestThrottled", "BandwidthLimitExceeded", "RequestTimeout",
+    "RequestTimeoutException", "InternalError", "ServiceUnavailable",
+})
+
+
+def is_provider_transient(error: BaseException) -> bool:
+    """The provider could not answer right now: retry with backoff, never conclude.
+
+    Covers 408/429/5xx, the 400 ``RequestTimeout``/``SlowDown`` family, transport
+    faults (connect/read timeouts, closed or truncated streams) and responses that
+    are not a well-formed HTTP/S3 answer (unparsable body, no HTTP status at all).
+    Credential and permission refusals are not transient.
+    """
+    for item in exception_chain(error):
+        if isinstance(item, ClientError):
+            status = item.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            code = item.response.get("Error", {}).get("Code")
+            if status in _TRANSIENT_HTTP_STATUSES or code in _TRANSIENT_ERROR_CODES:
+                return True
+        elif isinstance(item, (BotoConnectionError, HTTPClientError, IncompleteReadError, ResponseParserError,
+                               ConnectionError, TimeoutError)):
+            return True
+        elif isinstance(item, BotoCoreError) and "timeout" in type(item).__name__.lower():
+            return True
+    return False
 
 
 _CONNECTION_SQLSTATES = frozenset({"57P01", "57P02", "57P03", "53300"})
@@ -107,14 +143,12 @@ def classify_upload_failure(message: str | BaseException) -> str:
     lowered = str(message or "").lower()
     if "changed since fingerprinting" in lowered:
         return "source_changed"
+    if isinstance(message, BaseException) and is_provider_transient(message):
+        # A structured provider fault outranks words in its text (an error message
+        # that happens to contain a permanent marker is still a transient fault).
+        return "transient"
     if any(marker in lowered for marker in _PERMANENT_UPLOAD_FAILURE_MARKERS):
         return "permanent"
-    if isinstance(message, BaseException):
-        for error in exception_chain(message):
-            if isinstance(error, ClientError) and error.response.get(
-                "ResponseMetadata", {}
-            ).get("HTTPStatusCode") in {500, 502, 503, 504}:
-                return "transient"
     if any(marker in lowered for marker in _TRANSIENT_UPLOAD_FAILURE_MARKERS):
         return "transient"
     return "permanent"

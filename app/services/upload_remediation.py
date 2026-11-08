@@ -399,10 +399,10 @@ def transition(connection: Any, job_id: int, status: str, stamp: str, *, suspens
         state,reason = "blocked",block["reason"] if block else "retry_budget_exhausted" if job["retry_count"] >= 8 else "operation_failed"
     elif status == "cancelled":
         state,reason = "cancelled","file_removed" if closing_reason == "file_removed" else "owner_cancelled"
+    elif suspension and status in {"queued","retrying"}:
+        state,reason = "suspended",suspension
     elif status == "retrying":
         state,reason = "retrying","transient"
-    elif suspension:
-        state,reason = "suspended",suspension
     elif status in {"uploading","verifying"}:
         state,reason = "queued",None
     if row["state"] == "cancelled" and status != "completed":
