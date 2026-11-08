@@ -300,6 +300,7 @@ class WatcherRecoveryTests(DatabaseCase):
                 stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(
                     filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
                 stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+                stack.enter_context(patch("app.storage.scan_vault", return_value={}))
                 task = asyncio.create_task(storage._watch_vault_filesystem(
                     {"id": 2, "source_root": str(root)}))
                 try:
@@ -346,6 +347,7 @@ class WatcherRecoveryTests(DatabaseCase):
                 stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(
                     filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
                 stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True)))
+                stack.enter_context(patch("app.storage.scan_vault", return_value={}))
                 task = asyncio.create_task(storage._watch_vault_filesystem(
                     {"id": 2, "source_root": str(root)}))
                 try:

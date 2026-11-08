@@ -440,7 +440,9 @@ class LiveWatcherCatalogTests(unittest.TestCase):
         with (patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)),
               patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=300 if force_polling else 30)),
               patch("app.storage.awatch", side_effect=ticking_watch),
-              patch("app.storage.apply_filesystem_changes", side_effect=apply)):
+              patch("app.storage.apply_filesystem_changes", side_effect=apply),
+              # The scan paired with every watcher start has its own tests.
+              patch("app.storage.scan_vault", return_value={})):
             task = asyncio.create_task(storage._watch_vault_filesystem(self.vault))
             try:
                 await asyncio.wait_for(ready.wait(), 5)

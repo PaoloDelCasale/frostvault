@@ -4,8 +4,47 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+
+
+def is_storable_name(name: str) -> bool:
+    """Whether a directory entry name can be catalogued as UTF-8 text.
+
+    Linux names are bytes. Python decodes the undecodable ones with
+    surrogateescape, and such a name can neither be stored in the catalog nor
+    become a cloud key. It is reported and skipped, never allowed to abort a walk.
+    """
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def removal_is_unproven(root: Path, path: Path) -> bool:
+    """Whether a path that no longer exists may only have been renamed away.
+
+    A rename to a name that is not valid UTF-8 (another client, a remount with
+    another charset) looks like a removal: the new name is never catalogued.
+    The nearest existing folder above the path is listed; if it holds such a
+    name, or cannot be listed at all, the removal is not proven and the path
+    must not become missing. The scan that follows decides, and it treats the
+    same name as an incomplete observation (#494).
+    """
+    directory = path.parent
+    while directory == root or root in directory.parents:
+        try:
+            names = os.listdir(directory)
+        except (FileNotFoundError, NotADirectoryError):
+            if directory == root:
+                return True
+            directory = directory.parent
+            continue
+        except OSError:
+            return True
+        return any(not is_storable_name(name) for name in names)
+    return True
 
 
 def inspect_entry(path: Path) -> tuple[str, os.stat_result] | None:
@@ -122,13 +161,30 @@ class PinnedTree:
         except OSError as exc:
             raise TreeIdentityChanged("Visited directory is no longer accessible") from exc
 
-    def entries(self, *, on_error: Callable[[Path, OSError], None]) -> Iterator[tuple[Path, Path]]:
+    def entries(
+        self, *, on_error: Callable[[Path, OSError], None],
+        on_unsupported_name: Callable[[Path, bool], None] | None = None,
+    ) -> Iterator[tuple[Path, Path]]:
+        """Yield (logical path, descriptor path) for every storable entry.
+
+        A name that is not valid UTF-8 is handed to ``on_unsupported_name``
+        (with whether it is a directory) and skipped together with its subtree:
+        no catalog row can exist beneath a path that cannot be stored, and the
+        rest of the walk goes on.
+        """
         def descend(fd: int, parts: tuple[str, ...]):
             logical = self.root.joinpath(*parts)
             try:
                 with os.scandir(fd) as entries:
                     for entry in entries:
                         self.validate_active()
+                        if not is_storable_name(entry.name):
+                            if on_unsupported_name is not None:
+                                on_unsupported_name(
+                                    logical / entry.name,
+                                    entry.is_dir(follow_symlinks=False),
+                                )
+                            continue
                         path = logical / entry.name
                         info = entry.stat(follow_symlinks=False)
                         # Only this descriptor path is ever passed to inspection.
@@ -162,17 +218,23 @@ class PinnedTree:
                 yield from descend(fd, parts)
                 return
             name = self.start[len(parts)]
-            try:
-                with _open_directory(fd, (name,)) as child:
-                    expected = _directory_identity(child)
-                    self.identities[parts + (name,)] = expected
-                    self.active.append((fd, name, expected))
-                    try:
-                        yield from start(child, parts + (name,))
-                    finally:
-                        self.active.pop()
-            except OSError as exc:
-                raise TreeIdentityChanged("Subtree component could not be pinned") from exc
+            with ExitStack() as stack:
+                try:
+                    child = stack.enter_context(_open_directory(fd, (name,)))
+                except PermissionError as exc:
+                    # A folder that appeared unreadable (created by another
+                    # user) is a named, unreadable path, not a replaced tree.
+                    on_error(self.root.joinpath(*parts, name), exc)
+                    return
+                except OSError as exc:
+                    raise TreeIdentityChanged("Subtree component could not be pinned") from exc
+                expected = _directory_identity(child)
+                self.identities[parts + (name,)] = expected
+                self.active.append((fd, name, expected))
+                try:
+                    yield from start(child, parts + (name,))
+                finally:
+                    self.active.pop()
 
         yield from start(self.fd, ())
 

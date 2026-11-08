@@ -139,7 +139,7 @@ class FilesystemProblemTests(unittest.TestCase):
         self.assertEqual(result["local"], -1)
         self.assertIn("protection_blocked", {p["event"] for p in self.problems()})
 
-    def test_unreadable_non_utf8_filename_is_still_signalled(self):
+    def test_non_utf8_filename_is_signalled_as_unsupported_before_it_is_opened(self):
         target = self.root / "bad\udcff.jpg"
         target.write_bytes(b"data")
         real_open = os.open
@@ -151,7 +151,7 @@ class FilesystemProblemTests(unittest.TestCase):
             self.assertEqual(storage.scan_tree(self.vault, "non-utf8"), 0)
         problems = self.problems()
         self.assertEqual(len(problems), 1)
-        self.assertEqual(problems[0]["event"], "file_unreadable")
+        self.assertEqual(problems[0]["event"], "file_name_unsupported")
         import json
         self.assertEqual(json.loads(problems[0]["message_params"])["path"], "bad\\udcff.jpg")
 
