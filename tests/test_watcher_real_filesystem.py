@@ -460,19 +460,22 @@ class FolderCreatedUnreadableDuringTheWatchTests(Harness):
         task = self.start(root)
         try:
             await self.settle(lambda: scan.call_count >= 1 and self.resolve.call_count >= 1)
-            registrations = len(self.registrations)
+            registrations = len(self.ready_registrations)
             # As another user (root) would create it: not enterable.
             os.mkdir(root / "late", 0o000)
             await self.settle(lambda: watch_plan.unobserved(VAULT_ID).directories == {"late"})
-            await self.settle(lambda: len(self.registrations) > registrations)
+            # Construction is not registration: especially with PollWatcher,
+            # a write before the barrier can belong to its initial snapshot.
+            await self.settle(lambda: (str(root / "a"),) in self.ready_registrations[registrations:])
             (root / "a" / "still.txt").write_text("x")
             await self.settle(lambda: str(root / "a" / "still.txt") in self.applied_paths())
             # Repairing it raises no event: the re-check of the named path
             # notices, the Vault is scanned and the tree registered as a whole.
             scans = scan.call_count
+            registrations = len(self.ready_registrations)
             (root / "late").chmod(0o755)
             await self.settle(lambda: scan.call_count > scans)
-            await self.settle(lambda: self.registrations[-1] == (str(root),))
+            await self.settle(lambda: (str(root),) in self.ready_registrations[registrations:])
             (root / "late" / "inside.txt").write_text("x")
             await self.settle(lambda: str(root / "late" / "inside.txt") in self.applied_paths())
         finally:
