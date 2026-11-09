@@ -52,11 +52,11 @@ class SourceConfirmationCoverageTests(unittest.TestCase):
 
     def test_a_scan_started_before_the_handoff_cannot_confirm_its_coverage(self):
         watch_plan.record_registration(self.vault_id, self.gaps("repaired"))
-        before_scan = watch_plan.registered_directories(self.vault_id)
+        before_scan = watch_plan.scan_coverage_fence(self.vault_id)
         watch_plan.record_full_scan(self.vault_id, self.gaps())
         watch_plan.record_registration(self.vault_id, self.gaps())
         self.assertFalse(watch_plan.source_confirmation_ready(self.vault_id, before_scan))
-        after_registration = watch_plan.registered_directories(self.vault_id)
+        after_registration = watch_plan.scan_coverage_fence(self.vault_id)
         self.assertTrue(watch_plan.source_confirmation_ready(self.vault_id, after_registration))
 
     def test_manual_scan_cannot_erase_an_unconsumed_gap(self):
@@ -72,6 +72,18 @@ class SourceConfirmationCoverageTests(unittest.TestCase):
         self.assertFalse(watch_plan.source_confirmation_ready(self.vault_id, before_scan))
         self.assertTrue(self.ready())  # A fresh paired scan may now confirm.
         self.assertEqual(watch_plan.coverage_debt(self.vault_id), set())
+
+    def test_scan_started_before_debt_discovery_cannot_confirm_later_handoff(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        before_scan = watch_plan.scan_coverage_fence(self.vault_id)
+        watch_plan.record_subtree_scan(self.vault_id, "denied", self.gaps("denied"))
+        watch_plan.record_subtree_scan(self.vault_id, "denied", self.gaps())
+        plan, debt = watch_plan.registration_plan(self.vault_id)
+        watch_plan.record_registration(self.vault_id, plan, debt=debt)
+        self.assertFalse(watch_plan.source_confirmation_ready(self.vault_id, before_scan))
+        self.assertTrue(watch_plan.source_confirmation_ready(
+            self.vault_id, watch_plan.scan_coverage_fence(self.vault_id),
+        ))
 
     def test_subtree_repair_cannot_erase_an_unconsumed_gap(self):
         watch_plan.record_registration(self.vault_id, self.gaps())

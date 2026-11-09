@@ -172,8 +172,10 @@ scan's desired exclusions. A concurrent manual scan cannot erase this debt by
 repairing the desired plan before the watcher consumes it: even identical empty
 plans require a fresh registration and catch-up. Each registration settles only
 the debt captured before its construction, never a newer discovery made while
-it was registering. A scan already in flight before that barrier cannot confirm
-the recovered coverage; a subsequent complete walk can.
+it was registering. A scan captures both missing coverage and its registration
+generation before walking. A scan already in flight before a recovery barrier
+cannot confirm the recovered coverage, even if the debt was discovered after
+its walk started; a subsequent complete walk can.
 
 A file or folder name that is not valid UTF-8 (typical of old archives or SMB/NFS
 shares with another encoding) cannot be catalogued or become a cloud key. It is

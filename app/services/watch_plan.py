@@ -74,6 +74,7 @@ _registered: dict[int, tuple[object, frozenset[str]]] = {}
 # discovery has a generation so a barrier cannot erase discoveries made while
 # its observer was being constructed (even a rediscovery of the same path).
 _debt: dict[int, dict[str, int]] = {}
+_coverage_generation: dict[int, int] = {}
 _generation = 0
 _lock = threading.Lock()
 
@@ -141,6 +142,7 @@ def record_registration(
     Return settled directories: those no longer excluded need a paired scan.
     Re-publishing an observer's barrier must pass its original debt snapshot.
     """
+    global _generation
     with _lock:
         vault_id = int(vault_id)
         pending = _debt.get(vault_id, {})
@@ -149,6 +151,12 @@ def record_registration(
                             if pending.get(path) == generation)
         for path in settled:
             pending.pop(path)
+        previous = _registered.get(vault_id)
+        if previous is None or (previous[1] | settled) - found.directories:
+            # Even a scan that started before this debt was discovered must
+            # not substitute for the walk paired with this coverage expansion.
+            _generation += 1
+            _coverage_generation[vault_id] = _generation
         _registered[vault_id] = (owner, found.directories)
         return settled
 
@@ -160,6 +168,7 @@ def forget_registration(vault_id: int, *, owner: object = None) -> None:
         if registered is not None and registered[0] is owner:
             _registered.pop(int(vault_id), None)
             _debt.pop(int(vault_id), None)
+            _coverage_generation.pop(int(vault_id), None)
 
 
 def registered_directories(vault_id: int) -> frozenset[str]:
@@ -167,16 +176,25 @@ def registered_directories(vault_id: int) -> frozenset[str]:
         return _registered.get(int(vault_id), (None, frozenset()))[1]
 
 
-def scan_coverage_fence(vault_id: int) -> frozenset[str]:
-    """Coverage missing when a walk starts, including unconsumed discoveries."""
+@dataclass(frozen=True)
+class ScanCoverageFence:
+    excluded: frozenset[str] = frozenset()
+    generation: int = 0
+
+
+def scan_coverage_fence(vault_id: int) -> ScanCoverageFence:
+    """Coverage missing and the registration generation when a walk starts."""
     with _lock:
         if int(vault_id) not in _registered:
-            return frozenset()
-        return _registered[int(vault_id)][1] | frozenset(_debt.get(int(vault_id), {}))
+            return ScanCoverageFence()
+        return ScanCoverageFence(
+            _registered[int(vault_id)][1] | frozenset(_debt.get(int(vault_id), {})),
+            _coverage_generation[int(vault_id)],
+        )
 
 
 def source_confirmation_ready(
-    vault_id: int, registered_before_scan: frozenset[str] = frozenset(),
+    vault_id: int, registered_before_scan: ScanCoverageFence | None = None,
 ) -> bool:
     """A complete walk cannot confirm a repaired but still unwatched subtree.
 
@@ -186,7 +204,11 @@ def source_confirmation_ready(
     already walking at the handoff cannot stand in for that catch-up scan.
     """
     with _lock:
-        excluded = _registered.get(int(vault_id), (None, frozenset()))[1] | registered_before_scan
+        excluded = _registered.get(int(vault_id), (None, frozenset()))[1]
+        if registered_before_scan is not None:
+            if registered_before_scan.generation != _coverage_generation.get(int(vault_id), 0):
+                return False
+            excluded |= registered_before_scan.excluded
         if int(vault_id) in _registered:
             excluded |= frozenset(_debt.get(int(vault_id), {}))
         return not (excluded - _state.get(int(vault_id), UnobservedPaths()).directories)
@@ -197,6 +219,7 @@ def forget(vault_id: int) -> None:
         _state.pop(int(vault_id), None)
         _registered.pop(int(vault_id), None)
         _debt.pop(int(vault_id), None)
+        _coverage_generation.pop(int(vault_id), None)
 
 
 def watch_directories(root: Path, found: UnobservedPaths) -> tuple[list[Path], list[Path]]:
