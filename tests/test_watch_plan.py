@@ -50,6 +50,15 @@ class SourceConfirmationCoverageTests(unittest.TestCase):
         watch_plan.record_registration(self.vault_id, self.gaps("parent/child"))
         self.assertTrue(self.ready())
 
+    def test_a_scan_started_before_the_handoff_cannot_confirm_its_coverage(self):
+        watch_plan.record_registration(self.vault_id, self.gaps("repaired"))
+        before_scan = watch_plan.registered_directories(self.vault_id)
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        self.assertFalse(watch_plan.source_confirmation_ready(self.vault_id, before_scan))
+        after_registration = watch_plan.registered_directories(self.vault_id)
+        self.assertTrue(watch_plan.source_confirmation_ready(self.vault_id, after_registration))
+
     def test_file_only_gaps_do_not_need_directory_registration(self):
         found = watch_plan.UnobservedPaths(unsupported=frozenset({"bad-\udcff"}))
         watch_plan.record_registration(self.vault_id, found)

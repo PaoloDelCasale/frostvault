@@ -115,16 +115,24 @@ def forget_registration(vault_id: int) -> None:
         _registered.pop(int(vault_id), None)
 
 
-def source_confirmation_ready(vault_id: int) -> bool:
+def registered_directories(vault_id: int) -> frozenset[str]:
+    with _lock:
+        return _registered.get(int(vault_id), frozenset())
+
+
+def source_confirmation_ready(
+    vault_id: int, registered_before_scan: frozenset[str] = frozenset(),
+) -> bool:
     """A complete walk cannot confirm a repaired but still unwatched subtree.
 
     Callers without a watcher retain ordinary scan semantics. A live watcher
     must first enroll every directory its observer used to exclude; its paired
-    catch-up scan then covers files created before that registration.
+    catch-up scan then covers files created before that registration. A scan
+    already walking at the handoff cannot stand in for that catch-up scan.
     """
     with _lock:
-        return not (_registered.get(int(vault_id), frozenset())
-                    - _state.get(int(vault_id), UnobservedPaths()).directories)
+        excluded = _registered.get(int(vault_id), frozenset()) | registered_before_scan
+        return not (excluded - _state.get(int(vault_id), UnobservedPaths()).directories)
 
 
 def forget(vault_id: int) -> None:

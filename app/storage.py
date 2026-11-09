@@ -1875,6 +1875,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         access = source_layout.vault_local_access(vault["source_root"])
         if access.local_operations_allowed or access.volume_health == "scan_required":
             try:
+                registered_before_scan = watch_plan.registered_directories(vault_id)
                 count, rename_summary, _completed_alias, complete = _verified_local_scan(
                     vault, scan_id
                 )
@@ -1916,7 +1917,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 # A repaired directory can be walked before the observer that
                 # excluded it has been replaced. Keep source unconfirmed until
                 # registration AND the ensuing catch-up walk have completed.
-                covered = watch_plan.source_confirmation_ready(vault_id)
+                covered = watch_plan.source_confirmation_ready(vault_id, registered_before_scan)
                 confirmed = complete and covered
                 _record_scan_component_health(
                     vault_id, "source", ok=confirmed, verified=confirmed,
