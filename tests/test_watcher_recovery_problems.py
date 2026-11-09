@@ -15,7 +15,7 @@ from unittest.mock import patch
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.services import notifications, source_layout, vault_relocation
+from app.services import notifications, source_layout, vault_relocation, watch_plan
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 
 
@@ -42,6 +42,8 @@ class RecoveryProblemTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         storage.runtime_status.pop(9, None)
+        watch_plan.forget(9)
+        self.addCleanup(watch_plan.forget, 9)
         storage._workers_known_ok.clear()
         self.addCleanup(storage._workers_known_ok.clear)
 
@@ -214,6 +216,48 @@ class RecoveryProblemTests(unittest.TestCase):
         os.unlink(self.root / "Foto" / "a.jpg")
         storage.scan_tree(self.vault, "fourth")
         self.assertEqual(self.copies()["Foto/a.jpg"], "missing")
+
+    def test_complete_scan_waits_for_repaired_subtree_registration_before_confirming_source(self):
+        """A manual/periodic scan must obey the same gate as a paired scan."""
+        from app.services.component_health import load_vault_health, record_component_health
+
+        repaired = self.root / "repaired"
+        repaired.mkdir()
+        (repaired / "already-here.txt").write_text("catch-up")
+        gaps = watch_plan.UnobservedPaths(
+            unreadable=frozenset({"repaired"}), directories=frozenset({"repaired"}),
+        )
+        watch_plan.record_full_scan(9, gaps)
+        watch_plan.record_registration(9, gaps)
+        with PostgresConnection(str(self.path)) as connection:
+            connection.execute(
+                "UPDATE vaults SET root_identity=%s, root_identity_version=%s WHERE id=9",
+                (vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION),
+            )
+            record_component_health(connection, vault_id=9, component="source", ok=False,
+                                    error="Source scan incomplete")
+
+        with (
+            patch("app.storage._validate_enrolled_scan_root"),
+            patch("app.storage.scan_cloud", return_value=0),
+        ):
+            result = storage.scan_vault(self.vault)
+            self.assertNotIn("local_incomplete", result, "the walk itself is complete")
+            self.assertEqual(self.copies(), {"repaired/already-here.txt": "present"})
+            with PostgresConnection(str(self.path)) as connection:
+                health = load_vault_health(connection, 9)
+            self.assertEqual(health["source"]["last_error"], "Source watcher registration pending")
+
+            # The successor's actual barrier, followed by its paired scan.
+            (repaired / "before-barrier.txt").write_text("also catch up")
+            watch_plan.record_registration(9, watch_plan.UnobservedPaths())
+            storage.scan_vault(self.vault)
+        with PostgresConnection(str(self.path)) as connection:
+            health = load_vault_health(connection, 9)
+        self.assertIsNone(health["source"]["last_error"])
+        self.assertEqual(self.copies(), {
+            "repaired/already-here.txt": "present", "repaired/before-barrier.txt": "present",
+        })
 
     def test_each_unreadable_path_closes_by_itself(self):
         from app.services.problems import report_problem, resolve_stale_path_problems

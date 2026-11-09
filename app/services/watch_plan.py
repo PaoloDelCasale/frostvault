@@ -66,7 +66,28 @@ class UnobservedPaths:
 
 
 _state: dict[int, UnobservedPaths] = {}
+# Exclusions of the observer that has actually crossed its registration barrier,
+# not the newer scan's desired plan. Absence means no watcher task owns coverage.
+_registered: dict[int, tuple[object, frozenset[str]]] = {}
+# A scan can repair its desired plan before the watcher consumes a new gap.
+# Retain that coverage debt independently until a subsequent registration. Each
+# discovery has a generation so a barrier cannot erase discoveries made while
+# its observer was being constructed (even a rediscovery of the same path).
+_debt: dict[int, dict[str, int]] = {}
+_coverage_generation: dict[int, int] = {}
+_generation = 0
 _lock = threading.Lock()
+
+
+def _record_found(vault_id: int, found: UnobservedPaths) -> None:
+    """Replace desired state and retain newly discovered directory debt; locked."""
+    global _generation
+    old = _state.get(vault_id, UnobservedPaths())
+    added = found.directories - old.directories
+    if added:
+        _generation += 1
+        _debt.setdefault(vault_id, {}).update(dict.fromkeys(added, _generation))
+    _state[vault_id] = found
 
 
 def unobserved(vault_id: int) -> UnobservedPaths:
@@ -77,14 +98,14 @@ def unobserved(vault_id: int) -> UnobservedPaths:
 def record_full_scan(vault_id: int, found: UnobservedPaths) -> None:
     """A walk of the whole Vault is the complete picture: it replaces the old one."""
     with _lock:
-        _state[int(vault_id)] = found
+        _record_found(int(vault_id), found)
 
 
 def record_subtree_scan(vault_id: int, subtree: str, found: UnobservedPaths) -> None:
     """A partial walk only speaks for its own subtree."""
     with _lock:
         old = _state.get(int(vault_id), UnobservedPaths())
-        _state[int(vault_id)] = old.without(subtree).merged(found)
+        _record_found(int(vault_id), old.without(subtree).merged(found))
 
 
 def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> None:
@@ -98,12 +119,107 @@ def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> No
         return
     with _lock:
         old = _state.get(int(vault_id), UnobservedPaths())
-        _state[int(vault_id)] = old.merged(UnobservedPaths(added, frozenset(), added))
+        _record_found(int(vault_id), old.merged(UnobservedPaths(added, frozenset(), added)))
+
+
+def registration_plan(vault_id: int) -> tuple[UnobservedPaths, dict[str, int]]:
+    """Snapshot desired exclusions and debt BEFORE constructing an observer."""
+    with _lock:
+        return _state.get(int(vault_id), UnobservedPaths()), dict(_debt.get(int(vault_id), {}))
+
+
+def coverage_debt(vault_id: int) -> frozenset[str]:
+    with _lock:
+        return frozenset(_debt.get(int(vault_id), {}))
+
+
+def record_registration(
+    vault_id: int, found: UnobservedPaths, *, owner: object = None,
+    debt: dict[str, int] | None = None,
+) -> frozenset[str]:
+    """Publish a barrier, settling only debt captured before its construction.
+
+    Return settled directories: those no longer excluded need a paired scan.
+    Re-publishing an observer's barrier must pass its original debt snapshot.
+    """
+    global _generation
+    with _lock:
+        vault_id = int(vault_id)
+        pending = _debt.get(vault_id, {})
+        snapshot = dict(pending) if debt is None else debt
+        settled = frozenset(path for path, generation in snapshot.items()
+                            if pending.get(path) == generation)
+        for path in settled:
+            pending.pop(path)
+        previous = _registered.get(vault_id)
+        if previous is None or (previous[1] | settled) - found.directories:
+            # Even a scan that started before this debt was discovered must
+            # not substitute for the walk paired with this coverage expansion.
+            _generation += 1
+            _coverage_generation[vault_id] = _generation
+        _registered[vault_id] = (owner, found.directories)
+        return settled
+
+
+def forget_registration(vault_id: int, *, owner: object = None) -> None:
+    with _lock:
+        registered = _registered.get(int(vault_id))
+        # A cancelled task may finish closing after its replacement registered.
+        if registered is not None and registered[0] is owner:
+            _registered.pop(int(vault_id), None)
+            _debt.pop(int(vault_id), None)
+            _coverage_generation.pop(int(vault_id), None)
+
+
+def registered_directories(vault_id: int) -> frozenset[str]:
+    with _lock:
+        return _registered.get(int(vault_id), (None, frozenset()))[1]
+
+
+@dataclass(frozen=True)
+class ScanCoverageFence:
+    excluded: frozenset[str] = frozenset()
+    generation: int = 0
+
+
+def scan_coverage_fence(vault_id: int) -> ScanCoverageFence:
+    """Coverage missing and the registration generation when a walk starts."""
+    with _lock:
+        if int(vault_id) not in _registered:
+            return ScanCoverageFence()
+        return ScanCoverageFence(
+            _registered[int(vault_id)][1] | frozenset(_debt.get(int(vault_id), {})),
+            _coverage_generation[int(vault_id)],
+        )
+
+
+def source_confirmation_ready(
+    vault_id: int, registered_before_scan: ScanCoverageFence | None = None,
+) -> bool:
+    """A complete walk cannot confirm a repaired but still unwatched subtree.
+
+    Callers without a watcher retain ordinary scan semantics. A live watcher
+    must first enroll every directory its observer used to exclude; its paired
+    catch-up scan then covers files created before that registration. A scan
+    already walking at the handoff cannot stand in for that catch-up scan.
+    """
+    with _lock:
+        excluded = _registered.get(int(vault_id), (None, frozenset()))[1]
+        if registered_before_scan is not None:
+            if registered_before_scan.generation != _coverage_generation.get(int(vault_id), 0):
+                return False
+            excluded |= registered_before_scan.excluded
+        if int(vault_id) in _registered:
+            excluded |= frozenset(_debt.get(int(vault_id), {}))
+        return not (excluded - _state.get(int(vault_id), UnobservedPaths()).directories)
 
 
 def forget(vault_id: int) -> None:
     with _lock:
         _state.pop(int(vault_id), None)
+        _registered.pop(int(vault_id), None)
+        _debt.pop(int(vault_id), None)
+        _coverage_generation.pop(int(vault_id), None)
 
 
 def watch_directories(root: Path, found: UnobservedPaths) -> tuple[list[Path], list[Path]]:
