@@ -68,7 +68,7 @@ class UnobservedPaths:
 _state: dict[int, UnobservedPaths] = {}
 # Exclusions of the observer that has actually crossed its registration barrier,
 # not the newer scan's desired plan. Absence means no watcher task owns coverage.
-_registered: dict[int, frozenset[str]] = {}
+_registered: dict[int, tuple[object, frozenset[str]]] = {}
 _lock = threading.Lock()
 
 
@@ -104,20 +104,25 @@ def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> No
         _state[int(vault_id)] = old.merged(UnobservedPaths(added, frozenset(), added))
 
 
-def record_registration(vault_id: int, found: UnobservedPaths) -> None:
+def record_registration(
+    vault_id: int, found: UnobservedPaths, *, owner: object = None,
+) -> None:
     """Publish coverage only after the observer's registration barrier."""
     with _lock:
-        _registered[int(vault_id)] = found.directories
+        _registered[int(vault_id)] = (owner, found.directories)
 
 
-def forget_registration(vault_id: int) -> None:
+def forget_registration(vault_id: int, *, owner: object = None) -> None:
     with _lock:
-        _registered.pop(int(vault_id), None)
+        registered = _registered.get(int(vault_id))
+        # A cancelled task may finish closing after its replacement registered.
+        if registered is not None and registered[0] is owner:
+            _registered.pop(int(vault_id), None)
 
 
 def registered_directories(vault_id: int) -> frozenset[str]:
     with _lock:
-        return _registered.get(int(vault_id), frozenset())
+        return _registered.get(int(vault_id), (None, frozenset()))[1]
 
 
 def source_confirmation_ready(
@@ -131,7 +136,7 @@ def source_confirmation_ready(
     already walking at the handoff cannot stand in for that catch-up scan.
     """
     with _lock:
-        excluded = _registered.get(int(vault_id), frozenset()) | registered_before_scan
+        excluded = _registered.get(int(vault_id), (None, frozenset()))[1] | registered_before_scan
         return not (excluded - _state.get(int(vault_id), UnobservedPaths()).directories)
 
 

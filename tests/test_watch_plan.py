@@ -65,6 +65,16 @@ class SourceConfirmationCoverageTests(unittest.TestCase):
         watch_plan.record_full_scan(self.vault_id, watch_plan.UnobservedPaths())
         self.assertTrue(self.ready())
 
+    def test_stopping_old_task_cannot_remove_its_replacements_coverage_fence(self):
+        old, successor = object(), object()
+        watch_plan.record_registration(self.vault_id, self.gaps("old"), owner=old)
+        watch_plan.record_registration(self.vault_id, self.gaps("still-denied"), owner=successor)
+        watch_plan.forget_registration(self.vault_id, owner=old)
+        self.assertFalse(self.ready())
+        self.assertEqual(watch_plan.registered_directories(self.vault_id), {"still-denied"})
+        watch_plan.forget_registration(self.vault_id, owner=successor)
+        self.assertTrue(self.ready())
+
     def test_stopped_watcher_releases_its_confirmation_gate(self):
         watch_plan.record_registration(self.vault_id, self.gaps("denied"))
         self.assertFalse(self.ready())

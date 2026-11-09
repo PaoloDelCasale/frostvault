@@ -6635,7 +6635,7 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
     try:
         await _run_vault_filesystem_watch(vault)
     finally:
-        watch_plan.forget_registration(int(vault["id"]))
+        watch_plan.forget_registration(int(vault["id"]), owner=asyncio.current_task())
 
 
 async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
@@ -6764,7 +6764,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                 while True:
                     native_changes = set() if rearm_required else await anext(watcher)
                     if not rearm_required:
-                        watch_plan.record_registration(vault_id, registered_gaps)
+                        watch_plan.record_registration(vault_id, registered_gaps, owner=asyncio.current_task())
                     pending_reconcile |= native_changes
                     new_directories = await asyncio.to_thread(
                         _new_watcher_directories, root, native_changes,
@@ -6782,7 +6782,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.
                         first = await anext(successor)
-                        watch_plan.record_registration(vault_id, registered_gaps)
+                        watch_plan.record_registration(vault_id, registered_gaps, owner=asyncio.current_task())
                         if old_gaps.directories - registered_gaps.directories:
                             # Coverage expanded: files may predate the successor's
                             # snapshot. Pair this handoff with a scan, just like
