@@ -187,6 +187,7 @@ class Harness(RealTreeCase):
         self.addCleanup(self.stack.close)
         self.applied: list[set[tuple[Change, str]]] = []
         self.registrations: list[tuple[str, ...]] = []
+        self.ready_registrations: list[tuple[str, ...]] = []
         connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
         self.stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
@@ -204,7 +205,17 @@ class Harness(RealTreeCase):
 
         def counting_awatch(*paths, **kwargs):
             self.registrations.append(tuple(str(p) for p in paths))
-            return real_awatch(*paths, **kwargs)
+            async def registered():
+                observer = real_awatch(*paths, **kwargs)
+                try:
+                    first = await anext(observer)
+                    self.ready_registrations.append(tuple(str(p) for p in paths))
+                    yield first
+                    async for changes in observer:
+                        yield changes
+                finally:
+                    await observer.aclose()
+            return registered()
 
         self.stack.enter_context(patch("app.storage.awatch", side_effect=counting_awatch))
         self.addCleanup(watch_plan.forget, VAULT_ID)
@@ -281,6 +292,70 @@ class UnreadableFolderLifecycleTests(Harness):
             await self.settle(lambda: str(root / "a2" / "after.txt") in self.applied_paths())
         finally:
             await self.stop(task)
+
+
+@NOT_ROOT
+class PermissionRecoveryBoundaryTests(Harness):
+    """#506: write at scan_vault's actual source-health publication boundary."""
+
+    async def recovery_boundary(self, *, polling):
+        root = self.make_root()
+        repaired = root / "denied"
+        (repaired / "deep").mkdir(parents=True)
+        (root / "sibling").mkdir()
+        repaired.chmod(0o000)
+        self.stack.enter_context(patch(
+            "app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=polling),
+        ))
+        vault = {"id": VAULT_ID, "source_root": str(root), "s3_bucket": "test"}
+        scans = []
+        confirmed = threading.Event()
+        target = repaired / "deep" / "first-at-confirmation.txt"
+
+        def local_scan(_vault, _scan_id):
+            found = survey(root)
+            watch_plan.record_full_scan(VAULT_ID, found)
+            scans.append(found)
+            return 0, {}, None, not bool(found)
+
+        def health(_vault_id, component, *, ok, **_kwargs):
+            if component == "source" and ok and not confirmed.is_set():
+                # This is after the local walk, not after a convenient sleep or
+                # an observed re-registration. No later writes can rescue it.
+                target.write_text("created at the health-clear boundary")
+                confirmed.set()
+
+        self.health.side_effect = health
+        self.stack.enter_context(patch("app.storage._current_scan_vault", return_value=vault))
+        self.stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
+        self.stack.enter_context(patch("app.storage._verified_local_scan", side_effect=local_scan))
+        self.stack.enter_context(patch("app.storage.scan_cloud", return_value=0))
+        self.stack.enter_context(patch("app.storage.validate_cloud_vault"))
+        self.stack.enter_context(patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0))
+        self.stack.enter_context(patch("app.storage.s3_client"))
+        self.stack.enter_context(patch("app.storage.owner_user_id", return_value=None))
+        self.stack.enter_context(patch("app.storage.record_catalog_revision"))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scans and (str(root / "sibling"),) in self.ready_registrations)
+            # Prove the old plan is live, not merely constructed.
+            sibling = root / "sibling" / "still-watched.txt"
+            sibling.write_text("sibling")
+            await self.settle(lambda: str(sibling) in self.applied_paths())
+            repaired.chmod(0o755)
+            await self.settle(confirmed.is_set)
+            scans_at_confirmation = len(scans)
+            await self.settle(lambda: str(target) in self.applied_paths(), timeout=4)
+            self.assertEqual(len(scans), scans_at_confirmation,
+                             "the boundary file must arrive by event, not a later catch-up scan")
+        finally:
+            await self.stop(task)
+
+    async def test_native_first_file_at_source_confirmation_is_observed(self):
+        await self.recovery_boundary(polling=False)
+
+    async def test_polling_first_file_at_source_confirmation_is_observed(self):
+        await self.recovery_boundary(polling=True)
 
 
 class FolderCreatedUnreadableDuringTheWatchTests(Harness):
