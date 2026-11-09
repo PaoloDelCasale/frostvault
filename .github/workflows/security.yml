@@ -262,8 +262,15 @@ jobs:
       # that gitleaks-action uses for review comments.
       - name: Install gitleaks
         run: |
-          curl -sSfL \
+          # Release-download edges can return persistent 504s. Retry first,
+          # then use GitHub's official API for the same immutable release asset.
+          # Both paths must pass the pinned checksum below before extraction.
+          curl -sSfL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
             https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            -o /tmp/gitleaks.tar.gz || \
+          curl -sSfL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+            -H 'Accept: application/octet-stream' \
+            https://api.github.com/repos/gitleaks/gitleaks/releases/assets/245568496 \
             -o /tmp/gitleaks.tar.gz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" \
             | sha256sum --check --strict
