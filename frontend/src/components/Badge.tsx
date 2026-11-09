@@ -46,7 +46,7 @@ export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
 };
 
 const badgeVariants = cva(
-  "inline-flex w-fit max-w-full items-center font-bold whitespace-nowrap",
+  "inline-flex w-fit max-w-full items-center font-bold whitespace-normal wrap-anywhere",
   {
     variants: {
       state: BADGE_STATE_VARIANT_CLASSES,
