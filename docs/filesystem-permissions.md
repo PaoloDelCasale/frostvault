@@ -160,6 +160,14 @@ one is readable; the problem then closes by itself, path by path. (With
 lists a folder it may not read; a folder that becomes unreadable during the
 watch stops the poller once, and the restart registers around it.)
 
+A successful walk alone does not confirm a repaired subtree: the watcher first
+passes the registration barrier with the expanded coverage, then runs a paired
+catch-up scan before `source` health clears. This applies to both native and
+polling observers. Files that arrived before registration are caught by that
+scan; files created at or after confirmation are already watched. The catch-up
+scan also runs when only some gaps are repaired; unresolved gaps still keep the
+Vault unconfirmed. Merely discovering a new gap does not add another scan.
+
 A file or folder name that is not valid UTF-8 (typical of old archives or SMB/NFS
 shares with another encoding) cannot be catalogued or become a cloud key. It is
 reported as an unsupported name with the path shown in escaped form

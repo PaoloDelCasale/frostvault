@@ -1913,10 +1913,17 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     vault_id, "source", ok=False, error=status["last_error"],
                 )
             else:
+                # A repaired directory can be walked before the observer that
+                # excluded it has been replaced. Keep source unconfirmed until
+                # registration AND the ensuing catch-up walk have completed.
+                covered = watch_plan.source_confirmation_ready(vault_id)
+                confirmed = complete and covered
                 _record_scan_component_health(
-                    vault_id, "source", ok=complete, verified=complete,
-                    error=None if complete else "Source scan incomplete: unreadable paths or unsupported names",
-                    notify_problem=complete,
+                    vault_id, "source", ok=confirmed, verified=confirmed,
+                    error=(None if confirmed else
+                           "Source watcher registration pending" if complete else
+                           "Source scan incomplete: unreadable paths or unsupported names"),
+                    notify_problem=confirmed,
                 )
         else:
             result["local_skipped"] = 1
@@ -6624,6 +6631,13 @@ async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> _WatcherScanO
 
 
 async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
+    try:
+        await _run_vault_filesystem_watch(vault)
+    finally:
+        watch_plan.forget_registration(int(vault["id"]))
+
+
+async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
     # Some Source Volume backends do not reliably enroll new directories.
     # Install the successor BEFORE draining/closing the old recursive observer:
     # subtree catch-up alone cannot repair unrelated sibling events in a gap.
@@ -6748,6 +6762,8 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
             try:
                 while True:
                     native_changes = set() if rearm_required else await anext(watcher)
+                    if not rearm_required:
+                        watch_plan.record_registration(vault_id, registered_gaps)
                     pending_reconcile |= native_changes
                     new_directories = await asyncio.to_thread(
                         _new_watcher_directories, root, native_changes,
@@ -6760,10 +6776,17 @@ async def _watch_vault_filesystem(vault: dict[str, Any]) -> None:
                         (new_directories and not settings.filesystem_watch_force_polling)
                         or rearm_required
                     ):
+                        old_gaps = registered_gaps
                         successor = new_observer()
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.
                         first = await anext(successor)
+                        watch_plan.record_registration(vault_id, registered_gaps)
+                        if old_gaps.directories - registered_gaps.directories:
+                            # Coverage expanded: files may predate the successor's
+                            # snapshot. Pair this handoff with a scan, just like
+                            # a healthy watcher start (ADR 0027), before success.
+                            next_scan_at = loop.time()
                         pending_reconcile |= first
                         tail = await anext(watcher)
                         pending_reconcile |= tail

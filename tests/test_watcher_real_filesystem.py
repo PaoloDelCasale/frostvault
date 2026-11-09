@@ -309,19 +309,31 @@ class PermissionRecoveryBoundaryTests(Harness):
         ))
         vault = {"id": VAULT_ID, "source_root": str(root), "s3_bucket": "test"}
         scans = []
+        walked = []
         confirmed = threading.Event()
+        before_registration = repaired / "deep" / "before-registration.txt"
         target = repaired / "deep" / "first-at-confirmation.txt"
 
         def local_scan(_vault, _scan_id):
             found = survey(root)
             watch_plan.record_full_scan(VAULT_ID, found)
             scans.append(found)
+            walked.append({str(Path(directory) / name)
+                           for directory, _folders, names in os.walk(root) for name in names})
             return 0, {}, None, not bool(found)
 
-        def health(_vault_id, component, *, ok, **_kwargs):
-            if component == "source" and ok and not confirmed.is_set():
+        def health(_vault_id, component, *, ok, **kwargs):
+            if component != "source":
+                return
+            if kwargs.get("error") == "Source watcher registration pending":
+                before_registration.write_text("missed by the first recovery walk")
+            if ok and not confirmed.is_set():
                 # This is after the local walk, not after a convenient sleep or
                 # an observed re-registration. No later writes can rescue it.
+                self.assertEqual(self.ready_registrations[-1], (str(root),),
+                                 "the repaired subtree must already be recursively watched")
+                self.assertIn(str(before_registration), walked[-1],
+                              "the paired walk must catch files predating registration")
                 target.write_text("created at the health-clear boundary")
                 confirmed.set()
 

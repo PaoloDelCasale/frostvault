@@ -66,6 +66,9 @@ class UnobservedPaths:
 
 
 _state: dict[int, UnobservedPaths] = {}
+# Exclusions of the observer that has actually crossed its registration barrier,
+# not the newer scan's desired plan. Absence means no watcher task owns coverage.
+_registered: dict[int, frozenset[str]] = {}
 _lock = threading.Lock()
 
 
@@ -101,9 +104,33 @@ def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> No
         _state[int(vault_id)] = old.merged(UnobservedPaths(added, frozenset(), added))
 
 
+def record_registration(vault_id: int, found: UnobservedPaths) -> None:
+    """Publish coverage only after the observer's registration barrier."""
+    with _lock:
+        _registered[int(vault_id)] = found.directories
+
+
+def forget_registration(vault_id: int) -> None:
+    with _lock:
+        _registered.pop(int(vault_id), None)
+
+
+def source_confirmation_ready(vault_id: int) -> bool:
+    """A complete walk cannot confirm a repaired but still unwatched subtree.
+
+    Callers without a watcher retain ordinary scan semantics. A live watcher
+    must first enroll every directory its observer used to exclude; its paired
+    catch-up scan then covers files created before that registration.
+    """
+    with _lock:
+        return not (_registered.get(int(vault_id), frozenset())
+                    - _state.get(int(vault_id), UnobservedPaths()).directories)
+
+
 def forget(vault_id: int) -> None:
     with _lock:
         _state.pop(int(vault_id), None)
+        _registered.pop(int(vault_id), None)
 
 
 def watch_directories(root: Path, found: UnobservedPaths) -> tuple[list[Path], list[Path]]:

@@ -1,0 +1,63 @@
+"""Source confirmation follows registered coverage, not just the desired plan."""
+import unittest
+
+from app.services import watch_plan
+
+
+class SourceConfirmationCoverageTests(unittest.TestCase):
+    vault_id = 506
+
+    def setUp(self):
+        watch_plan.forget(self.vault_id)
+        self.addCleanup(watch_plan.forget, self.vault_id)
+
+    def gaps(self, *directories):
+        paths = frozenset(directories)
+        return watch_plan.UnobservedPaths(unreadable=paths, directories=paths)
+
+    def ready(self):
+        return watch_plan.source_confirmation_ready(self.vault_id)
+
+    def test_scans_without_a_watcher_keep_their_existing_semantics(self):
+        watch_plan.record_full_scan(self.vault_id, self.gaps("denied"))
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        self.assertTrue(self.ready())
+
+    def test_a_repaired_or_removed_directory_needs_registered_coverage(self):
+        gaps = self.gaps("denied")
+        watch_plan.record_full_scan(self.vault_id, gaps)
+        watch_plan.record_registration(self.vault_id, gaps)
+        self.assertTrue(self.ready())  # The incomplete walk still blocks health.
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        self.assertFalse(self.ready())
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        self.assertTrue(self.ready())
+
+    def test_partial_repair_requires_coverage_even_with_other_gaps_remaining(self):
+        gaps = self.gaps("a", "b")
+        watch_plan.record_full_scan(self.vault_id, gaps)
+        watch_plan.record_registration(self.vault_id, gaps)
+        watch_plan.record_subtree_scan(self.vault_id, "a", self.gaps())
+        self.assertFalse(self.ready())
+        watch_plan.record_registration(self.vault_id, self.gaps("b"))
+        self.assertTrue(self.ready())
+        self.assertEqual(watch_plan.unobserved(self.vault_id).directories, {"b"})
+
+    def test_repair_revealing_a_nested_gap_still_needs_a_handoff(self):
+        watch_plan.record_registration(self.vault_id, self.gaps("parent"))
+        watch_plan.record_full_scan(self.vault_id, self.gaps("parent/child"))
+        self.assertFalse(self.ready())
+        watch_plan.record_registration(self.vault_id, self.gaps("parent/child"))
+        self.assertTrue(self.ready())
+
+    def test_file_only_gaps_do_not_need_directory_registration(self):
+        found = watch_plan.UnobservedPaths(unsupported=frozenset({"bad-\udcff"}))
+        watch_plan.record_registration(self.vault_id, found)
+        watch_plan.record_full_scan(self.vault_id, watch_plan.UnobservedPaths())
+        self.assertTrue(self.ready())
+
+    def test_stopped_watcher_releases_its_confirmation_gate(self):
+        watch_plan.record_registration(self.vault_id, self.gaps("denied"))
+        self.assertFalse(self.ready())
+        watch_plan.forget_registration(self.vault_id)
+        self.assertTrue(self.ready())
