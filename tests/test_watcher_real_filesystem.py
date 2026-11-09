@@ -298,19 +298,42 @@ class UnreadableFolderLifecycleTests(Harness):
 class PermissionRecoveryBoundaryTests(Harness):
     """#506: write at scan_vault's actual source-health publication boundary."""
 
-    async def recovery_boundary(self, *, polling):
+    async def recovery_boundary(self, *, polling, concurrent_manual=False):
         root = self.make_root()
         repaired = root / "denied"
         (repaired / "deep").mkdir(parents=True)
         (root / "sibling").mkdir()
-        repaired.chmod(0o000)
+        if polling and concurrent_manual:
+            # PollWatcher rejects an initially denied tree outright. Introduce
+            # the denial after its real barrier, just before the paired scan;
+            # the same empty registered/desired-plan race then applies.
+            self.resolve.side_effect = lambda *_args: repaired.chmod(0o000)
+        else:
+            repaired.chmod(0o000)
         self.stack.enter_context(patch(
             "app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=polling),
         ))
         vault = {"id": VAULT_ID, "source_root": str(root), "s3_bucket": "test"}
         scans = []
         walked = []
+        paused = asyncio.Event()
+        resume = asyncio.Event()
+        manual_running = threading.Event()
         confirmed = threading.Event()
+        real_reconcile = storage._reconcile_vault_after_watcher
+
+        async def pause_after_incomplete(vault):
+            outcome = await real_reconcile(vault)
+            if concurrent_manual and not paused.is_set() and scans and scans[-1]:
+                # The full scan has returned and released its serialization lock,
+                # but the watcher has not yet compared desired/registered plans.
+                paused.set()
+                await resume.wait()
+            return outcome
+
+        self.stack.enter_context(patch(
+            "app.storage._reconcile_vault_after_watcher", side_effect=pause_after_incomplete,
+        ))
         before_registration = repaired / "deep" / "before-registration.txt"
         target = repaired / "deep" / "first-at-confirmation.txt"
 
@@ -328,6 +351,15 @@ class PermissionRecoveryBoundaryTests(Harness):
             if kwargs.get("error") == "Source watcher registration pending":
                 before_registration.write_text("missed by the first recovery walk")
             if ok and not confirmed.is_set():
+                if manual_running.is_set():
+                    # Observe premature publication without throwing from the
+                    # health callback: the test below asserts the actual fence.
+                    target.write_text("premature manual confirmation")
+                    confirmed.set()
+                    return
+                if concurrent_manual:
+                    self.assertGreater(len(self.ready_registrations), 1,
+                                       "even equal empty plans need a fresh registration")
                 # This is after the local walk, not after a convenient sleep or
                 # an observed re-registration. No later writes can rescue it.
                 self.assertEqual(self.ready_registrations[-1], (str(root),),
@@ -349,12 +381,30 @@ class PermissionRecoveryBoundaryTests(Harness):
         self.stack.enter_context(patch("app.storage.record_catalog_revision"))
         task = self.start(root)
         try:
-            await self.settle(lambda: scans and (str(root / "sibling"),) in self.ready_registrations)
-            # Prove the old plan is live, not merely constructed.
-            sibling = root / "sibling" / "still-watched.txt"
-            sibling.write_text("sibling")
-            await self.settle(lambda: str(sibling) in self.applied_paths())
-            repaired.chmod(0o755)
+            if concurrent_manual:
+                await self.settle(paused.is_set)
+                self.assertEqual(self.ready_registrations, [(str(root),)])
+                self.assertEqual(watch_plan.registered_directories(VAULT_ID), set())
+                self.assertEqual(watch_plan.unobserved(VAULT_ID).directories, {"denied"})
+                repaired.chmod(0o755)
+                manual_running.set()
+                try:
+                    result = await asyncio.to_thread(storage.scan_vault, vault)
+                finally:
+                    manual_running.clear()
+                self.assertNotIn("local_incomplete", result)
+                self.assertEqual(watch_plan.unobserved(VAULT_ID).directories, set())
+                self.assertFalse(confirmed.is_set(),
+                                 "manual scan erased an unconsumed coverage gap and confirmed source")
+                self.assertTrue(before_registration.exists(), "manual scan must report coverage pending")
+                resume.set()
+            else:
+                await self.settle(lambda: scans and (str(root / "sibling"),) in self.ready_registrations)
+                # Prove the old plan is live, not merely constructed.
+                sibling = root / "sibling" / "still-watched.txt"
+                sibling.write_text("sibling")
+                await self.settle(lambda: str(sibling) in self.applied_paths())
+                repaired.chmod(0o755)
             await self.settle(confirmed.is_set)
             scans_at_confirmation = len(scans)
             await self.settle(lambda: str(target) in self.applied_paths(), timeout=4)
@@ -368,6 +418,12 @@ class PermissionRecoveryBoundaryTests(Harness):
 
     async def test_polling_first_file_at_source_confirmation_is_observed(self):
         await self.recovery_boundary(polling=True)
+
+    async def test_native_manual_repair_before_watcher_consumes_gap(self):
+        await self.recovery_boundary(polling=False, concurrent_manual=True)
+
+    async def test_polling_manual_repair_before_watcher_consumes_gap(self):
+        await self.recovery_boundary(polling=True, concurrent_manual=True)
 
 
 class FolderCreatedUnreadableDuringTheWatchTests(Harness):
