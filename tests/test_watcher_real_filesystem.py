@@ -258,8 +258,9 @@ class UnreadableFolderLifecycleTests(Harness):
         scan = self.scanning(root)
         task = self.start(root)
         try:
-            # The scan names the gap; the watcher registers the readable rest.
-            await self.settle(lambda: scan.call_count >= 1 and len(self.registrations) >= 3)
+            # Wait for the real registration barriers, not observer creation:
+            # a slow runner can write before the readable siblings are watched.
+            await self.settle(lambda: scan.call_count >= 1 and len(self.ready_registrations) >= 3)
             self.assertEqual(self.registrations[0], (str(root),))
             (root / "a1" / "one.txt").write_text("x")
             (root / "a2" / "two.txt").write_text("x")
@@ -268,7 +269,7 @@ class UnreadableFolderLifecycleTests(Harness):
             # the Vault is scanned and the tree registered again as a whole.
             (root / "0denied").chmod(0o755)
             await self.settle(lambda: scan.call_count >= 2)
-            await self.settle(lambda: self.registrations[-1] == (str(root),))
+            await self.settle(lambda: self.ready_registrations[-1] == (str(root),))
             (root / "0denied" / "late.txt").write_text("x")
             await self.settle(lambda: str(root / "0denied" / "late.txt") in self.applied_paths())
         finally:
