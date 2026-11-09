@@ -307,7 +307,10 @@ class PermissionRecoveryBoundaryTests(Harness):
             # PollWatcher rejects an initially denied tree outright. Introduce
             # the denial after its real barrier, just before the paired scan;
             # the same empty registered/desired-plan race then applies.
-            self.resolve.side_effect = lambda *_args: repaired.chmod(0o000)
+            def deny_once(*_args):
+                if self.resolve.call_count == 1:
+                    repaired.chmod(0o000)
+            self.resolve.side_effect = deny_once
         else:
             repaired.chmod(0o000)
         self.stack.enter_context(patch(

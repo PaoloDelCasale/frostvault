@@ -1875,7 +1875,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         access = source_layout.vault_local_access(vault["source_root"])
         if access.local_operations_allowed or access.volume_health == "scan_required":
             try:
-                registered_before_scan = watch_plan.registered_directories(vault_id)
+                registered_before_scan = watch_plan.scan_coverage_fence(vault_id)
                 count, rename_summary, _completed_alias, complete = _verified_local_scan(
                     vault, scan_id
                 )
@@ -6658,6 +6658,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
     batch_failures = 0
     # What the registered observer was built around; a change re-registers it.
     registered_gaps = watch_plan.UnobservedPaths()
+    registered_debt: dict[str, int] = {}
 
     def schedule_gap_scan() -> None:
         nonlocal next_scan_at
@@ -6728,8 +6729,8 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
             runtime = await asyncio.to_thread(_runtime_settings)
 
             def new_observer():
-                nonlocal registered_gaps
-                gaps = watch_plan.unobserved(vault_id)
+                nonlocal registered_gaps, registered_debt
+                gaps, registered_debt = watch_plan.registration_plan(vault_id)
                 registered_gaps = gaps
                 options = dict(
                     watch_filter=_filesystem_watch_filter,
@@ -6764,7 +6765,9 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                 while True:
                     native_changes = set() if rearm_required else await anext(watcher)
                     if not rearm_required:
-                        watch_plan.record_registration(vault_id, registered_gaps, owner=asyncio.current_task())
+                        watch_plan.record_registration(
+                            vault_id, registered_gaps, owner=asyncio.current_task(), debt=registered_debt,
+                        )
                     pending_reconcile |= native_changes
                     new_directories = await asyncio.to_thread(
                         _new_watcher_directories, root, native_changes,
@@ -6782,8 +6785,10 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.
                         first = await anext(successor)
-                        watch_plan.record_registration(vault_id, registered_gaps, owner=asyncio.current_task())
-                        if old_gaps.directories - registered_gaps.directories:
+                        settled = watch_plan.record_registration(
+                            vault_id, registered_gaps, owner=asyncio.current_task(), debt=registered_debt,
+                        )
+                        if (old_gaps.directories | settled) - registered_gaps.directories:
                             # Coverage expanded: files may predate the successor's
                             # snapshot. Pair this handoff with a scan, just like
                             # a healthy watcher start (ADR 0027), before success.
@@ -6840,7 +6845,8 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                             recheck_at = loop.time() + WATCHER_RECHECK_SECONDS
                     if (
                         recovered and not rearm_required
-                        and watch_plan.unobserved(vault_id).directories != registered_gaps.directories
+                        and (watch_plan.unobserved(vault_id).directories != registered_gaps.directories
+                             or watch_plan.coverage_debt(vault_id))
                     ):
                         # A permission was repaired, a name renamed, or a folder
                         # turned out unreadable: register the tree again.

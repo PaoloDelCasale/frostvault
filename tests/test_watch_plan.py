@@ -59,6 +59,64 @@ class SourceConfirmationCoverageTests(unittest.TestCase):
         after_registration = watch_plan.registered_directories(self.vault_id)
         self.assertTrue(watch_plan.source_confirmation_ready(self.vault_id, after_registration))
 
+    def test_manual_scan_cannot_erase_an_unconsumed_gap(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        watch_plan.record_full_scan(self.vault_id, self.gaps("denied"))
+        before_scan = watch_plan.scan_coverage_fence(self.vault_id)
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        self.assertFalse(self.ready())
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), {"denied"})
+        plan, debt = watch_plan.registration_plan(self.vault_id)
+        self.assertEqual(plan.directories, set())
+        self.assertEqual(watch_plan.record_registration(self.vault_id, plan, debt=debt), {"denied"})
+        self.assertFalse(watch_plan.source_confirmation_ready(self.vault_id, before_scan))
+        self.assertTrue(self.ready())  # A fresh paired scan may now confirm.
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), set())
+
+    def test_subtree_repair_cannot_erase_an_unconsumed_gap(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        watch_plan.record_subtree_scan(self.vault_id, "parent", self.gaps("parent/denied"))
+        watch_plan.record_subtree_scan(self.vault_id, "parent", self.gaps())
+        self.assertFalse(self.ready())
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), {"parent/denied"})
+
+    def test_registration_preserves_debt_discovered_during_its_construction(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        watch_plan.record_full_scan(self.vault_id, self.gaps("first"))
+        plan, debt = watch_plan.registration_plan(self.vault_id)
+        watch_plan.record_subtree_scan(self.vault_id, "new", self.gaps("new/denied"))
+        settled = watch_plan.record_registration(self.vault_id, plan, debt=debt)
+        self.assertEqual(settled, {"first"})
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), {"new/denied"})
+        # An ordinary tick of the same observer must not acknowledge newer debt.
+        self.assertEqual(watch_plan.record_registration(self.vault_id, plan, debt=debt), set())
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), {"new/denied"})
+
+    def test_registration_cannot_clear_a_new_generation_of_the_same_path(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        watch_plan.record_full_scan(self.vault_id, self.gaps("denied"))
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        plan, debt = watch_plan.registration_plan(self.vault_id)
+        watch_plan.record_full_scan(self.vault_id, self.gaps("denied"))
+        watch_plan.record_full_scan(self.vault_id, self.gaps())
+        self.assertEqual(watch_plan.record_registration(self.vault_id, plan, debt=debt), set())
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), {"denied"})
+        self.assertFalse(self.ready())
+        successor_plan, successor_debt = watch_plan.registration_plan(self.vault_id)
+        self.assertEqual(watch_plan.record_registration(
+            self.vault_id, successor_plan, debt=successor_debt,
+        ), {"denied"})
+        self.assertTrue(self.ready())
+
+    def test_unchanged_gap_does_not_create_permanent_debt(self):
+        watch_plan.record_registration(self.vault_id, self.gaps())
+        watch_plan.note_unreadable_directories(self.vault_id, {"denied"})
+        plan, debt = watch_plan.registration_plan(self.vault_id)
+        watch_plan.record_registration(self.vault_id, plan, debt=debt)
+        watch_plan.record_full_scan(self.vault_id, self.gaps("denied"))
+        self.assertEqual(watch_plan.coverage_debt(self.vault_id), set())
+        self.assertTrue(self.ready())  # Incomplete scan, not coverage, blocks health.
+
     def test_file_only_gaps_do_not_need_directory_registration(self):
         found = watch_plan.UnobservedPaths(unsupported=frozenset({"bad-\udcff"}))
         watch_plan.record_registration(self.vault_id, found)

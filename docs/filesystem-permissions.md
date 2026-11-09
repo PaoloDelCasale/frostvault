@@ -167,6 +167,13 @@ polling observers. Files that arrived before registration are caught by that
 scan; files created at or after confirmation are already watched. The catch-up
 scan also runs when only some gaps are repaired; unresolved gaps still keep the
 Vault unconfirmed. Merely discovering a new gap does not add another scan.
+A discovered directory also records coverage debt independently of the latest
+scan's desired exclusions. A concurrent manual scan cannot erase this debt by
+repairing the desired plan before the watcher consumes it: even identical empty
+plans require a fresh registration and catch-up. Each registration settles only
+the debt captured before its construction, never a newer discovery made while
+it was registering. A scan already in flight before that barrier cannot confirm
+the recovered coverage; a subsequent complete walk can.
 
 A file or folder name that is not valid UTF-8 (typical of old archives or SMB/NFS
 shares with another encoding) cannot be catalogued or become a cloud key. It is
