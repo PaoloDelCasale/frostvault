@@ -7,7 +7,7 @@ const longLabel = `${messages["state.unconfirmed"]} · ${messages["state.last_kn
 
 // Exercise the real SPA, catalog, Badge and responsive file-browser layout without
 // depending on a filesystem scan or mutating the shared seeded Vaults.
-for (const width of [390, 1400]) {
+for (const width of [375, 390, 1400]) {
   test(`Italian status labels remain fully readable without horizontal overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     const vault = { id: 1, slug: "family", name: "Family Archive" };
@@ -22,7 +22,10 @@ for (const width of [390, 1400]) {
         { type: "file", name: "unconfirmed.txt", path: "unconfirmed.txt", state: "unconfirmed", last_known_state: "protected", last_known_at: lastKnownAt },
         { type: "file", name: "changed.txt", path: "changed.txt", state: "pending", previous_snapshot_protected: true },
         { type: "file", name: "protected.txt", path: "protected.txt", state: "protected" },
-      ], total: 3, aggregate_status: "ready" };
+        // Unsupported local entries project to "problem"; a failed source scan
+        // overlays "unconfirmed" plus the last evidence, as above.
+        { type: "file", name: "symlink", path: "symlink", state: "problem" },
+      ], total: 4, aggregate_status: "ready" };
       else if (pathname === "/api/jobs") json = { groups: [] };
       else if (pathname === "/api/notifications") json = { items: [], unread_count: 0 };
       await route.fulfill({ json });
@@ -33,6 +36,7 @@ for (const width of [390, 1400]) {
     const longBadge = list.locator('[data-state="unconfirmed"]');
     await expect(longBadge).toHaveText(longLabel);
     await expect(list.locator('[data-state="pending"]')).toHaveText(`${messages["state.pending"]} · ${messages["state.previous_snapshot_protected"]}`);
+    await expect(list.locator('[data-state="problem"]')).toHaveText(messages["state.problem"]);
     await expect(list).toBeVisible();
 
     const documentSize = await page.evaluate(() => ({
@@ -67,6 +71,9 @@ for (const width of [390, 1400]) {
       expect(geometry.textBottom).toBeLessThanOrEqual(geometry.bottom);
       if (await badge.getAttribute("data-state") === "protected") {
         expect(geometry.height).toBeCloseTo(geometry.lineHeight + geometry.padding, 0);
+      }
+      if (width < 768 && await badge.getAttribute("data-state") === "unconfirmed") {
+        expect(geometry.height).toBeGreaterThan(geometry.lineHeight + geometry.padding);
       }
     }
   });
