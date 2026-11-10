@@ -29,6 +29,15 @@ describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("offers Vaults and New Vault in the switcher, not a duplicate Overview entry (#523)", async () => {
+    render(<AppShell capabilities={{ vaults, currentVaultId: 2, locale, locales: ["en", "it"] }} t={t}><p>Browser</p></AppShell>);
+    await userEvent.setup().click(screen.getByTestId("vault-switcher"));
+    const menu = within(await screen.findByRole("dialog", { name: t("nav.switch_vault") }));
+    expect(menu.getByRole("button", { name: "First" })).toBeInTheDocument();
+    expect(menu.getByRole("button", { name: t("nav.new_vault") })).toBeInTheDocument();
+    expect(menu.getAllByRole("button")).toHaveLength(vaults.length + 1);
+  });
+
   it("names the current Vault in the header switcher", () => {
     render(<AppShell capabilities={{ vaults, currentVaultId: 2, locale, locales: ["en", "it"] }} t={t}><p>Browser</p></AppShell>);
     expect(within(screen.getByRole("banner")).getByTestId("vault-switcher")).toHaveTextContent("Second");

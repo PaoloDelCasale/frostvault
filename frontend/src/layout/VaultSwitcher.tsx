@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronsUpDown, LayoutDashboard, Plus, Vault } from "lucide-react";
+import { Check, ChevronsUpDown, Plus, Vault } from "lucide-react";
 
 import type { VaultListItem } from "@/api/types";
 import { Popover } from "@/components/Popover";
@@ -43,7 +43,6 @@ export function VaultSwitcher({ vaults, currentVaultId, problemCounts = {}, t, o
       {!shown.length && <li className="px-2.5 py-3 text-sm text-muted">{shellLabel(t, "nav.no_vault_match", "No Vault matches")}</li>}
     </ul>
     <div className="mt-2 grid gap-0.5 border-t border-line pt-2">
-      <button type="button" className={item} onClick={() => go("/")}><LayoutDashboard className="size-4 shrink-0" aria-hidden="true" />{shellLabel(t, "nav.all_vaults", "All Vaults")}</button>
       <button type="button" className={item} onClick={() => go("/vaults/new")}><Plus className="size-4 shrink-0" aria-hidden="true" />{shellLabel(t, "nav.new_vault", "New Vault")}</button>
     </div>
   </Popover>;
