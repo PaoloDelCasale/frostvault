@@ -44,3 +44,22 @@ export function formatCompactCount(value: number): string {
     maximumFractionDigits: 1,
   }).format(n);
 }
+
+/** The page language set by the i18n provider (`<html lang>`). */
+const pageLocale = () => (typeof document !== "undefined" && document.documentElement.lang) || undefined;
+
+export function formatNumber(value: number): string {
+  return new Intl.NumberFormat(pageLocale()).format(value);
+}
+
+/** Human date and time in the page language; "—" when absent or invalid. */
+export function formatDateTime(value: unknown): string {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(pageLocale(), { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** How long a cold recovery takes, by S3 storage class. */
+export function recoveryTimeKey(storageClass: unknown): string {
+  return storageClass === "DEEP_ARCHIVE" ? "essential.ready_deep" : storageClass === "GLACIER" ? "essential.ready_glacier" : "essential.ready_now";
+}

@@ -124,7 +124,7 @@ describe("shared component i18n coverage parity", () => {
     for (const locale of ["en", "it"]) {
       const messages = JSON.parse(await readFile(path.join(localesDir, `${locale}.json`), "utf8")) as Record<string, string>;
       expect(Object.keys(messages).some((key) => key.startsWith("admin.") || key.startsWith("access.") || ["ui.manage_access", "ui.administration"].includes(key))).toBe(false);
-      for (const key of ["essential.general", "essential.search", "essential.bulk", "essential.details"]) expect(messages[key]).toBeTruthy();
+      for (const key of ["essential.general", "files.search_vault", "essential.bulk", "essential.details"]) expect(messages[key]).toBeTruthy();
     }
   });
 });

@@ -14,49 +14,93 @@ function setup(items: unknown[] = [file], search = "") {
     if (url.startsWith("/api/files/detail")) return jsonResponse(file);
     if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [] });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+    if (url.startsWith("/api/stats")) return jsonResponse({ states: { protected: 1180, cloud_only: 3, pending: 2 }, protection_state: "pending", storage: {}, active_jobs: 0, runtime: {}, source_volume: {}, delete_enabled: true });
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
   }) });
   render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={1} vaultName="First" t={(key) => key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
   return calls;
 }
 afterEach(() => { resetApiClientForTests(); window.history.replaceState({}, "", "/"); });
+const select = (name: RegExp) => screen.getAllByRole("checkbox", { name })[0];
 describe("essential file browser", () => {
-  it("pins browsing and shows only five columns, no cloud internals", async () => {
+  it("pins browsing to the Vault and shows name, state, size and modified only", async () => {
     const calls = setup(); await screen.findAllByText("photo.jpg");
-    expect(calls[0]).toContain("vault_id=1");
+    expect(calls.find((url) => url.startsWith("/api/files?"))).toContain("vault_id=1");
     const table = screen.getByTestId("file-list-table");
-    expect(within(table).getAllByRole("columnheader")).toHaveLength(6);
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(5);
+    expect(table).not.toHaveTextContent("essential.ready");
     expect(table).not.toHaveTextContent("DEEP_ARCHIVE");
     expect(screen.queryByText(/VersionId/)).not.toBeInTheDocument();
   });
-  it("searches all protected Vaults with the Cloud-only filter and retains result identity", async () => {
-    const calls = setup([{ ...file, vault_id: 2, vault_name: "Second" }], "?q=photo&state=cloud_only");
+  it("names the Vault with its state and the Files | Settings tabs", async () => {
+    setup(); const header = await screen.findByTestId("vault-header");
+    expect(within(header).getByRole("heading", { level: 1, name: "First" })).toBeInTheDocument();
+    expect(await within(header).findByText("state.pending")).toBeInTheDocument();
+    expect(within(header).getByRole("link", { name: "nav.files" })).toHaveAttribute("aria-current", "page");
+    expect(within(header).getByRole("link", { name: "nav.settings" })).toHaveAttribute("href", "/vaults/1/settings");
+  });
+  it("filters by state chips that carry the Vault-wide counts", async () => {
+    const calls = setup(); await screen.findAllByText("photo.jpg");
+    const chips = screen.getByTestId("state-filter");
+    expect(await within(chips).findByRole("button", { name: "files.chip_all 1,185" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.setup().click(within(chips).getByRole("button", { name: "files.chip_cloud_only 3" }));
+    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files?") && url.includes("state=cloud_only"))).toBe(true));
+    expect(window.location.search).toContain("state=cloud_only");
+  });
+  it("searches this Vault by default and every Vault on request", async () => {
+    const calls = setup([file], "?q=photo");
+    await screen.findAllByText("2026/photo.jpg");
+    expect(calls.find((url) => url.startsWith("/api/files?q=photo"))).toContain("vault_id=1");
+    expect(calls.some((url) => url.startsWith("/api/files/search"))).toBe(false);
+    await userEvent.setup().click(within(screen.getByTestId("search-scope")).getByRole("button", { name: "files.scope_all" }));
+    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files/search?q=photo"))).toBe(true));
+  });
+  it("searches all Vaults with the Cloud-only filter and retains result identity", async () => {
+    const calls = setup([{ ...file, vault_id: 2, vault_name: "Second" }], "?q=photo&state=cloud_only&scope=all");
     await screen.findAllByText("Second / 2026/photo.jpg");
     const search = calls.find((url) => url.startsWith("/api/files/search?"));
     expect(search).toContain("state=cloud_only"); expect(search).not.toContain("vault_id");
     const user = userEvent.setup();
-    await user.click(screen.getAllByRole("checkbox")[0]);
-    await user.click(screen.getByRole("button", { name: "essential.details" }));
+    await user.click(select(/essential.select Second/));
+    await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "essential.details" }));
     await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files/detail?") && url.endsWith("vault_id=2"))).toBe(true));
     expect(calls.some((url) => url.includes("/select"))).toBe(false);
   });
-  it("folder rows show state counts, never Mixed", async () => {
+  it("folder rows show a badge per state, never Mixed", async () => {
     setup([{ type: "directory", name: "2026", path: "2026", state: "problem", item_count: 7, total_size: 99, state_counts: { protected: 5, cloud_only: 2 } }]);
-    await screen.findAllByText("5 state.protected · 2 state.cloud_only");
+    expect((await screen.findAllByText("5 state.protected"))[0]).toHaveAttribute("data-state", "protected");
+    expect(screen.getAllByText("2 state.cloud_only")[0]).toHaveAttribute("data-state", "cloud_only");
     expect(screen.queryByText(/mixed|misto/i)).not.toBeInTheDocument();
   });
-  it("email link loads a file outside the first page, highlights it and opens the problem details", async () => {
+  it("roots the breadcrumb at the Vault name", async () => {
+    setup([file], "?directory=2026%2Fsummer");
+    const crumbs = await screen.findByTestId("breadcrumbs");
+    expect(within(crumbs).getByRole("button", { name: "First" })).toHaveAttribute("data-directory", "");
+    expect(within(crumbs).getByRole("button", { name: "summer" })).toHaveAttribute("aria-current", "location");
+  });
+  it("email link loads a file outside the first page, highlights it and opens its details panel", async () => {
     const calls = setup([], "?vault_id=1&directory=2026&file=2026%2Fphoto.jpg");
     expect(await screen.findByRole("dialog")).toHaveTextContent("First / 2026/photo.jpg");
     expect(document.querySelector('[data-highlighted="true"]')).not.toBeNull();
     expect(calls.some((url) => url.startsWith("/api/files/detail?path=2026%2Fphoto.jpg&vault_id=1"))).toBe(true);
   });
-  it("resets selection when a filter changes and offers no bulk cloud deletion", async () => {
+  it("shows the selection bar only with a selection, and clears it when a filter changes", async () => {
     setup(); await screen.findAllByText("photo.jpg"); const user = userEvent.setup();
-    await user.click(screen.getAllByRole("checkbox")[0]);
-    expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled();
-    await user.selectOptions(screen.getByTestId("state-filter"), "cloud_only");
-    expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /cloud.purge/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("selection-bar")).not.toBeInTheDocument();
+    await user.click(select(/essential.select First/));
+    const bar = screen.getByTestId("selection-bar");
+    expect(bar).toHaveTextContent("files.selected");
+    expect(within(bar).getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled();
+    expect(within(bar).getByRole("button", { name: "essential.free_now" })).toBeDisabled();
+    expect(within(bar).queryByRole("button", { name: /cloud.purge/ })).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId("state-filter")).getByRole("button", { name: /files.chip_pending/ }));
+    expect(screen.queryByTestId("selection-bar")).not.toBeInTheDocument();
+    await user.click(select(/essential.select First/));
+    await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "files.clear_selection" }));
+    expect(screen.queryByTestId("selection-bar")).not.toBeInTheDocument();
+  });
+  it("labels the page as a readable range", async () => {
+    setup(); await screen.findAllByText("photo.jpg");
+    expect(screen.getByTestId("page-label")).toHaveTextContent("files.range");
   });
 });
