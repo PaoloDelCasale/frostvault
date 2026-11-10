@@ -68,8 +68,8 @@ describe("essential file browser", () => {
   });
   it("folder rows show a badge per state, never Mixed", async () => {
     setup([{ type: "directory", name: "2026", path: "2026", state: "problem", item_count: 7, total_size: 99, state_counts: { protected: 5, cloud_only: 2 } }]);
-    expect((await screen.findAllByText("5 state.protected"))[0]).toHaveAttribute("data-state", "protected");
-    expect(screen.getAllByText("2 state.cloud_only")[0]).toHaveAttribute("data-state", "cloud_only");
+    expect((await screen.findAllByText("state.protected 5"))[0]).toHaveAttribute("data-state", "protected");
+    expect(screen.getAllByText("state.cloud_only 2")[0]).toHaveAttribute("data-state", "cloud_only");
     expect(screen.queryByText(/mixed|misto/i)).not.toBeInTheDocument();
   });
   it("roots the breadcrumb at the Vault name", async () => {

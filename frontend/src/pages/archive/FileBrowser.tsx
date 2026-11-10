@@ -28,7 +28,7 @@ const parentOf = (path: string) => path.includes("/") ? path.slice(0, path.lastI
 function FolderStates({ item, t }: { item: ArchiveListItem; t: Translate }) {
   const counts = Object.entries((item.state_counts ?? {}) as Record<string, number>).filter(([, count]) => count > 0);
   if (!counts.length) return <span className="text-muted">—</span>;
-  return <span className="flex flex-wrap gap-1">{counts.map(([state, count]) => <Badge key={state} size="sm" state={state as BadgeState} label={`${formatNumber(count)} ${t(`state.${state}`)}`} />)}</span>;
+  return <span className="flex flex-wrap gap-1">{counts.map(([state, count]) => <Badge key={state} size="sm" state={state as BadgeState} label={`${t(`state.${state}`)} ${formatNumber(count)}`} />)}</span>;
 }
 
 export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh }: FileBrowserProps) {
@@ -117,7 +117,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   const attention = Boolean(query.data?.protection_suspended) || problemCount > 0;
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
     <VaultHeader vaultId={vaultId} vaultName={vaultName} active="files" t={t} />
-    {attention && <div role="status" className="flex min-w-0 items-start gap-3 rounded-card border border-[var(--state-missing-bg)] bg-red-soft/60 p-3 text-sm" data-testid="vault-attention">
+    {attention && <div role="status" className="flex min-w-0 items-start gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/60 p-3 text-sm" data-testid="vault-attention">
       <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
       <p className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
         {query.data?.protection_suspended && <span>{t("state.protection_suspended")} · <a className="font-semibold underline" href={vaultSettingsUrl(vaultId)}>{t("essential.review_protection")}</a></span>}
