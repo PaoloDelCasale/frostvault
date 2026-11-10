@@ -18,7 +18,7 @@ function SettingsSection({ id, title, summary, more, danger, children }: {
 }) {
   const { t } = useI18n();
   return <section aria-labelledby={`settings-${id}`} data-section={id}
-    className={cn("grid min-w-0 gap-4 rounded-panel border bg-surface p-4 sm:p-5", danger ? "border-[var(--state-missing-bg)]" : "border-line")}>
+    className={cn("grid min-w-0 gap-4 rounded-panel border bg-surface p-4 sm:p-5", danger ? "border-[var(--state-problem-bg)]" : "border-line")}>
     <div className="grid gap-1">
       <h2 id={`settings-${id}`} className={cn("text-lg font-bold", danger && "text-destructive")}>{title}</h2>
       <p className="text-sm text-muted">{summary}</p>

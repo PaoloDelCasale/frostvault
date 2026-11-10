@@ -1,4 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority";
+import { AlertTriangle, Ban, Clock, Cloud, CloudOff, HardDrive, HelpCircle, MinusCircle, RotateCw, ShieldCheck, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -19,7 +20,7 @@ export type BadgeState =
 export const BADGE_STATE_VARIANT_CLASSES = {
   pending: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
   protected: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
-  problem: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
+  problem: "bg-[var(--state-problem-bg)] text-[var(--state-problem-fg)]",
   unconfirmed: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
   excluded: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
   both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
@@ -43,6 +44,21 @@ export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
   restoring: "Recovery in progress",
   missing: "Unavailable",
   unsupported: "Unsupported local entry",
+};
+
+/** Shape carries state alongside colour and text. */
+const BADGE_STATE_ICONS: Record<BadgeState, LucideIcon> = {
+  pending: Clock,
+  protected: ShieldCheck,
+  problem: AlertTriangle,
+  unconfirmed: HelpCircle,
+  excluded: MinusCircle,
+  both: ShieldCheck,
+  local_only: HardDrive,
+  cloud_only: Cloud,
+  restoring: RotateCw,
+  missing: CloudOff,
+  unsupported: Ban,
 };
 
 const badgeVariants = cva(
@@ -69,11 +85,13 @@ type BadgeProps = {
 } & VariantProps<typeof badgeVariants>;
 
 export function Badge({ state, label, size = "default", className }: BadgeProps) {
+  const Icon = BADGE_STATE_ICONS[state];
   return (
     <span
       className={cn(badgeVariants({ state, size }), className)}
       data-state={state}
     >
+      <Icon className={size === "sm" ? "size-3 shrink-0" : "size-3.5 shrink-0"} aria-hidden="true" />
       {label ?? BADGE_STATE_LABELS[state]}
     </span>
   );

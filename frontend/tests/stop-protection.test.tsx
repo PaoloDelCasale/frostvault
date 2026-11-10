@@ -37,7 +37,7 @@ describe("stop folder protection (#428)", () => {
     const choice = await screen.findByRole("combobox", { name: "Cloud copy" });
     expect(choice).toHaveValue("keep");
     expect(screen.queryByText(/remove local copies/i)).not.toBeInTheDocument();
-    const button = screen.getByRole("button", { name: "Stop protecting this folder" });
+    const button = screen.getByRole("button", { name: "Stop protecting this Vault" });
     expect(button).toBeDisabled();
     await user.type(screen.getByLabelText("Reason"), "Stop protection deliberately");
     await user.type(screen.getByLabelText("Type the exact folder name (Photos)"), "photos");
@@ -53,7 +53,7 @@ describe("stop folder protection (#428)", () => {
     expect(screen.getByText(/Only Cloud-only files can be deleted/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("Type the exact folder name (Photos)"), "Photos");
     await user.type(screen.getByLabelText("Reason"), "Deliberate deletion");
-    await user.click(screen.getByRole("button", { name: "Stop protecting this folder" }));
+    await user.click(screen.getByRole("button", { name: "Stop protecting this Vault" }));
     await screen.findByTestId("stop-protection-status");
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({ cloud_disposition: "delete", confirmation: "Photos", reason: "Deliberate deletion" });
     expect(screen.getByText(/Deletion cannot begin before 2026-11-12/)).toBeInTheDocument();

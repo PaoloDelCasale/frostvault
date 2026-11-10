@@ -334,7 +334,7 @@ export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string
                           {t("general.metadata_backups_timestamp")}
                         </dt>
                         <dd className="mt-1 break-all text-sm">
-                          <time dateTime={timestamp(run)}>{timestamp(run)}</time>
+                          <time dateTime={timestamp(run)}>{formatDateTime(timestamp(run))}</time>
                         </dd>
                       </div>
                       <div>
@@ -348,7 +348,7 @@ export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string
                               <span className="mx-2" aria-hidden="true">
                                 ·
                               </span>
-                              <time dateTime={run.verified_at}>{run.verified_at}</time>
+                              <time dateTime={run.verified_at}>{formatDateTime(run.verified_at)}</time>
                             </>
                           ) : (
                             t("general.metadata_backups_not_verified")

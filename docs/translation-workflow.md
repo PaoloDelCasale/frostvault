@@ -34,6 +34,36 @@ prose.
    `tests.test_i18n.CatalogIntegrityTests` fails on missing/unused critical keys
    and on EN/IT key-set drift.
 
+## Italian terminology
+
+The Italian catalog translates domain terms instead of keeping the English
+names. "Vault" stays "Vault" everywhere; "cartella" means only a directory
+inside a Vault or on a volume, never the Vault itself.
+
+| English | Italiano |
+|---|---|
+| Vault | Vault |
+| Local Copy | copia locale |
+| Source Volume | volume sorgente |
+| Archive Version | versione d'archivio |
+| Current Snapshot | copia cloud attuale |
+| Storage Plan | piano di archiviazione |
+| Storage class | classe di archiviazione |
+| Recovery Kit | Kit di recupero |
+| Stop protection | Smetti di proteggere |
+| Reconnect folder | Ricollega la cartella |
+| Free space | Libera spazio |
+| Recover | Recupera |
+| Problem | Problema |
+| Job | lavoro |
+| Owner | proprietario |
+| Deployment default | predefinito dell'installazione |
+| Preflight | controllo preliminare |
+| Restore (S3) | ripristino |
+
+API names such as `RestoreObject`, S3 class names (Glacier, Deep Archive),
+"upload", "checksum" and "mount" stay as they are.
+
 ## Locale preference
 
 - Cookie: `frostvault_locale` (`en` or `it`).

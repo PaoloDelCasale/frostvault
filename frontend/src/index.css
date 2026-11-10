@@ -100,6 +100,8 @@
   --state-unsupported-fg: #4b5b51;
   --state-missing-bg: #eeeeee;
   --state-missing-fg: #555555;
+  --state-problem-bg: #f8d4cf;
+  --state-problem-fg: #7a1f18;
 
   --storage-standard-bg: #f1f4f2;
   --storage-standard-fg: #526159;
@@ -165,6 +167,8 @@
   --state-unsupported-fg: #bfcec3;
   --state-missing-bg: #303a35;
   --state-missing-fg: #d0ddd4;
+  --state-problem-bg: #6a2522;
+  --state-problem-fg: #ffd2cc;
 
   --storage-standard-bg: #293930;
   --storage-standard-fg: #c4d7ca;

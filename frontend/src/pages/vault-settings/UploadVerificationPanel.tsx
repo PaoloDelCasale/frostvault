@@ -22,8 +22,8 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     finally { setBusy(false); }
   }
   return <section className="grid gap-2">
-    <label className="grid gap-2 font-semibold"><span className="sr-only">{t("verification.title")}</span>
-      <select className="min-h-11 rounded border border-line bg-surface px-3" disabled={!policy || busy} value={policy?.upload_verification ?? "inherit"} onChange={(event) => void change(event.target.value)}>
+    <label className="grid min-w-0 gap-2 font-semibold"><span className="sr-only">{t("verification.title")}</span>
+      <select className="min-h-11 w-full min-w-0 truncate rounded border border-line bg-surface px-3" disabled={!policy || busy} value={policy?.upload_verification ?? "inherit"} onChange={(event) => void change(event.target.value)}>
         <option value="inherit">{t("verification.inherit")}</option>
         <option value="s3_checksum">{t("verification.s3_checksum")}</option>
         <option value="read_back">{t("verification.read_back")}</option>
