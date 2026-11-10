@@ -2258,7 +2258,27 @@ def set_job(
     with owned_connection(db()) as connection:
         # Non-key changes serialize with admission without blocking notification
         # FK KEY SHARE locks (Owner episode -> Vault vs Vault -> Owner).
-        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
+        vault_lock = "NO KEY UPDATE"
+        if (
+            held
+            and claim_token
+            and remediation_suspension is None
+            and remediation_reason is None
+            and _held_transition_may_share_vault(connection, job_id)
+        ):
+            # ADR-0031 (#535): a worker's own step between held statuses
+            # (uploading -> verifying ...) keeps the Job active and writes only
+            # its Job row and append-only dirty marks, so it needs no exclusion
+            # from admission, provenance or aggregate maintenance. KEY SHARE
+            # still keeps the Vault-first lock order: FOR UPDATE holders
+            # (cancel-pending, Stop Protection, deletions) wait for it or make
+            # it wait, before it locks the Job row and before the dirty-mark
+            # FK would ask for the same lock.
+            vault_lock = "KEY SHARE"
+        connection.execute(
+            f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
+            (job_id,),
+        )
         current = connection.execute(
             "SELECT status, action, vault_id, path FROM jobs WHERE id=%s",
             (job_id,),
@@ -2357,6 +2377,27 @@ def set_job(
     return updated
 
 
+def _held_transition_may_share_vault(connection: Any, job_id: int) -> bool:
+    """Whether a held-status step of ``job_id`` writes nothing admission reads.
+
+    An upload bound to an Upload Remediation episode also moves that episode
+    (``upload_remediation.transition``); it keeps the exclusive Vault lock.
+    Bindings are written only with the Job's creation or completion, never
+    while a claimant holds it, so this unlocked read cannot go stale.
+    """
+    row = connection.execute(
+        """
+        SELECT NOT (
+            j.action='upload'
+            AND EXISTS (SELECT 1 FROM upload_remediation_jobs b WHERE b.job_id=j.id)
+        ) AS unbound
+        FROM jobs j WHERE j.id=%s
+        """,
+        (job_id,),
+    ).fetchone()
+    return bool(row and row["unbound"])
+
+
 @retry_database_unit
 def schedule_upload_retry(
     job_id: int,
@@ -2387,6 +2428,10 @@ def schedule_upload_retry(
     claim_token = _claim_token_for(job_id)
     action = None
     with owned_connection(db()) as connection:
+        # Stays exclusive (ADR-0031, #535): releasing the lease returns the
+        # Job to the unstarted set ('retrying') that cancel-pending and the
+        # scheduler select, and moves a bound remediation episode; sharing
+        # was not proven safe, and retries are rare.
         connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
         current = connection.execute(
             "SELECT action FROM jobs WHERE id=%s",

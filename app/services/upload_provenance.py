@@ -204,6 +204,10 @@ def _is_provider_unreachable(error: BaseException) -> bool:
 
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
+    # Stays exclusive (ADR-0031, #535): it fences the Vault identity and
+    # lifecycle checks below against relocation, moves and decommissioning,
+    # and anchors the Vault-first order of the catalog unit that publishes
+    # this upload's results and directory aggregates in the same transaction.
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (job["vault_id"],)).fetchone()
     from .upload_remediation import require_job
     require_job(connection, job)

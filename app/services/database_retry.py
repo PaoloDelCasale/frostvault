@@ -42,8 +42,10 @@ def owned_connection(connection: Any) -> Iterator[Any]:
     """Always close an owned handle, including when its COMMIT raises.
 
     psycopg's Connection.__exit__ commits before close; a commit-time 40001
-    otherwise bypasses close. Never use this for caller-owned/pool handles.
-    Lightweight recording seams may implement only the context protocol.
+    otherwise bypasses close. ``db()`` handles qualify: a pooled one returns
+    its connection once, so the second close is a no-op. Never use this for
+    caller-owned handles. Lightweight recording seams may implement only the
+    context protocol.
     """
     try:
         with connection as active:
