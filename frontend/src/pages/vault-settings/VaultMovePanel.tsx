@@ -5,9 +5,13 @@ import { MenuSelect } from "@/components/MenuSelect";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
+import { formatBytes, formatDate, formatEur } from "@/pages/archive/format";
+
+/** "≈ 0.27 €"; a sub-cent "< 0.01 €" is already a bound, so it gets no "≈". */
+const approximately = (amount: string) => amount.startsWith("<") ? amount : `≈ ${amount}`;
 
 export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [preview, setPreview] = useState<VaultMovePreview | null>(null);
   const [target, setTarget] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
@@ -53,7 +57,11 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
         onValueChange={(value) => { setTarget(value); setAcknowledged(false); }}
         options={preview.targets.filter((item) => item.eligible_count > 0).map((item) => ({ value: item.target_class, label: t(`storage.${item.target_class}`) }))} />
       {estimate && <>
-        <p className="text-sm">{t("move.estimate", { count: estimate.eligible_count, bytes: estimate.total_bytes, monthly: estimate.estimated_monthly_eur, retrieval: estimate.estimated_retrieval_eur, region: estimate.region, date: estimate.pricing_effective_at })}</p>
+        <div className="grid gap-1" data-testid="vault-move-estimate">
+          <p className="text-sm"><strong className="text-base">{t("move.estimate_monthly", { monthly: approximately(formatEur(estimate.estimated_monthly_eur, locale)) })}</strong>{" "}
+            {t("move.estimate_scope", { count: new Intl.NumberFormat(locale).format(estimate.eligible_count), size: formatBytes(estimate.total_bytes) })}</p>
+          <p className="text-sm text-muted">{t("move.estimate_pricing", { retrieval: formatEur(estimate.estimated_retrieval_eur, locale), region: estimate.region, date: formatDate(estimate.pricing_effective_at, locale) })}</p>
+        </div>
         <p className="text-sm text-muted">{t("move.exclusions")}</p>
         <p className="text-sm">{t("move.minimum", { days: estimate.minimum_days })}</p>
         {Object.entries(estimate.skipped).map(([reason, count]) => <p className="text-sm text-muted" key={reason}>{t(`move.skip_${reason}`, { count })}</p>)}
