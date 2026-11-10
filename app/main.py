@@ -2518,10 +2518,11 @@ def recover_estimate(
         estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
                      storage_class=row["storage_class"], tier=tier, days=days)
                      for row in classes if storage_class_requires_restore(row["storage_class"])]
-        total_cost = sum(item.estimated_cost_eur for item in estimates)
-        # Same whole-request rule queueing applies, so the dialog announces the
-        # Restore Approval the queued group will wait for (#533).
-        high_impact = recovery_request_impact(classes, tier=tier, days=days)["high_impact"]
+        # Only new cloud restores are charged; already-requested versions must
+        # not inflate the selection's price or approval threshold (#534).
+        impact = recovery_request_impact(classes, tier=tier, days=days)
+        total_cost = impact["estimated_cost_eur"]
+        high_impact = impact["high_impact"]
         return {"path": logical_path, "archive_version_id": None,
                 "requires_restore": bool(estimates), "restore_object_irreversible": bool(estimates), "high_impact": high_impact,
                 "estimate": {"tier": tier, "days": days,

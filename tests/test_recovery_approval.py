@@ -1,5 +1,7 @@
 """Request expiry, selection admission and serialized approval/cancellation (#536)."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Event
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 import unittest
@@ -109,6 +111,47 @@ class RecoveryApprovalTests(unittest.TestCase):
                 future.result(timeout=20)
         self.assertEqual({j["status"] for j in self._jobs().values()}, {"cancelled"})
         self.assertEqual(len({j["approved_at"] for j in self._jobs().values()}), 1)
+
+    def test_approval_rechecks_clock_after_waiting_for_vault_lock(self):
+        _, queued = self._queue_and_estimate(self._runtime())
+        deadline = datetime.now(timezone.utc) + timedelta(hours=1)
+        entered_lock = Event()
+        original_db = main.db
+
+        class LockObserver:
+            def __init__(self, connection):
+                self.connection = connection
+            def execute(self, query, params=None):
+                if "FOR UPDATE" in query:
+                    entered_lock.set()
+                return self.connection.execute(query, params)
+
+        @contextmanager
+        def observed_db():
+            with original_db() as connection:
+                yield LockObserver(connection)
+
+        with patch("app.database.settings", self.database_settings), patch("app.main.db", observed_db), patch("app.main.datetime") as clock, ThreadPoolExecutor(max_workers=1) as pool:
+            clock.now.return_value = deadline
+            with PostgresConnection(str(self.database_path)) as connection:
+                connection.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
+                connection.execute("UPDATE jobs SET pending_until=%s", (deadline.isoformat(),))
+                future = pool.submit(self._approve, queued["group_id"])
+                self.assertTrue(entered_lock.wait(timeout=10))
+                clock.now.assert_not_called()
+            with self.assertRaises(HTTPException):
+                future.result(timeout=20)
+        self.assertEqual({j["status"] for j in self._jobs().values()}, {"cancelled"})
+
+    def test_mixed_already_restored_selection_does_not_inflate_estimate(self):
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE archive_versions SET restore_state='available' WHERE vault_file_id IN (SELECT vault_file_id FROM file_paths WHERE path='photos/p00.jpg')")
+        selection = [("photos", True), ("photos/p00.jpg", False)]
+        with patch("app.database.settings", self.database_settings), patch("app.main.settings", self._runtime()):
+            estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
+            queued = main.queue_jobs("", "recover", 2, 1, recovery_selection=selection)
+        self.assertAlmostEqual(estimate["estimate"]["estimated_cost_eur"], queued["estimated_cost_eur"], places=6)
+        self.assertTrue(queued["approval_required"])
 
     def test_separate_files_are_one_request_priced_on_selection_total(self):
         selection = [(f"photos/p{i:02d}.jpg", False) for i in range(self.COLD_FILES)]

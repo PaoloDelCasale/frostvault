@@ -326,7 +326,8 @@ def enqueue_recovery_approval_best_effort(connection: Any, *, job_ids: list[int]
             ).fetchone()
             if not job:
                 return
-            params = {"count": int(job["count"]), "cost": f"{float(job['cost'] or 0):.2f}"}
+            params = {"count": int(job["count"]), "cost": f"{float(job['cost'] or 0):.2f}",
+                      "path": job["path"], "group_id": job["group_id"]}
             channels = ("in_app", "email") if _smtp_config() is not None else ("in_app",)
             for recipient in _owner_recipients(connection):
                 enqueue_notification(
