@@ -7,7 +7,6 @@ import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 
 const shellCapabilities: ShellCapabilities = {
-  vaultName: "Owner Admin Archive",
   locale: "en",
   locales: ["en", "it"],
   vaults: [
@@ -21,11 +20,8 @@ const shellCapabilities: ShellCapabilities = {
 };
 
 const shellHandlers: ShellNavHandlers = {
-  onNewVault: vi.fn(),
-  onGeneral: vi.fn(),
   onSignOut: vi.fn(),
   onLocaleChange: vi.fn(),
-  onVaultChange: vi.fn(),
 };
 
 afterEach(() => {
@@ -40,8 +36,6 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
         locale="en"
         locales={["en", "it"]}
         handlers={{
-          onNewVault: vi.fn(),
-          onGeneral: vi.fn(),
           onSignOut: vi.fn(),
           onLocaleChange: vi.fn(),
         }}
@@ -70,7 +64,6 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
         locale="en"
         locales={["en"]}
         handlers={{
-          onNewVault: vi.fn(),
           onSignOut: vi.fn(),
         }}
       />,
@@ -107,11 +100,12 @@ describe("AppShell desktop header single-row alignment (#224)", () => {
 
 
     const header = screen.getByRole("banner");
-    expect(screen.getByRole("navigation", { name: /vault navigation/i })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: /main navigation/i })).toBeInTheDocument();
     expect(within(header).getByTestId("notification-bell")).toBeInTheDocument();
     expect(
       within(header).getByRole("button", { name: /open account menu/i }),
     ).toBeInTheDocument();
+    expect(within(header).getByTestId("vault-switcher")).toBeInTheDocument();
     expect(
       within(header).queryByRole("button", { name: /^new vault$/i }),
     ).not.toBeInTheDocument();

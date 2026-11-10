@@ -1,12 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { emergencyPasswordLogin, openAccountMenu, openMobileDrawer } from "../helpers/auth";
-
-async function nav(page: Page, name: string | RegExp) {
-  await openMobileDrawer(page);
-  const dialog = page.getByRole("dialog");
-  const navigation = await dialog.isVisible() ? dialog.getByRole("navigation") : page.getByRole("navigation", { name: /vault navigation/i });
-  await navigation.getByRole("button", { name }).click();
-}
+import { emergencyPasswordLogin, navTo, openAccountMenu, switchVault, vaultFilesPath } from "../helpers/auth";
 const visible = (page: Page, name: string | RegExp) => page.getByRole("button", { name }).locator("visible=true").first();
 
 test.describe("essential Owner flows (#365 D1–D17)", () => {
@@ -20,15 +13,18 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await page.goBack(); await expect(page).toHaveURL(/directory=reports/);
   });
 
-  test("last-used folder opens at its root, with protected folders and filters in the menu", async ({ page }) => {
+  test("the header switcher changes Vault and the sidebar remembers it at its root", async ({ page }) => {
     const credentials = await emergencyPasswordLogin(page);
-    await nav(page, "Secondary Archive");
+    await switchVault(page, "Secondary Archive");
+    await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}$`));
     await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
     await visible(page, "📁 photos").click();
     await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1, name: /^overview$/i })).toBeVisible();
+    await navTo(page, /^files$/i);
     await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
     await expect(visible(page, "hello.txt")).toBeVisible();
-    await page.goto(`/?vault_id=${credentials.vaults.primary.id}`);
+    await page.goto(vaultFilesPath(credentials.vaults.primary.id));
   });
 
   test("global Cloud-only name/path search retains duplicate paths and the correct Vault during recovery", async ({ page }) => {
@@ -38,7 +34,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await expect(visible(page, "Family Archive / photos/cold.jpg")).toBeVisible();
     await expect(visible(page, "Secondary Archive / photos/cold.jpg")).toBeVisible();
     await visible(page, "Secondary Archive / photos/cold.jpg").click();
-    await expect(page).toHaveURL(new RegExp(`vault_id=${credentials.vaults.secondary.id}`));
+    await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}\\?`));
     await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
     const details = page.getByRole("dialog", { name: /details.*secondary archive.*cold.jpg/i });
     await expect(details).toBeVisible();
@@ -71,10 +67,10 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
 
   test("problem link opens the folder, highlights the row and offers an explicit remedy", async ({ page }) => {
     const credentials = await emergencyPasswordLogin(page);
-    await page.getByRole("banner").getByRole("button", { name: /\d+ problems/i }).click();
+    await navTo(page, /^problems: \d+ open$/i);
     const problem = page.locator("article").filter({ hasText: "Conflict with a file kept only in the cloud" });
     await problem.getByRole("link", { name: /open problem and remedy/i }).click();
-    await expect(page).toHaveURL(new RegExp(`vault_id=${credentials.vaults.primary.id}`));
+    await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.primary.id)}\\?`));
     const details = page.getByRole("dialog", { name: /details.*conflict.jpg/i });
     await expect(details).toContainText(/rename the new file outside frostvault/i);
     await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
@@ -86,13 +82,14 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     expect((await response).status()).toBe(202);
   });
 
-  test("release is deliberate; folder gear uses fixed periods and collapsed Advanced", async ({ page }) => {
+  test("release is deliberate; Vault settings use fixed periods and collapsed Advanced", async ({ page }) => {
     await emergencyPasswordLogin(page);
     await page.getByRole("checkbox", { name: /select family archive \/ note.txt/i }).locator("visible=true").check();
     await page.getByRole("button", { name: /free space now/i }).click();
     const confirm = page.getByRole("alertdialog"); await expect(confirm).toBeVisible();
     await confirm.getByRole("button", { name: /cancel/i }).click();
-    await page.getByRole("button", { name: /folder settings/i }).click();
+    await navTo(page, /^settings$/i);
+    await expect(page).toHaveURL(/\/vaults\/\d+\/settings$/);
     const release = page.locator('[data-panel="retention"]');
     await release.getByRole("checkbox").check();
     await release.getByRole("combobox").selectOption("180");
@@ -104,8 +101,8 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await release.getByRole("button", { name: /save local copy retention/i }).click();
   });
 
-  test("General exposes email warning, kit fingerprint/custody and protected-folder creation", async ({ page }) => {
-    await emergencyPasswordLogin(page); await nav(page, /^general$/i);
+  test("System exposes email warning, kit fingerprint/custody and Vault creation", async ({ page }) => {
+    await emergencyPasswordLogin(page); await navTo(page, /^system$/i);
     await expect(page.getByTestId("email-not-configured")).toBeVisible();
     await expect(page.getByText(/last verified metadata backup/i)).toBeVisible();
     await expect(page.getByText(/^current kit fingerprint/i)).toBeVisible();

@@ -20,7 +20,7 @@ export function GeneralPage({ overview, onRefresh }: { overview?: Overview; onRe
   const load = useCallback(async () => { const data = await fetchGeneralVaults(); setVaults(data.items); onRefresh(); }, [onRefresh]);
   useEffect(() => { void load().catch((error: unknown) => setMessage(String(error))); }, [load]);
   return <div className="grid min-w-0 gap-6">
-    <h1 className="text-2xl font-bold">{t("essential.general")}</h1>
+    <h1 className="text-2xl font-bold">{t("nav.system")}</h1>
     <section className="rounded-panel border border-line bg-surface p-4">
       <h2 className="font-bold">{t("essential.email")}</h2>
       <p>{t("essential.email_help")}</p>

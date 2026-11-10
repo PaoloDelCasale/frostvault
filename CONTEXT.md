@@ -8,7 +8,8 @@ of each Vault File.
 
 **Vault**:
 An isolated archive owned by the Owner as one policy and storage namespace.
-_Avoid_: Bucket, folder, account
+"Folder" always means a directory inside a Vault, never the Vault itself.
+_Avoid_: Bucket, folder, protected folder (cartella protetta), account
 
 **Storage Plan**:
 The one Vault-wide schedule of progressively colder cloud storage classes,

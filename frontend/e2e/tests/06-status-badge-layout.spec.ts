@@ -30,7 +30,7 @@ for (const width of [375, 390, 1400]) {
       else if (pathname === "/api/notifications") json = { items: [], unread_count: 0 };
       await route.fulfill({ json });
     });
-    await page.goto("/?vault_id=1");
+    await page.goto("/vaults/1/files");
     await expect(page.locator("html")).toHaveAttribute("lang", "it");
     const list = page.getByTestId(width < 768 ? "file-list-cards" : "file-list-table");
     const longBadge = list.locator('[data-state="unconfirmed"]');

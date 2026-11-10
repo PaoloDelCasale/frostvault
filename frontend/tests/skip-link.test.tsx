@@ -6,7 +6,6 @@ import { AppShell } from "@/layout/AppShell";
 import type { ShellCapabilities } from "@/layout/types";
 
 const caps: ShellCapabilities = {
-  vaultName: "Test Archive",
   locale: "en",
   locales: ["en"],
   vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
