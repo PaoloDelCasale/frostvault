@@ -1,4 +1,5 @@
 import { useContext, useEffect, useRef, useState } from "react";
+import { UserRound } from "lucide-react";
 import { Dialog } from "@/components/Dialog";
 import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
@@ -15,8 +16,6 @@ const MENU_KEYS = {
   preferencesTitle: ["ui", "preferences"].join("."),
   preferencesDescription: ["ui", "preferences_description"].join("."),
   closePreferences: ["ui", "close_preferences"].join("."),
-  newVault: ["ui", "new_vault"].join("."),
-  general: "essential.general",
   language: ["ui", "language"].join("."),
   languageEn: ["ui", "language_en"].join("."),
   languageIt: ["ui", "language_it"].join("."),
@@ -33,8 +32,6 @@ const FALLBACK_LABELS = {
     preferencesTitle: "Preferences",
     preferencesDescription: "Personal appearance settings for this browser.",
     closePreferences: "Close preferences",
-    newVault: "New vault",
-    general: "General",
     language: "Language",
     languageEn: "English",
     languageIt: "Italiano",
@@ -49,8 +46,6 @@ const FALLBACK_LABELS = {
     preferencesTitle: "Preferenze",
     preferencesDescription: "Impostazioni personali di aspetto per questo browser.",
     closePreferences: "Chiudi preferenze",
-    newVault: "Nuovo vault",
-    general: "Generale",
     language: "Lingua",
     languageEn: "English",
     languageIt: "Italiano",
@@ -72,8 +67,6 @@ function translatedLabel(
 }
 
 export type AccountMenuHandlers = {
-  onNewVault?: () => void;
-  onGeneral?: () => void;
   onSignOut?: () => void;
   onLocaleChange?: (locale: string) => void;
 };
@@ -83,8 +76,8 @@ type AccountPreferencesMenuProps = {
   locale?: string;
   locales?: string[];
   /**
-   * When provided, the menu becomes the shell secondary surface (New vault,
-   * General, Language, Appearance, Sign out). Without handlers the
+   * When provided, the menu becomes the shell secondary surface
+   * (Language, Appearance, Sign out). Without handlers the
    * menu stays appearance-only for no-Vault / create screens.
    */
   handlers?: AccountMenuHandlers;
@@ -142,12 +135,6 @@ export function AccountPreferencesMenu({
     shellSecondary ? fallback.close : fallback.closePreferences,
   );
 
-  const newVaultLabel = translatedLabel(
-    MENU_KEYS.newVault,
-    t(MENU_KEYS.newVault),
-    fallback.newVault,
-  );
-  const generalLabel = translatedLabel(MENU_KEYS.general, t(MENU_KEYS.general), fallback.general);
   const languageLabel = translatedLabel(
     MENU_KEYS.language,
     t(MENU_KEYS.language),
@@ -182,7 +169,8 @@ export function AccountPreferencesMenu({
         data-testid="account-preferences-trigger"
         onClick={() => setOpen(true)}
       >
-        {title}
+        <UserRound className="size-4" aria-hidden="true" />
+        <span className="hidden sm:inline">{title}</span>
       </Button>
 
       <Dialog
@@ -199,24 +187,6 @@ export function AccountPreferencesMenu({
         >
           {shellSecondary ? (
             <>
-              <Button
-                type="button"
-                variant="secondary"
-                className={actionClass}
-                onClick={() => runAndClose(handlers?.onNewVault)}
-              >
-                {newVaultLabel}
-              </Button>
-
-              <Button
-                type="button"
-                variant="secondary"
-                className={actionClass}
-                onClick={() => runAndClose(handlers?.onGeneral)}
-              >
-                {generalLabel}
-              </Button>
-
               <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">
                 <span>{languageLabel}</span>
                 <select

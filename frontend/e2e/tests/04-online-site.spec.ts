@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
-import { applySession } from "../helpers/auth";
+import { applySession, vaultFilesPath } from "../helpers/auth";
 
 test("another client's Session selection cannot redirect this browser's pinned Vault",  async ({ page, context }) => {
-  await applySession(context);
-  await page.goto("/");
+  const credentials = await applySession(context);
+  await page.goto(vaultFilesPath(credentials.vaults.primary.id));
   await expect(page.getByTestId("file-browser")).toBeVisible();
   const me = await (await page.request.get("/api/me")).json();
   const vaults = await (await page.request.get("/api/vaults")).json();
-  const other = vaults.items.find((vault: { id: number; name: string }) => vault.id !== me.vault.id);
+  const other = vaults.items.find((vault: { id: number; name: string }) => vault.id !== credentials.vaults.primary.id);
   if (!other) throw new Error("This test requires the two seeded Vaults");
   const select = (vaultId: number) => page.request.post("/api/vaults/select", {
     headers: { "X-CSRF-Token": me.csrf_token }, data: { vault_id: vaultId },
@@ -16,9 +16,13 @@ test("another client's Session selection cannot redirect this browser's pinned V
   try {
     const response = await select(other.id);
     expect(response.ok()).toBe(true);
+    // The Overview's sidebar keeps pointing at this browser's last Vault.
+    await page.goto("/");
+    // The sidebar is collapsed on phones, so read the link without requiring visibility.
+    const files = page.locator('aside nav a[href$="/files"]');
+    await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));
     await page.reload();
-    await expect(page.getByRole("heading", { level: 1, name: me.vault.name, exact: true })).toBeVisible();
-    await expect(page.getByTestId("file-browser")).toBeVisible();
+    await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));
   } finally {
     const response = await select(me.vault.id);
     expect(response.ok()).toBe(true);
@@ -26,8 +30,8 @@ test("another client's Session selection cannot redirect this browser's pinned V
 });
 
 test("an existing PWA installation is retired without clearing Owner preferences", async ({ page, context }) => {
-  await applySession(context);
-  await page.goto("/");
+  const credentials = await applySession(context);
+  await page.goto(vaultFilesPath(credentials.vaults.primary.id));
   await expect(page.getByTestId("file-browser")).toBeVisible();
   // A Worker's entry fetch is not page-route interceptable in Chromium.
   // The disposable CI server serves this fixture; the normal URL still serves
@@ -42,7 +46,7 @@ test("an existing PWA installation is retired without clearing Owner preferences
     localStorage.setItem("frostvault.files.cache.v3:old-session", "old listing");
     localStorage.setItem("frostvault.theme.owner", "dark");
   });
-  await page.goto("/");
+  await page.goto(vaultFilesPath(credentials.vaults.primary.id));
   await expect(page.getByTestId("file-browser")).toBeVisible();
   await expect.poll(() => page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
   await expect.poll(() => page.evaluate(async () => (await caches.keys()).length)).toBe(0);
@@ -57,8 +61,8 @@ test("the responsive site has no offline shell, registered Worker or persisted l
   page,
   context,
 }) => {
-  await applySession(context);
-  await page.goto("/");
+  const credentials = await applySession(context);
+  await page.goto(vaultFilesPath(credentials.vaults.primary.id));
   await expect(page.getByTestId("file-browser")).toBeVisible();
   await expect(page.locator("#main-content")).toBeVisible();
   await page.locator("a.skip-link").focus();

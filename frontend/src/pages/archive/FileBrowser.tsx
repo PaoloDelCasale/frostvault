@@ -8,7 +8,7 @@ import { itemStateBadge } from "./protectionLabel";
 import { Button } from "@/components/ui/button";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
+import { navigate, vaultFilesUrl, vaultSettingsUrl } from "@/router";
 import { FileDetails } from "./FileDetails";
 import { RecoverSelection, type Target } from "./RecoverSelection";
 import { formatBytes } from "./format";
@@ -24,7 +24,6 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   const [details, setDetails] = useState<Target | null>(null);
   const [recover, setRecover] = useState<Target[] | null>(null);
   const [release, setRelease] = useState<Target[] | null>(null);
-  const [settings, setSettings] = useState(params.has("settings"));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const scope = useMemo(() => vaultApi(vaultId), [vaultId]);
@@ -34,7 +33,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   function update(values: Record<string, string>, push = false) {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(values)) { if (value) next.set(key, value); else next.delete(key); }
-    window.history[push ? "pushState" : "replaceState"]({}, "", `/?${next}`);
+    window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?${next}`);
     setParams(next); setSelected([]); setDetails(null);
   }
   useEffect(() => {
@@ -43,7 +42,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
       const next = new URLSearchParams(window.location.search);
       if (input) next.set("q", input); else next.delete("q");
       next.delete("page"); next.delete("file");
-      window.history.replaceState({}, "", `/?${next}`); setParams(next); setSelected([]); setDetails(null);
+      window.history.replaceState({}, "", `${window.location.pathname}?${next}`); setParams(next); setSelected([]); setDetails(null);
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [input, q]);
@@ -80,8 +79,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     if (column === 0) return <button className="min-h-11 max-w-full break-words text-left font-semibold underline" onClick={() => {
       if (item.type === "directory") openFolder(item.path);
       else if (global) {
-        const next = new URLSearchParams({ vault_id: String(target.vaultId), directory: item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "", file: item.path });
-        window.location.assign(`/?${next}`);
+        navigate(vaultFilesUrl(target.vaultId, { directory: item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "", file: item.path }));
       } else setDetails(target);
     }}>{item.type === "directory" ? "📁 " : ""}{global ? `${target.vaultName} / ${item.path}` : item.name}</button>;
     if (column === 1) return item.type === "directory" ? <span className="text-sm">{Object.entries(item.state_counts ?? {}).filter(([, count]) => count > 0).map(([status, count]) => `${count} ${t(`state.${status}`)}`).join(" · ") || "—"}</span> : <Badge {...itemStateBadge(item, t)} />;
@@ -92,10 +90,9 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   function toggle(target: Target) { setSelected((current) => current.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path) ? current.filter((row) => row.vaultId !== target.vaultId || row.item.path !== target.item.path) : [...current, target]); }
   const checked = (target: Target) => selected.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path);
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
-    <div className="flex items-center justify-between gap-3"><h1 className="min-w-0 break-words text-2xl font-bold">{vaultName}</h1><Button variant="secondary" aria-expanded={settings} onClick={() => setSettings(!settings)}>{t("essential.settings")}</Button></div>
+    <h1 className="min-w-0 break-words text-2xl font-bold">{vaultName}</h1>
     {problemCount > 0 && <p role="status" className="rounded border border-line p-3"><a className="underline" href="/problems">{t("essential.folder_problems", { count: problemCount })}</a></p>}
-    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <button className="min-h-11 underline" onClick={() => setSettings(true)}>{t("essential.review_protection")}</button></p>}
-    {settings && <VaultSettingsPanel key={vaultId} vaultId={vaultId} vaultName={vaultName} onStopped={() => window.location.assign("/general")} />}
+    {query.data?.protection_suspended && <p role="status" className="rounded border border-line p-3">{t("state.protection_suspended")} <a className="inline-flex min-h-11 items-center underline" href={vaultSettingsUrl(vaultId)}>{t("essential.review_protection")}</a></p>}
     <label className="block"><span className="sr-only">{t("essential.search")}</span><input type="search" className="min-h-11 w-full min-w-0 rounded border border-input bg-surface px-3" data-testid="file-search" placeholder={t("essential.search")} value={input} onChange={(event) => setInput(event.target.value)} /></label>
     <label className="flex flex-wrap items-center gap-2">{t("ui.filter_by_state")}<select className="min-h-11 rounded border border-input bg-surface px-3" data-testid="state-filter" value={state} onChange={(event) => update({ state: event.target.value, page: "", file: "" })}>{[["", "essential.all"], ["cloud_only", "state.cloud_only"], ["pending", "state.pending"], ["excluded", "state.excluded"], ["problem", "state.problem"]].map(([value, key]) => <option key={value} value={value}>{t(key)}</option>)}</select></label>
     {!global && <nav aria-label={t("ui.breadcrumb_archive")} data-testid="breadcrumbs" className="flex min-w-0 flex-wrap items-center gap-2"><button className="min-h-11 font-bold underline" data-directory="" onClick={() => openFolder("")}>{t("ui.breadcrumb_archive")}</button>{directory.split("/").filter(Boolean).map((part, index, parts) => <button key={index} data-directory={parts.slice(0, index + 1).join("/")} className="min-h-11 break-all underline" onClick={() => openFolder(parts.slice(0, index + 1).join("/"))}>/ {part}</button>)}</nav>}

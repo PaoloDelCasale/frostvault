@@ -73,7 +73,7 @@ test.describe("metadata backup download checksum", () => {
     await applySession(context);
     await mockMetadataBackupApis(page, ARTIFACT_BODY);
 
-    await page.goto("/general");
+    await page.goto("/system");
     await page.locator("summary").filter({ hasText: /^metadata backups$/i }).click();
     await expect(
       page.getByRole("heading", {
@@ -105,7 +105,7 @@ test.describe("metadata backup download checksum", () => {
     await applySession(context);
     await mockMetadataBackupApis(page, "corrupted metadata backup");
 
-    await page.goto("/general");
+    await page.goto("/system");
     await page.locator("summary").filter({ hasText: /^metadata backups$/i }).click();
     await expect(
       page.getByRole("heading", {

@@ -29,6 +29,11 @@ function show(activity: UploadActivitySummary, vaultId?: number) {
   render(<ApiQueryProvider client={client}><UploadActivity t={t} vaultId={vaultId} /></ApiQueryProvider>);
   return { data, fetch, client };
 }
+/** The indicator only exists while work is observed; its panel holds the detail. */
+async function openPanel() {
+  await userEvent.setup().click(await screen.findByTestId("upload-indicator"));
+  return screen.findByTestId("upload-activity");
+}
 afterEach(() => { cleanup(); vi.useRealTimers(); resetApiClientForTests(); });
 
 describe("aggregate upload activity", () => {
@@ -37,10 +42,12 @@ describe("aggregate upload activity", () => {
     activity[stage] = { files: 1789, bytes: 102400, transferred_bytes: 51200 };
     if (stage === "stability_wait") activity.next_stable_at = "2026-11-06T10:05:00Z";
     const { fetch } = show(activity);
+    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.indicator", { count: 1789, size: formatBytes(102400) }));
+    await openPanel();
     const label = t(`activity.${stage}`, { count: 1789 });
     expect(await screen.findAllByText(label)).toHaveLength(2);
     await userEvent.setup().click(screen.getByText(t("activity.by_vault")));
-    expect(screen.getByRole("link", { name: "Other Vault <img>" })).toHaveAttribute("href", "/?vault_id=2");
+    expect(screen.getByRole("link", { name: "Other Vault <img>" })).toHaveAttribute("href", "/vaults/2/files");
     expect(document.querySelector("img")).toBeNull();
     expect(fetch).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0]?.[0]).toBe("/api/upload-activity");
@@ -52,6 +59,7 @@ describe("aggregate upload activity", () => {
   it("shows the selected Vault's own activity without expanding anything", async () => {
     const activity = empty(); activity.uploading = { files: 13, bytes: 130, transferred_bytes: 12 };
     show(activity, 2);
+    await openPanel();
     const selected = await screen.findByTestId("selected-vault-activity");
     expect(selected).toBeVisible();
     expect(within(selected).getByText("13 files uploading")).toBeVisible();
@@ -63,8 +71,10 @@ describe("aggregate upload activity", () => {
     fetch.mockImplementation(async (input) => String(input).startsWith("/api/upload/cancel-pending")
       ? jsonResponse({ message: "x", cancelled_count: 4292 })
       : jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: activity, vaults: [{ ...activity, vault_id: 2, vault_name: "V" }] }));
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    await userEvent.setup().click(await screen.findByRole("button", { name: t("activity.cancel_pending") }));
+    await openPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: t("activity.cancel_pending") }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: t("activity.cancel_pending") }));
     expect(await screen.findByText(t("activity.cancel_pending_done", { count: 4292 }))).toBeVisible();
     const call = fetch.mock.calls.find(([url]) => String(url).startsWith("/api/upload/cancel-pending"));
     expect(call?.[0]).toBe("/api/upload/cancel-pending?vault_id=2");
@@ -74,6 +84,7 @@ describe("aggregate upload activity", () => {
   it("offers no cancel action when no upload is waiting", async () => {
     const activity = empty(); activity.uploading = { files: 3, bytes: 30, transferred_bytes: 10 };
     show(activity, 2);
+    await openPanel();
     await screen.findByTestId("selected-vault-activity");
     expect(screen.queryByRole("button", { name: t("activity.cancel_pending") })).not.toBeInTheDocument();
   });
@@ -81,6 +92,7 @@ describe("aggregate upload activity", () => {
   it("discloses stable files awaiting admission rather than promising transfer start", async () => {
     const activity = empty(); activity.queued.files = 7; activity.awaiting_admission_files = 7;
     show(activity);
+    await openPanel();
     expect(await screen.findAllByText(t("activity.admission", { count: 7 }))).toHaveLength(2);
     expect(screen.queryByText(/stable in about/)).not.toBeInTheDocument();
   });
@@ -88,17 +100,26 @@ describe("aggregate upload activity", () => {
   it("does not fabricate timing when the observed deadline is unavailable or past", async () => {
     const activity = empty(); activity.stability_wait.files = 4; activity.next_stable_at = "2026-11-06T09:00:00Z";
     show(activity);
+    await openPanel();
     expect(await screen.findAllByText(t("activity.waiting_observation"))).toHaveLength(2);
     expect(screen.queryByText(/in about .*min/)).not.toBeInTheDocument();
   });
 
-  it("is quiet when idle and surfaces unavailable/stale observations", async () => {
-    const { fetch, client } = show(empty());
-    expect(await screen.findByText(t("activity.idle"))).toBeInTheDocument();
+  it("shows nothing while idle", async () => {
+    const { fetch } = show(empty());
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId("upload-indicator")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last observation and says when it could not be refreshed", async () => {
+    const activity = empty(); activity.uploading = { files: 2, bytes: 20, transferred_bytes: 1 };
+    const { fetch, client } = show(activity);
+    await openPanel();
     fetch.mockRejectedValueOnce(new Error("unavailable"));
     await act(async () => { await client.invalidateQueries({ queryKey: ["upload-activity"] }); });
     expect(await screen.findByRole("status")).toHaveTextContent(t("activity.unavailable"));
-    expect(screen.getByText(t("activity.idle"))).toBeInTheDocument();
+    expect(screen.getAllByText(t("activity.uploading", { count: 2 }))[0]).toBeInTheDocument();
   });
 
   it("polls bounded installation aggregates even if no selected Vault emits events", async () => {
@@ -106,6 +127,7 @@ describe("aggregate upload activity", () => {
     vi.useFakeTimers();
     const { fetch, data } = show(activity);
     for (let tick = 0; tick < 3; tick++) await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    await act(async () => { screen.getByTestId("upload-indicator").click(); });
     expect(screen.getAllByText(t("activity.uploading", { count: 3 }))).toHaveLength(2);
     data.global.uploading.transferred_bytes = 20;
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });

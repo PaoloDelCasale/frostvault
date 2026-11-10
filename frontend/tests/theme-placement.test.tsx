@@ -31,7 +31,6 @@ function loadCatalog(locale: "en" | "it"): Record<string, string> {
 }
 
 const shellCapabilities: ShellCapabilities = {
-  vaultName: "Test Archive",
   locale: "en",
   locales: ["en", "it"],
   vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
@@ -39,11 +38,8 @@ const shellCapabilities: ShellCapabilities = {
 };
 
 const shellHandlers: ShellNavHandlers = {
-  onNewVault: vi.fn(),
-  onGeneral: vi.fn(),
   onSignOut: vi.fn(),
   onLocaleChange: vi.fn(),
-  onVaultChange: vi.fn(),
 };
 
 function renderWithProviders(
