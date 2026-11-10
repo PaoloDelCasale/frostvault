@@ -32,6 +32,20 @@ describe("essential recovery", () => {
     render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     await screen.findByText("essential.ready_now"); expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
+  it("announces before confirming that a high-impact folder waits for Restore Approval (#533)", async () => {
+    const folder: Target = { vaultId: 2, vaultName: "Second", item: { type: "directory", name: "photos", path: "photos", state: "cloud_only", item_count: 25, total_size: 128849018880, state_counts: { cloud_only: 25 } } };
+    configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, high_impact: true, estimate: { estimated_cost_eur: 25, estimated_hours: 48, tier: "Bulk", days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
+    render(<RecoverSelection targets={[folder]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    expect(await screen.findByTestId("recover-approval-notice")).toHaveTextContent("essential.recover_approval_notice");
+    expect(screen.getByTestId("recover-needs-approval")).toHaveTextContent("essential.recover_needs_approval");
+  });
+  it("shows no approval notice below the high-impact limit", async () => {
+    configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, high_impact: false, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: "Bulk", days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
+    render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    await screen.findByText(/essential.recover_estimate/);
+    expect(screen.queryByTestId("recover-approval-notice")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("recover-needs-approval")).not.toBeInTheDocument();
+  });
   it("keeps many items in a bounded, scrolling body with the actions always outside it (#522)", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 0.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
     const many = Array.from({ length: 7 }, (_, index) => ({ ...target, item: { ...target.item, name: `f${index}.jpg`, path: `f${index}.jpg` } }));

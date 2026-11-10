@@ -120,11 +120,7 @@ from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
 from .services import audit_events as audit_event_store
-from .services.cost_estimates import list_prices
-from .services.restore_estimates import (
-    estimate_restore,
-    is_high_impact_restore,
-)
+from .services.restore_estimates import estimate_restore
 from .services.job_scheduler import select_fair_jobs
 from .services.operation_policies import (
     get_policy,
@@ -5141,75 +5137,10 @@ def process_recover(job: dict[str, Any]) -> None:
     size_bytes = int(target.get("cloud_size") or job.get("total_bytes") or 0)
     restore_expiry = target.get("restore_expiry")
 
-    if (
-        storage_class_requires_restore(storage_class)
-        and target.get("restore_state") != "available"
-        and job.get("approved_at") is None
-    ):
-        runtime = _runtime_settings()
-        tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
-        days = int(job.get("restore_days") or runtime.restore_days or 3)
-        estimate = estimate_restore(
-            size_bytes=size_bytes,
-            storage_class=str(storage_class),
-            tier=str(tier),
-            days=days,
-            pricing=list_prices(runtime.aws_region).restore_rates,
-        )
-        if is_high_impact_restore(
-            size_bytes=size_bytes,
-            estimated_cost_eur=estimate.estimated_cost_eur,
-            size_threshold_gib=runtime.restore_high_impact_gib,
-            cost_threshold_eur=runtime.restore_high_impact_eur,
-        ):
-            hold_seconds = int(runtime.restore_approval_hold_seconds)
-            pending_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
-            ).isoformat()
-            with db() as connection:
-                timestamp = now_iso()
-                claim_token = _claim_token_for(int(job["id"]))
-                predicate = "WHERE id=%s"
-                claim_params: list[Any] = []
-                if claim_token:
-                    predicate += """
-                      AND claim_token=%s
-                      AND claim_expires_at IS NOT NULL
-                      AND claim_expires_at > %s
-                      AND status NOT IN ('completed', 'failed', 'cancelled')
-                    """
-                    claim_params = [claim_token, timestamp]
-                connection.execute(
-                    f"""
-                    UPDATE jobs
-                    SET status='pending_approval',
-                        message=%s,
-                        pending_until=%s,
-                        restore_tier=%s,
-                        restore_days=%s,
-                        estimated_cost_eur=%s,
-                        estimated_hours=%s,
-                        updated_at=%s,
-                        claim_token=NULL,
-                        claimed_at=NULL,
-                        claim_expires_at=NULL
-                    {predicate}
-                    """,
-                    (
-                        "High-impact Glacier restore held for primary-owner approval; "
-                        "RestoreObject cannot be cancelled after AWS accepts it",
-                        pending_until,
-                        estimate.tier,
-                        estimate.days,
-                        estimate.estimated_cost_eur,
-                        estimate.estimated_hours,
-                        timestamp,
-                        job["id"],
-                        *claim_params,
-                    ),
-                )
-            return
-
+    # Restore Approval is decided once for the whole request when it is
+    # queued (#533). The worker never re-evaluates the thresholds, so a restore
+    # already requested from AWS cannot be held again after settings change
+    # (#534).
     head = s3_client().head_object(
         Bucket=job["s3_bucket"],
         Key=object_key,

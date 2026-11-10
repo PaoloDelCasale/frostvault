@@ -518,6 +518,8 @@
   "essential.recovered_retention": "Resta sul server per almeno {days} giorni completi dal recupero prima della liberazione automatica.",
   "essential.recovered_keep": "La liberazione automatica è spenta: il file recuperato resta sul server.",
   "essential.recover_estimate": "Stima {cost} EUR; {hours} ore",
+  "essential.recover_needs_approval": "Richiede la tua approvazione prima di partire",
+  "essential.recover_approval_notice": "Questo recupero supera la soglia di alto impatto. Nulla viene ripristinato dal cloud finché non lo approvi in Operazioni attive.",
   "essential.recover_notification": "Puoi chiudere la pagina. Completamento o fallimento del recupero appare nelle Notifiche e nell’email facoltativa.",
   "essential.last_verified": "Ultima verifica",
   "essential.cloud_class": "Classe cloud",

@@ -25,7 +25,7 @@ export function ActiveOperations({ vaultId, moves = false, t }: { vaultId: numbe
   return <section className="grid gap-3 rounded-panel border border-line p-3" aria-label={t("ui.active_operations")}>
     <h2 className="font-bold">{t("ui.active_operations")}</h2>
     {jobs.map((job) => <div key={job.id} className="grid gap-2 break-words text-sm"><strong>{t(moves ? "move.title" : `action.${job.action}`)} · {job.path}</strong><p>{t(`operation.${job.status}`)} · {job.completed_count}/{job.item_count} · {Math.round(job.percent)}%</p>
-      {job.status === "pending_approval" && <><p>{t("essential.approval_cost", { cost: job.estimated_cost_eur ?? "—", hours: job.estimated_hours ?? "—" })}</p><Button disabled={busy !== null} onClick={() => void mutate(job.id, job.action, true)}>{t("ui.approve_restore")}</Button></>}
+      {job.status === "pending_approval" && <><p>{t("essential.approval_cost", { cost: job.estimated_cost_eur == null ? "—" : Number(job.estimated_cost_eur).toFixed(2), hours: job.estimated_hours ?? "—" })}</p><Button disabled={busy !== null} onClick={() => void mutate(job.id, job.action, true)}>{t("ui.approve_restore")}</Button></>}
       <Button variant="secondary" disabled={busy !== null} onClick={() => void mutate(job.id, job.action)}>{t("ui.cancel")}</Button>
     </div>)}
     {message && <p role="status">{message}</p>}
