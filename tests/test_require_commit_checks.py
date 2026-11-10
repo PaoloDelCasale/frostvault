@@ -172,6 +172,28 @@ class EvaluateRequiredChecksTests(unittest.TestCase):
         )
         self.assertEqual(code, 1)
 
+    def test_custom_check_cannot_replace_mandatory_publication_checks(self) -> None:
+        from unittest.mock import patch
+        with patch.object(gate, "wait_for_required_checks", return_value=0) as wait:
+            self.assertEqual(gate.main([
+                "--sha", "a" * 40, "--repository", "owner/repo", "--token", "test",
+                "--check", "Additional release proof",
+            ]), 0)
+        required = wait.call_args.kwargs["required"]
+        self.assertTrue(set(gate.DEFAULT_REQUIRED_CHECKS).issubset(required))
+        self.assertIn("Additional release proof", required)
+
+    def test_missing_sha_evidence_cannot_publish(self) -> None:
+        code = gate.wait_for_required_checks(
+            repository="owner/repo", sha="a" * 40, token="token",
+            required=["Full PostgreSQL concurrency stress"], timeout_seconds=0,
+            interval_seconds=1, fetch=lambda: [{
+                "name": "Full PostgreSQL concurrency stress",
+                "status": "completed", "conclusion": "success",
+            }],
+        )
+        self.assertEqual(code, 1)
+
     def test_cli_rejects_short_sha(self) -> None:
         self.assertEqual(gate.main(["--sha", "abc", "--repository", "o/r", "--token", "t"]), 64)
 

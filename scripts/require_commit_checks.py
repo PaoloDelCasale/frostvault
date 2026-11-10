@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         dest="checks",
         default=[],
-        help="Required check-run name (repeatable)",
+        help="Additional required check-run name (repeatable; never replaces mandatory checks)",
     )
     parser.add_argument("--timeout-seconds", type=int, default=1500)
     parser.add_argument("--interval-seconds", type=int, default=20)
@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.token:
         print("GITHUB_TOKEN is required", file=sys.stderr)
         return 64
-    required = args.checks or list(DEFAULT_REQUIRED_CHECKS)
+    required = list(dict.fromkeys((*DEFAULT_REQUIRED_CHECKS, *args.checks)))
     return wait_for_required_checks(
         repository=args.repository,
         sha=sha,

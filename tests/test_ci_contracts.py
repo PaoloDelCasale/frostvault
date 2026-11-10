@@ -244,10 +244,22 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertEqual(step["env"]["PROFILE"], "${{ needs.postgresql-tests.outputs.profile }}")
         self.assertIn('test "$RESULT" = success', step["run"])
         self.assertIn('test "$PROFILE" = full', step["run"])
+        import os
+        import subprocess
+        for result, profile, expected in (
+            ("success", "full", 0), ("success", "pr", 1),
+            ("success", "", 1), ("skipped", "full", 1),
+            ("failure", "full", 1), ("cancelled", "full", 1),
+        ):
+            with self.subTest(result=result, profile=profile):
+                command = subprocess.run(["bash", "-e", "-c", step["run"]],
+                                         env={**os.environ, "RESULT": result, "PROFILE": profile})
+                self.assertEqual(command.returncode, expected)
 
     def test_every_python_module_is_selected_once_without_importing_database_tests(self) -> None:
         # Execute the actual workflow selector for all shards: a newly added
         # regression must not disappear or run repeatedly due to sharding.
+        import ast
         import contextlib
         import io
         import os
@@ -271,6 +283,13 @@ class PullRequestCiContractTests(unittest.TestCase):
         runs = "\n".join(step.get("run", "") for step in postgres["steps"])
         self.assertIn("tests.test_migrations_postgresql.PostgreSQLMigrationTests", runs)
         self.assertIn("tests.test_aggregate_deadlocks", runs)
+        # The class-qualified migration selection must remain exhaustive if
+        # someone introduces another test class in that dedicated module.
+        tree = ast.parse((ROOT / "tests" / "test_migrations_postgresql.py").read_text())
+        classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)
+                   and any(isinstance(item, ast.FunctionDef) and item.name.startswith("test_")
+                           for item in node.body)}
+        self.assertEqual(classes, {"PostgreSQLMigrationTests"})
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -721,6 +740,13 @@ class ContainerPublishContractTests(unittest.TestCase):
             "Frontend production build",
         ):
             self.assertIn(name, script)
+        require_steps = workflow["jobs"]["require-ci"]["steps"]
+        gate_step = next(step for step in require_steps
+                         if "scripts/require_commit_checks.py" in step.get("run", ""))
+        self.assertNotIn("if", gate_step)
+        self.assertFalse(gate_step.get("continue-on-error", False))
+        self.assertEqual(gate_step["run"].strip(),
+                         'python scripts/require_commit_checks.py --sha "${{ steps.resolve.outputs.sha }}"')
         self.assertIn('ref: ${{ needs.require-ci.outputs.sha }}', text)
         self.assertIn('git rev-parse "v${PROMOTE_TAG}^{commit}"', text)
 
