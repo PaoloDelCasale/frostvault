@@ -93,6 +93,12 @@ def _scan_id() -> str:
 
 class SnapshotScanStaleCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Direct scan_cloud calls have no registered scan generation. Other
+        # modules can leave Vault 2 in the process-wide watcher runtime; that
+        # belongs to another disposable DB and must not suppress this scan.
+        runtime = patch("app.storage.runtime_status", {})
+        runtime.start()
+        self.addCleanup(runtime.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.database_path = Path(self._tmp.name) / "catalog.db"

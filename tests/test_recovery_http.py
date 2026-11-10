@@ -175,6 +175,28 @@ class RecoveryHttpTests(unittest.TestCase):
             self.assertTrue(all(row["recoverable"] for row in rows), "No implicit cloud purge on read/recovery")
             self.assertEqual(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"], newest)
 
+    def test_selection_recovery_preserves_csrf_vault_scope_and_bulk_decision(self) -> None:
+        selection = {"selection": [{"path": "docs", "is_directory": True}, {"path": "docs/note.txt"}]}
+        self.assertIn(self.client.post("/api/recover", json=selection).status_code, {401, 403})
+        self._authenticate(self.owner_id)
+        self.assertEqual(self.client.post("/api/recover", json=selection).status_code, 403)
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE archive_versions SET size=%s", (100 * 1024**3,))
+        for endpoint in ("/api/recover/estimate", "/api/recover"):
+            self.assertEqual(self.client.post(endpoint + "?vault_id=999999", headers=self._csrf(), json=selection).status_code, 404)
+            self.assertEqual(self.client.post(endpoint, headers=self._csrf(), json={"selection": [{"path": "../other"}]}).status_code, 422)
+            self.assertEqual(self.client.post(endpoint, headers=self._csrf(), json={**selection, "path": "docs/note.txt"}).status_code, 422)
+        estimate = self.client.post(f"/api/recover/estimate?vault_id={self.vault_id}", headers=self._csrf(), json=selection)
+        self.assertEqual(estimate.status_code, 200, estimate.text)
+        self.assertTrue(estimate.json()["high_impact"])
+        queued = self.client.post(f"/api/recover?vault_id={self.vault_id}", headers=self._csrf(), json=selection)
+        self.assertEqual(queued.status_code, 202, queued.text)
+        self.assertEqual(queued.json()["item_count"], 1, "folder/file overlap deduplicated")
+        self.assertTrue(queued.json()["approval_required"])
+        approved = self.client.post(f"/api/recover/approve?vault_id={self.vault_id}", headers=self._csrf(), json={"group_id": queued.json()["group_id"]})
+        self.assertEqual(approved.status_code, 202, approved.text)
+        self.assertEqual(approved.json()["job_ids"], queued.json()["job_ids"])
+
     def test_owner_approves_high_impact_restore(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(

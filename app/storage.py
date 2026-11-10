@@ -6072,6 +6072,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
     if shutdown_state.requested:
         return 0
     reconcile_interrupted_jobs()
+    from .services.recovery_approval import sweep_expired
+    with db() as connection:
+        sweep_expired(connection, now=datetime.now(timezone.utc).isoformat())
     try:
         sweep_source_volume_problems()
     except Exception:
