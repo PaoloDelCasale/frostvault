@@ -50,6 +50,13 @@ The Owner's deliberate end to a folder's automatic protection, keeping all Local
 Copies and choosing either retained cloud content or Delayed Cloud Deletion.
 _Avoid_: Decommission, Delete Vault, Disable
 
+**Paused Vault**:
+A Vault whose automatic cloud work the Owner has temporarily held: nothing new
+starts, running Jobs finish, the catalog keeps following Local Copies, and
+recoveries continue. It stays paused until the Owner resumes it; it never
+deletes or stops protection.
+_Avoid_: Stopped, Suspended, Disabled, Operating window
+
 **Delayed Cloud Deletion**:
 The Owner's explicit permanent removal of Cloud-only content after a seven-day
 cancellable delay; it never removes Local Copies or follows an SMB deletion.
@@ -139,6 +146,13 @@ A queued or running operation targeting one stable Vault File and, when known,
 one exact Archive Version.
 _Avoid_: Task, request
 
+**Restore Approval**:
+The Owner's explicit consent, given once for a whole recovery request, before a
+request whose total size or Cost Estimate is high-impact starts any cloud
+restore. Unanswered in time, the request is cancelled; once a cloud restore has
+started it is never asked again.
+_Avoid_: Confirmation, Per-file approval
+
 **Scheduling Tier**:
 The order in which the worker serves runnable Jobs: Owner operations (restore,
 free-space, rename, storage-class, cloud purge) first, then uploads the Owner
@@ -165,7 +179,8 @@ _Avoid_: Price book, Quote, Bill
 
 **Upload Bandwidth Limit**:
 The one optional, installation-wide cap on upload transfer speed. There are no
-per-Vault quotas, limits, or operating windows; recoveries are never throttled.
+per-Vault quotas, limits, or operating windows (a Paused Vault is a manual
+hold, not a window); recoveries are never throttled.
 _Avoid_: Quota, Operating window, Vault bandwidth
 
 **Owner**:
