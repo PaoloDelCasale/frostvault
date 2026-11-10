@@ -71,15 +71,16 @@ export function createVaultAccessFetch(
     | Response
     | ((init?: RequestInit) => Response | Promise<Response>)
   > = {},
+  { locale = "en" }: { locale?: "en" | "it" } = {},
 ): Mock<ApiFetch> {
-  const en = loadCatalog("en");
+  const messages = loadCatalog(locale);
   return vi.fn<ApiFetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input).replace(/\?vault_id=\d+$/, "");
     const method = (init?.method ?? "GET").toUpperCase();
     const key = `${method} ${url}`;
 
     if (url.startsWith("/api/i18n/catalog")) {
-      return jsonResponse({ locale: "en", locales: ["en", "it"], messages: en });
+      return jsonResponse({ locale, locales: ["en", "it"], messages });
     }
 
     const byKey = handlers[key];

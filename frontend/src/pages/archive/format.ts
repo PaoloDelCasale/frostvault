@@ -59,6 +59,23 @@ export function formatDateTime(value: unknown): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString(pageLocale(), { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** Human calendar date in `locale`; date-only ISO values (`2026-11-01`) stay on their calendar day. */
+export function formatDate(value: unknown, locale?: string): string {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", ...(dateOnly ? { timeZone: "UTC" } : {}) });
+}
+
+/** A euro amount with two decimals in `locale`; positive amounts under one cent read "< 0.01 €". */
+export function formatEur(value: number, locale?: string): string {
+  const money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  return amount > 0 && amount < 0.01 ? `< ${money.format(0.01)}` : money.format(amount);
+}
+
 /** How long a cold recovery takes, by S3 storage class. */
 export function recoveryTimeKey(storageClass: unknown): string {
   return storageClass === "DEEP_ARCHIVE" ? "essential.ready_deep" : storageClass === "GLACIER" ? "essential.ready_glacier" : "essential.ready_now";

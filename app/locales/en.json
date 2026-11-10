@@ -19,7 +19,9 @@
   "move.help": "Only verified current copies move to a colder class on the saved Storage Plan. Equal or colder files and files with pending work are skipped. Glacier sources require an explicit restore of their exact version; this action never requests a restore or warms content.",
   "move.vault_changed": "The selected Vault changed. Refresh these settings before moving content.",
   "move.target": "Move eligible files to",
-  "move.estimate": "{count} files · {bytes} bytes. Estimated storage €{monthly}/month; source retrieval €{retrieval}. AWS list prices for {region}, published {date} (USD used 1:1 as EUR).",
+  "move.estimate_monthly": "{monthly}/month",
+  "move.estimate_scope": "storage for {count} files ({size})",
+  "move.estimate_pricing": "Source retrieval {retrieval}. AWS list prices for {region}, published {date} (USD used 1:1 as EUR).",
   "move.exclusions": "Estimate, not a bill. Copy/verification requests, additional destination readback retrieval, minimum billable object sizes, archive metadata, temporary restored storage and early-deletion fees are excluded. Multipart verification reads the source. Actual eligibility is rechecked in the background.",
   "move.minimum": "The destination bills at least {days} days. Copying resets its age and Storage Plan clock. Removing the old copy before its minimum duration can incur an additional charge, even if a Local Copy exists.",
   "move.acknowledge": "I understand the estimated costs, minimum duration and early-deletion charges. Cold copies can require hours to recover.",
@@ -516,6 +518,8 @@
   "essential.recovered_retention": "Stays on the server for at least a full {days} days after recovery before automatic release.",
   "essential.recovered_keep": "Automatic release is off: the recovered file stays on the server.",
   "essential.recover_estimate": "Estimated {cost} EUR; {hours} hours",
+  "essential.recover_needs_approval": "Needs your approval before it starts",
+  "essential.recover_approval_notice": "This recovery is above the high-impact limit. Nothing is restored from the cloud until you approve it in Active operations.",
   "essential.recover_notification": "You can close this page. Recovery completion or failure appears in Notifications and optional email.",
   "essential.last_verified": "Last verified",
   "essential.cloud_class": "Cloud class",
@@ -661,5 +665,6 @@
   "api.vault_adoption.overlap": "The directory overlaps with another Vault.",
   "api.vault_adoption.unreadable": "FrostVault cannot read the selected directory.",
   "api.vault_adoption.unwritable": "FrostVault cannot write to the selected directory.",
-  "api.vault_adoption.volume_unavailable": "The source volume is not available right now."
+  "api.vault_adoption.volume_unavailable": "The source volume is not available right now.",
+  "cloud_preflight.bucket_not_found": "S3 bucket preflight failed: the configured bucket does not exist. Check VAULT_S3_BUCKET / S3_BUCKET and AWS_DEFAULT_REGION, or create the bucket"
 }

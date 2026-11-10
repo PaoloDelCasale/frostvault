@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
+from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
     VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
 )
@@ -3348,6 +3349,19 @@ class ArchiveCatalog:
         from .services.operation_policies import get_policy
         return get_policy(self.connection, vault_id).effective_upload_verification()
 
+    @staticmethod
+    def _carries_restore(action: str, row: Any) -> bool:
+        """Only recoveries of archived classes persist a restore tier/days.
+
+        A directory request applies one tier to every Job, but files already in
+        an instant-access class never restore (#532).
+        """
+        if action == "storage-class":
+            return True
+        return action == "recover" and storage_class_requires_restore(
+            row["storage_class"]
+        )
+
     def queue_jobs(
         self,
         *,
@@ -3603,8 +3617,8 @@ class ArchiveCatalog:
                     group_id,
                     path if path else (row["path"] if not whole_vault else ""),
                     size,
-                    restore_tier if action in {"recover", "storage-class"} else None,
-                    restore_days if action in {"recover", "storage-class"} else None,
+                    restore_tier if self._carries_restore(action, row) else None,
+                    restore_days if self._carries_restore(action, row) else None,
                     estimated_cost_eur if action in {"recover", "storage-class"} else None,
                     estimated_hours if action in {"recover", "storage-class"} else None,
                     pending_until if action == "recover" else None,

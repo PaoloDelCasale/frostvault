@@ -43,7 +43,7 @@ from .services import watch_plan
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, parse_message_params, translate
-from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
+from .services.s3_preflight import check_bucket_readiness, failure_message_key, preflight_failure_message
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -120,11 +120,7 @@ from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
 from .services import audit_events as audit_event_store
-from .services.cost_estimates import list_prices
-from .services.restore_estimates import (
-    estimate_restore,
-    is_high_impact_restore,
-)
+from .services.restore_estimates import estimate_restore
 from .services.job_scheduler import select_fair_jobs
 from .services.operation_policies import (
     get_policy,
@@ -499,8 +495,12 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
         client=s3_client(preflight=True),
     )
     if not result.ok:
+        key = failure_message_key(result)
+        # Keyed failures store the English catalog text, so the readiness gate
+        # can localize it for each viewer (cloud_preflight_gate.remediation_key).
         raise cloud_preflight_gate.ReadinessFailure(
-            "S3 bucket preflight failed: " + preflight_failure_message(result)
+            translate(key, locale="en") if key
+            else "S3 bucket preflight failed: " + preflight_failure_message(result)
         )
 
 
@@ -3821,6 +3821,26 @@ def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> 
     clear_problem()
 
 
+def _close_stale_upload_snapshot(job: dict[str, Any]) -> None:
+    """After a source change, let the next attempt fingerprint the current content.
+
+    Snapshot A can never match a Local Copy that changed, so retrying against it
+    only rereads the file until ``job.source_changed_stalled`` (#538). An unsent
+    intent is closed (never re-pinned) and the Job forgets A. A started send is left
+    alone: the next attempt reconciles it, and that reconciliation leaves the
+    send-started state in one attempt (a proven absence makes the intent unsent and
+    closable here, a found version is verified as A, anything else is a durable
+    block), so the stale comparison cannot repeat. Best effort: on any failure the
+    retry is scheduled as before and the next source change tries again.
+    """
+    from .services import upload_provenance as provenance
+    try:
+        _upload_catalog_unit(job, lambda catalog: provenance.close_unsent_for_job(
+            catalog.connection, job, now_iso()))
+    except Exception:
+        logging.getLogger(__name__).warning("Stale Upload Snapshot was not closed; the retry reuses it")
+
+
 def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], client: Any) -> None:
     from .services import upload_provenance as provenance
     pinned = json.loads(intent["target_json"])
@@ -5117,75 +5137,10 @@ def process_recover(job: dict[str, Any]) -> None:
     size_bytes = int(target.get("cloud_size") or job.get("total_bytes") or 0)
     restore_expiry = target.get("restore_expiry")
 
-    if (
-        storage_class_requires_restore(storage_class)
-        and target.get("restore_state") != "available"
-        and job.get("approved_at") is None
-    ):
-        runtime = _runtime_settings()
-        tier = job.get("restore_tier") or runtime.restore_tier or "Bulk"
-        days = int(job.get("restore_days") or runtime.restore_days or 3)
-        estimate = estimate_restore(
-            size_bytes=size_bytes,
-            storage_class=str(storage_class),
-            tier=str(tier),
-            days=days,
-            pricing=list_prices(runtime.aws_region).restore_rates,
-        )
-        if is_high_impact_restore(
-            size_bytes=size_bytes,
-            estimated_cost_eur=estimate.estimated_cost_eur,
-            size_threshold_gib=runtime.restore_high_impact_gib,
-            cost_threshold_eur=runtime.restore_high_impact_eur,
-        ):
-            hold_seconds = int(runtime.restore_approval_hold_seconds)
-            pending_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
-            ).isoformat()
-            with db() as connection:
-                timestamp = now_iso()
-                claim_token = _claim_token_for(int(job["id"]))
-                predicate = "WHERE id=%s"
-                claim_params: list[Any] = []
-                if claim_token:
-                    predicate += """
-                      AND claim_token=%s
-                      AND claim_expires_at IS NOT NULL
-                      AND claim_expires_at > %s
-                      AND status NOT IN ('completed', 'failed', 'cancelled')
-                    """
-                    claim_params = [claim_token, timestamp]
-                connection.execute(
-                    f"""
-                    UPDATE jobs
-                    SET status='pending_approval',
-                        message=%s,
-                        pending_until=%s,
-                        restore_tier=%s,
-                        restore_days=%s,
-                        estimated_cost_eur=%s,
-                        estimated_hours=%s,
-                        updated_at=%s,
-                        claim_token=NULL,
-                        claimed_at=NULL,
-                        claim_expires_at=NULL
-                    {predicate}
-                    """,
-                    (
-                        "High-impact Glacier restore held for primary-owner approval; "
-                        "RestoreObject cannot be cancelled after AWS accepts it",
-                        pending_until,
-                        estimate.tier,
-                        estimate.days,
-                        estimate.estimated_cost_eur,
-                        estimate.estimated_hours,
-                        timestamp,
-                        job["id"],
-                        *claim_params,
-                    ),
-                )
-            return
-
+    # Restore Approval is decided once for the whole request when it is
+    # queued (#533). The worker never re-evaluates the thresholds, so a restore
+    # already requested from AWS cannot be held again after settings change
+    # (#534).
     head = s3_client().head_object(
         Bucket=job["s3_bucket"],
         Key=object_key,
@@ -5798,6 +5753,9 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if job["action"] == "upload" and failure_kind == "source_changed":
             next_attempt = int(job.get("retry_count") or 0) + 1
             if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
+                # A started send keeps its snapshot: the retry reconciles it first
+                # (ADR-0025/0029). Only an unsent intent is closed here (#538).
+                _close_stale_upload_snapshot(job)
                 with db() as connection:
                     policy = get_policy(connection, int(job["vault_id"]))
                 return schedule_upload_retry(

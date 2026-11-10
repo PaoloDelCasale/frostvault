@@ -19,7 +19,9 @@
   "move.help": "Si spostano solo le copie correnti verificate verso una classe più fredda del piano salvato. I file già uguali o più freddi e quelli con lavori in corso vengono saltati. Le sorgenti Glacier richiedono il ripristino esplicito della versione esatta: questa azione non richiede ripristini e non scalda contenuti.",
   "move.vault_changed": "Il Vault selezionato è cambiato. Aggiorna queste impostazioni prima di spostare i contenuti.",
   "move.target": "Sposta i file idonei in",
-  "move.estimate": "{count} file · {bytes} byte. Archiviazione stimata €{monthly}/mese; lettura dalla sorgente €{retrieval}. Listino AWS per {region}, pubblicato il {date} (USD usati 1:1 come EUR).",
+  "move.estimate_monthly": "{monthly}/mese",
+  "move.estimate_scope": "di archiviazione per {count} file ({size})",
+  "move.estimate_pricing": "Lettura dalla sorgente {retrieval}. Listino AWS per {region}, pubblicato il {date} (USD usati 1:1 come EUR).",
   "move.exclusions": "Stima, non fattura. Esclusi richieste di copia/verifica, letture aggiuntive della destinazione, dimensioni minime fatturabili, metadati archivio, spazio temporaneo ripristinato e addebiti per rimozione anticipata. La verifica multipart legge la sorgente. L'idoneità effettiva viene ricontrollata in background.",
   "move.minimum": "La destinazione fattura almeno {days} giorni. La copia azzera la sua età e il conteggio del piano. Rimuovere la vecchia copia prima della durata minima può comportare un costo aggiuntivo, anche se esiste una copia locale.",
   "move.acknowledge": "Ho compreso la stima, la durata minima e gli addebiti per rimozione anticipata. Il recupero delle copie fredde può richiedere ore.",
@@ -516,6 +518,8 @@
   "essential.recovered_retention": "Resta sul server per almeno {days} giorni completi dal recupero prima della liberazione automatica.",
   "essential.recovered_keep": "La liberazione automatica è spenta: il file recuperato resta sul server.",
   "essential.recover_estimate": "Stima {cost} EUR; {hours} ore",
+  "essential.recover_needs_approval": "Richiede la tua approvazione prima di partire",
+  "essential.recover_approval_notice": "Questo recupero supera la soglia di alto impatto. Nulla viene ripristinato dal cloud finché non lo approvi in Operazioni attive.",
   "essential.recover_notification": "Puoi chiudere la pagina. Completamento o fallimento del recupero appare nelle Notifiche e nell’email facoltativa.",
   "essential.last_verified": "Ultima verifica",
   "essential.cloud_class": "Classe cloud",
@@ -661,5 +665,6 @@
   "api.vault_adoption.overlap": "La cartella si sovrappone a un altro Vault.",
   "api.vault_adoption.unreadable": "FrostVault non riesce a leggere la cartella scelta.",
   "api.vault_adoption.unwritable": "FrostVault non riesce a scrivere nella cartella scelta.",
-  "api.vault_adoption.volume_unavailable": "Il volume sorgente non è disponibile in questo momento."
+  "api.vault_adoption.volume_unavailable": "Il volume sorgente non è disponibile in questo momento.",
+  "cloud_preflight.bucket_not_found": "Controllo preliminare del bucket S3 non riuscito: il bucket configurato non esiste. Controlla VAULT_S3_BUCKET / S3_BUCKET e AWS_DEFAULT_REGION, oppure crea il bucket"
 }
