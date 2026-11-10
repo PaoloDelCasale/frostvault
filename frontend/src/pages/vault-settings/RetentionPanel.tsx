@@ -6,7 +6,6 @@ import {
   type OperationPolicy,
 } from "@/api";
 import { FormField, FormSelect } from "@/components/FormField";
-import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
@@ -64,13 +63,9 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
 
   return (
     <section data-panel="retention">
-      <Panel className="p-4 sm:p-5">
-        <h2 className="text-lg font-bold">{t("folder_settings.retention_title")}</h2>
-        <p className="mt-1 text-sm text-muted">{t("folder_settings.retention_help")}</p>
-        <p className="mt-2 text-sm text-muted">{t("folder_settings.retention_example")}</p>
-        <p className="mt-2 text-sm text-muted">{t("folder_settings.retention_never")}</p>
-        <p className="mt-2 text-sm text-muted" role="status">{loadState}</p>
-        <form className="mt-4 grid gap-3" onSubmit={(event) => void onSave(event)}>
+      <div>
+        <p className="sr-only" role="status">{loadState}</p>
+        <form className="grid gap-3" onSubmit={(event) => void onSave(event)}>
           <label className="flex min-h-11 items-center gap-3 text-sm font-bold text-ink">
             <input
               id="local-release"
@@ -98,11 +93,11 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
               {periods.map((period) => <option key={period} value={period}>{t(`folder_settings.retention_period_${period}`)}</option>)}
             </FormSelect>
           </FormField>
-          <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={saving || !policy}>
+          <Button type="submit" className="min-h-11 w-full sm:w-fit sm:justify-self-start" disabled={saving || !policy}>
             {t("folder_settings.retention_save")}
           </Button>
         </form>
-      </Panel>
+      </div>
     </section>
   );
 }

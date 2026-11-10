@@ -4,7 +4,6 @@ import { Plus, Trash2 } from "lucide-react";
 import { fetchLifecycle, updateLifecycleDefault, type LifecycleProfile, type LifecycleResponse } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MenuSelect } from "@/components/MenuSelect";
-import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
@@ -54,10 +53,8 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
 
   return (
     <section data-panel="lifecycle">
-      <Panel className="p-4 sm:p-5">
-        <h2 className="text-lg font-bold text-ink">{t("folder_settings.plan_title")}</h2>
-        <p className="mt-1 text-sm text-muted">{t("folder_settings.plan_help")}</p>
-        {data ? <div className="mt-4 grid gap-4">
+      <div>
+        {data ? <div className="grid gap-4">
           <FormField label={t("folder_settings.plan_label")} htmlFor="vault-storage-plan" labelAsText>
             <MenuSelect id="vault-storage-plan" label={t("folder_settings.plan_label")} value={selection} disabled={busy}
               onValueChange={(value) => {
@@ -91,7 +88,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
         </div> : <p role="status">{t("folder_settings.plan_loading")}</p>}
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
         {data && <VaultMovePanel key={`${vaultId}:${JSON.stringify(data.profile)}`} vaultId={vaultId} onNotice={onNotice} />}
-      </Panel>
+      </div>
     </section>
   );
 }

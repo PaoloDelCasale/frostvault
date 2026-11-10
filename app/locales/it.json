@@ -624,5 +624,17 @@
   "details.version_id": "ID versione",
   "integrity.verified": "Verificata",
   "integrity.unverified": "Non ancora verificata",
-  "integrity.mismatch": "Non corrisponde: la copia cloud è diversa"
+  "integrity.mismatch": "Non corrisponde: la copia cloud è diversa",
+  "settings.more": "Ulteriori informazioni",
+  "settings.protection_title": "Protezione",
+  "settings.protection_summary": "Scegli se i file nuovi e modificati vanno nel cloud da soli.",
+  "settings.auto_on": "Upload automatico attivato.",
+  "settings.auto_off": "Upload automatico disattivato. I nuovi file restano solo sul server.",
+  "settings.verification_summary": "Come FrostVault controlla che ogni nuovo upload sia arrivato integro.",
+  "settings.verification_saved": "Controllo degli upload salvato.",
+  "settings.local_title": "Spazio locale",
+  "settings.local_summary": "Libera spazio sul server per i file già al sicuro nel cloud.",
+  "settings.plan_open": "Mostra piano e spostamenti",
+  "settings.danger_title": "Zona pericolosa",
+  "settings.danger_summary": "Azioni che cambiano dove si trova questo Vault o ne fermano la protezione."
 }

@@ -7,7 +7,7 @@ import { createVaultAccessFetch, defaultLifecycle, jsonResponse, loadCatalog, re
 
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 
-describe("Vault storage plan in Advanced", () => {
+describe("Vault storage plan in its collapsed section", () => {
   it("offers four explained presets plus custom and saves one whole-Vault plan", async () => {
     const user = userEvent.setup();
     let payload: unknown;
@@ -18,7 +18,7 @@ describe("Vault storage plan in Advanced", () => {
       },
     });
     renderVaultAccess({ fetchImpl });
-    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
     expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(5);
     await user.click(screen.getByRole("option", { name: /Economical instant access/ }));
@@ -39,7 +39,7 @@ describe("Vault storage plan in Advanced", () => {
       },
     });
     renderVaultAccess({ fetchImpl });
-    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
     await user.click(screen.getByRole("option", { name: /^Custom/ }));
     await user.click(screen.getByRole("button", { name: "Add transition" }));
