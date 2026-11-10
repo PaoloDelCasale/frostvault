@@ -124,7 +124,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     const account = page.getByRole("dialog", { name: /^account$/i });
     await account.getByRole("combobox", { name: /^language$/i }).selectOption("it");
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /cerca per nome/i);
+    await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /^cerca in questo vault/i);
     await openAccountMenu(page); await page.getByRole("button", { name: /^esci$/i }).click();
     await expect(page).toHaveURL(/\/login/);
   });
