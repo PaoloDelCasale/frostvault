@@ -592,12 +592,26 @@ class CloudOnlyReplacementAction(BaseModel):
     path: str
 
 
-class RecoverEstimateRequest(BaseModel):
-    path: str
+class RecoverySelectionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=1024)
     is_directory: bool = False
-    archive_version_id: str | None = None
-    restore_tier: str | None = None
-    restore_days: int | None = Field(default=None, ge=1, le=30)
+
+
+class RecoverRequest(FileAction):
+    model_config = ConfigDict(extra="forbid")
+    path: str = ""
+    selection: list[RecoverySelectionItem] | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def unambiguous_scope(self):
+        if self.selection is not None and (self.path or self.is_directory or self.archive_version_id):
+            raise ValueError("Use either selection or a single path/version")
+        return self
+
+
+class RecoverEstimateRequest(RecoverRequest):
+    pass
 
 
 class RecoverApproveAction(BaseModel):
@@ -2199,6 +2213,7 @@ def _hold_high_impact_recovery(connection: Any, job_ids: list[int]) -> dict[str,
             """,
             (HIGH_IMPACT_RESTORE_HELD_MESSAGE, pending_until, timestamp, job_ids),
         )
+        notification_service.enqueue_recovery_approval_best_effort(connection, job_ids=job_ids)
     return impact
 
 
@@ -2214,8 +2229,14 @@ def queue_jobs(
     restore_days: int | None = None,
     target_storage_class: str | None = None,
     whole_vault: bool = False,
+    recovery_selection: list[tuple[str, bool]] | None = None,
 ) -> dict[str, Any]:
-    if whole_vault:
+    if recovery_selection:
+        recovery_selection = [(safe_relative_path(p).as_posix(), directory) for p, directory in recovery_selection]
+        if action != "recover" or archive_version_id or whole_vault:
+            raise HTTPException(422, "Invalid recovery selection")
+        logical_path = ""
+    elif whole_vault:
         logical_path = ""
     else:
         logical_path = safe_relative_path(path).as_posix()
@@ -2263,7 +2284,7 @@ def queue_jobs(
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-    directory_recover = action == "recover" and (is_directory or whole_vault)
+    directory_recover = action == "recover" and (is_directory or whole_vault or bool(recovery_selection))
     if directory_recover:
         resolved_tier, resolved_days = resolve_directory_restore(
             restore_tier, restore_days
@@ -2272,7 +2293,7 @@ def queue_jobs(
         if action == "free-space" and not local_release_is_confirmed(connection, vault_id):
             raise HTTPException(409, "Local release blocked: protection is not confirmed")
         catalog = ArchiveCatalog(connection)
-        if action in {"recover", "storage-class"} and not is_directory and not whole_vault:
+        if action in {"recover", "storage-class"} and not is_directory and not whole_vault and not recovery_selection:
             versions = catalog.list_versions(vault_id, logical_path)
             if action == "recover":
                 selectable = [row for row in versions if row["recoverable"]]
@@ -2375,6 +2396,7 @@ def queue_jobs(
             estimated_hours=estimated_hours,
             target_storage_class=resolved_target_class,
             whole_vault=whole_vault,
+            recovery_selection=recovery_selection,
         )
         skipped_same_class = int(getattr(catalog, "last_skipped_same_class", 0) or 0)
         if directory_recover and not (
@@ -2471,23 +2493,26 @@ def recover_estimate(
     action: RecoverEstimateRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    logical_path = safe_relative_path(action.path).as_posix()
-    if action.is_directory:
+    selection = [(safe_relative_path(item.path).as_posix(), item.is_directory) for item in action.selection] if action.selection else None
+    logical_path = "" if selection else safe_relative_path(action.path).as_posix()
+    if action.is_directory or selection:
         recoverable_join = """LEFT JOIN archive_versions av ON av.id=(
             SELECT recoverable.id FROM archive_versions recoverable
             WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
               AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
         )"""
-        prefix = logical_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(selection or [(logical_path, True)])
         with db() as connection:
             classes = connection.execute(
                 f"SELECT av.storage_class, av.restore_state, sum(av.size) AS bytes FROM vault_files vf "
                 f"JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL "
                 f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {recoverable_join} "
-                "WHERE vf.vault_id=%s AND vf.status='active' AND fp.path LIKE %s ESCAPE '\\' "
+                f"WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND vf.status='active' AND {scope_sql} "
                 "AND av.integrity='verified' AND av.availability='available' "
-                "AND (lc.presence IS NULL OR lc.presence='missing') GROUP BY av.storage_class, av.restore_state",
-                (vault["id"], prefix),
+                "AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.vault_file_id=vf.id "
+                "AND pending.status NOT IN ('completed','failed','cancelled')) "
+                "AND (lc.presence IS NULL OR lc.presence<>'present') GROUP BY av.storage_class, av.restore_state",
+                [vault["id"], *scope_params],
             ).fetchall()
         tier, days = resolve_directory_restore(action.restore_tier, action.restore_days)
         estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
@@ -2887,7 +2912,7 @@ def cancel_upload(
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def recover(
-    action: FileAction,
+    action: RecoverRequest,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
@@ -2901,6 +2926,7 @@ def recover(
         archive_version_id=action.archive_version_id,
         restore_tier=action.restore_tier,
         restore_days=action.restore_days,
+        recovery_selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
     )
     return {**queued, **_api_message(request, "api.recovery_started")}
 
@@ -2911,38 +2937,30 @@ def approve_recover(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    timestamp = now_iso()
+    from .services.recovery_approval import expire_pending
+
     with db() as connection:
+        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        # Read the clock AFTER the lock: waiting for another decision must never
+        # allow a late approval. Keep subsecond precision at the deadline.
+        timestamp = datetime.now(timezone.utc).isoformat()
+        expire_pending(connection, vault_id=vault["id"], group_id=action.group_id, now=timestamp)
         rows = connection.execute(
             """
-            SELECT id FROM jobs
+            UPDATE jobs SET status='queued', approved_by=%s, approved_at=%s,
+                pending_until=NULL, message=%s, updated_at=%s
             WHERE vault_id=%s AND group_id=%s AND action='recover'
               AND status='pending_approval'
+            RETURNING id
             """,
-            (vault["id"], action.group_id),
+            (user["id"], timestamp,
+             "High-impact restore approved; RestoreObject cannot be cancelled after AWS accepts it",
+             timestamp, vault["id"], action.group_id),
         ).fetchall()
-        if not rows:
-            raise HTTPException(409, "No high-impact restore is waiting for approval")
         job_ids = [int(row["id"]) for row in rows]
-        placeholders = ", ".join(["%s"] * len(job_ids))
-        connection.execute(
-            f"""
-            UPDATE jobs
-            SET status='queued',
-                approved_by=%s,
-                approved_at=%s,
-                message=%s,
-                updated_at=%s
-            WHERE id IN ({placeholders})
-            """,
-            [
-                user["id"],
-                timestamp,
-                "High-impact restore approved; RestoreObject cannot be cancelled after AWS accepts it",
-                timestamp,
-                *job_ids,
-            ],
-        )
+    # Commit expiration even when the approval is refused.
+    if not job_ids:
+        raise HTTPException(409, "No high-impact restore is waiting for approval (it may have expired)")
     return {
         "group_id": action.group_id,
         "job_ids": job_ids,

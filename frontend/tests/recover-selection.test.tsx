@@ -46,8 +46,31 @@ describe("essential recovery", () => {
     expect(screen.queryByTestId("recover-approval-notice")).not.toBeInTheDocument();
     expect(screen.queryByTestId("recover-needs-approval")).not.toBeInTheDocument();
   });
+  it("estimates and queues a multiselection once per Vault, with approval on the total", async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    configureApiClient({ fetch: vi.fn(async (input, init) => {
+      const url = String(input); const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      if (init?.method === "POST") calls.push({ url, body });
+      if (url.includes("estimate")) return jsonResponse({ requires_restore: true, high_impact: Array.isArray(body.selection), estimate: { estimated_cost_eur: 12, estimated_hours: 48, days: 3 } });
+      return jsonResponse({});
+    }) });
+    const second = { ...target, item: { ...target.item, path: "other.jpg" } };
+    const otherVault = { ...target, vaultId: 3, vaultName: "Third" };
+    const done = vi.fn();
+    render(<RecoverSelection targets={[target, second, otherVault]} t={t} onClose={vi.fn()} onDone={done} />);
+    await screen.findByTestId("recover-approval-notice");
+    const estimates = calls.filter((call) => call.url.includes("estimate"));
+    expect(estimates).toHaveLength(2);
+    expect(estimates[0]).toEqual({ url: "/api/recover/estimate?vault_id=2", body: { path: "", selection: [{ path: "same.jpg", is_directory: false }, { path: "other.jpg", is_directory: false }], restore_tier: "Bulk" } });
+    await userEvent.setup().click(screen.getByRole("button", { name: "ui.row_action_recover" }));
+    await waitFor(() => expect(done).toHaveBeenCalledOnce());
+    const recoveries = calls.filter((call) => !call.url.includes("estimate"));
+    expect(recoveries).toHaveLength(2);
+    expect(recoveries[0].body.selection).toEqual(estimates[0].body.selection);
+    expect(recoveries.map((call) => call.url)).toEqual(["/api/recover?vault_id=2", "/api/recover?vault_id=3"]);
+  });
   it("keeps many items in a bounded, scrolling body with the actions always outside it (#522)", async () => {
-    configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 0.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
+    configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 3.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
     const many = Array.from({ length: 7 }, (_, index) => ({ ...target, item: { ...target.item, name: `f${index}.jpg`, path: `f${index}.jpg` } }));
     render(<RecoverSelection targets={many} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     expect(await screen.findByTestId("recover-summary")).toHaveTextContent('essential.recover_summary_cold{"count":7,"cost":"3.50","hours":12}');
