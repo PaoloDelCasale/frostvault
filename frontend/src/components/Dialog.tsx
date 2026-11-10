@@ -12,6 +12,8 @@ type DialogProps = {
   /** Accessible label for the dismiss control. */
   closeLabel?: string;
   children: ReactNode;
+  /** Actions kept visible below the scrolling body (e.g. Cancel / Confirm). */
+  footer?: ReactNode;
   className?: string;
 };
 
@@ -25,6 +27,7 @@ export function Dialog({
   description,
   closeLabel = "Close",
   children,
+  footer,
   className,
 }: DialogProps) {
   return (
@@ -33,12 +36,12 @@ export function Dialog({
         <RadixDialog.Overlay className="fixed inset-0 z-50 bg-[var(--overlay)]" />
         <RadixDialog.Content
           className={cn(
-            "fixed top-1/2 left-1/2 z-50 w-[min(760px,calc(100%-30px))] -translate-x-1/2 -translate-y-1/2",
+            "fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-30px)] w-[min(760px,calc(100%-30px))] -translate-x-1/2 -translate-y-1/2 flex-col",
             "rounded-panel border border-line bg-surface p-[22px] text-ink shadow-lg outline-none",
             className,
           )}
         >
-          <div className="mb-4 flex items-start justify-between gap-5">
+          <div className="mb-4 flex shrink-0 items-start justify-between gap-5">
             <div>
               <RadixDialog.Title className="text-lg font-bold">{title}</RadixDialog.Title>
               {description ? (
@@ -60,7 +63,8 @@ export function Dialog({
               </Button>
             </RadixDialog.Close>
           </div>
-          {children}
+          <div className="-mx-1 min-h-0 overflow-y-auto px-1" data-testid="dialog-body">{children}</div>
+          {footer ? <div className="mt-4 flex shrink-0 flex-wrap gap-2 border-t border-line pt-4">{footer}</div> : null}
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>

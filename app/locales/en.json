@@ -641,5 +641,8 @@
   "system.email_on": "Email is configured.",
   "system.email_how": "How to configure email",
   "system.uploads_title": "Failed uploads",
-  "system.uploads_summary": "Retry uploads that failed in any Vault."
+  "system.uploads_summary": "Retry uploads that failed in any Vault.",
+  "essential.recover_summary": "{count} items, ready right away.",
+  "essential.recover_summary_cold": "{count} items: estimated cost {cost} EUR, ready within {hours} h.",
+  "essential.recover_items": "Show the items"
 }
