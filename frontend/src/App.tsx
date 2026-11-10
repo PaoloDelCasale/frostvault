@@ -4,6 +4,7 @@ import { fetchMe, fetchVaults, logout, useCatalogEvents, type MeResponse, type V
 import { fetchOverview } from "@/api/vault";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
+import { VaultHeader } from "@/layout/VaultHeader";
 import { AppShell } from "@/layout/AppShell";
 import type { ShellSection } from "@/layout/types";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
@@ -73,7 +74,7 @@ export default function App() {
   else if (route.name === "system") page = <GeneralPage overview={overview.data} onRefresh={refresh} />;
   else if (route.name === "problems") page = <ProblemsPage />;
   else if (route.name === "files") page = current ? <FileBrowser key={`${current.id}:${locale}`} t={t} vaultId={current.id} vaultName={current.name} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} problemCount={problemCounts[current.id] ?? 0} onRefresh={refresh} /> : unavailable;
-  else if (route.name === "settings") page = current ? <div className="grid min-w-0 gap-4"><h1 className="min-w-0 break-words text-2xl font-bold">{current.name}</h1>
+  else if (route.name === "settings") page = current ? <div className="grid min-w-0 gap-4"><VaultHeader vaultId={current.id} vaultName={current.name} active="settings" t={t} />
     <VaultSettingsPanel key={current.id} vaultId={current.id} vaultName={current.name} onStopped={() => { void loadVaults().then(() => navigate("/")); }} /></div> : unavailable;
   else page = <p role="alert" className="rounded-card border border-line bg-surface p-4">{t("nav.not_found")}</p>;
   return <AppShell capabilities={{ currentVaultId: current?.id, locale, locales: me.locales, vaults }} queryClient={client} t={t}

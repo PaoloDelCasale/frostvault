@@ -5,7 +5,7 @@ const visible = (page: Page, name: string | RegExp) => page.getByRole("button", 
 test.describe("essential Owner flows (#365 D1–D17)", () => {
   test("folder navigation, breadcrumbs and browser Back", async ({ page }) => {
     await emergencyPasswordLogin(page);
-    await visible(page, "📁 reports").click();
+    await visible(page, /^reports$/).click();
     await expect(page).toHaveURL(/directory=reports/);
     await expect(visible(page, "readme.txt")).toBeVisible();
     await page.getByTestId("breadcrumbs").locator('button[data-directory=""]').click();
@@ -18,7 +18,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await switchVault(page, "Secondary Archive");
     await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}$`));
     await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
-    await visible(page, "📁 photos").click();
+    await visible(page, /^photos$/).click();
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1, name: /^overview$/i })).toBeVisible();
     await navTo(page, /^files$/i);
@@ -30,13 +30,14 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
   test("global Cloud-only name/path search retains duplicate paths and the correct Vault during recovery", async ({ page }) => {
     const credentials = await emergencyPasswordLogin(page);
     await page.getByTestId("file-search").fill("photos/cold");
-    await page.getByTestId("state-filter").selectOption("cloud_only");
+    await page.getByTestId("search-scope").getByRole("button", { name: /^all vaults$/i }).click();
+    await page.getByTestId("state-filter").getByRole("button", { name: /^cloud only/i }).click();
     await expect(visible(page, "Family Archive / photos/cold.jpg")).toBeVisible();
     await expect(visible(page, "Secondary Archive / photos/cold.jpg")).toBeVisible();
     await visible(page, "Secondary Archive / photos/cold.jpg").click();
     await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}\\?`));
     await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
-    const details = page.getByRole("dialog", { name: /details.*secondary archive.*cold.jpg/i });
+    const details = page.getByRole("dialog", { name: "cold.jpg" });
     await expect(details).toBeVisible();
     await details.getByRole("button", { name: /^recover$/i }).click();
     const recovery = page.getByRole("dialog", { name: /^recover$/i });
@@ -71,7 +72,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     const problem = page.locator("article").filter({ hasText: "Conflict with a file kept only in the cloud" });
     await problem.getByRole("link", { name: /open problem and remedy/i }).click();
     await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.primary.id)}\\?`));
-    const details = page.getByRole("dialog", { name: /details.*conflict.jpg/i });
+    const details = page.getByRole("dialog", { name: "conflict.jpg" });
     await expect(details).toContainText(/rename the new file outside frostvault/i);
     await expect(page.locator('[data-highlighted="true"]:visible')).toHaveCount(1);
     await details.getByRole("button", { name: /replace the cloud copy/i }).click();
@@ -123,7 +124,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     const account = page.getByRole("dialog", { name: /^account$/i });
     await account.getByRole("combobox", { name: /^language$/i }).selectOption("it");
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /cerca per nome/i);
+    await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /^cerca in questo vault/i);
     await openAccountMenu(page); await page.getByRole("button", { name: /^esci$/i }).click();
     await expect(page).toHaveURL(/\/login/);
   });

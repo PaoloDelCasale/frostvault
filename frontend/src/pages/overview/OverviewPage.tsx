@@ -4,7 +4,8 @@ import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Plus, ShieldChec
 
 import { fetchGeneralVaults, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
-import { Badge, type BadgeState } from "@/components/Badge";
+import { VaultStateBadge } from "@/components/VaultStateBadge";
+import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { buttonVariants } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -26,7 +27,7 @@ function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview
   const states = (stats?.states ?? {}) as Record<string, number>;
   const storage = (stats?.storage ?? {}) as { local_bytes?: number; cloud_bytes?: number };
   const summary = overview?.vaults.find((item) => item.id === vault.id);
-  const state = !stats ? "unknown" : stats.protection_suspended ? "suspended" : stats.protection_state ?? "empty";
+  const state = vaultState(stats);
   return {
     id: vault.id, name: vault.name, state, loaded: Boolean(stats),
     protected: states.protected ?? 0,
@@ -34,13 +35,6 @@ function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview
     local: storage.local_bytes ?? 0, cloud: storage.cloud_bytes ?? 0,
     cost: summary ? summary.monthly_estimate : null, problems: summary?.open_problem_count ?? 0,
   };
-}
-
-function StateBadge({ state, t }: { state: string; t: (key: string) => string }) {
-  if (state === "unknown") return <span className="text-muted">—</span>;
-  if (state === "suspended") return <Badge state="problem" size="sm" label={t("state.protection_suspended")} />;
-  if (state === "empty") return <Badge state="excluded" size="sm" label={t("overview.empty_vault")} />;
-  return <Badge state={state as BadgeState} size="sm" label={t(`state.${state}`)} />;
 }
 
 function Tile({ icon, label, value, detail, tone = "neutral", testId }: {
@@ -87,7 +81,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   ];
   const cell = (row: Row, key: SortKey): ReactNode => {
     if (key === "name") return <a href={vaultFilesUrl(row.id)} className="font-bold text-ink no-underline hover:underline">{row.name}</a>;
-    if (key === "state") return <StateBadge state={row.state} t={t} />;
+    if (key === "state") return <VaultStateBadge state={row.state} t={t} />;
     if (!row.loaded && key !== "cost" && key !== "problems") return <span className="text-muted">—</span>;
     if (key === "protected") return `${number.format(row.protected)} / ${number.format(row.files)}`;
     if (key === "local") return formatBytes(row.local);
@@ -139,7 +133,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
         </div>
         <ul className="grid gap-2 md:hidden" data-testid="overview-cards">{sorted.map((row) => <li key={row.id}>
           <a href={vaultFilesUrl(row.id)} className="grid min-w-0 gap-2 rounded-card border border-line bg-surface p-3 text-ink no-underline">
-            <span className="flex min-w-0 items-start justify-between gap-2"><span className="min-w-0 font-bold break-words">{row.name}</span><StateBadge state={row.state} t={t} /></span>
+            <span className="flex min-w-0 items-start justify-between gap-2"><span className="min-w-0 font-bold break-words">{row.name}</span><VaultStateBadge state={row.state} t={t} /></span>
             <span className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
               <span className="text-muted">{t("overview.col_files")}</span><span className="text-right tabular-nums">{cell(row, "protected")}</span>
               <span className="text-muted">{t("overview.col_local")}</span><span className="text-right tabular-nums">{cell(row, "local")}</span>

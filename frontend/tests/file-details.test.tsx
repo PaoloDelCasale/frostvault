@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
@@ -31,16 +31,28 @@ describe("deliberate file Details", () => {
     expect(screen.getByText("remediation.phase: remediation.phase.cleanup")).toBeInTheDocument();
     expect(screen.getByText("remediation.reason: reconciliation.reason.cleanup_unavailable")).toBeInTheDocument();
     expect(screen.queryByText("remediation.reason: cleanup_unavailable")).not.toBeInTheDocument();
-    expect(screen.getByText("essential.protection: state.pending")).toBeInTheDocument();
+    expect(within(screen.getByTestId("details-summary")).getByText("state.pending")).toHaveAttribute("data-state", "pending");
     await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
     await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
     expect(calls.some((url) => url.startsWith("/api/upload?"))).toBe(false);
   });
   it("explains an excluded file as neither pending nor a problem", async () => {
     setup("excluded", true);
-    await screen.findByText("essential.protection: state.excluded");
+    expect(within(await screen.findByTestId("details-summary")).getByText("state.excluded")).toHaveAttribute("data-state", "excluded");
     expect(screen.getByText("essential.excluded_help")).toBeInTheDocument();
     expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
+  });
+  it("summarises copies and recovery first, with technical details collapsed and translated", async () => {
+    setup("cloud_only", false);
+    const summary = await screen.findByTestId("details-summary");
+    expect(within(summary).getByText("details.on_server").nextSibling).toHaveTextContent("details.absent");
+    expect(within(summary).getByText("details.in_cloud").nextSibling).toHaveTextContent("details.present");
+    expect(within(summary).getByText("details.recovery_time").nextSibling).toHaveTextContent("essential.ready_now");
+    const technical = screen.getByText("details.technical").closest("details")!;
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText("integrity.verified")).toBeInTheDocument();
+    expect(within(technical).getByText("exact")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("same.jpg");
   });
   it("loads paginated targeted history and bidirectional links outside recent50", async () => {
     const calls = setup("protected",true);
