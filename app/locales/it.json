@@ -562,7 +562,6 @@
   "nav.search_vaults": "Cerca Vault",
   "nav.no_vault_match": "Nessun Vault corrisponde",
   "nav.problem_count": "{count} problemi",
-  "nav.all_vaults": "Tutti i Vault",
   "nav.new_vault": "Nuovo Vault",
   "nav.not_found": "Questa pagina non esiste.",
   "overview.subtitle": "Stato di protezione di ogni Vault.",
