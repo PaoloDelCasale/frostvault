@@ -641,5 +641,8 @@
   "system.email_on": "Email configurata.",
   "system.email_how": "Come configurare l’email",
   "system.uploads_title": "Upload falliti",
-  "system.uploads_summary": "Riprova gli upload falliti in tutti i Vault."
+  "system.uploads_summary": "Riprova gli upload falliti in tutti i Vault.",
+  "essential.recover_summary": "{count} elementi, pronti subito.",
+  "essential.recover_summary_cold": "{count} elementi: costo stimato {cost} EUR, pronti entro {hours} h.",
+  "essential.recover_items": "Mostra gli elementi"
 }

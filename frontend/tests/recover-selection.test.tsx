@@ -32,4 +32,18 @@ describe("essential recovery", () => {
     render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     await screen.findByText("essential.ready_now"); expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
+  it("keeps many items in a bounded, scrolling body with the actions always outside it (#522)", async () => {
+    configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 0.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
+    const many = Array.from({ length: 7 }, (_, index) => ({ ...target, item: { ...target.item, name: `f${index}.jpg`, path: `f${index}.jpg` } }));
+    render(<RecoverSelection targets={many} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    expect(await screen.findByTestId("recover-summary")).toHaveTextContent('essential.recover_summary_cold{"count":7,"cost":"3.50","hours":12}');
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.className).toMatch(/max-h-\[calc\(100dvh/);
+    const body = screen.getByTestId("dialog-body");
+    expect(body.className).toContain("overflow-y-auto");
+    const recover = screen.getByRole("button", { name: "ui.row_action_recover" });
+    expect(body).not.toContainElement(recover);
+    expect(body).not.toContainElement(screen.getByRole("button", { name: "ui.cancel" }));
+    expect(screen.getByText("essential.recover_items").closest("details")).not.toHaveAttribute("open");
+  });
 });
