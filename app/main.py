@@ -1272,10 +1272,26 @@ def list_vaults(_: dict[str, Any] = Depends(current_user)):
     return {"items": rows}
 
 
+VAULT_ADOPTION_ERROR_KEYS = frozenset(
+    f"api.vault_adoption.{reason}"
+    for reason in (
+        "invalid_path", "invalid_volume", "path_missing", "volume_not_found", "nested_mount",
+        "occupied", "overlap", "unreadable", "unwritable", "volume_unavailable",
+    )
+)
+
+
+def _vault_create_error(request: Request, status: int, key: str) -> JSONResponse:
+    """Localized creation failure: the SPA shows ``message`` and keys on ``message_key``."""
+    message = translate(key, locale=_request_locale(request))
+    return JSONResponse({"detail": message, "message": message, "message_key": key}, status_code=status)
+
+
 @app.post("/api/vaults", status_code=201, response_model=response_model("VaultCreateResponse"))
 def create_owner_vault(
     action: VaultSelfServiceCreate,
     background_tasks: BackgroundTasks,
+    request: Request,
     _: dict[str, Any] = Depends(current_user),
 ):
     """Create a Vault from the UI, the only way Vaults are created (#412).
@@ -1292,16 +1308,17 @@ def create_owner_vault(
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
         )
-    except VaultSlugTaken as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except VaultProvisioningUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-    except InvalidVaultName as exc:
-        raise HTTPException(422, str(exc)) from exc
+    except VaultSlugTaken:
+        return _vault_create_error(request, 409, "api.vault_name_taken")
+    except VaultProvisioningUnavailable:
+        return _vault_create_error(request, 503, "api.vault_provisioning_unavailable")
+    except InvalidVaultName:
+        return _vault_create_error(request, 422, "api.vault_name_invalid")
     except VaultAdoptionError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except VaultCreationError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        key = f"api.vault_adoption.{exc.reason}"
+        return _vault_create_error(request, 422, key if key in VAULT_ADOPTION_ERROR_KEYS else "api.vault_adoption.failed")
+    except VaultCreationError:
+        return _vault_create_error(request, 409, "ui.vault_create.failed")
     if action.creation_mode == "adopt":
         # scan_vault reloads the authoritative row.
         background_tasks.add_task(scan_vault, {"id": vault["id"]})

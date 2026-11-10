@@ -181,8 +181,12 @@ class WorkerDrainBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 storage.ensure_job_claim_owned_in_transaction(None, {"id": 1}, "stop")
             with self.assertRaises(WorkerStopping):
                 storage._operation_pool(1)
+            # Finished futures of earlier tests in the same process (for example a
+            # cloud_recovery_scan) stay registered; only this submission matters.
+            before = dict(storage._maintenance_futures)
             storage._submit_maintenance("must-not-start", lambda: self.fail("maintenance admitted"))
-            self.assertEqual(storage._maintenance_futures, {})
+            self.assertNotIn("must-not-start", storage._maintenance_futures)
+            self.assertEqual(storage._maintenance_futures, before)
             terminal.assert_not_called()
 
     async def test_worker_drain_timeout_returns_without_blocking_event_loop(self):
