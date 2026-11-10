@@ -518,6 +518,8 @@
   "essential.recovered_retention": "Stays on the server for at least a full {days} days after recovery before automatic release.",
   "essential.recovered_keep": "Automatic release is off: the recovered file stays on the server.",
   "essential.recover_estimate": "Estimated {cost} EUR; {hours} hours",
+  "essential.recover_needs_approval": "Needs your approval before it starts",
+  "essential.recover_approval_notice": "This recovery is above the high-impact limit. Nothing is restored from the cloud until you approve it in Active operations.",
   "essential.recover_notification": "You can close this page. Recovery completion or failure appears in Notifications and optional email.",
   "essential.last_verified": "Last verified",
   "essential.cloud_class": "Cloud class",
