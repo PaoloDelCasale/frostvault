@@ -112,7 +112,8 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     expect((await download).suggestedFilename()).toContain("recovery-kit");
     await page.getByRole("button", { name: /i have stored|custod|saved.*outside/i }).click();
     await expect(page.getByRole("status").filter({ hasText: /custody|stored|acknowledged/i })).toBeVisible();
-    await page.getByRole("link", { name: /protect a folder/i }).click();
+    await navTo(page, /^overview$/i);
+    await page.getByRole("link", { name: /^new vault$/i }).click();
     await page.getByLabel(/^vault name/i).fill(`ZZ Essential ${Date.now()}`);
     await page.locator("form").getByRole("button", { name: /create vault/i }).click();
     await expect(page.getByTestId("file-browser")).toBeVisible();

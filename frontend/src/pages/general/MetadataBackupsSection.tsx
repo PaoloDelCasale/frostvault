@@ -14,6 +14,7 @@ import { Badge, type BadgeState } from "@/components/Badge";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { formatDateTime } from "@/pages/archive/format";
 
 export type MetadataBackupOutcome =
   | "full_off_host"
@@ -107,7 +108,7 @@ export async function verifyMetadataBackupIntegrity(
   }
 }
 
-export function MetadataBackupsSection() {
+export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string | null } = {}) {
   const { t } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
@@ -213,6 +214,9 @@ export function MetadataBackupsSection() {
         <p className="mt-1 text-sm text-muted">
           {t("general.metadata_backups_subtitle")}
         </p>
+        {lastVerified !== undefined && <p className="mt-2 text-sm font-semibold">
+          {t("essential.last_verified_backup")}: {lastVerified ? formatDateTime(lastVerified) : t("essential.not_available")}
+        </p>}
       </div>
 
       <Panel className="grid gap-4 p-5">

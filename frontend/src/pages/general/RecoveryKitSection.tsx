@@ -44,20 +44,24 @@ export function RecoveryKitSection() {
     finally { setBusy(false); }
   }
   return (
-    <Panel className="mb-6 grid gap-3 p-5">
-      <h2 className="text-lg font-bold">{t("recovery_kit.title")}</h2>
-      <p>{t("recovery_kit.help")}</p>
-      {status?.configured ? <>
-        <p>{t("recovery_kit.fingerprint")}: <code>{status.fingerprint}</code></p>
-        <Button disabled={busy} onClick={() => void download()}>{t("recovery_kit.download")}</Button>
-        {status.custody_acknowledged
-          ? <p role="status">{t("recovery_kit.acknowledged")}</p>
-          : <Button disabled={busy} variant="secondary" onClick={() => void acknowledge()}>{t("recovery_kit.acknowledge")}</Button>}
-      </> : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
-      {status?.metadata_restore ? <p role="alert" data-testid="metadata-restore-warning">
-        {t("recovery_kit.restore_warning", { date: status.metadata_restore.backup_created_at, count: status.metadata_restore.updated_files })}
-      </p> : null}
-      {error ? <p role="alert">{t(error)}</p> : null}
-    </Panel>
+    <section aria-labelledby="system-kit-heading" className="grid gap-4">
+      <div>
+        <h2 id="system-kit-heading" className="text-xl font-bold">{t("recovery_kit.title")}</h2>
+        <p className="mt-1 text-sm text-muted">{t("recovery_kit.help")}</p>
+      </div>
+      <Panel className="grid gap-3 p-5">
+        {status?.configured ? <>
+          <p className="break-all">{t("recovery_kit.fingerprint")}: <code>{status.fingerprint}</code></p>
+          <Button className="w-fit" disabled={busy} onClick={() => void download()}>{t("recovery_kit.download")}</Button>
+          {status.custody_acknowledged
+            ? <p role="status">{t("recovery_kit.acknowledged")}</p>
+            : <Button className="w-fit" disabled={busy} variant="secondary" onClick={() => void acknowledge()}>{t("recovery_kit.acknowledge")}</Button>}
+        </> : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
+        {status?.metadata_restore ? <p role="alert" data-testid="metadata-restore-warning">
+          {t("recovery_kit.restore_warning", { date: status.metadata_restore.backup_created_at, count: status.metadata_restore.updated_files })}
+        </p> : null}
+        {error ? <p role="alert">{t(error)}</p> : null}
+      </Panel>
+    </section>
   );
 }
