@@ -17,11 +17,12 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     setBusy(true);
     try {
       setPolicy(await updateOperationPolicy({ upload_verification: value === "inherit" ? null : value === "read_back" ? "read_back" : "s3_checksum" }, vaultId));
+      onNotice(t("settings.verification_saved"));
     } catch (error) { onNotice(String(error), true); }
     finally { setBusy(false); }
   }
   return <section className="grid gap-2">
-    <label className="grid gap-2 font-semibold">{t("verification.title")}
+    <label className="grid gap-2 font-semibold"><span className="sr-only">{t("verification.title")}</span>
       <select className="min-h-11 rounded border border-line bg-surface px-3" disabled={!policy || busy} value={policy?.upload_verification ?? "inherit"} onChange={(event) => void change(event.target.value)}>
         <option value="inherit">{t("verification.inherit")}</option>
         <option value="s3_checksum">{t("verification.s3_checksum")}</option>
@@ -30,6 +31,5 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     </label>
     <p className="text-sm text-muted">{t("verification.global")}: {policy?.global_upload_verification ? t(`verification.${policy.global_upload_verification}`) : "—"}</p>
     <p className="text-sm text-muted">{t("verification.effective")}: {policy?.effective_upload_verification ? t(`verification.${policy.effective_upload_verification}`) : "—"}</p>
-    <p className="text-sm text-muted">{t("verification.help")}</p>
   </section>;
 }

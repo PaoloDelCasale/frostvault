@@ -6,7 +6,7 @@ import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 
 /** No Session-selected Vault fallback: omitted identity explicitly means global. */
-export function UploadRetryActions({ vaultId }: { vaultId?: number }) {
+export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: number; showHelp?: boolean }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -29,7 +29,7 @@ export function UploadRetryActions({ vaultId }: { vaultId?: number }) {
       <Button variant="secondary" disabled={busy} onClick={() => void perform(false)}>{t("uploads.retry_failed")}</Button>
       {vaultId !== undefined && <Button variant="secondary" disabled={busy} onClick={() => void perform(true)}>{t("uploads.whole_vault")}</Button>}
     </div>
-    <p className="text-sm text-muted">{t("uploads.retry_help")}</p>
+    {showHelp && <p className="text-sm text-muted">{t("uploads.retry_help")}</p>}
     {notice && <p role={error ? "alert" : "status"}>{notice}</p>}
   </section>;
 }

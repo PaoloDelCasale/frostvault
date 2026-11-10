@@ -10,7 +10,7 @@ const estimate = { target_class: "DEEP_ARCHIVE", eligible_count: 2, total_bytes:
 
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 
-describe("Vault-wide Move now in Advanced", () => {
+describe("Vault-wide Move now in the storage plan section", () => {
   it("discloses mixed-class skips, estimates and minimum duration before acknowledgement and Vault-wide submission", async () => {
     const user = userEvent.setup();
     let payload: unknown;
@@ -21,7 +21,7 @@ describe("Vault-wide Move now in Advanced", () => {
         return jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 });
       },
     }) });
-    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     const start = await screen.findByRole("button", { name: "Move now in background" });
     expect(start).toBeDisabled();
     expect(screen.getByText(/destination bills at least 180 days/)).toBeInTheDocument();
@@ -50,7 +50,7 @@ describe("Vault-wide Move now in Advanced", () => {
       "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [estimate] }),
       "POST /api/vault/move": () => jsonResponse({ detail: "No eligible files: pending work" }, 409),
     }) });
-    await user.click(await screen.findByText("Advanced", { exact: true }));
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("checkbox", { name: /I understand the estimated costs/ }));
     await user.click(screen.getByRole("button", { name: "Move now in background" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("No eligible files: pending work");

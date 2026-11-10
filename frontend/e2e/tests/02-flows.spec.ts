@@ -83,7 +83,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     expect((await response).status()).toBe(202);
   });
 
-  test("release is deliberate; Vault settings use fixed periods and collapsed Advanced", async ({ page }) => {
+  test("release is deliberate; Vault settings use fixed periods and a collapsed storage plan", async ({ page }) => {
     await emergencyPasswordLogin(page);
     await page.getByRole("checkbox", { name: /select family archive \/ note.txt/i }).locator("visible=true").check();
     await page.getByRole("button", { name: /free space now/i }).click();
