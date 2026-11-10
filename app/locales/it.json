@@ -480,7 +480,6 @@
   "stop_protection.keep_remaining": "Mantieni le copie cloud rimaste e rilascia la cartella",
   "stop_protection.failed_help": "Eliminazione parzialmente fallita. Le cancellazioni completate non sono annullabili. Mantieni le copie rimaste per rilasciare la cartella in sicurezza.",
   "essential.general": "Generale",
-  "essential.protected_folders": "Cartelle protette",
   "essential.all": "Tutti i file",
   "essential.problems": "Problemi",
   "essential.settings": "⚙ Impostazioni cartella",
@@ -502,8 +501,6 @@
   "essential.email_help": "Notifiche fisse: problemi, esiti dei recuperi e riepilogo settimanale. Configura SMTP_TO_ADDRESS e il trasporto SMTP nell’ambiente del servizio; APP_PUBLIC_URL abilita i link al file. Nessuna preferenza per evento.",
   "essential.last_verified_backup": "Ultimo backup dei metadati verificato",
   "essential.not_available": "Non ancora disponibile",
-  "essential.add_folder": "+ Proteggi una cartella",
-  "essential.folder_spend": "Stima archiviazione: {cost} {currency}/mese",
   "essential.estimate_caveat": "Stima dai listini AWS, non un budget né una fattura; i valori USD sono mostrati 1:1 in EUR, senza conversione valutaria. Richieste, dimensioni/durate minime, copie temporanee e rimozione anticipata possono aggiungere costi.",
   "essential.month_estimate": "{month}: ~{cost} {currency}/mese",
   "essential.month_delta": "{cost} {currency} rispetto alla stima del mese precedente",
@@ -636,5 +633,13 @@
   "settings.local_summary": "Libera spazio sul server per i file già al sicuro nel cloud.",
   "settings.plan_open": "Mostra piano e spostamenti",
   "settings.danger_title": "Zona pericolosa",
-  "settings.danger_summary": "Azioni che cambiano dove si trova questo Vault o ne fermano la protezione."
+  "settings.danger_summary": "Azioni che cambiano dove si trova questo Vault o ne fermano la protezione.",
+  "system.subtitle": "Impostazioni dell’installazione, comuni a tutti i Vault.",
+  "system.email_title": "Notifiche email",
+  "system.email_summary": "Problemi, esiti dei recuperi e riepilogo settimanale possono arrivare anche via email.",
+  "system.email_off": "Email non configurata: le notifiche compaiono solo nel centro notifiche.",
+  "system.email_on": "Email configurata.",
+  "system.email_how": "Come configurare l’email",
+  "system.uploads_title": "Upload falliti",
+  "system.uploads_summary": "Riprova gli upload falliti in tutti i Vault."
 }

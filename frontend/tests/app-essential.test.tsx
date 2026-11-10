@@ -89,6 +89,17 @@ describe("Owner app routing and shell (#512)", () => {
     expect(reloads).toBe(0);
   });
 
+  it("System holds installation settings only, not the Vault list (#515)", async () => {
+    window.history.replaceState({}, "", "/system"); show();
+    expect(await screen.findByRole("heading", { level: 1, name: "System" })).toBeInTheDocument();
+    for (const name of ["Recovery Kit", "Email notifications", "Failed uploads"]) expect(screen.getByRole("heading", { level: 2, name })).toBeInTheDocument();
+    expect(await screen.findByTestId("email-not-configured")).toBeInTheDocument();
+    const main = screen.getByRole("main");
+    expect(within(main).queryByText("Second")).not.toBeInTheDocument();
+    expect(within(main).queryByRole("link", { name: /new vault|protect a folder/i })).not.toBeInTheDocument();
+    expect(within(main).queryByRole("button", { name: /reconnect/i })).not.toBeInTheDocument();
+  });
+
   it("shows the open problem count in the sidebar, not as a header button", async () => {
     show();
     expect(await screen.findByTestId("nav-problem-count")).toHaveTextContent("1");
