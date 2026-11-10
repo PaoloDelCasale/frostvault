@@ -226,7 +226,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             # Notification resolution never changes or removes the sole cloud copy.
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions WHERE id=%s',(version,)).fetchone()['n'],1)
 
-    def test_summary_reads_success_dates_freed_space_cost_and_all_six_states(self):
+    def test_summary_reads_success_dates_freed_space_cost_and_every_state(self):
         from app.catalog import ArchiveCatalog
         from app.services.component_health import record_component_health
         from app.services.metadata_backups import record_backup_run
@@ -237,9 +237,10 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 local = state != 'cloud_only'
                 version = None
                 if local:
-                    catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',
+                    catalog.observe_local_copy(vault_id=self.vault_id,path=name,
+                                               file_type='symlink' if state == 'unsupported' else 'regular',
                                                size=1024**3,mtime_ns=1,observed_at=NOW.isoformat())
-                if state not in ('pending', 'excluded'):
+                if state not in ('pending', 'excluded', 'unsupported'):
                     version = catalog.record_archive_version(vault_id=self.vault_id,path=name,
                         object_key='docs/'+state,provider_version_id=state,size=1024**3,
                         storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
@@ -272,7 +273,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertIn('not an AWS',summary['cost_disclaimer'])
             with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
                 self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
-                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':6})
+                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)})
 
     def test_migration_removes_only_routine_history_preserving_recovery_and_copy_evidence(self):
         from tests.postgres import run_alembic
