@@ -248,6 +248,19 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         second = self._create("Docs Two", slug="docs")
 
         self.assertEqual(second.status_code, 409, second.text)
+        self.assertEqual(second.json()["message_key"], "api.vault_name_taken")
+        self.assertNotIn("slug", second.json()["message"].lower())
+
+    def test_creation_errors_are_localized_for_the_owner_locale(self) -> None:
+        self._login()
+        self.assertEqual(self._create("Docs", slug="docs").status_code, 201)
+        self.client.cookies.set("frostvault_locale", "it")
+
+        response = self._create("Docs Two", slug="docs")
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["message"], "Esiste già un Vault con questo nome. Scegline un altro.")
+        self.assertEqual(response.json()["detail"], response.json()["message"])
 
     def test_no_new_user_is_ever_provisioned_by_creating_a_vault(self) -> None:
         self._login()
@@ -298,6 +311,7 @@ class UnconfiguredVaultCreationTests(VaultCreationHttpTestCase):
         response = self._create("Docs")
 
         self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["message_key"], "api.vault_provisioning_unavailable")
         self.assertEqual(self.client.get("/api/vaults").json()["items"], [])
 
 
