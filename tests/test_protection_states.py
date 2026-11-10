@@ -1,4 +1,4 @@
-"""Five protection observations; PostgreSQL parity runs only in PR CI."""
+"""Protection observations; PostgreSQL parity runs only in PR CI."""
 from __future__ import annotations
 
 import json
@@ -60,6 +60,21 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertEqual(aggregate_state({'excluded': 18}), 'excluded')
         self.assertIn('excluded', STATES)
 
+    def test_unsupported_never_outranks_actionable_states_and_is_reported_alone(self):
+        # #524: a symlink or FIFO is not a protection failure.
+        self.assertEqual(aggregate_state({'unsupported': 4, 'protected': 3}), 'protected')
+        self.assertEqual(aggregate_state({'unsupported': 4, 'pending': 1}), 'pending')
+        self.assertEqual(aggregate_state({'unsupported': 4, 'problem': 1}), 'problem')
+        self.assertEqual(aggregate_state({'unsupported': 4, 'excluded': 2}), 'unsupported')
+        self.assertEqual(aggregate_state({'unsupported': 4}), 'unsupported')
+        self.assertIn('unsupported', STATES)
+
+    def test_unsupported_keeps_last_known_state_and_previous_cloud_copy(self):
+        result = project_file({'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'unsupported'})
+        self.assertEqual(result['last_known_state'], 'unsupported')
+        result = project_file({'protection_state': 'unsupported', 'integrity': 'verified', 'availability': 'available'})
+        self.assertTrue(result['previous_snapshot_protected'])
+
     def test_state_sql_embeds_fixed_and_vault_rules_as_safe_literals(self):
         from app.services.operation_policies import OperationPolicy
         fixed = state_sql()
@@ -111,11 +126,11 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
-    def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True, path=None):
+    def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True, path=None, file_type='regular'):
         path = path or f'photos/{name}.jpg'
         file_id = None
         if local:
-            file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type='regular', size=12, mtime_ns=1, observed_at='2026-11-03T10:00:00Z')
+            file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at='2026-11-03T10:00:00Z')
         version_id = None
         if archive:
             version_id = self.catalog.record_archive_version(vault_id=9, path=path, object_key=f'files/{path}', provider_version_id=name, size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
@@ -186,6 +201,56 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.summary(9)['protection_state'], 'pending')
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {**expected, 'pending': 1})
+
+    def test_unsupported_entries_have_their_own_state_and_do_not_make_the_vault_a_problem(self):
+        # #524: symlinks are never followed and FIFOs cannot be archived; the
+        # Vault stays protected and the entries are listed under their own filter.
+        self.seed('protected', archive=True, verified=True)
+        self.seed('link', path='photos/link', file_type='symlink')
+        self.seed('pipe', path='photos/sub/pipe', file_type='other')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        expected = {'protected': 1, 'unsupported': 2}
+        summary = self.catalog.summary(9)
+        self.assertEqual(summary['states'], expected)
+        self.assertEqual(summary['protection_state'], 'protected')
+        folder = self.catalog.list_files_page(9)['items'][0]
+        self.assertEqual(folder['state_counts'], expected)
+        self.assertEqual(folder['state'], 'protected')
+        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='problem')['total'], 0)
+        page = self.catalog.list_files_page(9, directory='photos', state='unsupported')
+        self.assertEqual([item['type'] for item in page['items']], ['directory', 'file'])
+        self.assertEqual(page['items'][1]['state'], 'unsupported')
+        self.assertFalse(page['items'][1]['upload_eligible'])
+        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+            payload = stats({'id': 9, 'source_root': '/source'})
+        self.assertEqual(payload['states'], expected)
+        self.assertEqual(payload['protection_state'], 'protected')
+        # The dirty SQL rollup agrees with the streamed rebuild.
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos')
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+
+    def test_unsupported_migration_roundtrip_only_discards_the_disposable_rollups(self):
+        from tests.postgres import run_alembic
+        self.seed('protected', archive=True, verified=True)
+        self.seed('link', path='photos/link', file_type='symlink')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                  for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
+        column = "SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_unsupported'"
+        result = run_alembic(self.path, '0067_upload_multipart_journal', 'downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.connection.execute(column).fetchone()['n'], 0)
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.connection.execute(column).fetchone()['n'], 1)
+        self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'protected': 1, 'unsupported': 1})
+        after = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in before}
+        self.assertEqual(after, before)
 
     def test_only_excluded_files_are_reported_excluded_and_a_manual_upload_protects_them(self):
         file_id, _ = self.seed('._only', path='._only')

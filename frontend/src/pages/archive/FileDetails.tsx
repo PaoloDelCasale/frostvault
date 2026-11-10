@@ -64,11 +64,12 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
               <Fact label={t("essential.modified")}>{formatDateTime(item.modified_at)}</Fact>
               <Fact label={t("essential.last_verified")}>{formatDateTime(version?.verified_at)}</Fact>
               <Fact label={t("essential.cloud_class")}>{storage ? <StorageBadge storage={storage === "DEEP_ARCHIVE" ? "deep-archive" : storage.startsWith("GLACIER") ? "glacier" : "standard"} label={t(`storage.${storage}`)} /> : "—"}</Fact>
-              {item.cloud_exists && storage && <Fact label={t("details.recovery_time")}>{t(recoveryTimeKey(storage))}</Fact>}
+              {Boolean(item.cloud_exists) && storage && <Fact label={t("details.recovery_time")}>{t(recoveryTimeKey(storage))}</Fact>}
             </dl>
             {item.recover_eligible && <Button className="w-fit" disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
           </section>
           {item.state === "excluded" && <p role="note" className="rounded-card border border-line p-3">{t("essential.excluded_help")}</p>}
+          {item.state === "unsupported" && <p role="note" className="rounded-card border border-line p-3" data-testid="unsupported-help">{t(item.local_file_type === "symlink" ? "essential.unsupported_symlink_help" : "essential.unsupported_other_help")}</p>}
           {item.state === "problem" && <section className="grid gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/50 p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>
             {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}

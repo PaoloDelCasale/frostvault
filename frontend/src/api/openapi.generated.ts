@@ -2136,7 +2136,7 @@ export interface components {
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
-        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only or excluded (skipped by automatic upload, never pending). Restore progress is independent. */
+        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). Restore progress is independent. */
         VaultFileListItem: {
             availability?: string | null;
             cleanup_eligible?: boolean;

@@ -22,7 +22,7 @@ export type FileBrowserProps = { t: Translate; vaultId: number; vaultName: strin
 export const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 100;
 /** List filters; "" is every file. Counts come from the Vault-wide `/api/stats`. */
-const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["excluded", "files.chip_excluded"], ["problem", "files.chip_problem"]] as const;
+const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["excluded", "files.chip_excluded"], ["unsupported", "files.chip_unsupported"], ["problem", "files.chip_problem"]] as const;
 const parentOf = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 
 function FolderStates({ item, t }: { item: ArchiveListItem; t: Translate }) {

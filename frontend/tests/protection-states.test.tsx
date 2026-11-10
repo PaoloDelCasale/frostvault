@@ -8,7 +8,7 @@ import { itemStateBadge } from "@/pages/archive/protectionLabel";
 const translations: Record<string, string> = {
   "state.pending": "In attesa", "state.protected": "Protetto",
   "state.problem": "Problema", "state.unconfirmed": "Non accertato",
-  "state.cloud_only": "Solo cloud", "state.excluded": "Escluso",
+  "state.cloud_only": "Solo cloud", "state.excluded": "Escluso", "state.unsupported": "Non supportato",
   "state.last_known": "Ultimo stato noto: {state} ({date})",
   "state.previous_snapshot_protected": "Versione precedente protetta",
 };
@@ -20,7 +20,7 @@ function file(state: string): ArchiveListItem {
 }
 
 describe("protection-state labels", () => {
-  it.each(["pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded"])("renders %s with a localized textual label", (state) => {
+  it.each(["pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded", "unsupported"])("renders %s with a localized textual label", (state) => {
     const badge = itemStateBadge(file(state), t);
     render(<Badge state={badge.state} label={badge.label} />);
     expect(screen.getByText(translations[`state.${state}`])).toBeInTheDocument();

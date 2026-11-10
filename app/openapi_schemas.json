@@ -2030,7 +2030,7 @@
     },
     "VaultFileListItem": {
       "additionalProperties": true,
-      "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only or excluded (skipped by automatic upload, never pending). Restore progress is independent.",
+      "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). Restore progress is independent.",
       "properties": {
         "upload_verification_requested": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
         "verification_method": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
