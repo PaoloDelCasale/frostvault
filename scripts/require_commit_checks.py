@@ -24,6 +24,7 @@ from typing import Any, Callable
 DEFAULT_REQUIRED_CHECKS = (
     "Unit and migration tests",
     "PostgreSQL migration and concurrency tests",
+    "Full PostgreSQL concurrency stress",
     "S3-compatible integrity (MinIO)",
     "Frontend generate and typecheck",
     "Frontend lint and unit tests",
@@ -169,7 +170,9 @@ def wait_for_required_checks(
     )
     last_details: list[str] = []
     while True:
-        runs = fetch_runs()
+        # The API is SHA-scoped; also verify the returned evidence rather than
+        # accepting malformed responses (or a full stress run for another SHA).
+        runs = [run for run in fetch_runs() if run.get("head_sha") == sha]
         state, details = evaluate_required_checks(required, runs)
         last_details = details
         for line in details:

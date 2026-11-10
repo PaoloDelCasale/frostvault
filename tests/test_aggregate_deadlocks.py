@@ -20,6 +20,7 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import directory_aggregates as aggregates
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.stress_profile import stress_file_count
 
 PAYLOAD = b"nested concurrent upload content"
 STAMP = "2026-07-21T10:00:00+00:00"
@@ -220,7 +221,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],1)
 
     def test_16_workers_1024_nested_uploads_with_concurrent_maintenance(self):
-        jobs = self.seed(1024)
+        count = stress_file_count(1024)
+        jobs = self.seed(count)
         stop = threading.Event()
         maintenance_passes = []
         start = threading.Barrier(17)
@@ -248,14 +250,14 @@ class AggregateDeadlockTests(unittest.TestCase):
             upkeep.result(timeout=30)
         aggregates.process_directory_aggregate_maintenance(vault_id=2)
         self.assertTrue(maintenance_passes)
-        self.assert_completed(1024)
+        self.assert_completed(count)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM directory_aggregate_dirty").fetchone()["n"], 0)
             actual = connection.execute("SELECT * FROM directory_aggregates ORDER BY path").fetchall()
             root = next(row for row in actual if row["path"] == "0")
-            self.assertEqual(root["item_count"], 1024)
-            self.assertEqual(root["state_protected"], 1024)
-            self.assertEqual(root["cloud_size"], len(PAYLOAD) * 1024)
+            self.assertEqual(root["item_count"], count)
+            self.assertEqual(root["state_protected"], count)
+            self.assertEqual(root["cloud_size"], len(PAYLOAD) * count)
             self.assertEqual(root["action_upload"], 0)
             aggregates.rebuild_vault_directory_aggregates(connection, 2)
             expected = connection.execute("SELECT * FROM directory_aggregates ORDER BY path").fetchall()
@@ -263,7 +265,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         def semantic(rows):
             return [{k: v for k, v in row.items() if k != "updated_at"} for row in rows]
         self.assertEqual(semantic(actual), semantic(expected))
-        print(f"#458 acceptance: 16 workers / 1024 completed / {len(maintenance_passes)} maintenance passes / exact full-rebuild parity")
+        print(f"#458 acceptance: 16 workers / {count} completed / {len(maintenance_passes)} maintenance passes / exact full-rebuild parity")
 
     def test_forced_post_response_transaction_abort_retries_linkage_without_put(self):
         original = ArchiveCatalog.link_job_version

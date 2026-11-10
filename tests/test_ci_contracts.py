@@ -220,6 +220,58 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("PostgreSQLMigrationTests", postgres_runs)
         self.assertIn("tests.test_aggregate_deadlocks", postgres_runs)
 
+    def test_upload_stress_is_bounded_only_on_prs_and_attested_on_main(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        triggers = _workflow_on(workflow)
+        self.assertEqual(triggers["push"]["branches"], ["main"])
+        self.assertNotIn("paths", triggers["pull_request"] or {})
+        job = workflow["jobs"]["postgresql-tests"]
+        self.assertEqual(job["env"]["FROSTVAULT_STRESS_PROFILE"],
+                         "${{ github.event_name == 'pull_request' && 'pr' || 'full' }}")
+        stress = next(step for step in job["steps"] if step.get("id") == "stress")
+        self.assertNotIn("if", stress)
+        self.assertFalse(stress.get("continue-on-error", False))
+        self.assertIn("tests.test_aggregate_deadlocks", stress["run"])
+        self.assertIn("PostgreSQLMigrationTests", stress["run"])
+        self.assertIn('echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"', stress["run"])
+        self.assertEqual(job["outputs"]["profile"], "${{ steps.stress.outputs.profile }}")
+        full = workflow["jobs"]["full-postgresql-stress"]
+        self.assertEqual(full["name"], "Full PostgreSQL concurrency stress")
+        self.assertEqual(full["needs"], ["postgresql-tests"])
+        self.assertEqual(full["if"], "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}")
+        step = full["steps"][0]
+        self.assertEqual(step["env"]["RESULT"], "${{ needs.postgresql-tests.result }}")
+        self.assertEqual(step["env"]["PROFILE"], "${{ needs.postgresql-tests.outputs.profile }}")
+        self.assertIn('test "$RESULT" = success', step["run"])
+        self.assertIn('test "$PROFILE" = full', step["run"])
+
+    def test_every_python_module_is_selected_once_without_importing_database_tests(self) -> None:
+        # Execute the actual workflow selector for all shards: a newly added
+        # regression must not disappear or run repeatedly due to sharding.
+        import contextlib
+        import io
+        import os
+        from collections import Counter
+        from unittest.mock import patch
+
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["python-unit-tests"]
+        run = job["steps"][-1]["run"]
+        selector = run.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        selected = []
+        for shard in job["strategy"]["matrix"]["shard"]:
+            out = io.StringIO()
+            with patch.dict(os.environ, {"SHARD_INDEX": str(shard), "SHARD_COUNT": "12"}), contextlib.redirect_stdout(out):
+                exec(compile(selector, "workflow-selector", "exec"), {})
+            selected.extend(out.getvalue().splitlines())
+        dedicated = {"tests.test_migrations_postgresql", "tests.test_aggregate_deadlocks"}
+        expected = {f"tests.{path.stem}" for path in (ROOT / "tests").glob("test_*.py")} - dedicated
+        self.assertEqual(Counter(selected), Counter({module: 1 for module in expected}))
+        postgres = workflow["jobs"]["postgresql-tests"]
+        runs = "\n".join(step.get("run", "") for step in postgres["steps"])
+        self.assertIn("tests.test_migrations_postgresql.PostgreSQLMigrationTests", runs)
+        self.assertIn("tests.test_aggregate_deadlocks", runs)
+
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["playwright-e2e"]
@@ -663,6 +715,7 @@ class ContainerPublishContractTests(unittest.TestCase):
         for name in (
             "Unit and migration tests",
             "PostgreSQL migration and concurrency tests",
+            "Full PostgreSQL concurrency stress",
             "S3-compatible integrity (MinIO)",
             "Frontend generate and typecheck",
             "Frontend production build",
