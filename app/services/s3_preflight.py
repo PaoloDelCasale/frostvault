@@ -21,6 +21,9 @@ class PreflightCheck:
     status: CheckStatus
     message: str
     remediation: str | None = None
+    # Catalog key of the full localized readiness text, for failures the UI
+    # translates (the key's English text is what the readiness gate stores).
+    message_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,12 @@ def preflight_failure_message(result: PreflightResult) -> str:
         else:
             parts.append(check.message)
     return "; ".join(parts)
+
+
+def failure_message_key(result: PreflightResult) -> str | None:
+    """Catalog key when the only failed check has a localized readiness text."""
+    failed = [check for check in result.checks if check.status == "fail"]
+    return failed[0].message_key if len(failed) == 1 else None
 
 
 def _normalize_bucket_region(location: str | None) -> str:
@@ -67,6 +76,9 @@ CREDENTIAL_ERROR_CODES = frozenset({
 })
 # A bodyless HEAD 403 reaches botocore as the bare status code.
 _FORBIDDEN_CODES = frozenset({"403", "Forbidden", "AccessDenied"})
+# Likewise a missing bucket answers HeadBucket with a bare 404.
+_NOT_FOUND_CODES = frozenset({"404", "NoSuchBucket", "NotFound"})
+BUCKET_NOT_FOUND_KEY = "cloud_preflight.bucket_not_found"
 
 
 def _credential_failure(code: str) -> PreflightCheck:
@@ -105,8 +117,28 @@ def _head_bucket_failure(client: Any, bucket: str, exc: ClientError) -> Prefligh
     code = _client_error_code(exc)
     if code in CREDENTIAL_ERROR_CODES:
         return _credential_failure(code)
+    if code in _NOT_FOUND_CODES or _http_status(exc) == 404:
+        return PreflightCheck(
+            code="bucket.exists",
+            status="fail",
+            message="The configured S3 bucket does not exist",
+            remediation=(
+                "Check VAULT_S3_BUCKET / S3_BUCKET and AWS_DEFAULT_REGION, "
+                "or create the bucket"
+            ),
+            message_key=BUCKET_NOT_FOUND_KEY,
+        )
     if code not in _FORBIDDEN_CODES and _http_status(exc) != 403:
-        return _permission_failure("s3:HeadBucket", exc)
+        # Only the provider error code is echoed, never its message.
+        return PreflightCheck(
+            code="bucket.access",
+            status="fail",
+            message=f"S3 could not check the bucket ({code})",
+            remediation=(
+                "Check the bucket configuration and grant the archive IAM identity "
+                "s3:ListBucket (required by HeadBucket) on the bucket"
+            ),
+        )
     try:
         client.get_bucket_location(Bucket=bucket)
     except ClientError as probe_exc:

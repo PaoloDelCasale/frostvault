@@ -9,7 +9,7 @@ from .cost_estimates import estimate_storage_month, list_prices
 from . import notifications, cloud_preflight_gate
 
 
-def overview(connection: Any, *, user_id: int) -> dict[str, Any]:
+def overview(connection: Any, *, user_id: int, locale: str | None = None) -> dict[str, Any]:
     notifications.reconcile_problem_states(connection)
     prices = list_prices()
     rows = connection.execute(
@@ -55,6 +55,7 @@ def overview(connection: Any, *, user_id: int) -> dict[str, Any]:
         "previous_month_delta": round(total - float(baseline), 6) if baseline is not None else None,
         "currency": prices.currency, "pricing_effective_at": prices.effective_at,
         "email_configured": notifications.email_configured(),
-        "cloud_preflight": cloud_preflight_gate.snapshot(connection),
+        "cloud_preflight": cloud_preflight_gate.localized_snapshot(
+            cloud_preflight_gate.snapshot(connection), locale),
         "last_verified_backup": backup["verified_at"] if backup else None,
     }

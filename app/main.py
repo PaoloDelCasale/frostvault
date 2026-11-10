@@ -1502,10 +1502,10 @@ def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
 
 
 @app.get("/api/general", response_model=response_model("GeneralOverview"))
-def general_overview(user: dict[str, Any] = Depends(current_user)):
+def general_overview(request: Request, user: dict[str, Any] = Depends(current_user)):
     from .services.essential_interface import overview
     with db() as connection:
-        return overview(connection, user_id=user["id"])
+        return overview(connection, user_id=user["id"], locale=_request_locale(request))
 
 
 @app.get("/api/problems", response_model=response_model("NotificationsResponse"))

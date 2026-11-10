@@ -661,5 +661,6 @@
   "api.vault_adoption.overlap": "La cartella si sovrappone a un altro Vault.",
   "api.vault_adoption.unreadable": "FrostVault non riesce a leggere la cartella scelta.",
   "api.vault_adoption.unwritable": "FrostVault non riesce a scrivere nella cartella scelta.",
-  "api.vault_adoption.volume_unavailable": "Il volume sorgente non è disponibile in questo momento."
+  "api.vault_adoption.volume_unavailable": "Il volume sorgente non è disponibile in questo momento.",
+  "cloud_preflight.bucket_not_found": "Controllo preliminare del bucket S3 non riuscito: il bucket configurato non esiste. Controlla VAULT_S3_BUCKET / S3_BUCKET e AWS_DEFAULT_REGION, oppure crea il bucket"
 }

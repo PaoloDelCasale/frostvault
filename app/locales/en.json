@@ -661,5 +661,6 @@
   "api.vault_adoption.overlap": "The directory overlaps with another Vault.",
   "api.vault_adoption.unreadable": "FrostVault cannot read the selected directory.",
   "api.vault_adoption.unwritable": "FrostVault cannot write to the selected directory.",
-  "api.vault_adoption.volume_unavailable": "The source volume is not available right now."
+  "api.vault_adoption.volume_unavailable": "The source volume is not available right now.",
+  "cloud_preflight.bucket_not_found": "S3 bucket preflight failed: the configured bucket does not exist. Check VAULT_S3_BUCKET / S3_BUCKET and AWS_DEFAULT_REGION, or create the bucket"
 }

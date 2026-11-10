@@ -43,7 +43,7 @@ from .services import watch_plan
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, parse_message_params, translate
-from .services.s3_preflight import check_bucket_readiness, preflight_failure_message
+from .services.s3_preflight import check_bucket_readiness, failure_message_key, preflight_failure_message
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
@@ -499,8 +499,12 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
         client=s3_client(preflight=True),
     )
     if not result.ok:
+        key = failure_message_key(result)
+        # Keyed failures store the English catalog text, so the readiness gate
+        # can localize it for each viewer (cloud_preflight_gate.remediation_key).
         raise cloud_preflight_gate.ReadinessFailure(
-            "S3 bucket preflight failed: " + preflight_failure_message(result)
+            translate(key, locale="en") if key
+            else "S3 bucket preflight failed: " + preflight_failure_message(result)
         )
 
 
