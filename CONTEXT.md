@@ -91,6 +91,12 @@ rules). It is not pending work and never counts against a Vault's protection;
 a manual upload remains possible.
 _Avoid_: Ignored, Skipped, Pending
 
+**Unsupported**:
+The protection state of a local entry FrostVault cannot archive: a symbolic
+link, which is never followed, or a special file such as a pipe, socket or
+device. It is not a Problem and never counts against a Vault's protection.
+_Avoid_: Broken, Invalid, Problem
+
 **Cloud-only Conflict**:
 Different content observed at the path of a Vault File whose Local Copy was
 absent, so its verified Archive Version was the only copy. The content is held

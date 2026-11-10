@@ -16,7 +16,7 @@ import { vaultFilesUrl } from "@/router";
 const STATS_REFRESH_MS = 60_000;
 type SortKey = "name" | "state" | "protected" | "local" | "cloud" | "cost" | "problems";
 /** Worst first, so an ascending sort puts the Vaults that need attention on top. */
-const STATE_RANK: Record<string, number> = { suspended: 0, problem: 1, unconfirmed: 2, pending: 3, cloud_only: 4, protected: 5, excluded: 6, empty: 7, unknown: 8 };
+const STATE_RANK: Record<string, number> = { suspended: 0, problem: 1, unconfirmed: 2, pending: 3, cloud_only: 4, protected: 5, unsupported: 6, excluded: 7, empty: 8, unknown: 9 };
 
 type Row = {
   id: number; name: string; state: string; protected: number; files: number; local: number; cloud: number;
@@ -31,7 +31,7 @@ function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview
   return {
     id: vault.id, name: vault.name, state, loaded: Boolean(stats),
     protected: states.protected ?? 0,
-    files: Object.entries(states).filter(([name]) => name !== "excluded").reduce((sum, [, count]) => sum + count, 0),
+    files: Object.entries(states).filter(([name]) => name !== "excluded" && name !== "unsupported").reduce((sum, [, count]) => sum + count, 0),
     local: storage.local_bytes ?? 0, cloud: storage.cloud_bytes ?? 0,
     cost: summary ? summary.monthly_estimate : null, problems: summary?.open_problem_count ?? 0,
   };

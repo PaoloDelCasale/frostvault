@@ -13,7 +13,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0067_upload_multipart_journal"
+HEAD_SCHEMA_REVISION = "0068_unsupported_state"
 
 
 class DatabaseSchemaError(RuntimeError):

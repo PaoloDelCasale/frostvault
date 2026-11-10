@@ -43,6 +43,7 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "state.unconfirmed",
         "state.cloud_only",
         "state.excluded",
+        "state.unsupported",
         "state.last_known",
         "state.previous_snapshot_protected",
         "state.protection_suspended",

@@ -13,7 +13,10 @@ from .upload_path_rules import inline_eligibility_sql
 # "excluded" is a Local Copy the automatic upload never admits (fixed noise such
 # as ._* or .DS_Store, or a Vault exclude glob). It is no pending work and never
 # counts against the Vault's protection; a manual upload stays possible.
-STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded")
+# "unsupported" is a local entry FrostVault cannot archive (a symlink, which is
+# never followed, or a FIFO, socket or device). It is not a failure of
+# protection: like excluded it never counts against the Vault (#524).
+STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded", "unsupported")
 LOCAL_EXISTS_SQL = "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
 PROTECTED_SQL = """(
     lc.presence='present' AND lc.file_type='regular'
@@ -30,7 +33,6 @@ FAILED_UPLOAD_SQL = """coalesce((
 PROBLEM_SQL = f"""(
     av.availability='missing' OR av.integrity='mismatch'
     OR lc.cloud_only_version_id IS NOT NULL
-    OR lc.presence='unsupported'
     OR (NOT coalesce({PROTECTED_SQL}, FALSE) AND ({FAILED_UPLOAD_SQL}))
 )"""
 
@@ -50,6 +52,7 @@ def state_sql(policy: Any = None) -> str:
     return f"""CASE
     WHEN {PROBLEM_SQL} THEN 'problem'
     WHEN av.availability='unknown' THEN 'unconfirmed'
+    WHEN lc.presence='unsupported' THEN 'unsupported'
     WHEN NOT ({LOCAL_EXISTS_SQL}) AND av.id IS NOT NULL THEN
         CASE WHEN av.integrity='verified' AND av.availability='available'
              THEN 'cloud_only' ELSE 'unconfirmed' END
@@ -73,10 +76,12 @@ LATEST_JOIN_SQL = """
 def aggregate_state(counts: Mapping[str, int]) -> str | None:
     """Worst actionable observation; counts remain the authoritative summary.
 
-    Excluded files never lower the result; they are reported only when nothing
-    else is present, so a folder of ``.DS_Store`` files is not "protected".
+    Excluded and unsupported entries never lower the result; they are reported
+    only when nothing else is present, so a folder of ``.DS_Store`` files or
+    symlinks is not "protected".
     """
-    return next((state for state in ("problem", "unconfirmed", "pending", "protected", "cloud_only", "excluded")
+    return next((state for state in ("problem", "unconfirmed", "pending", "protected", "cloud_only",
+                                      "unsupported", "excluded")
                  if counts.get(state, 0) > 0), None)
 
 
@@ -92,6 +97,7 @@ def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[s
             and row.get("local_sha256") is not None
             and row.get("local_sha256") == row.get("version_sha256")
         ) else "cloud_only" if row.get("local_presence") not in {"present", "unsupported"} else (
+            "unsupported" if row.get("local_presence") == "unsupported" else
             # Unknown availability hides the rule-based state; the path still tells.
             "excluded" if row.get("path_excluded") else "pending"
         )
@@ -100,7 +106,7 @@ def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[s
         "last_known_state": last_known,
         "last_known_at": row.get("protection_observed_at"),
         "previous_snapshot_protected": bool(
-            known in ("pending", "excluded") and (
+            known in ("pending", "excluded", "unsupported") and (
                 int(row.get("recoverable_version_count") or 0) > 0
                 or (row.get("integrity") == "verified" and row.get("availability") == "available")
             )

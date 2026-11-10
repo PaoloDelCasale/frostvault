@@ -67,6 +67,7 @@ _STATE_COLUMNS = {
     "unconfirmed": "state_unconfirmed",
     "cloud_only": "state_cloud_only",
     "excluded": "state_excluded",
+    "unsupported": "state_unsupported",
 }
 
 _ACTION_COLUMNS = {
@@ -1143,7 +1144,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
         return
     escaped = _escape_like(directory)
     # Use the same SQL classification as files and statistics. The result is
-    # bounded to the six states, regardless of descendant count.
+    # bounded to the seven states, regardless of descendant count.
     select_sql, extra_params = _visible_file_select_sql(
         policy=get_policy(connection, int(vault_id)), path_prefix=directory,
     )
@@ -1256,14 +1257,14 @@ def _upsert_rollup(
             vault_id, path, parent_path, name,
             item_count, total_size, local_size, cloud_size,
             state_pending, state_cloud_only, state_protected, state_problem, state_unconfirmed,
-            state_excluded,
+            state_excluded, state_unsupported,
             action_upload, action_recover, action_free_space,
             action_cloud_purge, storage_class_counts, updated_at
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
-            %s,
+            %s, %s,
             %s, %s, %s,
             %s, %s, %s
         )
@@ -1280,6 +1281,7 @@ def _upsert_rollup(
             state_problem=excluded.state_problem,
             state_unconfirmed=excluded.state_unconfirmed,
             state_excluded=excluded.state_excluded,
+            state_unsupported=excluded.state_unsupported,
             action_upload=excluded.action_upload,
             action_recover=excluded.action_recover,
             action_free_space=excluded.action_free_space,
@@ -1302,6 +1304,7 @@ def _upsert_rollup(
             int(rollup.state_counts.get("problem", 0)),
             int(rollup.state_counts.get("unconfirmed", 0)),
             int(rollup.state_counts.get("excluded", 0)),
+            int(rollup.state_counts.get("unsupported", 0)),
             int(rollup.action_counts.get("upload", 0)),
             int(rollup.action_counts.get("recover", 0)),
             int(rollup.action_counts.get("free-space", 0)),
