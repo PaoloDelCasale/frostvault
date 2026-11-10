@@ -102,3 +102,68 @@ class CloudPreflightPolicyTests(unittest.TestCase):
                 self.assertEqual(job["retry_count"], 7)
                 update.assert_called_once_with(job["id"], "queued", "S3 readiness blocked; Job remains queued")
                 retry.assert_not_called()
+
+
+class LocalizedRemediationTests(unittest.TestCase):
+    """#531: the missing-bucket readiness text follows the viewer's language."""
+
+    def setUp(self):
+        from app.i18n import translate
+        from app.services.s3_preflight import BUCKET_NOT_FOUND_KEY
+        self.key = BUCKET_NOT_FOUND_KEY
+        self.english = translate(self.key, locale='en')
+        self.italian = translate(self.key, locale='it')
+
+    def test_both_catalogs_explain_the_missing_bucket_without_a_permission(self):
+        self.assertNotEqual(self.english, self.italian)
+        for text in (self.english, self.italian):
+            for setting in ('VAULT_S3_BUCKET', 'S3_BUCKET', 'AWS_DEFAULT_REGION'):
+                self.assertIn(setting, text)
+            self.assertNotIn('s3:HeadBucket', text)
+            # The notification body appends ". Jobs remain queued…".
+            self.assertFalse(text.endswith('.'))
+        self.assertIn('does not exist', self.english)
+        self.assertIn('non esiste', self.italian)
+
+    def test_stored_english_remediation_maps_back_to_its_key(self):
+        self.assertEqual(gate.remediation_key(self.english), self.key)
+        for other in (None, '', self.italian, gate.AUTH_REMEDIATION, self.english + ' '):
+            self.assertIsNone(gate.remediation_key(other))
+
+    def test_overview_snapshot_is_localized_and_unkeyed_text_is_unchanged(self):
+        state = {'status': 'blocked', 'remediation': self.english, 'next_probe_at': None}
+        self.assertEqual(gate.localized_snapshot(state, 'it')['remediation'], self.italian)
+        self.assertEqual(gate.localized_snapshot(state, 'en')['remediation'], self.english)
+        self.assertEqual(state['remediation'], self.english)
+        other = {'status': 'blocked', 'remediation': 'S3 bucket preflight failed: x', 'next_probe_at': None}
+        self.assertEqual(gate.localized_snapshot(other, 'it'), other)
+        ready = {'status': 'ready', 'remediation': None, 'next_probe_at': None}
+        self.assertEqual(gate.localized_snapshot(ready, 'it'), ready)
+
+    def test_blocked_problem_carries_the_key_and_renders_in_the_viewer_language(self):
+        from app.services import notifications
+        now = datetime.now(timezone.utc)
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {'acquired': True}
+        probe = Mock(side_effect=gate.ReadinessFailure(self.english))
+        with patch.object(gate, '_ready_pid', None), patch.object(
+            gate, 'snapshot', return_value={'status': 'ready', 'next_probe_at': now.isoformat()}
+        ), patch.object(gate.notifications, 'set_problem') as notify:
+            gate.check(lambda: connection, probe, now=now)
+        params = notify.call_args.kwargs['params']
+        self.assertEqual(params, {'remediation': self.english, 'remediation_key': self.key})
+        row = {'id': 1, 'user_id': 1, 'event': 'cloud_preflight_blocked', 'created_at': now.isoformat(),
+               'title_key': 'notification.cloud_preflight_blocked.title', 'title': '',
+               'body_key': 'notification.cloud_preflight_blocked.body', 'body': 'stored',
+               'message_params': params}
+        self.assertTrue(notifications._row_notification(row, locale='it')['body'].startswith(self.italian + '. '))
+        self.assertTrue(notifications._row_notification(row, locale='en')['body'].startswith(self.english + '. '))
+        summary = notifications.render_weekly_summary({'problems': [{
+            'event': row['event'], 'body_key': row['body_key'],
+            'message_params': '{"remediation": "%s", "remediation_key": "%s"}' % (self.english, self.key),
+        }]}, locale='it')
+        self.assertIn(self.italian, summary)
+
+    def test_unkeyed_remediation_keeps_its_plain_problem_params(self):
+        self.assertEqual(gate._problem_params('Check permissions'), {'remediation': 'Check permissions'})
+        self.assertEqual(gate._problem_params(None), {'remediation': ''})

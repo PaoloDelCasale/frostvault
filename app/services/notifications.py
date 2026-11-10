@@ -62,6 +62,15 @@ def _message_params(row: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str, Any]:
+    """Translate a keyed ``remediation`` param; its stored text stays English."""
+    localized = dict(params)
+    key = localized.get("remediation_key")
+    if isinstance(key, str) and key in locale_catalog("en"):
+        localized["remediation"] = translate(key, locale=locale)
+    return localized
+
+
 def _localized_notification_text(
     row: Mapping[str, Any], *, key_field: str, text_field: str, locale: str | None
 ) -> str:
@@ -84,7 +93,7 @@ def _localized_notification_text(
         english_catalog = locale_catalog("en")
         if key not in english_catalog:
             return fallback
-    return translate(key, locale=locale, **_message_params(row))
+    return translate(key, locale=locale, **_localized_params(_message_params(row), locale))
 
 
 def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = None) -> str:
@@ -103,7 +112,8 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
                      audit=vault.get("last_audit") or "—", suspended=vault["suspended"]))
     for problem in summary.get("problems") or []:
         lines.append(translate(problem["body_key"], locale=locale,
-                               **parse_message_params(problem.get("message_params"))) if problem.get("body_key") else problem["event"])
+                               **_localized_params(parse_message_params(problem.get("message_params")), locale))
+                     if problem.get("body_key") else problem["event"])
     lines.append(str(summary.get("cost_disclaimer") or ""))
     return "\n".join(lines)
 

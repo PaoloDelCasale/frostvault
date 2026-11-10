@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from botocore.exceptions import ClientError
-from app.services.s3_preflight import check_bucket_readiness, preflight_failure_message
+from app.services.s3_preflight import (
+    BUCKET_NOT_FOUND_KEY, check_bucket_readiness, failure_message_key, preflight_failure_message,
+)
 
 FLAGS = ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
 
@@ -147,12 +149,56 @@ class BucketPreflightTests(unittest.TestCase):
                 self.assertIn("SignatureDoesNotMatch", message)
                 self.assertNotIn(action, message)
 
-    def test_head_bucket_non_forbidden_errors_keep_their_existing_report(self):
+    def test_head_bucket_404_is_a_missing_bucket_not_a_permission(self):
+        for code, status in (("404", 404), ("NoSuchBucket", 404), ("NotFound", 404), ("", 404),
+                             ("NoSuchBucket", None)):
+            error = ClientError({"Error": {"Code": code, "Message": "provider-secret-fixture"},
+                                 "ResponseMetadata": {"HTTPStatusCode": status}}, "HeadBucket")
+            client = ready_client(head_bucket=Mock(side_effect=error))
+            with self.subTest(code=code, status=status):
+                result = check(client)
+                message = preflight_failure_message(result)
+                self.assertFalse(result.ok)
+                self.assertEqual([c.code for c in result.checks], ["bucket.exists"])
+                self.assertEqual(failure_message_key(result), BUCKET_NOT_FOUND_KEY)
+                self.assertIn("does not exist", message)
+                for setting in ("VAULT_S3_BUCKET", "S3_BUCKET", "AWS_DEFAULT_REGION", "create the bucket"):
+                    self.assertIn(setting, message)
+                self.assertNotIn("permission", message.lower())
+                self.assertNotIn("s3:HeadBucket", message)
+                self.assertNotIn("provider-secret-fixture", message)
+                client.get_bucket_location.assert_not_called()
+
+    def test_head_bucket_unexpected_error_reports_code_and_list_bucket_not_head_bucket(self):
+        for code, status in (("SlowDown", 503), ("InternalError", 500), ("301", 301)):
+            client = ready_client(head_bucket=Mock(side_effect=self.provider_error(code, "HeadBucket", status)))
+            with self.subTest(code=code):
+                result = check(client)
+                message = preflight_failure_message(result)
+                self.assertEqual([c.code for c in result.checks], ["bucket.access"])
+                self.assertIsNone(failure_message_key(result))
+                self.assertIn(f"({code})", message)
+                self.assertIn("s3:ListBucket", message)
+                self.assertNotIn("s3:HeadBucket", message)
+                self.assertNotIn("provider-secret-fixture", message)
+                client.get_bucket_location.assert_not_called()
+
+    def test_only_a_single_keyed_failure_has_a_message_key(self):
+        self.assertIsNone(failure_message_key(check(self.head_denied())))
+        self.assertIsNone(failure_message_key(check(ready_client())))
+
+    def test_missing_bucket_blocks_readiness_with_the_english_catalog_text(self):
+        from app.i18n import translate
+        from app.storage import _validate_cloud_vault
         error = ClientError({"Error": {"Code": "404"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "HeadBucket")
         client = ready_client(head_bucket=Mock(side_effect=error))
-        result = check(client)
-        self.assertEqual([c.code for c in result.checks], ["bucket.permissions"])
-        client.get_bucket_location.assert_not_called()
+        with patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings:
+            settings.aws_region = "eu-south-1"
+            with self.assertRaises(RuntimeError) as raised:
+                _validate_cloud_vault({"s3_bucket": "my-archive-bucket"})
+        self.assertEqual(str(raised.exception), translate(BUCKET_NOT_FOUND_KEY, locale="en"))
+        self.assertIn("does not exist", str(raised.exception))
+        self.assertNotIn("s3:HeadBucket", str(raised.exception))
 
     def test_wrong_region_fails(self):
         self.assertFalse(check(ready_client(get_bucket_location=Mock(return_value={"LocationConstraint": "us-west-2"}))).ok)
