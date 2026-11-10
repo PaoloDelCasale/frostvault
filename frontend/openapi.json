@@ -2079,6 +2079,7 @@
         "type": "object"
       },
       "RecoverEstimateRequest": {
+        "additionalProperties": false,
         "properties": {
           "archive_version_id": {
             "anyOf": [
@@ -2097,6 +2098,7 @@
             "type": "boolean"
           },
           "path": {
+            "default": "",
             "title": "Path",
             "type": "string"
           },
@@ -2123,11 +2125,24 @@
               }
             ],
             "title": "Restore Tier"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RecoverySelectionItem"
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection"
           }
         },
-        "required": [
-          "path"
-        ],
         "title": "RecoverEstimateRequest",
         "type": "object"
       },
@@ -2177,6 +2192,74 @@
           "high_impact",
           "estimate"
         ],
+        "type": "object"
+      },
+      "RecoverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "archive_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Version Id"
+          },
+          "is_directory": {
+            "default": false,
+            "title": "Is Directory",
+            "type": "boolean"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "restore_days": {
+            "anyOf": [
+              {
+                "maximum": 30.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Days"
+          },
+          "restore_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Tier"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RecoverySelectionItem"
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection"
+          }
+        },
+        "title": "RecoverRequest",
         "type": "object"
       },
       "RecoveryKitCustody": {
@@ -2243,6 +2326,27 @@
           "acknowledged_at",
           "metadata_restore"
         ],
+        "type": "object"
+      },
+      "RecoverySelectionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "is_directory": {
+            "default": false,
+            "title": "Is Directory",
+            "type": "boolean"
+          },
+          "path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "RecoverySelectionItem",
         "type": "object"
       },
       "RestoreEstimate": {
@@ -5100,7 +5204,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FileAction"
+                "$ref": "#/components/schemas/RecoverRequest"
               }
             }
           },

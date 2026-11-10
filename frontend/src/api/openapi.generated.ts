@@ -1856,12 +1856,17 @@ export interface components {
              * @default false
              */
             is_directory: boolean;
-            /** Path */
+            /**
+             * Path
+             * @default
+             */
             path: string;
             /** Restore Days */
             restore_days?: number | null;
             /** Restore Tier */
             restore_tier?: string | null;
+            /** Selection */
+            selection?: components["schemas"]["RecoverySelectionItem"][] | null;
         };
         RecoverEstimateResponse: {
             archive_version_id: string | null;
@@ -1873,6 +1878,27 @@ export interface components {
             storage_class?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** RecoverRequest */
+        RecoverRequest: {
+            /** Archive Version Id */
+            archive_version_id?: string | null;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /** Restore Days */
+            restore_days?: number | null;
+            /** Restore Tier */
+            restore_tier?: string | null;
+            /** Selection */
+            selection?: components["schemas"]["RecoverySelectionItem"][] | null;
         };
         /** RecoveryKitCustody */
         RecoveryKitCustody: {
@@ -1890,6 +1916,16 @@ export interface components {
             } | null;
         } & {
             [key: string]: unknown;
+        };
+        /** RecoverySelectionItem */
+        RecoverySelectionItem: {
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Path */
+            path: string;
         };
         RestoreEstimate: {
             assumptions?: {
@@ -3271,7 +3307,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FileAction"];
+                "application/json": components["schemas"]["RecoverRequest"];
             };
         };
         responses: {

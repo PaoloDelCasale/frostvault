@@ -313,6 +313,35 @@ def enqueue_notification(
     return notification
 
 
+def enqueue_recovery_approval_best_effort(connection: Any, *, job_ids: list[int]) -> None:
+    """One inbox/optional email notice per request, isolated from admission."""
+    from ..database import transaction
+    try:
+        with transaction(connection):
+            job = connection.execute(
+                """SELECT vault_id, group_id, min(path) AS path, count(*) AS count,
+                          max(estimated_cost_eur) AS cost
+                   FROM jobs WHERE id=ANY(%s) AND status='pending_approval'
+                   GROUP BY vault_id, group_id""", (job_ids,),
+            ).fetchone()
+            if not job:
+                return
+            params = {"count": int(job["count"]), "cost": f"{float(job['cost'] or 0):.2f}",
+                      "path": job["path"], "group_id": job["group_id"]}
+            channels = ("in_app", "email") if _smtp_config() is not None else ("in_app",)
+            for recipient in _owner_recipients(connection):
+                enqueue_notification(
+                    connection, user_id=int(recipient["user_id"]),
+                    vault_id=job["vault_id"], event="recovery_approval", title="",
+                    title_key="notification.recovery_approval.title",
+                    body_key="notification.recovery_approval.body", message_params=params,
+                    channels=channels,
+                    dedupe_key=f"recovery:{job['vault_id']}:{job['group_id']}:approval",
+                )
+    except Exception:
+        _logger.warning("Recovery approval notification failed; recovery request remains queued for approval")
+
+
 def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     """Notify the Owner of terminal Jobs; failures also use optional SMTP."""
     job = connection.execute(

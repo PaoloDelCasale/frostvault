@@ -3362,6 +3362,19 @@ class ArchiveCatalog:
             row["storage_class"]
         )
 
+    @staticmethod
+    def recovery_selection_scope(selection: Sequence[tuple[str, bool]]) -> tuple[str, list[Any]]:
+        """One union of paths, never a concatenation that duplicates overlaps.
+
+        Callers normalize paths first. The surrounding query must bind vf.vault_id.
+        starts_with treats SQL wildcard characters literally.
+        """
+        clauses, params = [], []
+        for path, is_directory in selection:
+            clauses.append("starts_with(fp.path, %s)" if is_directory else "fp.path=%s")
+            params.append(path + "/" if is_directory else path)
+        return "(" + " OR ".join(clauses) + ")", params
+
     def queue_jobs(
         self,
         *,
@@ -3382,6 +3395,7 @@ class ArchiveCatalog:
         origin: str = "manual",
         target_storage_class: str | None = None,
         whole_vault: bool = False,
+        recovery_selection: Sequence[tuple[str, bool]] | None = None,
     ) -> tuple[list[int], int, int]:
         # This write is deliberately first: take the Vault row lock before
         # the candidate read and inserts.
@@ -3403,7 +3417,13 @@ class ArchiveCatalog:
             """
         )
         params.extend(TERMINAL_JOB_STATUSES)
-        if whole_vault:
+        if recovery_selection:
+            if action != "recover":
+                raise ValueError("Selections are only supported for recovery")
+            scope, scope_params = self.recovery_selection_scope(recovery_selection)
+            clauses.append(scope)
+            params.extend(scope_params)
+        elif whole_vault:
             pass
         elif is_directory:
             escaped = (
