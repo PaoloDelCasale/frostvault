@@ -33,7 +33,7 @@ describe("essential recovery", () => {
     await screen.findByText("essential.ready_now"); expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
   it("announces before confirming that a high-impact folder waits for Restore Approval (#533)", async () => {
-    const folder: Target = { vaultId: 2, vaultName: "Second", item: { type: "directory", name: "photos", path: "photos", state: "cloud_only" } };
+    const folder: Target = { vaultId: 2, vaultName: "Second", item: { type: "directory", name: "photos", path: "photos", state: "cloud_only", item_count: 25, total_size: 128849018880, state_counts: { cloud_only: 25 } } };
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, high_impact: true, estimate: { estimated_cost_eur: 25, estimated_hours: 48, tier: "Bulk", days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
     render(<RecoverSelection targets={[folder]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     expect(await screen.findByTestId("recover-approval-notice")).toHaveTextContent("essential.recover_approval_notice");
