@@ -2065,6 +2065,33 @@ async def catalog_events_stream(
     )
 
 
+# A Vault directory may mix GLACIER and DEEP_ARCHIVE versions, so one request
+# tier must be valid for every class that needs a restore (no Expedited).
+DIRECTORY_RESTORE_TIERS = ("Standard", "Bulk")
+
+
+def resolve_directory_restore(
+    tier: str | None, days: int | None
+) -> tuple[str, int]:
+    """Resolve the tier and days one directory recovery applies to every Job.
+
+    The directory Cost Estimate and the queued Jobs share this so the dialog,
+    the estimate and the actual restore agree (#532).
+    """
+    runtime = _runtime_settings()
+    requested = (tier or "").strip()
+    if requested:
+        if requested not in DIRECTORY_RESTORE_TIERS:
+            raise HTTPException(422, "Choose Standard or Bulk")
+        resolved_tier = requested
+    else:
+        resolved_tier = normalize_restore_tier(
+            runtime.restore_tier, storage_class="DEEP_ARCHIVE"
+        )
+    resolved_days = int(days if days is not None else runtime.restore_days)
+    return resolved_tier, resolved_days
+
+
 def queue_jobs(
     path: str,
     action: str,
@@ -2126,6 +2153,11 @@ def queue_jobs(
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+    directory_recover = action == "recover" and (is_directory or whole_vault)
+    if directory_recover:
+        resolved_tier, resolved_days = resolve_directory_restore(
+            restore_tier, restore_days
+        )
     with db() as connection:
         if action == "free-space" and not local_release_is_confirmed(connection, vault_id):
             raise HTTPException(409, "Local release blocked: protection is not confirmed")
@@ -2235,6 +2267,15 @@ def queue_jobs(
             whole_vault=whole_vault,
         )
         skipped_same_class = int(getattr(catalog, "last_skipped_same_class", 0) or 0)
+        if directory_recover and not (
+            job_ids
+            and connection.execute(
+                "SELECT 1 FROM jobs WHERE id=ANY(%s) AND restore_tier IS NOT NULL LIMIT 1",
+                (job_ids,),
+            ).fetchone()
+        ):
+            # Nothing queued needs a cloud restore; echo what was persisted.
+            resolved_tier = resolved_days = None
         if not eligible_count:
             if action == "storage-class" and skipped_same_class:
                 raise HTTPException(
@@ -2329,11 +2370,9 @@ def recover_estimate(
                 "AND (lc.presence IS NULL OR lc.presence='missing') GROUP BY av.storage_class",
                 (vault["id"], prefix),
             ).fetchall()
-        tier = action.restore_tier or "Bulk"
-        if tier not in {"Bulk", "Standard"}:
-            raise HTTPException(422, "Choose Standard or Bulk")
+        tier, days = resolve_directory_restore(action.restore_tier, action.restore_days)
         estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
-                     storage_class=row["storage_class"], tier=tier, days=action.restore_days or settings.restore_days)
+                     storage_class=row["storage_class"], tier=tier, days=days)
                      for row in classes if storage_class_requires_restore(row["storage_class"])]
         total_cost = sum(item.estimated_cost_eur for item in estimates)
         high_impact = bool(estimates) and is_high_impact_restore(
@@ -2342,7 +2381,7 @@ def recover_estimate(
         )
         return {"path": logical_path, "archive_version_id": None,
                 "requires_restore": bool(estimates), "restore_object_irreversible": bool(estimates), "high_impact": high_impact,
-                "estimate": {"tier": tier, "days": action.restore_days or settings.restore_days,
+                "estimate": {"tier": tier, "days": days,
                              "estimated_cost_eur": total_cost,
                              "estimated_hours": max((item.estimated_hours or 0 for item in estimates), default=0)} if estimates else None}
     with db() as connection:
