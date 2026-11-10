@@ -57,7 +57,8 @@ original failure notification, only when the upload completes through the
 ordinary completion/cleanup postcondition. An intent whose send never started has
 no provider obligation: it neither blocks nor binds later uploads and is re-pinned
 or settled when the next upload prepares. Content that changed meanwhile fails the
-Job as a source change, never as an identity change.
+Job as a source change, never as an identity change, and closes the unsent intent so
+the next attempt takes a new Upload Snapshot ([ADR-0030](0030-a-stale-upload-snapshot-closes-its-unsent-intent.md), #538).
 
 A reconcile-only attempt (remediation or explicit reconcile) does not bypass
 paused protection: a proven absence on a path with paused automatic protection
