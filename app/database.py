@@ -13,7 +13,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0068_unsupported_state"
+HEAD_SCHEMA_REVISION = "0069_upload_intent_per_attempt"
 
 
 class DatabaseSchemaError(RuntimeError):

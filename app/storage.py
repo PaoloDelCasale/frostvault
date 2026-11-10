@@ -3821,6 +3821,26 @@ def _rearm_after_proven_absence(job: dict[str, Any], intent: dict[str, Any]) -> 
     clear_problem()
 
 
+def _close_stale_upload_snapshot(job: dict[str, Any]) -> None:
+    """After a source change, let the next attempt fingerprint the current content.
+
+    Snapshot A can never match a Local Copy that changed, so retrying against it
+    only rereads the file until ``job.source_changed_stalled`` (#538). An unsent
+    intent is closed (never re-pinned) and the Job forgets A. A started send is left
+    alone: the next attempt reconciles it, and that reconciliation leaves the
+    send-started state in one attempt (a proven absence makes the intent unsent and
+    closable here, a found version is verified as A, anything else is a durable
+    block), so the stale comparison cannot repeat. Best effort: on any failure the
+    retry is scheduled as before and the next source change tries again.
+    """
+    from .services import upload_provenance as provenance
+    try:
+        _upload_catalog_unit(job, lambda catalog: provenance.close_unsent_for_job(
+            catalog.connection, job, now_iso()))
+    except Exception:
+        logging.getLogger(__name__).warning("Stale Upload Snapshot was not closed; the retry reuses it")
+
+
 def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], client: Any) -> None:
     from .services import upload_provenance as provenance
     pinned = json.loads(intent["target_json"])
@@ -5798,6 +5818,9 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if job["action"] == "upload" and failure_kind == "source_changed":
             next_attempt = int(job.get("retry_count") or 0) + 1
             if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
+                # A started send keeps its snapshot: the retry reconciles it first
+                # (ADR-0025/0029). Only an unsent intent is closed here (#538).
+                _close_stale_upload_snapshot(job)
                 with db() as connection:
                     policy = get_policy(connection, int(job["vault_id"]))
                 return schedule_upload_retry(

@@ -269,6 +269,39 @@ def _settle_unstarted(connection: Any, file_id: str, *, keep_intent_id: str | No
         close_multiparts(connection, row["id"], datetime.now(timezone.utc).isoformat())
 
 
+def close_unsent_for_job(connection: Any, job: dict[str, Any], timestamp: str) -> bool:
+    """Close a Job's stale, never-sent Upload Snapshot after a source change (#538).
+
+    The Upload Snapshot stays immutable for an admitted intent; it is never
+    re-pinned here. An intent whose send never started (or was closed by a proven
+    absence) owes the provider nothing, so it is settled with its snapshot intact
+    and unbound from the Job, and the Job forgets snapshot A. The next attempt then
+    fingerprints the current Local Copy and admits a new intent with a new token,
+    instead of comparing the file with A until the retry budget runs out.
+
+    Never touched: a linked Archive Version, a started send (reconciliation decides
+    it, ADR-0025/0029), a receipt, or a reconcile-only attempt (it can never send a
+    new snapshot). Caller owns the claim-fenced DB unit. Returns True if closed.
+    """
+    row = connection.execute("SELECT archive_version_id,upload_snapshot_json,upload_reconcile_only FROM jobs WHERE id=%s FOR UPDATE", (job["id"],)).fetchone()
+    if not row or row["archive_version_id"] or row["upload_reconcile_only"]:
+        return False
+    intent = load_for_job(connection, job["id"])
+    if intent is not None:
+        if intent["send_started"] or intent["archive_version_id"] or receipt(connection, intent["id"]) is not None:
+            return False
+        if not intent["settled"]:
+            closed = connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started AND archive_version_id IS NULL RETURNING id", (intent["id"],)).fetchone()
+            if not closed:
+                return False
+            close_multiparts(connection, intent["id"], timestamp)
+        connection.execute("DELETE FROM upload_intent_jobs WHERE job_id=%s AND intent_id=%s", (job["id"], intent["id"]))
+    elif row["upload_snapshot_json"] is None:
+        return False
+    connection.execute("UPDATE jobs SET upload_snapshot_json=NULL,upload_plaintext_sha256=NULL WHERE id=%s", (job["id"],))
+    return True
+
+
 def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> None:
     original = connection.execute("SELECT status FROM jobs WHERE id=%s", (intent["original_job_id"],)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM upload_intent_jobs b JOIN jobs j ON j.id=b.job_id WHERE b.intent_id=%s AND j.status='cancelled' LIMIT 1", (intent["id"],)).fetchone()
