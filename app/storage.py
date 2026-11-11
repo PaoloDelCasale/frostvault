@@ -4077,7 +4077,7 @@ def process_upload(job: dict[str, Any]) -> None:
         target: dict[str, Any]
         head: dict[str, Any]
         client = s3_client()
-        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
+        namespace = snapshot_cleanup.pin_upload_namespace(sys.modules[__name__], job, client)
         if linked_version_id:
             # A retry after catalog linkage is verification-only. Uploading
             # again here would create a second provider VersionId and split the
@@ -4189,11 +4189,17 @@ def process_upload(job: dict[str, Any]) -> None:
                 key = expected_cloud_key(job["path"], job["s3_prefix"])
                 assert snapshot is not None
                 provider = provenance.provider_identity(client)
-                with db() as connection:
-                    pinned = provenance.target(connection, job, key=key, provider=provider, shared=True)
-                before = provenance.inventory(client, job["s3_bucket"], key)
-                if before != provenance.inventory(client, job["s3_bucket"], key):
-                    raise provenance.UploadBlocked("inventory_changed")
+                fresh = namespace.take_for_upload(job, client)
+                if fresh is None:
+                    # Resume/historical pins are not fresh observations. Preserve
+                    # the ordinary independent pair, without rebasing cleanup.
+                    with db() as connection:
+                        pinned = provenance.target(connection, job, key=key, provider=provider, shared=True)
+                    before = provenance.inventory(client, job["s3_bucket"], key)
+                    if before != provenance.inventory(client, job["s3_bucket"], key):
+                        raise provenance.UploadBlocked("inventory_changed")
+                else:
+                    pinned, before = fresh
                 intent = _upload_catalog_unit(job, lambda catalog: provenance.prepare(
                     catalog.connection, job, pinned=pinned, snapshot=snapshot,
                     requested=requested_mode, before=before, timestamp=now_iso(), shared=True), shared=True)
