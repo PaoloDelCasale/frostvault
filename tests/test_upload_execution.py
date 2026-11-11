@@ -38,7 +38,7 @@ class ReceiptJournalTests(unittest.TestCase):
             self.assertEqual(append.call_count, 2)
 
 
-class CancelledJournalRecoveryTests(unittest.TestCase):
+class JournalAdmissionTests(unittest.TestCase):
     def setUp(self):
         from app import storage
         from app.services.upload_execution import UploadExecution
@@ -72,46 +72,46 @@ class CancelledJournalRecoveryTests(unittest.TestCase):
         self.worker, self.provider, self.coordinator = worker, provider, coordinator
         self.execution = UploadExecution(worker)
 
-    def test_cancelled_intent_repairs_only_facts_before_reopening_other_sends(self):
+    def test_reachable_journal_does_not_wait_for_reconciliation_of_an_active_intent(self):
+        query = self.worker.db.return_value.__enter__.return_value.execute.side_effect
+        def active_intent(sql, *args):
+            result = query(sql, *args)
+            if "FROM upload_intents" in sql:
+                result.fetchone.return_value = {**result.fetchone.return_value, "cancelled": False}
+            return result
+        self.worker.db.return_value.__enter__.return_value.execute.side_effect = active_intent
+        self.execution._refresh_journal_gate(self.coordinator)
+        self.coordinator.require_send_admission()
+        self.assertEqual(self.provider.puts, 0)
+        self.worker._resume_materialized_upload.assert_not_called()
+
+    def test_cancelled_intent_cannot_force_provider_reads_on_other_sends(self):
+        self.worker.s3_client.side_effect = AssertionError("Admission must be DB-only, even for cancelled intents")
         with patch.object(provenance, "append_receipt") as append:
             self.execution._refresh_journal_gate(self.coordinator)
             self.coordinator.require_send_admission()
-            append.assert_called_once()
-            self.assertEqual(append.call_args.args[1], "intent")
-            self.assertEqual(append.call_args.args[2]["VersionId"], "version-1")
+            append.assert_not_called()
         self.worker._publish_upload_receipt.assert_not_called()
         self.worker._resume_materialized_upload.assert_not_called()
         self.assertEqual((self.provider.puts, self.provider.deletes, self.provider.aborted), (0, 0, []))
 
-    def test_missing_token_mismatched_bytes_absence_and_failed_append_stay_closed(self):
-        original = dict(self.provider.objects)
-        for fault in ("token", "digest", "absence", "external", "journal"):
-            with self.subTest(fault=fault):
-                self.provider.objects = dict(original)
-                key = ("old/file", "version-1")
-                if fault == "token":
-                    self.provider.objects[key] = (b"frozen content", {})
-                elif fault == "digest":
-                    self.provider.objects[key] = (b"different data", {provenance.TOKEN_KEY: "intent-token"})
-                elif fault == "absence":
-                    self.provider.objects.clear()
-                elif fault == "external":
-                    self.provider.add("old/file", b"external", version="external-version")
-                failure = psycopg.OperationalError("journal unavailable") if fault == "journal" else None
-                with patch.object(provenance, "append_receipt", side_effect=failure) as append:
-                    self.execution._refresh_journal_gate(self.coordinator)
-                    with self.assertRaises(psycopg.OperationalError):
-                        self.coordinator.require_send_admission()
-                    if fault != "journal":
-                        append.assert_not_called()
-                self.assertEqual((self.provider.puts, self.provider.deletes, self.provider.aborted), (0, 0, []))
+    def test_failed_probe_or_commit_keeps_send_admission_closed(self):
+        from app.services.upload_pipeline import UploadJournalHeld
+        for stage in ("probe", "commit"):
+            with self.subTest(stage=stage):
+                context = self.worker.db.return_value
+                context.__exit__.side_effect = psycopg.OperationalError("unknown commit") if stage == "commit" else None
+                with patch.object(provenance, "probe_receipt_journal",
+                                  side_effect=psycopg.OperationalError("write unavailable") if stage == "probe" else None):
+                    with self.assertRaises(UploadJournalHeld):
+                        self.execution._refresh_journal_gate(self.coordinator)
+                with self.assertRaises(UploadJournalHeld):
+                    self.coordinator.require_send_admission()
+        self.worker.s3_client.assert_not_called()
 
-    def test_another_failed_late_fact_during_repair_is_not_cleared(self):
-        def fail_late(stage, **kwargs):
-            if stage == "head":
-                self.coordinator.journal_failed("intent", "different-late-fact")
-        self.provider.hook = fail_late
-        with patch.object(provenance, "append_receipt"):
+    def test_another_failed_late_fact_during_probe_is_not_cleared(self):
+        with patch.object(provenance, "probe_receipt_journal", side_effect=lambda connection:
+                          self.coordinator.journal_failed("intent", "different-late-fact")):
             self.execution._refresh_journal_gate(self.coordinator)
         self.assertEqual(self.coordinator.uncertain_journals(), (("intent", "different-late-fact"),))
         with self.assertRaises(psycopg.OperationalError):

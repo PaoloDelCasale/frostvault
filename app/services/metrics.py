@@ -51,6 +51,8 @@ _ALLOWED_METRICS = {
     "upload_remediation_due_oldest_age_seconds": "gauge",
     "upload_remediation_states": "gauge",
     "upload_remediation_last_tick_unixtime": "gauge",
+    "upload_remediation_sweep_stale": "gauge",
+    "upload_journal_held": "gauge",
     "jobs_notification_backlog": "gauge",
     "worker_up": "gauge",
     "metadata_backup_last_success_unixtime": "gauge",

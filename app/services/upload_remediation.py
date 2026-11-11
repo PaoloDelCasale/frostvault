@@ -17,6 +17,8 @@ from . import upload_provenance as provenance
 from .upload_remediation_discovery import enroll as _enroll, capture as capture_fact, drain as discover_facts
 
 POLL_SECONDS = 10
+SWEEP_NAMES = ("discovery", "facts", "admission")
+SWEEP_STALE_SECONDS = 5 * POLL_SECONDS
 VAULT_BATCH = 10
 TARGET_BATCH = 10
 TERMINAL = ("completed", "failed", "cancelled")
@@ -438,6 +440,9 @@ def retry_vault(connection: Any, vault: dict[str, Any], user_id: int, stamp: str
 
 
 def _fair_vaults(connection: Any, name: str, stamp: str) -> list[dict[str, Any]]:
+    # Restore coordination metadata lost by a partial restore/reset. Never reset
+    # an existing cursor or mistake an absent row for another sweep's row lock.
+    connection.execute("INSERT INTO upload_remediation_sweep(name) VALUES (%s) ON CONFLICT DO NOTHING", (name,))
     cursor = connection.execute("SELECT * FROM upload_remediation_sweep WHERE name=%s FOR UPDATE SKIP LOCKED", (name,)).fetchone()
     if not cursor:
         return []
@@ -454,7 +459,7 @@ def sweep(db: Any, stamp: str | None = None) -> int:
     """Bounded round-robin across Vaults; no maintenance/operation worker needed."""
     stamp = stamp or datetime.now(timezone.utc).isoformat()
     count = 0
-    for name in ("discovery","facts","admission"):
+    for name in SWEEP_NAMES:
         deadline = monotonic() + 1.0
         with db() as connection:
             connection.execute("SET LOCAL lock_timeout='100ms'")
@@ -537,8 +542,30 @@ def project_jobs(connection: Any, jobs: list[dict[str, Any]]) -> list[dict[str, 
     return [{**row,"remediation":by_job.get(row["id"]),"remediation_rejection":rejections.get(row["id"])} for row in jobs]
 
 
+def sweep_status(connection: Any, current: datetime | None = None) -> dict[str, Any]:
+    """Read durable heartbeats, never substitute the observer's own timestamp."""
+    current = current or datetime.now(timezone.utc)
+    ticks = {row["name"]: row["last_tick_at"] for row in connection.execute(
+        "SELECT name,last_tick_at FROM upload_remediation_sweep").fetchall()}
+    stamps = [datetime.fromisoformat(ticks[name]) for name in SWEEP_NAMES if ticks.get(name)]
+    missing = any(not ticks.get(name) for name in SWEEP_NAMES)
+    oldest = min(stamps) if stamps else None
+    age = max(0.0, (current - oldest).total_seconds()) if oldest else None
+    return {"available": True, "stale": missing or age > SWEEP_STALE_SECONDS,
+            "missing_ticks": missing, "oldest_tick_age_seconds": age,
+            "last_tick_unixtime": oldest.timestamp() if oldest and not missing else 0.0}
+
+
+def sweep_health(db: Any) -> dict[str, Any]:
+    try:
+        with db() as connection:
+            return sweep_status(connection)
+    except Exception:
+        return {"available": False, "stale": True}
+
+
 def observe(db: Any) -> None:
-    from . import metrics
+    from . import metrics, notifications, upload_pipeline
     current = datetime.now(timezone.utc)
     def age(value: str | None) -> float:
         return max(0.0,(current-datetime.fromisoformat(value)).total_seconds()) if value else 0.0
@@ -549,6 +576,12 @@ def observe(db: Any) -> None:
         inbox["oldest"] = min(value for value in (inbox["oldest"], facts["oldest"]) if value is not None) if inbox["oldest"] or facts["oldest"] else None
         due = connection.execute("SELECT count(*) n,min(due_at) oldest FROM upload_remediations WHERE state IN ('pending','queued','retrying') AND due_at<=%s", (current.isoformat(),)).fetchone()
         states = connection.execute("SELECT state,count(*) n FROM upload_remediations WHERE state<>'resolved' GROUP BY state").fetchall()
+        status = sweep_status(connection, current)
+        journal = upload_pipeline.journal_status()
+        notifications.set_problem(connection, key="upload_remediation_stale", event="upload_remediation_stale",
+                                  active=status["stale"], email=False)
+        notifications.set_problem(connection, key="upload_journal_unavailable", event="upload_journal_unavailable",
+                                  active=journal["held"], email=False)
     metrics.set_gauge("upload_remediation_discovery_backlog",inbox["n"])
     metrics.set_gauge("upload_remediation_discovery_oldest_age_seconds",age(inbox["oldest"]))
     metrics.set_gauge("upload_remediation_due_queue",due["n"])
@@ -556,4 +589,6 @@ def observe(db: Any) -> None:
     counts = {r["state"]:r["n"] for r in states}
     for state in ("pending","queued","retrying","blocked","suspended","cancelled"):
         metrics.set_gauge("upload_remediation_states",counts.get(state,0),state=state)
-    metrics.set_gauge("upload_remediation_last_tick_unixtime",current.timestamp())
+    metrics.set_gauge("upload_remediation_last_tick_unixtime", status["last_tick_unixtime"])
+    metrics.set_gauge("upload_remediation_sweep_stale", float(status["stale"]))
+    metrics.set_gauge("upload_journal_held", float(journal["held"]))

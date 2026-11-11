@@ -20,8 +20,9 @@ bounded by 16 claimed Jobs x 10,000 checksums and dies with the attempt.
 
 Receipt appends never acquire a catalog permit. A failed append closes *new*
 send admission, without waiting behind catalog writers or occupying all workers
-waiting for a recovery Job. Only a confirmed append or reconciliation can reopen
-it. The latch stores bounded intent identities, never a RAM receipt queue.
+waiting for a recovery Job. A committed writable-journal probe can reopen admission for unrelated intents;
+the durable send-started intent still MUST reconcile before another send. The
+latch stores bounded failure identities, never a RAM receipt queue.
 """
 from __future__ import annotations
 
@@ -37,6 +38,10 @@ import psycopg
 
 from .database_retry import owned_connection
 from .upload_snapshot import CHUNK_SIZE, MAX_PART_SIZE, MULTIPART_THRESHOLD, UploadSnapshot
+
+
+class UploadJournalHeld(psycopg.OperationalError):
+    """Send admission is waiting, not a transfer failure or spent retry."""
 
 
 @dataclass(frozen=True)
@@ -149,10 +154,9 @@ class _Pipeline:
     def require_send_admission(self) -> None:
         with self._lock:
             if self._uncertain:
-                # Fail fast using the existing bounded database retry policy.
-                # Waiting here could consume every claimed slot and hide the
-                # recovery Job. Do not mark unrelated files ambiguous/started.
-                raise psycopg.OperationalError("Upload receipt journal unavailable; new sends held")
+                # Release the claim with a timed wait, without spending transfer
+                # retries or occupying all workers behind a reconciliation Job.
+                raise UploadJournalHeld("Upload receipt journal unavailable; new sends held")
 
     @contextmanager
     def sending(self, snapshot: UploadSnapshot, check: Callable[[], None]) -> Iterator[None]:
@@ -184,6 +188,15 @@ def _after_fork() -> None:
 
 
 os.register_at_fork(after_in_child=_after_fork)
+
+
+def journal_status() -> dict[str, Any]:
+    """Installation-local, bounded health signal; never expose DSNs or intent IDs."""
+    from .. import database
+    with _registry_lock:
+        coordinator = _registry.get(database.settings.database_dsn)
+    pending = len(coordinator.uncertain_journals()) if coordinator else 0
+    return {"held": bool(pending), "uncertain_facts": pending}
 
 
 def pipeline_for(worker: Any) -> _Pipeline:

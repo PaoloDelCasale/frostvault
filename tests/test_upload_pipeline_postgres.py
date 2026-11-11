@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import psycopg
 
-from app import storage
+from app import database, storage
 from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services import upload_pipeline as pipeline, upload_provenance as provenance
@@ -31,6 +31,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker.setUp()
         self.pipeline = pipeline._Pipeline(4, pipeline._Limits(network_count=1))
         self.enterContext(patch.object(pipeline, "pipeline_for", return_value=self.pipeline))
+        self.enterContext(patch.dict(pipeline._registry, {database.settings.database_dsn: self.pipeline}))
         self.addCleanup(storage.shutdown_state.reset)
 
     def queue(self, path):
@@ -241,15 +242,18 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             self.assertTrue(intent["send_started"])
             self.assertIsNone(provenance.receipt(connection, intent["id"]))
             connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
+        self.assertTrue(pipeline.journal_status()["held"])
         self.worker.run_job(other)
+        self.assertFalse(pipeline.journal_status()["held"])
         self.worker.assert_keeper(other)
         self.assertEqual(self.worker.row(other)["retry_count"], 0)
         self.assertEqual(self.worker.provider.puts, 2)
         # Reachability is not evidence that the first provider send never landed.
         with PostgresConnection(self.worker.db_path) as connection:
             after = provenance.load_for_job(connection, first)
-            self.assertEqual(after["token"], intent["token"])
-            self.assertTrue(after["send_started"])
+            for field in ("token", "target_json", "snapshot_json", "send_started", "settled", "archive_version_id"):
+                self.assertEqual(after[field], intent[field], field)
+            self.assertIsNone(provenance.receipt(connection, intent["id"]), "Availability is not a recovered receipt")
             connection.execute("UPDATE vaults SET enabled=TRUE WHERE id=2")
             connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (first,))
         self.worker.run_job(first)
@@ -257,15 +261,37 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.puts, 2, "Same durable intent must reconcile, never send twice")
         self.assert_empty()
 
-    def test_failed_journal_holds_new_sends_until_reconciliation_without_a_receipt_queue(self):
+    def test_unavailable_journal_holds_without_spending_retries_then_recovers(self):
         first, second = self.queue("report.txt"), self.queue("second.txt")
         with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):
             self.worker.run_job(first)
         self.assertEqual(self.worker.provider.puts, 1)
         self.assertTrue(self.pipeline.uncertain_journals())
-        self.worker.run_job(second)
-        self.assertEqual(self.worker.provider.puts, 1, "A different claimed Job must NOT PUT through a broken journal")
-        self.assert_no_send_fact(second)
+        from app.services import upload_remediation
+        with PostgresConnection(self.worker.db_path) as connection:
+            connection.execute("UPDATE jobs SET retry_count=7 WHERE id=%s", (second,))
+        # Inject a real journal write outage while the rest of the catalog can
+        # still park Jobs. More waits than the transfer budget must not fail it.
+        probe = provenance.probe_receipt_journal
+        def read_only_journal(connection):
+            connection.execute("SET TRANSACTION READ ONLY")
+            probe(connection)  # Actual PostgreSQL read-only failure, not a mock verdict.
+        with patch.object(provenance, "probe_receipt_journal", side_effect=read_only_journal):
+            for _ in range(10):
+                self.assertFalse(self.worker.run_job(second))
+                held = self.worker.row(second)
+                self.assertEqual((held["status"], held["retry_count"]), ("retrying", 7))
+                self.assertEqual(held["message_key"], "job.upload_journal_waiting")
+                self.assertIsNotNone(held["retry_after"])
+                self.assertIsNone(held["claim_token"])
+                self.assert_no_send_fact(second)
+                with PostgresConnection(self.worker.db_path) as connection:
+                    connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (second,))
+            upload_remediation.observe(storage.db)
+            with PostgresConnection(self.worker.db_path) as connection:
+                self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_journal_unavailable'").fetchone()["problem_status"], "open")
+                self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed' AND job_id=%s", (second,)).fetchone()["n"], 0)
+        self.assertEqual(self.worker.provider.puts, 1)
         self.assert_empty()
         with PostgresConnection(self.worker.db_path) as connection:
             connection.execute("UPDATE jobs SET retry_after=NULL WHERE id IN (%s,%s)", (first, second))
@@ -277,14 +303,19 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker.run_job(second)
         self.worker.assert_keeper(second)
         self.assertEqual(self.worker.provider.puts, 2)
+        self.assertEqual(self.worker.row(second)["retry_count"], 7)
+        upload_remediation.observe(storage.db)
+        with PostgresConnection(self.worker.db_path) as connection:
+            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_journal_unavailable'").fetchone()["problem_status"], "resolved")
         self.assert_empty()
 
-    def test_cancelled_failed_journal_recovers_facts_without_resurrecting_job_or_blocking_another_vault(self):
+    def test_cancelled_uncertain_intent_needs_no_provider_reads_and_never_resurrects(self):
         first, other = self.queue("report.txt"), self.queue_other_vault()
         with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):
             self.worker.run_job(first)
             self.assertTrue(storage.set_job(first, "cancelled"))
-            self.worker.run_job(other)
+            with patch.object(provenance, "probe_receipt_journal", side_effect=psycopg.OperationalError("still unavailable")):
+                self.worker.run_job(other)
             self.assert_no_send_fact(other)
             self.assertEqual(self.worker.provider.puts, 1)
             self.assertTrue(self.pipeline.uncertain_journals())
@@ -292,8 +323,12 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             before = provenance.load_for_job(connection, first)
             self.assertIsNone(provenance.receipt(connection, before["id"]))
             connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (other,))
-        # Only the journal fault is gone. The first Job remains cancelled and
-        # cannot resume; another Vault must repair facts without its authority.
+        # Only the journal fault is gone. Do not query the cancelled namespace:
+        # a suspended source or unavailable provider there must not hold others.
+        def no_cancelled_reads(stage, **kwargs):
+            if kwargs.get("key") == "docs/report.txt":
+                raise AssertionError("Unrelated admission cannot reconcile the cancelled intent")
+        self.worker.provider.hook = no_cancelled_reads
         self.worker.run_job(other)
         self.worker.assert_keeper(other)
         self.assertEqual(self.worker.row(first)["status"], "cancelled")
@@ -301,8 +336,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with PostgresConnection(self.worker.db_path) as connection:
             after = provenance.load_for_job(connection, first)
             receipt = provenance.receipt(connection, before["id"])
-            self.assertIsNotNone(receipt)
-            self.assertIn(("docs/report.txt", receipt["VersionId"]), self.worker.provider.objects)
+            self.assertIsNone(receipt, "A reachability probe does not invent a lost receipt")
             for field in ("token", "target_json", "snapshot_json", "send_started", "settled", "archive_version_id"):
                 self.assertEqual(after[field], before[field], field)
             self.assertEqual(connection.execute("SELECT count(*) n FROM archive_versions WHERE vault_id=2").fetchone()["n"], 0)
@@ -311,7 +345,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.pipeline.uncertain_journals(), ())
         self.assert_empty()
 
-    def test_a_preexisting_receipt_cannot_clear_failure_of_a_different_fact(self):
+    def test_a_preexisting_different_fact_keeps_its_intent_ambiguous_not_other_sends(self):
         first, second = self.queue("report.txt"), self.queue("second.txt")
         transport = storage.upload_s3_file
         append = provenance.append_receipt
@@ -329,12 +363,17 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             intent = provenance.load_for_job(connection, first)
             self.assertIsNotNone(provenance.receipt(connection, intent["id"]))
         self.worker.run_job(second)
-        self.assert_no_send_fact(second)
-        self.assertEqual(self.worker.provider.puts, 1, "A different committed fact cannot reopen send admission")
-        self.assertTrue(self.pipeline.uncertain_journals())
+        self.worker.assert_keeper(second)
+        self.assertEqual(self.worker.provider.puts, 2)
+        self.assertEqual(self.pipeline.uncertain_journals(), ())
+        with PostgresConnection(self.worker.db_path) as connection:
+            self.assertTrue(provenance.load_for_job(connection, first)["send_started"])
+            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (first,))
+        self.worker.run_job(first)
+        self.assertEqual(self.worker.provider.puts, 2, "Conflicting facts cannot authorize another PUT")
         self.assert_empty()
 
-    def test_unencodable_ack_is_also_a_journal_failure_and_holds_new_sends(self):
+    def test_unencodable_ack_is_local_when_the_journal_is_writable(self):
         first, second = self.queue("report.txt"), self.queue("second.txt")
         transport = storage.upload_s3_file
         def malformed_return(transfer_job, **kwargs):
@@ -343,9 +382,14 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with patch.object(storage, "upload_s3_file", side_effect=malformed_return):
             self.worker.run_job(first)
         self.worker.run_job(second)
-        self.assert_no_send_fact(second)
-        self.assertEqual(self.worker.provider.puts, 1)
-        self.assertTrue(self.pipeline.uncertain_journals())
+        self.worker.assert_keeper(second)
+        self.assertEqual(self.worker.provider.puts, 2)
+        self.assertEqual(self.pipeline.uncertain_journals(), ())
+        with PostgresConnection(self.worker.db_path) as connection:
+            self.assertTrue(provenance.load_for_job(connection, first)["send_started"])
+            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (first,))
+        self.worker.run_job(first)
+        self.assertEqual(self.worker.provider.puts, 2)
         self.assert_empty()
 
     def test_a_durably_committed_unknown_outcome_can_reopen_admission_without_repeating_put(self):

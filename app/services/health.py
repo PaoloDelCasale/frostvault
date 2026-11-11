@@ -70,6 +70,7 @@ def check_config() -> bool:
 
 
 def readiness_report() -> dict[str, Any]:
+    from . import upload_pipeline, upload_remediation
     checks = {
         "database": check_database(),
         "worker": worker_is_healthy(),
@@ -82,4 +83,7 @@ def readiness_report() -> dict[str, Any]:
         # Informational only: a stalled queue must be visible without turning a
         # healthy process into a failing container health check.
         "queue": queue_status(),
+        "upload_journal": upload_pipeline.journal_status(),
+        "upload_remediation": (upload_remediation.sweep_health(db) if checks["database"]
+                               else {"available": False, "stale": True}),
     }

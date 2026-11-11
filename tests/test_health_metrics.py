@@ -104,6 +104,23 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertTrue(body["checks"]["config"])
         self.assertNotIn("crypt_custody", body)
 
+    def test_upload_holds_and_missing_sweep_ticks_are_visible_without_failing_readiness(self) -> None:
+        from app.services import upload_pipeline
+        coordinator = upload_pipeline._Pipeline(1)
+        coordinator.journal_failed("private-intent", "private-fact-hash")
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("DELETE FROM upload_remediation_sweep")
+        with patch.dict(upload_pipeline._registry, {self.test_settings.database_dsn: coordinator}):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["upload_journal"], {"held": True, "uncertain_facts": 1})
+        self.assertTrue(body["upload_remediation"]["stale"])
+        self.assertTrue(body["upload_remediation"]["missing_ticks"])
+        self.assertNotIn("private-intent", response.text)
+        self.assertNotIn("private-fact-hash", response.text)
+        self.assertNotIn(self.test_settings.database_dsn, response.text)
+
     def test_metrics_expose_low_cardinality_prometheus_counters(self) -> None:
         metrics_service.inc("jobs_completed_total", action="upload")
         metrics_service.inc("verification_failures_total")

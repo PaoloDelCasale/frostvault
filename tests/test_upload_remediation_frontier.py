@@ -93,6 +93,42 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         self.assertEqual(self.assert_keeper(resumed)["id"], av)
         self.assertEqual(self.provider.puts, 0)
 
+    def test_missing_and_stale_sweep_ticks_are_visible_and_recovery_resolves_problem(self):
+        from app.services import metrics
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(seconds=remediation.SWEEP_STALE_SECONDS + 1)).isoformat()
+        with self.db() as connection:
+            connection.execute("UPDATE upload_remediation_sweep SET last_tick_at=%s", (stale,))
+        self.assertTrue(remediation.sweep_health(self.db)["stale"])
+        remediation.observe(self.db)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_remediation_stale'").fetchone()["problem_status"], "open")
+            connection.execute("DELETE FROM upload_remediation_sweep WHERE name='facts'")
+        self.assertTrue(remediation.sweep_health(self.db)["missing_ticks"])
+        remediation.observe(self.db)
+        self.assertIn("upload_remediation_last_tick_unixtime 0", metrics.render_prometheus())
+        remediation.sweep(self.db)
+        remediation.observe(self.db)
+        self.assertFalse(remediation.sweep_health(self.db)["stale"])
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_remediation_stale'").fetchone()["problem_status"], "resolved")
+        self.assertIn("upload_remediation_sweep_stale 0", metrics.render_prometheus())
+
+    def test_locked_sweep_cursor_is_not_reset_or_confused_with_a_missing_cursor(self):
+        av, _ = self.seed_owned()
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        with self.db() as connection:
+            connection.execute("UPDATE upload_remediation_sweep SET last_vault_id=99,last_tick_at=%s WHERE name='facts'", (stale,))
+        with self.db() as held:
+            held.execute("SELECT name FROM upload_remediation_sweep WHERE name='facts' FOR UPDATE")
+            self.assertEqual(remediation.sweep(self.db), 0)
+            row = held.execute("SELECT last_vault_id,last_tick_at FROM upload_remediation_sweep WHERE name='facts'").fetchone()
+            self.assertEqual(row, {"last_vault_id": 99, "last_tick_at": stale})
+        self.assertEqual(remediation.sweep(self.db), 1)
+        with self.db() as connection:
+            self.assertEqual(connection.execute("SELECT archive_version_id FROM upload_remediations").fetchone()["archive_version_id"], av)
+        self.assertEqual(self.provider.puts, 0)
+
     def test_owned_unverified_without_any_failed_original_is_admitted_without_put(self):
         av, _ = self.seed_owned()
         with patch("app.storage.s3_client", side_effect=AssertionError("Discovery must be DB-only")):
