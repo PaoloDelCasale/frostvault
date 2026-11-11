@@ -123,6 +123,28 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertEqual(len(ids),102)
         self.assertEqual(len(set(ids)),102)
 
+    def test_active_group_cursor_does_not_move_when_newest_member_completes(self):
+        self.seed_group(52)
+        with PostgresConnection(self.database_path) as connection:
+            connection.execute("UPDATE jobs SET status='queued',group_id='single-' || id::text")
+            connection.execute("""UPDATE jobs SET group_id='long'
+                WHERE id IN ((SELECT min(id) FROM jobs),(SELECT max(id) FROM jobs))""")
+        first = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true")
+        self.assertEqual(first.status_code,200,first.text)
+        first = first.json()
+        first_ids = {row["id"] for row in first["groups"]}
+        self.assertIn("long",first_ids)
+        cursor = first["next_groups_before_id"]
+        self.assertIsNotNone(cursor)
+        with PostgresConnection(self.database_path) as connection:
+            connection.execute("UPDATE jobs SET status='completed' WHERE id=(SELECT max(id) FROM jobs)")
+        second = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true&groups_before_id={cursor}")
+        self.assertEqual(second.status_code,200,second.text)
+        second_ids = {row["id"] for row in second.json()["groups"]}
+        self.assertTrue(second_ids)
+        self.assertFalse(first_ids & second_ids,"completion moved a group across the cursor")
+        self.assertEqual(len(first_ids | second_ids),52)
+
     def test_sql_weighted_progress_and_terminal_precedence_match_reference_reducer(self):
         from app.main import build_job_groups
         from app.services.upload_remediation import project_jobs

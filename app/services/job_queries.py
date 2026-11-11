@@ -39,13 +39,18 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         [*params, PAGE_SIZE],
     ).fetchall()
     aggregates = connection.execute(f"""
-        WITH candidates AS (
-            SELECT {GROUP_KEY} AS group_key, max(id) AS last_id
-            FROM jobs WHERE {filters}
-            GROUP BY {GROUP_KEY}
-            HAVING max(id)<%s ORDER BY last_id DESC LIMIT %s
+        WITH matching AS (
+            SELECT DISTINCT {GROUP_KEY} AS group_key FROM jobs WHERE {filters}
         ), members AS NOT MATERIALIZED (
             SELECT j.*, {GROUP_KEY} AS group_key FROM jobs j WHERE vault_id=%s
+        ), candidates AS (
+            -- Match on display filters, but keep the ordering key independent
+            -- of changing member status so completion cannot move a group
+            -- backwards across an already returned pagination cursor.
+            SELECT m.group_key, max(m.id) AS last_id
+            FROM members m JOIN matching f ON f.group_key=m.group_key
+            GROUP BY m.group_key
+            HAVING max(m.id)<%s ORDER BY last_id DESC LIMIT %s
         ), totals AS (
             SELECT c.group_key, c.last_id, count(*) AS item_count,
                 count(*) FILTER (WHERE j.status='completed') AS completed_count,
@@ -82,7 +87,7 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         FROM totals t JOIN representatives representative ON representative.group_key=t.group_key
         LEFT JOIN active ON active.group_key=t.group_key
         ORDER BY t.last_id DESC
-        """, [*params, groups_before_id or 2**63-1, PAGE_SIZE+1, vault_id]).fetchall()
+        """, [*params, vault_id, groups_before_id or 2**63-1, PAGE_SIZE+1]).fetchall()
     groups = []
     for row in aggregates[:PAGE_SIZE]:
         group = dict(row)
