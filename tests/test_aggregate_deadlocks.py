@@ -466,9 +466,11 @@ class AggregateDeadlockTests(unittest.TestCase):
         with PostgresConnection(self.path) as c:
             job = c.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job_id,)).fetchone()
         started = threading.Event()
+        reader_pid = []
         def read_target():
             with PostgresConnection(self.path) as c:
                 c.execute("SET LOCAL statement_timeout='10s'")
+                reader_pid.append(c.info.backend_pid)
                 started.set()
                 return provenance.target(c, job, key="key", provider="fake", shared=True)
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -480,6 +482,17 @@ class AggregateDeadlockTests(unittest.TestCase):
                 writer.execute("UPDATE file_paths SET path='renamed' WHERE vault_file_id=%s AND valid_to IS NULL", (job["vault_file_id"],))
                 future = pool.submit(read_target)
                 self.assertTrue(started.wait(5))
+                # Ensure the locking statement took its pre-wait snapshot
+                # BEFORE the writer commits, not merely that the thread began.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    writer.execute("SELECT pg_stat_clear_snapshot()")
+                    waiting = writer.execute("SELECT wait_event_type FROM pg_stat_activity WHERE pid=%s", (reader_pid[0],)).fetchone()
+                    if waiting and waiting["wait_event_type"] == "Lock":
+                        break
+                    time.sleep(0.01)
+                else:
+                    self.fail("Target reader did not wait for the Vault lock")
             with self.assertRaises(provenance.UploadBlocked) as caught:
                 future.result(timeout=15)
             self.assertEqual(caught.exception.reason, "identity_changed")
