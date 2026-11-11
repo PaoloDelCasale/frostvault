@@ -1297,6 +1297,7 @@
     "JobsResponse": {
       "additionalProperties": true,
       "properties": {
+        "next_groups_before_id": {"type": ["integer", "null"]},
         "groups": {
           "items": {
             "$ref": "#/components/schemas/JobGroup"
