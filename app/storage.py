@@ -36,6 +36,7 @@ from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
+from .services.upload_pipeline import UploadJournalHeld
 from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
@@ -5392,6 +5393,15 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
             _release_preflight_purge_claim(job)
         else:
             set_job(job["id"], job["status"], "S3 readiness blocked; Job remains queued", **_keep_wait_state(job))
+        return False
+    except UploadJournalHeld:
+        # A dependency hold is not a failed transfer. Give back the claim and
+        # retry later without exhausting this (possibly unrelated) file's budget.
+        schedule_upload_retry(
+            job["id"], message_key="job.upload_journal_waiting",
+            retry_count=int(job.get("retry_count") or 0), delay_seconds=10,
+            remediation_suspension="upload_journal_unavailable",
+        )
         return False
     except SourceVolumeUnavailable:
         # A transient failure reading the enrolled root is not an identity
