@@ -142,6 +142,16 @@ class ProtectionProblemClosureTests(unittest.TestCase):
                 self.assertEqual(self.state(c), "open")
                 c.execute("ROLLBACK TO SAVEPOINT scenario")
 
+    def test_completion_must_be_after_failure_and_target_current_snapshot(self):
+        with self.connect() as c:
+            successor, version = self.protect(c)
+            c.execute("UPDATE jobs SET updated_at='2000-01-01T00:00:00Z' WHERE id=%s", (successor,))
+            self.assertEqual(self.state(c), "open")
+            c.execute("UPDATE jobs SET updated_at=%s,archive_version_id=NULL WHERE id=%s", (NOW.isoformat(),successor))
+            self.assertEqual(self.state(c), "open")
+            c.execute("UPDATE jobs SET archive_version_id=%s WHERE id=%s", (version,successor))
+            self.assertEqual(self.state(c), "resolved")
+
     def test_materialized_failure_stays_open_even_with_new_protected_content(self):
         with self.connect() as c:
             _, version = self.protect(c)
@@ -203,11 +213,20 @@ class ProtectionProblemClosureTests(unittest.TestCase):
                     VALUES (%s,%s,'a.txt','upload','failed',%s,%s) RETURNING id""",
                     (self.vault_id,self.file_id,NOW.isoformat(),NOW.isoformat())).fetchone()["id"]
                 inbox.enqueue_job_terminal_notification(c, job_id=failed)
+            ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="b.txt", file_type="regular",
+                                                  size=1, mtime_ns=1, observed_at=NOW.isoformat())
+            failed = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                SELECT %s,vault_file_id,'b.txt','upload','failed',%s,%s FROM file_paths
+                WHERE vault_id=%s AND path='b.txt' AND valid_to IS NULL RETURNING id""",
+                (self.vault_id,NOW.isoformat(),NOW.isoformat(),self.vault_id)).fetchone()["id"]
+            inbox.enqueue_job_terminal_notification(c, job_id=failed)
             group = c.execute("SELECT id FROM notifications WHERE event='job_failed_group'").fetchone()
             self.assertIsNotNone(group)
             self.assertEqual(self.state(c), "open")
             self.protect(c)
             self.assertEqual(self.state(c), "resolved")
+            self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 1)
+            self.protect(c, path="b.txt")
             self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 0)
             c.execute("UPDATE local_copies SET matched_archive_version_id=NULL")
             # A delayed outbox replay for a formerly folded failure must keep
