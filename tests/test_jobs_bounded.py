@@ -125,8 +125,17 @@ class BoundedJobsHttpTests(unittest.TestCase):
 
     def test_active_group_cursor_does_not_move_when_newest_member_completes(self):
         self.seed_group(52)
+        from app.catalog import ArchiveCatalog
         with PostgresConnection(self.database_path) as connection:
-            connection.execute("UPDATE jobs SET status='queued',group_id='single-' || id::text")
+            connection.execute("UPDATE jobs SET status='completed'")
+            catalog = ArchiveCatalog(connection)
+            for row in connection.execute("SELECT id FROM jobs ORDER BY id").fetchall():
+                path = f"cursor-{row['id']}.txt"
+                file_id = catalog.observe_local_copy(
+                    vault_id=self.vault_id,path=path,file_type="regular",
+                    size=100,mtime_ns=1,observed_at="2026-11-11")
+                connection.execute("""UPDATE jobs SET status='queued',group_id='single-' || id::text,
+                    path=%s,vault_file_id=%s WHERE id=%s""",(path,file_id,row["id"]))
             connection.execute("""UPDATE jobs SET group_id='long'
                 WHERE id IN ((SELECT min(id) FROM jobs),(SELECT max(id) FROM jobs))""")
         first = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true")
