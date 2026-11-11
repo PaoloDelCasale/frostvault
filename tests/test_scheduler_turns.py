@@ -189,6 +189,20 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertEqual(connection.execute('SELECT count(*) AS n FROM jobs WHERE claim_token IS NOT NULL')
                              .fetchone()['n'], 1)
 
+    def test_concurrent_base_claims_both_succeed_without_a_vault_quota(self):
+        ids = [self.auto_job(), self.auto_job(path='b.txt')]
+        barrier = threading.Barrier(2)
+
+        def run(job):
+            barrier.wait(timeout=10)
+            return self.claim(job)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(run, ids))
+        self.assertTrue(all(result is not None for result in results))
+        self.assertEqual(self.state()['generation'], 2)
+        self.assertEqual(self.state()['wait_seconds'], 0)
+
     def test_all_idle_single_worker_claims_alternate_equal_tier_turns(self):
         ids = {vault: [self._insert_upload_job(vault_id=vault, path=path)
                        for path in ('a.txt', 'b.txt')] for vault in (10, 20)}

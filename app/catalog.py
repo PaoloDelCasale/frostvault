@@ -3065,16 +3065,19 @@ class ArchiveCatalog:
 
         Never wait for a Job while holding its turn row: a status writer may
         already hold that Job and be invalidating the same turn. Both locks are
-        nonblocking; ordinary progress retains ADR-0031 shared Vault fences.
+        nonblocking for aged nominations. Base claims can briefly queue on the
+        turn row (no Job locks are acquired after it); ordinary progress retains
+        ADR-0031 shared Vault fences.
         """
         job = self.connection.execute(
             "SELECT vault_id FROM jobs WHERE id=%s FOR UPDATE SKIP LOCKED", (job_id,),
         ).fetchone()
         if job is None:
             return False
+        lock = "FOR UPDATE SKIP LOCKED" if generation is not None else "FOR UPDATE"
         turn = self.connection.execute(
-            "SELECT generation FROM scheduler_vault_turns WHERE vault_id=%s "
-            "FOR UPDATE SKIP LOCKED", (job["vault_id"],),
+            "SELECT generation FROM scheduler_vault_turns WHERE vault_id=%s " + lock,
+            (job["vault_id"],),
         ).fetchone()
         return turn is not None and (generation is None or turn["generation"] == generation)
 

@@ -66,8 +66,10 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
    than accidentally credit blocked time; it does not reset banked credit.
    No trigger runs on heartbeat/progress updates or queue admission INSERTs.
    Claims lock Jobs before the turn row, matching state invalidation, with
-   nonblocking turn acquisition; they do not upgrade the shared Vault fence of
-   ADR-0031/0033.
+   nonblocking aged-turn acquisition. Ordinary base-tier claims can briefly queue
+   on the turn row so simultaneous different-Job claims still succeed; no Job
+   lock is acquired after it, and progress never holds it. Claims do not upgrade
+   the shared Vault fence of ADR-0031/0033.
 6. **Deferral with backoff and deeper scans.** An automatic upload that is not
    runnable now (paused, excluded path, unstable, not a regular file, unreadable,
    changed) is excluded from the candidate query, in memory, keyed by database

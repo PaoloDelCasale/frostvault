@@ -31,11 +31,12 @@ class VaultPauseTests(QueueFixture):
         with self.db() as c:
             return vault_pause.set_paused(c, vault_id=vault_id, paused=paused, user_id=1)
 
-    def claim(self, c, job_id):
+    def claim(self, c, job_id, *, generation=None):
         return ArchiveCatalog(c).claim_job(
             job_id=job_id, claim_token=f"claim-{job_id}", claimed_at=self.clock.isoformat(),
             claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
             now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
+            scheduler_generation=generation,
         )
 
     def test_persistent_idempotent_hold_keeps_queue_and_resume_does_not_requeue(self):
@@ -172,7 +173,7 @@ class VaultPauseTests(QueueFixture):
                     self.assertIsNotNone(second.execute(
                         'SELECT id FROM vaults WHERE id=2 FOR KEY SHARE SKIP LOCKED'
                     ).fetchone())
-                    self.assertIsNone(self.claim(second, jobs[1]["id"]))
+                    self.assertIsNone(self.claim(second, jobs[1]["id"], generation=0))
                 future = pool.submit(pause_waiter)
                 self.assertTrue(entered.wait(3))
                 self.assertFalse(future.done())
