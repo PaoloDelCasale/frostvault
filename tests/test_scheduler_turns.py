@@ -9,6 +9,7 @@ from app.catalog import ArchiveCatalog
 from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
 from tests.postgres import PostgresConnection
 from tests.test_job_scheduler import _SchedulerDbMixin
+from tests.test_database import run_alembic
 
 
 class VaultTurnSelectionTests(unittest.TestCase):
@@ -187,6 +188,63 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute('SELECT count(*) AS n FROM jobs WHERE claim_token IS NOT NULL')
                              .fetchone()['n'], 1)
+
+    def test_all_idle_single_worker_claims_alternate_equal_tier_turns(self):
+        ids = {vault: [self._insert_upload_job(vault_id=vault, path=path)
+                       for path in ('a.txt', 'b.txt')] for vault in (10, 20)}
+        order = []
+        for second in range(4):
+            jobs = self.observe(second)
+            picked = select_fair_jobs(jobs, limit=1, active_by_vault={})[0]
+            self.assertIsNotNone(self.claim(picked['id'], second))
+            order.append(picked['vault_id'])
+            # Actual idle boundary, not the old test's accumulating active map.
+            with PostgresConnection(self.path) as connection:
+                connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (picked['id'],))
+        self.assertEqual(order, [10, 20, 10, 20])
+        self.assertEqual(sum(map(len, ids.values())), 4)
+
+    def test_contended_turn_skips_without_consuming_credit_or_leasing_job(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(1800)
+        before = self.state()
+        with PostgresConnection(self.path) as blocker:
+            blocker.execute('SELECT * FROM scheduler_vault_turns WHERE vault_id=20 FOR UPDATE')
+            self.assertIsNone(self.claim(auto, 1800, generation=0))
+        self.assertEqual(self.state(), before)
+
+    def test_claim_and_accounting_rollback_together(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(1800)
+        before = self.state()
+        with PostgresConnection(self.path) as connection:
+            result = ArchiveCatalog(connection).claim_job(
+                job_id=auto, claim_token='rolled-back', claimed_at=self.stamp(1800),
+                claim_expires_at=self.stamp(2100), now=self.stamp(1800),
+                restore_due_before=self.stamp(1800), scheduler_generation=0)
+            self.assertIsNotNone(result)
+            connection.rollback()
+        self.assertEqual(self.state(), before)
+        with PostgresConnection(self.path) as connection:
+            self.assertIsNone(connection.execute('SELECT claim_token FROM jobs WHERE id=%s', (auto,))
+                              .fetchone()['claim_token'])
+
+    def test_migration_downgrade_and_reupgrade_remove_only_scheduler_state(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(900)
+        result = run_alembic(self.path, revision='0070_vault_pause', command='downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with PostgresConnection(self.path) as connection:
+            self.assertIsNone(connection.execute("SELECT to_regclass('scheduler_vault_turns') AS name")
+                              .fetchone()['name'])
+            self.assertEqual(connection.execute('SELECT origin FROM jobs WHERE id=%s', (auto,))
+                             .fetchone()['origin'], 'automatic')
+        result = run_alembic(self.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.observe(900)[0]['scheduler_wait_seconds'], 0)
 
     def test_global_candidate_limit_cannot_hide_starved_automatic_vault(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')

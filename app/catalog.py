@@ -2990,11 +2990,6 @@ class ArchiveCatalog:
         SKIP LOCKED avoids blocking claims; a skipped turn gets no promotion.
         """
         runnable = sorted({int(vault_id) for vault_id in runnable_vault_ids})
-        for vault_id in runnable:
-            self.connection.execute(
-                "INSERT INTO scheduler_vault_turns(vault_id) VALUES (%s) "
-                "ON CONFLICT DO NOTHING", (vault_id,),
-            )
         rows = self.connection.execute(
             "SELECT * FROM scheduler_vault_turns ORDER BY vault_id FOR UPDATE SKIP LOCKED"
         ).fetchall()
@@ -3077,10 +3072,6 @@ class ArchiveCatalog:
         ).fetchone()
         if job is None:
             return False
-        self.connection.execute(
-            "INSERT INTO scheduler_vault_turns(vault_id) VALUES (%s) ON CONFLICT DO NOTHING",
-            (job["vault_id"],),
-        )
         turn = self.connection.execute(
             "SELECT generation FROM scheduler_vault_turns WHERE vault_id=%s "
             "FOR UPDATE SKIP LOCKED", (job["vault_id"],),

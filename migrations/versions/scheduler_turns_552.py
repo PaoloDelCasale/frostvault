@@ -21,6 +21,19 @@ def upgrade():
             generation BIGINT NOT NULL DEFAULT 0
         )
     """)
+    op.execute("INSERT INTO scheduler_vault_turns(vault_id) SELECT id FROM vaults")
+    op.execute("""
+        CREATE FUNCTION scheduler_create_turn_552() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            INSERT INTO scheduler_vault_turns(vault_id) VALUES (NEW.id);
+            RETURN NULL;
+        END $$
+    """)
+    op.execute("""
+        CREATE TRIGGER scheduler_vault_created_552 AFTER INSERT ON vaults
+        FOR EACH ROW EXECUTE FUNCTION scheduler_create_turn_552()
+    """)
     # Invalidate the open observation interval, NOT banked credit. Changes can
     # happen entirely between scheduler polls (or while the process is down).
     # Discarding that partial interval is deliberately conservative: blocked
@@ -80,4 +93,6 @@ def downgrade():
     op.execute("DROP TRIGGER scheduler_job_deleted_552 ON jobs")
     op.execute("DROP TRIGGER scheduler_job_state_552 ON jobs")
     op.execute("DROP FUNCTION scheduler_invalidate_turn_552()")
+    op.execute("DROP TRIGGER scheduler_vault_created_552 ON vaults")
+    op.execute("DROP FUNCTION scheduler_create_turn_552()")
     op.execute("DROP TABLE scheduler_vault_turns")
