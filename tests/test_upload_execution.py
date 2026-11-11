@@ -109,6 +109,13 @@ class JournalAdmissionTests(unittest.TestCase):
                     self.coordinator.require_send_admission()
         self.worker.s3_client.assert_not_called()
 
+    def test_same_fact_failing_again_during_probe_keeps_the_new_hold(self):
+        with patch.object(provenance, "probe_receipt_journal", side_effect=lambda connection:
+                          self.coordinator.journal_failed("intent", "lost-fact")):
+            self.execution._refresh_journal_gate(self.coordinator)
+        with self.assertRaises(psycopg.OperationalError):
+            self.coordinator.require_send_admission()
+
     def test_another_failed_late_fact_during_probe_is_not_cleared(self):
         with patch.object(provenance, "probe_receipt_journal", side_effect=lambda connection:
                           self.coordinator.journal_failed("intent", "different-late-fact")):

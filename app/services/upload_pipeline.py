@@ -112,7 +112,8 @@ class _Pipeline:
         self._vault_count = min(concurrency, limits.catalog_per_vault)
         self._lock = threading.Lock()
         self._vaults: dict[int, tuple[_Capacity, int]] = {}
-        self._uncertain: set[tuple[str, str]] = set()
+        self._uncertain: dict[tuple[str, str], int] = {}
+        self._journal_generation = 0
 
     @contextmanager
     def catalog_unit(self, job: dict[str, Any], check: Callable[[], None]) -> Iterator[None]:
@@ -138,18 +139,32 @@ class _Pipeline:
 
     def journal_failed(self, intent_id: str, receipt_hash: str) -> None:
         with self._lock:
-            self._uncertain.add((intent_id, receipt_hash))
+            self._journal_generation += 1
+            self._uncertain[intent_id, receipt_hash] = self._journal_generation
 
     def journal_safe(self, intent_id: str, receipt_hash: str | None = None) -> None:
         with self._lock:
             if receipt_hash is None:  # Completed reconciliation, not any receipt.
-                self._uncertain = {entry for entry in self._uncertain if entry[0] != intent_id}
+                self._uncertain = {entry: generation for entry, generation in self._uncertain.items()
+                                   if entry[0] != intent_id}
             else:
-                self._uncertain.discard((intent_id, receipt_hash))
+                self._uncertain.pop((intent_id, receipt_hash), None)
 
     def uncertain_journals(self) -> tuple[tuple[str, str], ...]:
         with self._lock:
             return tuple(self._uncertain)
+
+    def journal_probe_pending(self) -> dict[tuple[str, str], int]:
+        with self._lock:
+            return dict(self._uncertain)
+
+    def journal_probe_committed(self, observed: dict[tuple[str, str], int]) -> None:
+        with self._lock:
+            for entry, generation in observed.items():
+                # A probe confirms availability, NOT this receipt's durability.
+                # Even the SAME fact failing again meanwhile is a newer hold.
+                if self._uncertain.get(entry) == generation:
+                    del self._uncertain[entry]
 
     def require_send_admission(self) -> None:
         with self._lock:

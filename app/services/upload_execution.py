@@ -259,7 +259,7 @@ class UploadExecution:
     def _refresh_journal_gate(self, pipeline: upload_pipeline._Pipeline) -> None:
         # Recovery facts bypass nonurgent catalog capacity, just like their
         # original appends. No publication/cleanup/Job authority is granted.
-        pending = pipeline.uncertain_journals()
+        pending = pipeline.journal_probe_pending()
         if not pending:
             return
         try:
@@ -277,8 +277,7 @@ class UploadExecution:
         # retain send_started/token/snapshot and all durable per-intent fences.
         # Clear only the failures observed before probing, not concurrent late
         # failures. No response payload is retained or declared durably stored.
-        for intent_id, receipt_hash in pending:
-            pipeline.journal_safe(intent_id, receipt_hash)
+        pipeline.journal_probe_committed(pending)
         # No S3 observations here: an unrelated cancelled/paused/offline intent
         # must not turn this admission check into unbounded reconciliation I/O.
         # Cancellation still forbids resume, publication and cleanup of its target.

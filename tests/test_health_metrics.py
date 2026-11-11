@@ -104,19 +104,20 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertTrue(body["checks"]["config"])
         self.assertNotIn("crypt_custody", body)
 
-    def test_upload_holds_and_missing_sweep_ticks_are_visible_without_failing_readiness(self) -> None:
+    def test_upload_health_is_informational_and_public_readiness_exposes_no_workload(self) -> None:
         from app.services import upload_pipeline
         coordinator = upload_pipeline._Pipeline(1)
         coordinator.journal_failed("private-intent", "private-fact-hash")
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("DELETE FROM upload_remediation_sweep")
         with patch.dict(upload_pipeline._registry, {self.test_settings.database_dsn: coordinator}):
+            report = health_service.readiness_report()
             response = self.client.get("/ready")
         self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(body["upload_journal"], {"held": True, "uncertain_facts": 1})
-        self.assertTrue(body["upload_remediation"]["stale"])
-        self.assertTrue(body["upload_remediation"]["missing_ticks"])
+        self.assertEqual(report["upload_journal"], {"held": True, "uncertain_facts": 1})
+        self.assertTrue(report["upload_remediation"]["stale"])
+        self.assertTrue(report["upload_remediation"]["missing_ticks"])
+        self.assertEqual(set(response.json()), {"status", "checks"})
         self.assertNotIn("private-intent", response.text)
         self.assertNotIn("private-fact-hash", response.text)
         self.assertNotIn(self.test_settings.database_dsn, response.text)
