@@ -210,7 +210,27 @@ class WorkerErrorLoggingTests(DatabaseCase):
         self.assertEqual(text.count("original failure"), 1)
 
 
+class WatcherFixtureIsolationTests(unittest.TestCase):
+    def test_watcher_failure_does_not_leak_a_scan_generation_to_later_fixtures(self):
+        # Exercise the real watcher test and its fixture cleanup. A leftover
+        # runtime entry without scan_id rejects every later cloud scan for
+        # the same fixture Vault id, even though its database is unrelated.
+        previous = {3: {"scan_id": "another-fixture"}}
+        with patch.dict(storage.runtime_status, previous, clear=True):
+            result = unittest.TestResult()
+            WatcherRecoveryTests("test_failing_cycle_does_not_resolve_the_problem").run(result)
+            self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+            self.assertEqual(storage.runtime_status, previous)
+            self.assertTrue(storage._cloud_scan_still_current({"id": 2}, "fresh-scan"))
+
+
 class WatcherRecoveryTests(DatabaseCase):
+    def setUp(self):
+        super().setUp()
+        # Watcher error reporting writes this process-global map. Isolate it
+        # just like the disposable DB, and restore it even if the test fails.
+        self.enterContext(patch.dict(storage.runtime_status, clear=True))
+
     def open_problem(self, component="source_watcher"):
         with PostgresConnection(self.path) as connection:
             worker_errors.record_worker_error(

@@ -36,11 +36,23 @@ class StressProfileTests(unittest.TestCase):
         expected = {
             "test_16_workers_1024_nested_uploads_with_concurrent_maintenance",
             "test_535_small_file_burst_keeps_throughput_and_reuses_connections",
-        } & methods.keys()
+        }
         profiled = {name for name, method in methods.items()
                     if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                            and node.func.id == "stress_file_count" for node in ast.walk(method))}
         self.assertEqual(profiled, expected)
+        # Guard the full workloads and safety floors independently of the knob.
+        constants = {target.id: node.value.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                     for target in node.targets if isinstance(target, ast.Name)}
+        self.assertEqual(constants["THROUGHPUT_FILES"], 2048)
+        self.assertEqual(constants["THROUGHPUT_MIN_FILES_PER_SECOND"], 0.5)
+        self.assertEqual(constants["THROUGHPUT_MAX_NEW_CONNECTIONS"], 200)
+        nested = methods["test_16_workers_1024_nested_uploads_with_concurrent_maintenance"]
+        full_counts = [node.args[0].value for node in ast.walk(nested)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                       and node.func.id == "stress_file_count" and isinstance(node.args[0], ast.Constant)]
+        self.assertEqual(full_counts, [1024])
 
     def test_unknown_or_empty_profile_fails_closed(self):
         for profile in ("", "PR", "bounded", "none", "full ", "0"):

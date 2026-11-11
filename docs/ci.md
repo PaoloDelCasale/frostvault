@@ -10,7 +10,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Job | What it proves | Credentials |
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against isolated `postgres:16` services, partitioned across twelve parallel shards by packing largest test modules first. The stable aggregate requires all shards and the dedicated migration/concurrency job below. Each fixture uses its own database, with a migrated HEAD template for fresh fixtures; populated upgrades/downgrades still run Alembic. No database regression skips without configuration. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
-| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: nested uploads through `process_job` on all 16 workers with concurrent aggregate maintenance and full-rollup parity (64 uploads on PRs; the full 1,024 on `main`), a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions on every PR. Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
+| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: nested uploads through `process_job` on all 16 workers with concurrent aggregate maintenance and full-rollup parity (64 uploads on PRs; the full 1,024 on `main`), a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions on every PR, and #535: a small-upload burst (64 files on PRs; the full 2,048 on `main`) with the unchanged conservative files/second floor and bound on new PostgreSQL connections (pooled `db()`). Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
@@ -27,8 +27,8 @@ Only the **quantity** of the long upload bursts changes between profiles:
   per each of the same 16 workers, with the same concurrent maintenance,
   completed/verified exact-version/no-extra-PUT assertions and rollup parity.
 - `FROSTVAULT_STRESS_PROFILE=full`: the original full acceptance sizes (1,024
-  nested uploads; the pooled-connection burst retains its full 2,048 when
-  present). Explicit local test invocations default to `full`; an empty or
+  nested uploads and the pooled-connection burst's 2,048 files). Explicit local
+  test invocations default to `full`; an empty or
   unknown value raises an error, never a skip or a smaller fallback.
 
 The historical **PostgreSQL migration and concurrency tests** check stays stable
@@ -49,8 +49,9 @@ The publisher requires it in addition to every previous check on the **exact
 commit being published/promoted**. Missing, skipped, pending, cancelled, failed
 or wrong-SHA full-stress evidence cannot publish, including a manual dispatch
 or a version tag using the updated gate. The updated gate also refuses a
-pre-change historical commit without this new evidence; it has no legacy bypass. The gate's optional `--check` arguments
-add requirements, never replace the mandatory publication checks. Full stress is not merely a nightly or
+pre-change historical commit without this new evidence; it has no legacy bypass.
+The gate's optional `--check` arguments add requirements, never replace the
+mandatory publication checks. Full stress is not merely a nightly or
 optional test. No new release or deployment trigger is introduced.
 
 The tradeoff is deliberate: PRs find deterministic concurrency failures quickly,

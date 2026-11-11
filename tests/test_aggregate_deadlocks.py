@@ -267,6 +267,143 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertEqual(semantic(actual), semantic(expected))
         print(f"#458 acceptance: 16 workers / {count} completed / {len(maintenance_passes)} maintenance passes / exact full-rebuild parity")
 
+    def test_535_held_step_shares_vault_but_completion_stays_exclusive(self):
+        from app import database
+        import psycopg
+
+        job_id = self.seed()[0]
+        token = uuid.uuid4().hex
+        with PostgresConnection(self.path) as connection:
+            self.assertIsNotNone(ArchiveCatalog(connection).claim_job(
+                job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
+                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                restore_due_before=storage.now_iso(),
+            ))
+
+        def bounded_db():
+            lease = database.db()
+            lease.execute("SET LOCAL lock_timeout='200ms'")
+            return lease
+
+        # A concurrent derived-row writer owns NO KEY UPDATE on the Vault.
+        # An ordinary claimed intermediate step must not wait on that lock,
+        # whereas terminal/admission-relevant and unclaimed writes still do.
+        with PostgresConnection(self.path) as blocker, \
+                patch.object(storage, "db", side_effect=bounded_db), \
+                patch.object(storage, "_claim_token_for", return_value=token) as claim:
+            blocker.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
+            self.assertTrue(storage.set_job(job_id, "uploading"))
+            self.assertTrue(storage.set_job(job_id, "verifying"))
+            for status, owned in (("completed", token), ("queued", token), ("uploading", None)):
+                with self.subTest(status=status, claim=bool(owned)):
+                    claim.return_value = owned
+                    with self.assertRaises(psycopg.errors.LockNotAvailable):
+                        storage.set_job(job_id, status)
+            claim.return_value = token
+            with patch.object(storage, "_held_transition_may_share_vault", return_value=False):
+                with self.assertRaises(psycopg.errors.LockNotAvailable):
+                    storage.set_job(job_id, "uploading")
+            for kwargs in ({"remediation_suspension": "paused"}, {"remediation_reason": "file_removed"}):
+                with self.subTest(kwargs=kwargs), self.assertRaises(psycopg.errors.LockNotAvailable):
+                    storage.set_job(job_id, "uploading", **kwargs)
+            blocker.rollback()
+            blocker.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
+            with self.assertRaises(psycopg.errors.LockNotAvailable):
+                storage.set_job(job_id, "uploading")
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (job_id,)).fetchone()["status"], "verifying")
+
+    # #535: a burst of small files on 16 workers. Both bounds are deliberately
+    # far from the values measured on the PR (see its body) so a slow CI runner
+    # has generous headroom. The connection bound catches a return to one
+    # PostgreSQL connection per DB unit (tens per file); the throughput floor
+    # catches severe slowdowns, not small drifts or pool/lock effects alone.
+    # Local 512-file measurements: baseline 2.0 files/s, pooled 3.5 files/s.
+    THROUGHPUT_FILES = 2048
+    THROUGHPUT_MIN_FILES_PER_SECOND = 0.5
+    THROUGHPUT_MAX_NEW_CONNECTIONS = 200
+    THROUGHPUT_MAINTENANCE_SECONDS = 0.02
+
+    def test_535_small_file_burst_keeps_throughput_and_reuses_connections(self):
+        import psycopg
+        from app import database
+        # Size the pool as production does for OPERATION_CONCURRENCY=16.
+        dsn = database_dsn(self.path)
+        self.enterContext(patch("app.database.settings",
+                                SimpleNamespace(database_dsn=dsn, operation_concurrency=16)))
+        database.close_pools()
+        self.addCleanup(database.close_pools)
+        count = stress_file_count(self.THROUGHPUT_FILES)
+        jobs = self.seed(count, prefix="535")
+        # The harness claims through its own long-lived connections, opened
+        # before counting starts, so every counted connection is FrostVault's.
+        claimers = [PostgresConnection(self.path) for _ in range(16)]
+        for claimer in claimers:
+            self.addCleanup(claimer.close)
+        opened = []
+        opened_lock = threading.Lock()
+        class_connect = psycopg.Connection.connect.__func__
+        module_connect = psycopg.connect
+
+        def counted_class_connect(cls, *args, **kwargs):
+            with opened_lock:
+                opened.append(cls)
+            return class_connect(cls, *args, **kwargs)
+
+        def counted_module_connect(*args, **kwargs):
+            with opened_lock:
+                opened.append(psycopg.Connection)
+            return module_connect(*args, **kwargs)
+
+        stop = threading.Event()
+        maintenance_passes = []
+        start = threading.Barrier(18)
+
+        def maintenance():
+            start.wait(timeout=20)
+            while not stop.is_set():
+                maintenance_passes.append(aggregates.process_directory_aggregate_maintenance(vault_id=2))
+                stop.wait(self.THROUGHPUT_MAINTENANCE_SECONDS)
+
+        def worker(claimer, batch):
+            start.wait(timeout=20)
+            for job_id in batch:
+                token = uuid.uuid4().hex
+                claimed = ArchiveCatalog(claimer).claim_job(
+                    job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
+                    claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                    restore_due_before=storage.now_iso(),
+                )
+                job = claimer.execute("""SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix
+                    FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s""", (job_id,)).fetchone()
+                claimer.commit()
+                self.assertIsNotNone(claimed)
+                self.assertTrue(storage.process_job(job))
+
+        with patch.object(psycopg.Connection, "connect", classmethod(counted_class_connect)), \
+                patch.object(psycopg, "connect", counted_module_connect), \
+                ThreadPoolExecutor(max_workers=17) as pool:
+            upkeep = pool.submit(maintenance)
+            workers = [pool.submit(worker, claimers[i], jobs[i::16]) for i in range(16)]
+            start.wait(timeout=20)
+            started = time.monotonic()
+            try:
+                for future in workers:
+                    future.result(timeout=4800)
+            finally:
+                elapsed = time.monotonic() - started
+                stop.set()
+            upkeep.result(timeout=30)
+        self.assertTrue(maintenance_passes)
+        rate = count / elapsed
+        stats = database._pool_for(dsn).get_stats()
+        print(f"#535 throughput: {count} small files / 16 workers / "
+              f"{elapsed:.1f} s / {rate:.1f} files/s / {len(opened)} new PostgreSQL connections "
+              f"/ {stats.get('requests_num', 0)} pooled checkouts")
+        self.assert_completed(count)
+        self.assertGreaterEqual(rate, self.THROUGHPUT_MIN_FILES_PER_SECOND)
+        self.assertLessEqual(len(opened), self.THROUGHPUT_MAX_NEW_CONNECTIONS)
+
     def test_forced_post_response_transaction_abort_retries_linkage_without_put(self):
         original = ArchiveCatalog.link_job_version
         for code in ("40P01", "40001"):
