@@ -1,16 +1,20 @@
 """Real SDK against a loopback-only disposable provider, never live S3/DB."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import socket
 import tempfile
 import threading
 import unittest
 from collections import Counter
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
+import zlib
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -62,11 +66,15 @@ class SDKTransportHTTPTests(unittest.TestCase):
                     if operation in {"put", "complete"}:
                         self.send_header("x-amz-version-id", "exact")
                     if operation in {"put", "part"}:
-                        checksum = "d3Jvbmc=" if failure == "wrong_checksum" else self.headers.get("x-amz-checksum-sha256")
-                        if checksum:
+                        # Compute independent wire evidence, never reflect a
+                        # request header into the response (CodeQL28/29).
+                        if self.headers.get("x-amz-checksum-sha256"):
+                            checksum = ("d3Jvbmc=" if failure == "wrong_checksum" else
+                                        base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"))
                             self.send_header("x-amz-checksum-sha256", checksum)
                         if self.headers.get("x-amz-checksum-crc32"):
-                            self.send_header("x-amz-checksum-crc32", self.headers["x-amz-checksum-crc32"])
+                            checksum = base64.b64encode((zlib.crc32(body) & 0xFFFFFFFF).to_bytes(4, "big")).decode("ascii")
+                            self.send_header("x-amz-checksum-crc32", checksum)
                 self.end_headers()
                 self.wfile.write(payload)
             do_PUT = do_POST = do_DELETE = handle_request
@@ -97,6 +105,23 @@ class SDKTransportHTTPTests(unittest.TestCase):
         return upload_file(s3_client(), write_client=s3_client(non_idempotent=True),
                            source=self.source, snapshot=snapshot, bucket="bucket", key="key",
                            check_active=lambda: None, on_progress=kwargs.pop("on_progress", lambda _: None), **kwargs)
+
+    def test_fixture_computes_response_checksums_instead_of_reflecting_headers(self):
+        endpoint = urlsplit(os.environ["AWS_ENDPOINT_URL"])
+        client = HTTPConnection(endpoint.hostname, endpoint.port, timeout=5)
+        self.addCleanup(client.close)
+        body = b"independent wire evidence"
+        client.request("PUT", "/bucket/key", body, headers={
+            "x-amz-checksum-sha256": "caller-controlled",
+            "x-amz-checksum-crc32": "caller-controlled",
+        })
+        response = client.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("x-amz-checksum-sha256"),
+                         base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"))
+        self.assertEqual(response.getheader("x-amz-checksum-crc32"),
+                         base64.b64encode((zlib.crc32(body) & 0xFFFFFFFF).to_bytes(4, "big")).decode("ascii"))
+        response.read()
 
     def test_small_put_wire_checksum_progress_and_acknowledgment(self):
         progress, ack = [], []
