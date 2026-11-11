@@ -16,6 +16,7 @@ def upgrade():
         sa.Column("requested_by", sa.BigInteger(), nullable=False),
         sa.Column("requested_at", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.Text(), nullable=False),
+        sa.Column("last_attempted_at", sa.DateTime(timezone=True)),
         sa.Column("path", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
         sa.Column("reason", sa.Text()),

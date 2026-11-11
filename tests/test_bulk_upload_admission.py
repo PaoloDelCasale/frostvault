@@ -61,6 +61,51 @@ class BulkUploadApiTests(unittest.TestCase):
                 bulk.advance(Mock(), vault_id=9, group_id="g", batch_size=size)
 
 
+class BulkProducerRotationTests(unittest.TestCase):
+    def test_skipped_and_failed_attempts_rotate_past_the_vault_window(self):
+        # Model only SQL selection/commits; advance remains the real tick seam.
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                rows = [{"group_id": str(v), "vault_id": v, "attempt": 0}
+                        for v in range(1, bulk.VAULT_BATCH + 2)]
+                healthy = rows[-1]["vault_id"]
+                attempted = []
+
+                class Connection:
+                    def execute(self, statement, params=()):
+                        if "UPDATE bulk_upload_admissions" in statement:
+                            for row in rows:
+                                if row["group_id"] in params[1]:
+                                    row["attempt"] += 1
+                            return Mock()
+                        ordered = sorted(rows, key=lambda row: (
+                            row["attempt"] if "last_attempted_at" in statement else 0,
+                            row["vault_id"],
+                        ))
+                        return Mock(fetchall=lambda: ordered[:bulk.VAULT_BATCH])
+
+                @contextmanager
+                def connect():
+                    yield Connection()
+
+                def advance(connection, *, vault_id, group_id):
+                    attempted.append(vault_id)
+                    if vault_id == healthy:
+                        return True
+                    if failed:
+                        raise RuntimeError("batch unavailable")
+                    return False
+
+                with patch.object(bulk, "advance", side_effect=advance):
+                    for _ in range(2):
+                        if failed:
+                            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                                bulk.tick(connect)
+                        else:
+                            bulk.tick(connect)
+                self.assertIn(healthy, attempted)
+
+
 class CombinedMigrationContractTests(unittest.TestCase):
     def test_release_head_joins_both_independent_feature_revisions(self):
         from pathlib import Path

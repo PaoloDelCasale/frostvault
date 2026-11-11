@@ -289,6 +289,55 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.finish(group)
         self.assertEqual(len(self.jobs()), 4)
 
+    def many_vault_admissions(self):
+        ids = list(range(2, bulk.VAULT_BATCH + 3))
+        with self.db() as c:
+            for vault_id in ids[2:]:
+                c.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
+                    VALUES (%s,%s,%s,%s,'test-bucket',%s)""",
+                    (vault_id, f"bulk-{vault_id}", f"Bulk {vault_id}",
+                     str(self.base / f"bulk-{vault_id}"), f"bulk-{vault_id}"))
+        groups = {}
+        for vault_id in ids:
+            self.seed(["one.jpg"], vault_id=vault_id)
+            groups[vault_id] = self.create(vault_id=vault_id)["group_id"]
+        return groups
+
+    def test_busy_window_rotates_durably_and_releases_selection_before_vault_locks(self):
+        groups = self.many_vault_admissions()
+        healthy = max(groups)
+        with self.db() as held:
+            held.execute("SELECT id FROM vaults WHERE id=ANY(%s) FOR NO KEY UPDATE",
+                         ([v for v in groups if v != healthy],))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertEqual(pool.submit(bulk.tick, self.db).result(timeout=5), 0)
+                # A fresh call/connection has no in-memory rotation state.
+                self.assertEqual(pool.submit(bulk.tick, self.db).result(timeout=5), 1)
+        self.assertEqual(self.status(groups[healthy], healthy)["status"], "completed")
+        self.assertEqual(len(self.jobs()), 1)
+        with self.db() as c:
+            self.assertEqual(c.execute("""SELECT count(*) AS n FROM bulk_upload_admissions
+                WHERE last_attempted_at IS NOT NULL""").fetchone()["n"], len(groups))
+
+    def test_failed_window_rotates_even_when_every_earlier_batch_rolls_back(self):
+        groups = self.many_vault_admissions()
+        healthy = max(groups)
+        advance = bulk.advance
+        def fail_earlier(c, **kwargs):
+            result = advance(c, **kwargs)
+            if kwargs["vault_id"] != healthy:
+                raise RuntimeError("batch interrupted")
+            return result
+        with patch.object(bulk, "advance", side_effect=fail_earlier):
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                    bulk.tick(self.db)
+        self.assertEqual(self.status(groups[healthy], healthy)["status"], "completed")
+        self.assertEqual(len(self.jobs()), 1)
+        for vault_id, group in groups.items():
+            if vault_id != healthy:
+                self.assertEqual(self.status(group, vault_id)["processed_count"], 0)
+
     def test_failed_batch_rolls_back_without_preventing_other_vaults_from_advancing(self):
         self.seed(["a.jpg"])
         self.seed(["b.jpg"], vault_id=3)

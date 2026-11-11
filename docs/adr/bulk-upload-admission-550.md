@@ -34,8 +34,12 @@ scope is refused. Retrying without an identifier is a new request.
 
 Cursor, counters and produced Jobs commit together. Multiple processes serialize
 Vault first, request second. Crashes before commit produce neither progress nor
-Jobs; restart resumes the persisted cursor. Each transaction revalidates the
-Vault lifecycle and enrolled identity and delegates to the existing upload
+Jobs; restart resumes the persisted cursor. The producer selects at most eight
+Vaults per tick and commits their last-attempt times separately before acquiring
+any Vault lock. Least-recently attempted requests rotate even when every earlier
+Vault is locked or its batch rolls back. Attempt accounting never changes
+progress, and no request-row selection lock survives into a Vault-first batch.
+Each transaction revalidates the Vault lifecycle and enrolled identity and delegates to the existing upload
 remediation arbiter, preserving reconcile-only, exact-send and active-file fences.
 The requested policy applies to new uploads; remediation retains the original
 Upload Snapshot's proof mode, never replacing it with a later policy.

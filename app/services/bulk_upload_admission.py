@@ -180,11 +180,21 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
 def tick(connection_factory: Callable[..., Any]) -> int:
     """At most one request per Vault per tick; every advance commits separately."""
     with connection_factory() as connection:
-        requests = connection.execute("""SELECT group_id,vault_id FROM (
-            SELECT DISTINCT ON (vault_id) group_id,vault_id,updated_at
+        requests = connection.execute("""WITH heads AS (
+            SELECT DISTINCT ON (vault_id) group_id
             FROM bulk_upload_admissions WHERE status='pending'
             ORDER BY vault_id,requested_at,group_id
-        ) r ORDER BY updated_at,vault_id LIMIT %s""", (VAULT_BATCH,)).fetchall()
+        ) SELECT a.group_id,a.vault_id
+          FROM bulk_upload_admissions a JOIN heads h ON h.group_id=a.group_id
+          ORDER BY a.last_attempted_at NULLS FIRST,a.updated_at,a.vault_id
+          LIMIT %s FOR UPDATE OF a SKIP LOCKED""", (VAULT_BATCH,)).fetchall()
+        if requests:
+            # Commit the rotation BEFORE the Vault-first batch transactions.
+            # A skipped lock, rollback, or restart must not pin the oldest eight
+            # requests forever. This is attempt accounting, never progress.
+            connection.execute("""UPDATE bulk_upload_admissions SET last_attempted_at=%s
+                WHERE group_id=ANY(%s::text[])""",
+                (_now(), [row["group_id"] for row in requests]))
     advanced = 0
     failure = None
     for row in requests:
