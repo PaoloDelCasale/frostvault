@@ -108,6 +108,10 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
         chunk = stale[start:start + 500]
         connection.execute("DELETE FROM protection_pending WHERE vault_file_id IN (" +
                            ",".join(["%s"] * len(chunk)) + ")", chunk)
+    # Upload completion can delete a timer after the candidate query (READ
+    # COMMITTED). Missing ages are no longer pending in this observation; never
+    # recreate their age or abort maintenance for every other Vault (#549).
+    candidates = [row for row in candidates if row["id"] in ages]
     for row in candidates:
         row["pending_since"] = ages[row["id"]]
     progress = connection.execute(

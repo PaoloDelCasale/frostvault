@@ -154,7 +154,9 @@ def estimate_restore_cost(
         size_bytes=max(0, int(size_bytes)),
         storage_class=class_key,
         tier=resolved_tier,
-        estimated_cost_eur=round(gib * rate, 6),
+        # Preserve positive tiny estimates for request totals and sub-cent
+        # notices. Rounding is presentation, not pricing/admission evidence.
+        estimated_cost_eur=gib * rate,
         estimated_hours=hours,
         pricing_effective_at=prices.effective_at,
         region=prices.region,

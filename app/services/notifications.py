@@ -10,35 +10,19 @@ import smtplib
 import ssl
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from typing import Any, Protocol
 
 from ..config import settings
 from ..i18n import catalog as locale_catalog
-from ..i18n import format_message_params, parse_message_params, translate
+from ..i18n import format_message_params, normalize_locale, parse_message_params, translate
 
 
 # Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
 # into one open "job_failed_group" problem instead of one row per file (#499).
 GROUP_THRESHOLD = 10
 GROUP_WINDOW_SECONDS = 600
-
-# SQL (alias ``original`` = a failed upload Job): the file no longer exists and
-# the Job never reached the cloud, so the failure has nothing left to protect.
-# Failures that left a materialized fact (linked version, started send, a
-# remediation episode) are excluded: they stay open until reconciled.
-REMOVED_FILE_FAILURE_SQL = """(
-    original.action='upload' AND original.status='failed'
-    AND original.archive_version_id IS NULL
-    AND EXISTS (SELECT 1 FROM local_copies lc
-                WHERE lc.vault_file_id=original.vault_file_id AND lc.presence='missing')
-    AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs ib
-                    JOIN upload_intents i ON i.id=ib.intent_id
-                    WHERE ib.job_id=original.id AND i.send_started)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=original.id)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=original.id)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.job_id=original.id)
-)"""
 
 DELIVERY_TIMEOUT_SECONDS = 10.0
 DELIVERY_RETRY_CAP_SECONDS = 300
@@ -71,6 +55,28 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     return localized
 
 
+def _recovery_approval_params(params: Mapping[str, Any], locale: str | None = None) -> dict[str, Any]:
+    """Keep the stored decimal evidence; apply #530's sub-cent rule at render."""
+    localized = dict(params)
+    try:
+        amount = Decimal(str(params.get("cost") or 0))
+    except InvalidOperation:
+        amount = Decimal("NaN")
+    if not amount.is_finite():
+        localized["cost"] = "—"
+        return localized
+    subcent = 0 < amount < Decimal("0.01")
+    shown = Decimal("0.01") if subcent else amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    digits = f"{shown:,.2f}"
+    if normalize_locale(locale) == "it":
+        digits = digits.translate(str.maketrans({",": ".", ".": ","}))
+        money = f"{digits} €"
+    else:
+        money = f"€{digits}"
+    localized["cost"] = f"< {money}" if subcent else money
+    return localized
+
+
 def _localized_notification_text(
     row: Mapping[str, Any], *, key_field: str, text_field: str, locale: str | None
 ) -> str:
@@ -93,7 +99,10 @@ def _localized_notification_text(
         english_catalog = locale_catalog("en")
         if key not in english_catalog:
             return fallback
-    return translate(key, locale=locale, **_localized_params(_message_params(row), locale))
+    params = _localized_params(_message_params(row), locale)
+    if row.get("event") == "recovery_approval":
+        params = _recovery_approval_params(params, locale)
+    return translate(key, locale=locale, **params)
 
 
 def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = None) -> str:
@@ -214,7 +223,8 @@ def enqueue_notification(
     if title_key and not title:
         title = translate(title_key, **params)
     if body_key and not body:
-        body = translate(body_key, **params)
+        rendered_params = _recovery_approval_params(params) if event == "recovery_approval" else params
+        body = translate(body_key, **rendered_params)
     effective_in_app = (
         bool(in_app_enabled)
         if in_app_enabled is not None
@@ -326,7 +336,7 @@ def enqueue_recovery_approval_best_effort(connection: Any, *, job_ids: list[int]
             ).fetchone()
             if not job:
                 return
-            params = {"count": int(job["count"]), "cost": f"{float(job['cost'] or 0):.2f}",
+            params = {"count": int(job["count"]), "cost": str(job["cost"] or 0),
                       "path": job["path"], "group_id": job["group_id"]}
             channels = ("in_app", "email") if _smtp_config() is not None else ("in_app",)
             for recipient in _owner_recipients(connection):
@@ -358,7 +368,11 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     if not recovery and not (job["action"] == "upload" and job["status"] == "failed"):
         return 0
     event = ("recovery_completed" if job["status"] == "completed" else "recovery_failed") if recovery else "job_failed"
-    if event == "job_failed" and _fold_into_failure_group(connection, job):
+    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as RESOLUTION_SQL
+    already_closed = event == "job_failed" and connection.execute(
+        f"SELECT 1 FROM jobs original WHERE original.id=%s AND {RESOLUTION_SQL}", (job_id,),
+    ).fetchone() is not None
+    if event == "job_failed" and not already_closed and _fold_into_failure_group(connection, job):
         return 0
     title_key = f"notification.{event}.title"
     body_key = f"notification.{event}.body"
@@ -397,18 +411,17 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
         if event == "job_failed":
             # Late outbox delivery must materialize already-resolved history,
             # never reopen an exact target completed by remediation.
-            from .upload_remediation import CLOSED_SQL as RESOLUTION_SQL
             connection.execute(
                 f"""UPDATE notifications n SET
-                    problem_status=CASE WHEN {RESOLUTION_SQL} THEN 'resolved'
+                    problem_status=CASE WHEN %s OR {RESOLUTION_SQL} THEN 'resolved'
                         ELSE COALESCE(n.problem_status,'open') END,
-                    resolved_at=CASE WHEN {RESOLUTION_SQL} THEN COALESCE(n.resolved_at,%s)
+                    resolved_at=CASE WHEN %s OR {RESOLUTION_SQL} THEN COALESCE(n.resolved_at,%s)
                         ELSE n.resolved_at END,
-                    read_at=CASE WHEN {RESOLUTION_SQL} THEN COALESCE(n.read_at,%s)
+                    read_at=CASE WHEN %s OR {RESOLUTION_SQL} THEN COALESCE(n.read_at,%s)
                         ELSE n.read_at END
                     FROM jobs original WHERE original.id=n.job_id
                       AND n.user_id=%s AND n.dedupe_key=%s""",
-                (now_iso(), now_iso(), user_id, dedupe_key),
+                (already_closed, already_closed, now_iso(), already_closed, now_iso(), user_id, dedupe_key),
             )
         if existing is None:
             enqueued += 1
@@ -434,6 +447,7 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         return False
     vault_id = int(job["vault_id"])
     user_id = int(recipients[0]["user_id"])
+    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL
     own = connection.execute(
         "SELECT 1 FROM notifications WHERE user_id=%s AND dedupe_key=%s",
         (user_id, f"job:{int(job['id'])}:job_failed"),
@@ -444,10 +458,10 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     cutoff = (datetime.fromisoformat(stamp) - timedelta(seconds=GROUP_WINDOW_SECONDS)).isoformat()
     group_key = f"job_failed_group:{vault_id}"
     burst = connection.execute(
-        """
-        SELECT count(*) AS total FROM jobs
-        WHERE vault_id=%s AND action='upload' AND status='failed'
-          AND updated_at >= %s
+        f"""
+        SELECT count(*) AS total FROM jobs original
+        WHERE original.vault_id=%s AND original.action='upload' AND original.status='failed'
+          AND original.updated_at >= %s AND NOT {CLOSED_UPLOAD_FAILURE_SQL}
         """,
         (vault_id, cutoff),
     ).fetchone()
@@ -496,10 +510,11 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
             if retired_last > since:
                 since = retired_last
     count = connection.execute(
-        """
+        f"""
         SELECT count(*) AS total FROM jobs original
         WHERE original.vault_id=%s AND original.action='upload'
           AND original.status='failed' AND original.updated_at >= %s
+          AND NOT {CLOSED_UPLOAD_FAILURE_SQL}
           AND NOT EXISTS (SELECT 1 FROM notifications own
                           WHERE own.job_id=original.id AND own.event='job_failed')
         """,
@@ -763,11 +778,12 @@ def reconcile_problem_states(connection: Any) -> None:
     """Refresh catalog/Job-backed problems before counting, listing or emailing.
 
     No filesystem/S3 operations and no modification of protection evidence.
-    Only demonstrable completed remediation with exact cleanup resolves failed
-    uploads. A newer queued/failed upload, or successful content B, proves nothing
-    about failed snapshot A. Reading remains independent of resolution.
+    Materialized writes require exact completed remediation/cleanup. Pre-write
+    failures can also close when a later completed upload protects this same
+    file's current content; queued/failed Jobs or stale verified content cannot
+    establish that. Reading remains independent of resolution.
     """
-    from .upload_remediation import CLOSED_SQL as RESOLUTION_SQL
+    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as RESOLUTION_SQL
     connection.execute(f"""
         UPDATE notifications n SET problem_status='resolved', resolved_at=%s,
             read_at=COALESCE(read_at,%s)
@@ -777,7 +793,7 @@ def reconcile_problem_states(connection: Any) -> None:
                 WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
             )) OR (n.event='job_failed' AND EXISTS (
                 SELECT 1 FROM jobs original WHERE original.id=n.job_id
-                  AND ({RESOLUTION_SQL} OR {REMOVED_FILE_FAILURE_SQL})
+                  AND {RESOLUTION_SQL}
             )) OR (n.event='job_failed_group' AND NOT EXISTS (
                 SELECT 1 FROM jobs original
                 WHERE original.vault_id=n.vault_id AND original.action='upload'
@@ -786,7 +802,7 @@ def reconcile_problem_states(connection: Any) -> None:
                   AND original.updated_at <= COALESCE(n.message_params::jsonb->>'last', '9999-12-31')
                   AND NOT EXISTS (SELECT 1 FROM notifications own
                                   WHERE own.job_id=original.id AND own.event='job_failed')
-                  AND NOT ({RESOLUTION_SQL} OR {REMOVED_FILE_FAILURE_SQL})
+                  AND NOT {RESOLUTION_SQL}
             )) OR (n.event='file_unreadable' AND (
                 EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
                         AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
