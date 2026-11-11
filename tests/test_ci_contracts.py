@@ -42,6 +42,73 @@ def _workflow_on(workflow: dict) -> dict | list | str:
     return workflow[True]
 
 
+class PythonRuntimeAlignmentContractTests(unittest.TestCase):
+    """Issue #553: ship only the Python line exercised by the complete suite."""
+
+    def test_final_image_uses_versioned_official_python_312_index_pin(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        stages = re.findall(r"(?mi)^FROM\s+(.+)$", dockerfile)
+        self.assertRegex(
+            stages[-1],
+            r"^python:3\.12\.\d+-slim-trixie@sha256:[0-9a-f]{64}$",
+        )
+        # A literal tag+digest stays discoverable by root Docker Dependabot;
+        # a build ARG or floating tag must not bypass the runtime contract.
+        self.assertEqual(sum(stage.startswith("python:") for stage in stages), 1)
+
+    def test_all_ci_python_setups_and_host_commands_use_312(self) -> None:
+        configured = set()
+        host_python = re.compile(
+            r"(?m)^\s*(?:python(?:3(?:\.\d+)?)?|pip3?|pip-audit)(?:\s|$)"
+        )
+        for path in WORKFLOWS.glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for name, job in workflow["jobs"].items():
+                setup_seen = False
+                for step in job.get("steps", []):
+                    if step.get("uses", "").startswith("actions/setup-python@"):
+                        with self.subTest(workflow=path.name, job=name):
+                            self.assertEqual(step["with"]["python-version"], "3.12")
+                            self.assertNotIn("if", step)
+                            self.assertFalse(step.get("continue-on-error", False))
+                        setup_seen = True
+                        configured.add((path.name, name))
+                    if host_python.search(step.get("run", "")):
+                        self.assertTrue(setup_seen, f"{path.name}:{name} uses runner Python")
+        self.assertTrue({
+            ("migrations.yml", "python-unit-tests"),
+            ("migrations.yml", "postgresql-tests"),
+            ("migrations.yml", "s3-compatible-integrity"),
+            ("migrations.yml", "playwright-e2e"),
+            ("security.yml", "dependency-review"),
+            ("security.yml", "codeql"),
+            ("publish-image.yml", "require-ci"),
+            ("aws-s3-integrity.yml", "aws-integrity"),
+        }.issubset(configured))
+
+    def test_playwright_uses_the_setup_python_interpreter(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        step = next(step for step in workflow["jobs"]["playwright-e2e"]["steps"]
+                    if "npm run test:e2e" in step.get("run", ""))
+        self.assertEqual(step["env"]["E2E_PYTHON"], "python")
+        config = (ROOT / "frontend/e2e/playwright.config.ts").read_text(encoding="utf-8")
+        self.assertIn("if (process.env.E2E_PYTHON) return process.env.E2E_PYTHON", config)
+        self.assertIn("command: `${resolvePython()}", config)
+
+    def test_built_image_checks_python_line_before_backup(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["production-image-postgres-backup"]["steps"]
+        index = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Verify Python runtime in image")
+        probe = steps[index]
+        self.assertNotIn("if", probe)
+        self.assertFalse(probe.get("continue-on-error", False))
+        self.assertIn('docker run --rm --entrypoint python "$IMAGE"', probe["run"])
+        self.assertIn("assert sys.version_info[:2] == (3, 12)", probe["run"])
+        self.assertLess(index, next(i for i, step in enumerate(steps)
+                                   if "app.backup_upgrade" in step.get("run", "")))
+
+
 class PullRequestCiContractTests(unittest.TestCase):
     def test_pr_workflow_has_no_aws_oidc_or_static_keys(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -788,6 +855,19 @@ class ProductionImagePostgresClientContractTests(unittest.TestCase):
 
 
 class DependabotContractTests(unittest.TestCase):
+    def test_root_docker_updates_keep_python_digest_and_patch_refreshes_enabled(self) -> None:
+        config = yaml.safe_load(
+            (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        )
+        docker = next(item for item in config["updates"]
+                      if item["package-ecosystem"] == "docker")
+        self.assertEqual(docker["directory"], "/")
+        self.assertEqual(docker["schedule"]["interval"], "weekly")
+        self.assertFalse(docker.get("ignore"))
+        self.assertFalse(docker.get("allow"))
+        self.assertEqual(docker["groups"]["docker-minor-and-patch"]["update-types"],
+                         ["minor", "patch"])
+
     def test_codeql_actions_are_grouped_to_prevent_version_mismatches(self) -> None:
         config = yaml.safe_load(
             (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
