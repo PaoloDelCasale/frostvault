@@ -87,6 +87,9 @@ class JobQueueConnection(RecordingConnection):
 
     def execute(self, sql: str, params=()):
         self.statements.append((sql, tuple(params)))
+        if "SELECT v.id FROM vaults v" in sql and "FOR KEY SHARE SKIP LOCKED" in sql:
+            job = self.jobs_by_id.get(int(params[0]))
+            return JobQueueResult([{"id": job["vault_id"]}] if job else [])
         if "SELECT status FROM jobs" in sql and params:
             job = self.jobs_by_id.get(int(params[0]))
             return JobQueueResult([{"status": job["status"]}] if job else [])
