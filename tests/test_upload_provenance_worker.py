@@ -6,6 +6,7 @@ Provider persists actual version bytes/Metadata across worker invocations.
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -122,6 +123,45 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertIn((version["object_key"], version["provider_version_id"]), self.provider.objects)
         return version
 
+    def test_upload_rename_free_and_recover_preserves_archived_timestamp(self):
+        original = 1_597_614_120_123_456_789
+        os.utime(self.file, ns=(original, original))
+        job_id = self.queue()
+        self.run_job(job_id)
+        self.assert_keeper(job_id)
+        renamed = self.source / "renamed.txt"
+        self.file.rename(renamed)
+        # A later Local Copy observation is not the archived timestamp.
+        os.utime(renamed, ns=(original + 1000, original + 1000))
+        with PostgresConnection(self.db_path) as connection:
+            catalog = ArchiveCatalog(connection)
+            timestamp = storage.now_iso()
+            catalog.mark_local_copy_missing(self.file_id, observed_at=timestamp)
+            catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular",
+                size=len(A), mtime_ns=renamed.stat().st_mtime_ns, observed_at=timestamp)
+            catalog.set_local_fingerprint(vault_id=2, path="renamed.txt",
+                plaintext_sha256=hashlib.sha256(A).hexdigest(), matched_archive_version_id=None)
+            catalog.confirm_file_rename(vault_file_id=self.file_id, new_path="renamed.txt",
+                changed_at=timestamp, vault_id=2)
+        def process(action):
+            queue_jobs("renamed.txt", action, 2, 1)
+            with PostgresConnection(self.db_path) as connection:
+                queued = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
+            self.run_job(queued)
+            row = self.row(queued)
+            self.assertEqual(row["status"], "completed", row["message"])
+            return row
+        renamed_job = process("rename")
+        version = self.assert_keeper(renamed_job["id"])
+        head = self.provider.head_object(Bucket="bucket", Key=version["object_key"], VersionId=version["provider_version_id"])
+        self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original))
+        self.assertEqual(UploadSnapshot.from_json(version["upload_snapshot_json"]).mtime_ns, original)
+        process("free-space")
+        self.assertFalse(renamed.exists())
+        process("recover")
+        self.assertEqual(renamed.read_bytes(), A)
+        self.assertEqual(renamed.stat().st_mtime_ns, original)
+
     def test_module_run_accepts_a_claimed_job_and_returns_its_durable_outcome(self):
         from app.services.upload_execution import UploadExecution
         job_id = self.queue()
@@ -148,6 +188,8 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                     self.assertTrue(intent["send_started"])
                     self.assertEqual(intent["snapshot_json"], kwargs["snapshot"].as_json())
                     self.assertEqual(kwargs["metadata"][provenance.TOKEN_KEY], intent["token"])
+                    self.assertEqual(kwargs["metadata"]["frostvault-mtime-ns"], str(self.file.stat().st_mtime_ns))
+                    self.assertEqual(UploadSnapshot.from_json(intent["snapshot_json"]).mtime_ns, self.file.stat().st_mtime_ns)
                     self.assertIsNotNone(connection.execute("SELECT job_id FROM snapshot_cleanup_inventories").fetchone())
         self.provider.hook = inspect
         job = self.queue()
