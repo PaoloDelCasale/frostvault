@@ -36,6 +36,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against isolated `postgres:16` services, partitioned across twelve parallel shards by packing largest test modules first. The stable aggregate requires all shards and the dedicated migration/concurrency job below. Each fixture uses its own database, with a migrated HEAD template for fresh fixtures; populated upgrades/downgrades still run Alembic. No database regression skips without configuration. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: nested uploads through `process_job` on all 16 workers with concurrent aggregate maintenance and full-rollup parity (64 uploads on PRs; the full 1,024 on `main`), a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions on every PR, and #535: a small-upload burst (64 files on PRs; the full 2,048 on `main`) with the unchanged conservative files/second floor and bound on new PostgreSQL connections (pooled `db()`). Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
+| Upload execution baseline comparison | Separate #562 descriptive benchmark: the same external harness compares fixed v0.5.3 with the candidate on one runner/PG16 service, with three alternating repetitions per SHA and driver-probe profile. Real claims, Job execution, SDK orchestration and exact completed-after-cleanup assertions; in-memory S3 API responses, not AWS/HTTP throughput. Raw JSON, SQL-shape trace and summary artifact. No timing threshold and no change to existing stress/publication gates. | Ephemeral Postgres service only; synthetic SDK credentials, no network provider. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
@@ -84,6 +85,104 @@ while high-volume/long-tail effects remain a blocking pre-publication check on
 `main`. Main and image publication still pay the full stress cost. Measurements
 and hypothesis ranking are recorded in the
 [CI-latency session report](../sessioni/2026-11-11-ci-latency/report.md).
+
+### Repeatable upload execution comparison (#562)
+
+The **Upload execution baseline comparison** job is independent of the existing
+stress checks, thresholds, aggregate and publication requirements. It must fail
+on invalid prerequisites, extra PUTs, missing claims or wrong outcomes; it has
+**no speed pass/fail threshold**. It first runs the new
+`tests.upload_benchmark_postgres_contract` against disposable PG16 in both frozen
+verification modes. Existing integrity tests and floors are not changed.
+
+`scripts/upload_benchmark.py` runs **its own identical worker/probes** against
+two clean checkouts; it does not copy candidate code into the baseline. The
+baseline must resolve to v0.5.3
+`628d065fe54a5c13364d5da7c58cb563d0bd80b7`. Each subprocess imports `app` from the
+specified checkout, uses its real migrations and the unchanged
+`tests/postgres.py` fixture (the harness refuses different fixture hashes), and
+creates uniquely named disposable databases. A manifest records both exact
+SHAs, harness/fixture/requirements digests, Python/platform and installed SDK/PG
+driver versions, workload and actual run order.
+On PRs the candidate is the checkout's tested merge SHA, just like ordinary CI.
+
+Default CI workload: **32 new temporary files × 10 KiB**, one Vault, **16**
+concurrent claimed Jobs, unlimited bandwidth, explicit frozen **s3_checksum** on
+each Job. Every sample gets a fresh filesystem/database and 16 distinct warmup
+files; seeding/migration/warmup are excluded and separately timed. The timer
+covers the synchronized burst's real claim/load, hashing, SDK upload,
+verification, durable receipt, publication, cleanup and all `process_job`
+returns. Per-file claim→completed, claim-only and handler latencies are reported.
+It does **not** time bulk admission/HTTP202 or scheduler candidate nomination.
+Bucket readiness is a prevalidated fixture. Pause/cancel and aggregate
+maintenance (including automatic aggregate scheduling) are explicitly **excluded
+on both SHAs**; the unchanged concurrency stress covers those adversarial cases.
+The real pool reset and PG16 `fsync`, `synchronous_commit`, `full_page_writes=on`
+remain intact. No production service, dataset, credentials or S3 endpoint is used.
+
+The provider intercepts **only** `BaseClient._make_api_call`. Production client
+creation, upload facade, bounded-body checksum validation, SDK managers/threads,
+progress/ack callbacks and the whole Job pipeline still run. The thread-safe
+emulator consumes actual request bodies, validates supplied SHA256, preserves
+metadata/exact VersionIds, supports paged listings and exact GET/HEAD, counts
+API calls without inventing internal HEADs, and rejects unexpected operations
+(including fresh-file deletes/multipart). **No HTTP serialization, network,
+service retry latency or AWS throughput is represented.** This is not the old
+high-level synchronous upload stub. Real SDK-to-endpoint/AWS integrity evidence
+remains in the existing separate S3 jobs; this comparison does not claim an
+endpoint/HTTP profile or substitute for those checks.
+
+There are **three repetitions per SHA for each of two driver-probe profiles**
+(12 samples): traced and plain; baseline/candidate order is AB, BA, AB, and
+trace/plain order also alternates. The plain runs disable only SQL-driver
+instrumentation, keeping provider counting and the 50 ms lock observer the
+same. Median elapsed traced/plain minus one reports noisy probe overhead; it is
+not subtracted from results. Reports include throughput/latency, standard
+deviation/CV, per-file work, bounded parameter-free normalized SQL shapes,
+actual transaction start/finish state transitions plus BEGIN/COMMIT/ROLLBACK
+command attempts (a redundant BEGIN is not a second transaction), receipt INSERTs, renewal/progress
+UPDATE attempts, lock clauses/wait samples and S3 operations. SQL/driver timing
+is inclusive (implicit BEGIN can overlap cursor timing), not additive CPU time;
+transactions are not physical fsyncs. Server-trigger SQL is not a separate client
+statement. Sampling can miss short lock waits. No metric labels contain file,
+Job, VersionId or token identities; SQL parameter values are never exported.
+
+Every sample checks completed **after cleanup and intent settlement**, one
+durable receipt per intent, independently expected exact bytes/digest/VersionId,
+verified/available catalog state and matched Local Copy, frozen requested/effective
+mode without fallback, and exactly one PUT per completed file. A checksum sample
+must not fall back to GET; read_back must perform an exact GET. All validation is
+outside timing. Failures write only exception type and frame names/line numbers,
+never DB/provider exception text. The artifact `upload-execution-comparison`
+(retained seven days) includes `manifest.json`, the raw samples, `summary.json`
+and `summary.md` (also appended to the job summary). Artifact size is bounded by
+workload limits and a maximum 512 SQL shapes per sample. A failing run may contain
+only manifest/partial samples; never treat it as a valid comparison.
+
+To reproduce, prepare two clean checkouts and a disposable loopback PG16 service
+with CREATEDB, export `TEST_POSTGRES_URL` without displaying credentials, then
+use the **same Python 3.12 environment** and candidate harness for both:
+
+```bash
+# Paths are examples; output must be a fresh directory in this session.
+.venv/bin/python -m unittest tests.test_upload_benchmark -v  # no DB/network
+.venv/bin/python -m unittest tests.upload_benchmark_postgres_contract -v  # disposable PG16 required
+.venv/bin/python scripts/upload_benchmark.py \
+  --baseline /path/to/clean-v0.5.3 --candidate /path/to/clean-candidate \
+  --output /path/to/sessioni/<session>/upload-comparison \
+  --disposable-postgres \
+  --mode s3_checksum --files 32 --concurrency 16 --warmup 16 --repetitions 3
+```
+
+`--mode read_back` creates a **separate** comparison, not a mixed-mode ratio.
+Arguments are bounded (3–5 repetitions, 1–16 workers, at most 128 measured and
+32 warmup files). The tool refuses non-loopback DB addresses, wrong PG major,
+weakened durability, dirty compared trees, wrong baseline or missing configuration.
+The explicit disposable acknowledgment is still essential: loopback alone cannot
+prove that an operator chose a test server. Do not run these DB commands on the
+homelab's live PostgreSQL; local environments without PG16 should use PR CI.
+Never compare these fake-provider numbers directly with production observations
+from #535/#551 or call a static call-count estimate a runtime result.
 
 Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
