@@ -260,6 +260,17 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.observe(900)[0]['scheduler_wait_seconds'], 0)
 
+    def test_busy_observation_does_not_scan_already_served_bulk_windows(self):
+        manual = self._insert_upload_job(vault_id=10, path='a.txt')
+        self._insert_upload_job(vault_id=10, path='b.txt')
+        auto = self.auto_job()
+        self.assertIsNotNone(self.claim(manual))
+        with PostgresConnection(self.path) as connection:
+            rows = ArchiveCatalog(connection).list_claimable_jobs(
+                now=self.stamp(), restore_due_before=self.stamp(),
+                limit=1, per_vault_limit=1, unserved_only=True)
+        self.assertEqual([row['id'] for row in rows], [auto])
+
     def test_global_candidate_limit_cannot_hide_starved_automatic_vault(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')
         auto = self.auto_job()

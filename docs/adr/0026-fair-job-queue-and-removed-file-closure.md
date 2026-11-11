@@ -54,8 +54,9 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
    preemption, hard latency guarantee, worker reservation, per-Vault quota or
    operating window is introduced.
 5. **Observe one runnable head, then validate the backlog lazily.** Even when
-   every worker is busy, a bounded head per Vault/tier is observed so an unserved
-   Vault's clock can start before capacity returns. The automatic-upload local
+   every worker is busy, a bounded head per unserved Vault/tier is observed so
+   its clock can start before capacity returns; already leased Vaults' bulk
+   windows are not loaded for this accounting-only pass. The automatic-upload local
    fence must pass before banking credit; additional backlog elements are checked
    only until free slots are filled. Live service, pause, retry/delay, local
    deferral, lifecycle/source suspension and the cloud gate earn no new credit.

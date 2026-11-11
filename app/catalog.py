@@ -2921,6 +2921,7 @@ class ArchiveCatalog:
         limit: int,
         per_vault_limit: int | None = None,
         exclude_job_ids: Sequence[int] = (),
+        unserved_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Load scheduler candidates using the shared claimability definition.
 
@@ -2944,6 +2945,15 @@ class ArchiveCatalog:
         )
         excluded = [int(job_id) for job_id in exclude_job_ids]
         tier = self._SCHEDULING_TIER_SQL
+        # When no slot is free we only need starvation observations, not the
+        # already-served bulk queue's windows or local readiness checks.
+        idle_filter = """
+            AND NOT EXISTS (
+                SELECT 1 FROM jobs serving WHERE serving.vault_id=v.id
+                  AND serving.claim_token IS NOT NULL AND serving.claim_expires_at > %s
+                  AND serving.status NOT IN ('completed', 'failed', 'cancelled')
+            )
+        """ if unserved_only else ""
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
@@ -2971,11 +2981,11 @@ class ArchiveCatalog:
                 ) ranked
                 WHERE ranked.tier_rank <= {window}
             ) j
-            WHERE v.relocation_state='ready'
+            WHERE v.relocation_state='ready' {idle_filter}
             ORDER BY {tier} ASC,
                      j.requested_at ASC, j.id ASC
             """,
-            [*params, excluded],
+            [*params, excluded, *([now] if unserved_only else [])],
         ).fetchall()
 
     def observe_scheduler_turns(

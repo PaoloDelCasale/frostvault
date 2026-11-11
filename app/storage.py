@@ -6168,6 +6168,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     limit=max(10, concurrency * 10) * 8,
                     per_vault_limit=window,
                     exclude_job_ids=_deferred_job_ids(scope),
+                    unserved_only=not available_slots,
                 )
                 if int(row["id"]) not in seen_ids
             ]
