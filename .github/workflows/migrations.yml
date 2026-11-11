@@ -170,9 +170,13 @@ jobs:
 
   # Descriptive #562 evidence, isolated from existing stress/floor/release gates.
   upload-execution-benchmark:
-    name: Upload execution baseline comparison
+    name: Upload execution baseline comparison (${{ matrix.concurrency }} workers)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        concurrency: [1, 4, 16]
     services:
       postgres:
         image: postgres:16
@@ -212,13 +216,13 @@ jobs:
             --candidate "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/upload-execution-comparison" \
             --disposable-postgres \
-            --mode s3_checksum --files 128 --concurrency 16 --warmup 32 --repetitions 5
+            --mode s3_checksum --files 128 --concurrency ${{ matrix.concurrency }} --warmup 32 --repetitions 5
           cat "$RUNNER_TEMP/upload-execution-comparison/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload raw benchmark samples, manifest and summary
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: upload-execution-comparison
+          name: upload-execution-comparison-${{ matrix.concurrency }}
           path: ${{ runner.temp }}/upload-execution-comparison/
           if-no-files-found: warn
           retention-days: 7
