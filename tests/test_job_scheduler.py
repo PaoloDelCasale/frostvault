@@ -166,8 +166,10 @@ class SelectFairJobsTests(unittest.TestCase):
         from app.services.job_scheduler import AGING_SECONDS, effective_priority
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         waited = "2026-07-01T11:00:00+00:00"
-        self.assertEqual(effective_priority({"action": "upload", "origin": "manual", "requested_at": waited}, now), 0)
-        self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": waited}, now), 0)
+        self.assertEqual(effective_priority({"action": "upload", "origin": "manual", "requested_at": waited,
+                                             "scheduler_wait_seconds": 900}, now), 0)
+        self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": waited,
+                                             "scheduler_wait_seconds": 1800}, now), 0)
         recent = "2026-07-01T11:59:00+00:00"
         self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": recent}, now), 2)
         self.assertEqual(effective_priority({"action": "upload", "origin": "automatic", "requested_at": recent}), 2)
@@ -186,6 +188,7 @@ class SelectFairJobsTests(unittest.TestCase):
         # Without aging every rename goes first; once the upload has waited,
         # the Vaults alternate.
         self.assertEqual(select_fair_jobs(jobs, limit=2)[0]["id"], 1)
+        jobs[-1]['scheduler_wait_seconds'] = 900
         aged = [job["id"] for job in select_fair_jobs(jobs, limit=2, now=now)]
         self.assertIn(99, aged)
 
@@ -229,8 +232,12 @@ class SelectFairJobsTests(unittest.TestCase):
         ]
         # Without aging Vault 10's Owner operations come first.
         self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [1, 2])
-        # Vault 20 has waited long enough: the Vaults alternate, each in its own order.
-        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=4, now=now)], [3, 1, 4, 2])
+        # Vault 20 has ONE aged opportunity. Its remaining automatic backlog
+        # does not inherit that promotion, and each Vault retains its own order.
+        for job in jobs:
+            if job['vault_id'] == 20:
+                job['scheduler_wait_seconds'] = 1800
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=4, now=now)], [3, 1, 2, 4])
 
 
 class SchedulerFileIsolationTests(unittest.TestCase):
@@ -257,6 +264,7 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.catalog = Mock()
         self.catalog.list_claimable_jobs.return_value = [self.missing, self.healthy]
         self.catalog.active_job_counts.return_value = {}
+        self.catalog.observe_scheduler_turns.return_value = {}
         self.catalog.get_job_target.return_value = {"archive_version_id": None}
         self.catalog.claim_job.return_value = self.healthy
         self.enterContext(patch("app.storage.db", return_value=connection))
@@ -343,13 +351,17 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.assertEqual(kwargs["per_vault_limit"], 10)
         self.assertGreater(kwargs["limit"], kwargs["per_vault_limit"])
 
-    def test_busy_scheduler_does_not_read_or_recheck_candidates(self) -> None:
-        # Issue #500: with every worker busy a tick must cost nothing.
+    def test_busy_scheduler_observes_turns_without_claiming_backlog(self) -> None:
+        # #552: the clock must start while long transfers fill all slots, not
+        # only when capacity finally becomes available.
         with patch("app.storage._active_operation_count", return_value=2), \
-                patch("app.storage._automatic_upload_state") as state:
+                patch("app.storage.cloud_preflight_gate.dispatch_ready", return_value=True), \
+                patch("app.storage._automatic_upload_state", return_value=storage_module.UPLOAD_READY) as state:
             self.assertEqual(process_jobs_once(wait=False), 0)
-        self.catalog.list_claimable_jobs.assert_not_called()
-        state.assert_not_called()
+        self.assertEqual(self.catalog.list_claimable_jobs.call_args.kwargs['per_vault_limit'], 1)
+        self.catalog.observe_scheduler_turns.assert_called_once()
+        self.catalog.claim_job.assert_not_called()
+        self.assertEqual(state.call_count, 1)
 
     def test_readiness_is_rechecked_only_until_the_free_slots_are_filled(self) -> None:
         autos = [

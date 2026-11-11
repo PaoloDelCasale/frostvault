@@ -2931,6 +2931,8 @@ class ArchiveCatalog:
         behind a flood of Owner operations) out of the candidate set (issues
         #493, #500). Tiers match ``job_scheduler.job_priority``. ``exclude_job_ids`` removes candidates
         the worker already found not runnable *before* the window is cut.
+        ``limit`` defaults the per-Vault window, not a global cut: every eligible
+        Vault must be visible to the turn selector, including aged tier-2 work.
         """
         if limit <= 0:
             return []
@@ -2972,10 +2974,52 @@ class ArchiveCatalog:
             WHERE v.relocation_state='ready'
             ORDER BY {tier} ASC,
                      j.requested_at ASC, j.id ASC
-            LIMIT {int(limit)}
             """,
             [*params, excluded],
         ).fetchall()
+
+    def observe_scheduler_turns(
+        self, *, now: str, runnable_vault_ids: Sequence[int],
+    ) -> dict[int, dict[str, Any]]:
+        """Bank only observed runnable/unserved time, durably across restarts.
+
+        The worker validates one runnable head per Vault (including the local
+        automatic-upload fence) before observing. A live lease pauses aging.
+        SQL state changes invalidate open intervals even between observations;
+        missing/non-runnable Vaults retain banked credit but earn nothing new.
+        SKIP LOCKED avoids blocking claims; a skipped turn gets no promotion.
+        """
+        runnable = sorted({int(vault_id) for vault_id in runnable_vault_ids})
+        for vault_id in runnable:
+            self.connection.execute(
+                "INSERT INTO scheduler_vault_turns(vault_id) VALUES (%s) "
+                "ON CONFLICT DO NOTHING", (vault_id,),
+            )
+        rows = self.connection.execute(
+            "SELECT * FROM scheduler_vault_turns ORDER BY vault_id FOR UPDATE SKIP LOCKED"
+        ).fetchall()
+        active = self.active_job_counts(now=now)
+        result = {}
+        for row in rows:
+            vault_id = int(row["vault_id"])
+            eligible = vault_id in runnable and not active.get(vault_id, 0)
+            updated = self.connection.execute(
+                """UPDATE scheduler_vault_turns
+                   SET wait_seconds=wait_seconds + CASE
+                         WHEN %s AND eligible_since IS NOT NULL
+                         THEN GREATEST(0, EXTRACT(EPOCH FROM (%s::timestamptz-eligible_since)))
+                         ELSE 0 END,
+                       eligible_since=CASE WHEN %s THEN
+                         GREATEST(eligible_since, %s::timestamptz) ELSE NULL END
+                   WHERE vault_id=%s
+                   RETURNING wait_seconds AS scheduler_wait_seconds,
+                             last_served_at::text AS scheduler_last_served_at,
+                             generation AS scheduler_generation""",
+                (eligible, now, eligible, now, vault_id),
+            ).fetchone()
+            if vault_id in runnable:
+                result[vault_id] = dict(updated)
+        return result
 
     def active_job_counts(self, *, now: str) -> dict[int, int]:
         """Jobs currently holding a live lease, per Vault (scheduler fairness)."""
@@ -3021,6 +3065,37 @@ class ArchiveCatalog:
                FOR KEY SHARE SKIP LOCKED""", (job_id,),
         ).fetchone() is not None
 
+    def _lock_scheduler_turn(self, job_id: int, generation: int | None) -> bool:
+        """Job before turn lock, matching eligibility-invalidation triggers.
+
+        Never wait for a Job while holding its turn row: a status writer may
+        already hold that Job and be invalidating the same turn. Both locks are
+        nonblocking; ordinary progress retains ADR-0031 shared Vault fences.
+        """
+        job = self.connection.execute(
+            "SELECT vault_id FROM jobs WHERE id=%s FOR UPDATE SKIP LOCKED", (job_id,),
+        ).fetchone()
+        if job is None:
+            return False
+        self.connection.execute(
+            "INSERT INTO scheduler_vault_turns(vault_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (job["vault_id"],),
+        )
+        turn = self.connection.execute(
+            "SELECT generation FROM scheduler_vault_turns WHERE vault_id=%s "
+            "FOR UPDATE SKIP LOCKED", (job["vault_id"],),
+        ).fetchone()
+        return turn is not None and (generation is None or turn["generation"] == generation)
+
+    def _consume_scheduler_turn(self, job_id: int, *, now: str) -> None:
+        self.connection.execute(
+            """UPDATE scheduler_vault_turns
+               SET wait_seconds=0, eligible_since=NULL,
+                   last_served_at=GREATEST(last_served_at, %s::timestamptz),
+                   generation=generation+1
+               WHERE vault_id=(SELECT vault_id FROM jobs WHERE id=%s)""", (now, job_id),
+        )
+
     def claim_job(
         self,
         *,
@@ -3030,6 +3105,7 @@ class ArchiveCatalog:
         claim_expires_at: str,
         now: str,
         restore_due_before: str,
+        scheduler_generation: int | None = None,
     ) -> dict[str, Any] | None:
         """Atomically lease one runnable Job.
 
@@ -3041,12 +3117,14 @@ class ArchiveCatalog:
             raise ValueError("A Job claim token is required")
         if not self._lock_claim_vault(job_id):
             return None
+        if not self._lock_scheduler_turn(job_id, scheduler_generation):
+            return None
         claimable_sql, claimable_params = self._claimable_job_predicate_sql(
             prefix="",
             now=now,
             restore_due_before=restore_due_before,
         )
-        return self.connection.execute(
+        claimed = self.connection.execute(
             f"""
             UPDATE jobs
             SET claim_token=%s,
@@ -3066,6 +3144,9 @@ class ArchiveCatalog:
                 *claimable_params,
             ),
         ).fetchone()
+        if claimed is not None:
+            self._consume_scheduler_turn(job_id, now=claimed_at)
+        return claimed
 
     def claim_purge_group(
         self,
@@ -3077,6 +3158,7 @@ class ArchiveCatalog:
         now: str,
         message: str,
         message_key: str,
+        scheduler_generation: int | None = None,
     ) -> list[dict[str, Any]]:
         """Lease every active Job in one cloud-purge group as one operation.
 
@@ -3142,6 +3224,8 @@ class ArchiveCatalog:
         ):
             return []
 
+        if not self._lock_scheduler_turn(lead_job_id, scheduler_generation):
+            return []
         ids = [int(row["id"]) for row in active]
         placeholders = ", ".join(["%s"] * len(ids))
         claimed = self.connection.execute(
@@ -3169,6 +3253,8 @@ class ArchiveCatalog:
                 *ids,
             ),
         ).fetchall()
+        if claimed:
+            self._consume_scheduler_turn(lead_job_id, now=claimed_at)
         # RETURNING order is not a SQL contract.  Preserve the scheduler's
         # deterministic ordering for the selected lead and tests.
         return sorted(

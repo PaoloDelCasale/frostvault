@@ -2,7 +2,13 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from app.services.job_scheduler import select_fair_jobs
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+from app.catalog import ArchiveCatalog
+from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
+from tests.postgres import PostgresConnection
+from tests.test_job_scheduler import _SchedulerDbMixin
 
 
 class VaultTurnSelectionTests(unittest.TestCase):
@@ -17,3 +23,181 @@ class VaultTurnSelectionTests(unittest.TestCase):
                     scheduler_wait_seconds=900, scheduler_last_served_at=None)
         selected = select_fair_jobs(manual + [auto], limit=1, active_by_vault={9: 15}, now=now)
         self.assertEqual(selected[0]["id"], auto["id"])
+
+    def test_expired_turn_is_one_opportunity_not_inherited_by_backlog(self):
+        jobs = [dict(id=i, vault_id=20, action='upload', origin='automatic',
+                     scheduler_wait_seconds=1800) for i in (1, 2)]
+        jobs.append(dict(id=3, vault_id=10, action='rename', origin='manual'))
+        self.assertEqual([j['id'] for j in select_fair_jobs(jobs, limit=3)], [1, 3, 2])
+
+    def test_idle_single_worker_uses_last_served_even_when_active_counts_are_zero(self):
+        jobs = [dict(id=1, vault_id=10, action='upload', origin='manual',
+                     requested_at='2000-01-01', scheduler_last_served_at='2026-11-11T12:00:00Z'),
+                dict(id=2, vault_id=20, action='upload', origin='manual',
+                     requested_at='2026-11-11', scheduler_last_served_at='2026-11-11T11:00:00Z')]
+        self.assertEqual(select_fair_jobs(jobs, limit=1, active_by_vault={})[0]['id'], 2)
+
+    def test_owner_precedence_except_documented_aged_turn(self):
+        auto = dict(id=1, vault_id=20, action='upload', origin='automatic', scheduler_wait_seconds=900)
+        owner = dict(id=2, vault_id=10, action='recover', origin='manual')
+        self.assertEqual(select_fair_jobs([auto, owner], limit=1)[0]['id'], 2)
+        auto['scheduler_wait_seconds'] = 1800
+        self.assertEqual(select_fair_jobs([auto, owner], limit=1)[0]['id'], 1)
+        owner['vault_id'] = 20
+        self.assertEqual(select_fair_jobs([auto, owner], limit=1)[0]['id'], 2)
+
+    def test_very_old_jobs_without_accounted_credit_keep_base_tier(self):
+        job = dict(action='upload', origin='manual', requested_at='2000-01-01')
+        self.assertEqual(effective_priority(job, datetime.now(timezone.utc)), job_priority(job))
+
+
+class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
+    start = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
+
+    def stamp(self, seconds=0):
+        return (self.start + timedelta(seconds=seconds)).isoformat()
+
+    def observe(self, seconds=0, excluded=()):
+        with PostgresConnection(self.path) as connection:
+            catalog = ArchiveCatalog(connection)
+            jobs = catalog.list_claimable_jobs(now=self.stamp(seconds), restore_due_before=self.stamp(seconds),
+                                               limit=1, per_vault_limit=1, exclude_job_ids=excluded)
+            turns = catalog.observe_scheduler_turns(now=self.stamp(seconds),
+                                                    runnable_vault_ids=[j['vault_id'] for j in jobs])
+            for job in jobs:
+                job.update(turns.get(job['vault_id'], {}))
+            return jobs
+
+    def claim(self, job_id, seconds=0, generation=None):
+        with PostgresConnection(self.path) as connection:
+            return ArchiveCatalog(connection).claim_job(
+                job_id=job_id, claim_token=f'claim-{job_id}-{seconds}', claimed_at=self.stamp(seconds),
+                claim_expires_at=self.stamp(seconds + 300), now=self.stamp(seconds),
+                restore_due_before=self.stamp(seconds), scheduler_generation=generation)
+
+    def state(self, vault_id=20):
+        with PostgresConnection(self.path) as connection:
+            return connection.execute('SELECT * FROM scheduler_vault_turns WHERE vault_id=%s',
+                                      (vault_id,)).fetchone()
+
+    def auto_job(self, vault_id=20, path='a.txt'):
+        job = self._insert_upload_job(vault_id=vault_id, path=path)
+        with PostgresConnection(self.path) as connection:
+            connection.execute("UPDATE jobs SET origin='automatic' WHERE id=%s", (job,))
+        return job
+
+    def test_continuously_served_manual_backlog_yields_after_900_not_1800(self):
+        manual = self._insert_upload_job(vault_id=10, path='a.txt')
+        auto = self.auto_job()
+        self.observe()
+        for second in range(0, 901, 60):
+            # Keep replenishing a real manual queue while giving it service.
+            if second:
+                with PostgresConnection(self.path) as connection:
+                    connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (manual,))
+                manual = self._insert_upload_job(vault_id=10, path='a.txt')
+            self.assertIsNotNone(self.claim(manual, second))
+            jobs = self.observe(second)
+        self.assertEqual(self.state(10)['wait_seconds'], 0)
+        self.assertEqual(self.state()['wait_seconds'], 900)
+        self.assertEqual(select_fair_jobs(jobs, limit=1, active_by_vault={10: 1})[0]['id'], auto)
+
+    def test_restart_preserves_turn_but_claimed_backlog_starts_fresh(self):
+        auto = self.auto_job()
+        self.auto_job(path='b.txt')
+        self.observe()
+        self.observe(900)  # each observe uses a fresh connection/catalog
+        self.assertEqual(self.state()['wait_seconds'], 900)
+        self.assertIsNotNone(self.claim(auto, 900, generation=0))
+        self.assertEqual(self.state()['wait_seconds'], 0)
+        self.observe(1000)
+        self.assertIsNone(self.state()['eligible_since'])  # active service
+        with PostgresConnection(self.path) as connection:
+            connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (auto,))
+        jobs = self.observe(1100)
+        self.assertEqual(jobs[0]['scheduler_wait_seconds'], 0)
+        self.observe(1160)
+        self.assertEqual(self.state()['wait_seconds'], 60)
+
+    def test_pause_between_polls_cannot_earn_credit_and_preserves_bank(self):
+        self.auto_job()
+        self.observe()
+        self.observe(600)
+        with PostgresConnection(self.path) as connection:
+            connection.execute('UPDATE vaults SET paused=TRUE WHERE id=20')
+            connection.execute('UPDATE vaults SET paused=FALSE WHERE id=20')
+        self.observe(4000)
+        self.assertEqual(self.state()['wait_seconds'], 600)
+        self.observe(4300)
+        self.assertEqual(self.state()['wait_seconds'], 900)
+
+    def test_retry_backoff_between_polls_does_not_count_as_unserved_time(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(600)
+        with PostgresConnection(self.path) as connection:
+            connection.execute("UPDATE jobs SET status='retrying', retry_after=%s WHERE id=%s",
+                               (self.stamp(4000), auto))
+        self.assertEqual(self.observe(3000), [])
+        self.observe(4000)
+        self.assertEqual(self.state()['wait_seconds'], 600)
+        self.observe(4300)
+        self.assertEqual(self.state()['wait_seconds'], 900)
+
+    def test_local_deferral_freezes_bank_instead_of_earning_credit(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(600)
+        self.observe(1000, excluded=[auto])
+        self.observe(5000, excluded=[auto])
+        self.observe(6000)
+        self.assertEqual(self.state()['wait_seconds'], 600)
+        self.observe(6300)
+        self.assertEqual(self.state()['wait_seconds'], 900)
+
+    def test_failed_or_stale_claim_never_consumes_credit(self):
+        auto = self.auto_job()
+        self.observe()
+        self.observe(1800)
+        before = self.state()
+        self.assertIsNone(self.claim(auto, 1800, generation=999))
+        self.assertEqual(self.state(), before)
+        with PostgresConnection(self.path) as connection:
+            connection.execute('UPDATE vaults SET paused=TRUE WHERE id=20')
+        before = self.state()
+        self.assertIsNone(self.claim(auto, 1800, generation=0))
+        self.assertEqual(self.state(), before)
+        self.assertIsNotNone(self.state()['wait_seconds'])
+
+    def test_concurrent_different_jobs_can_consume_an_aged_turn_only_once(self):
+        ids = [self.auto_job(), self.auto_job(path='b.txt')]
+        self.observe()
+        self.observe(1800)
+        barrier = threading.Barrier(2)
+
+        def run(job):
+            barrier.wait(timeout=10)
+            return self.claim(job, 1800, generation=0)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(run, ids))
+        self.assertEqual(sum(r is not None for r in results), 1)
+        self.assertEqual(self.state()['generation'], 1)
+        self.assertEqual(self.state()['wait_seconds'], 0)
+        with PostgresConnection(self.path) as connection:
+            self.assertEqual(connection.execute('SELECT count(*) AS n FROM jobs WHERE claim_token IS NOT NULL')
+                             .fetchone()['n'], 1)
+
+    def test_global_candidate_limit_cannot_hide_starved_automatic_vault(self):
+        manual = self._insert_upload_job(vault_id=10, path='a.txt')
+        auto = self.auto_job()
+        rows = self.observe()
+        self.assertEqual({row['id'] for row in rows}, {manual, auto})
+        rows = self.observe(1800)
+        self.assertEqual(select_fair_jobs(rows, limit=1)[0]['id'], manual)
+        # Once the manual Vault gets service its remaining old backlog has no
+        # credit, and the automatic turn is still visible even with limit=1.
+        self.assertIsNotNone(self.claim(manual, 1800))
+        self._insert_upload_job(vault_id=10, path='b.txt')
+        rows = self.observe(1800)
+        self.assertEqual(select_fair_jobs(rows, limit=1)[0]['id'], auto)
