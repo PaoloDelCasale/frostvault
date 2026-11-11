@@ -305,6 +305,11 @@ jobs:
           if [ -d /tmp/.buildx-cache-out ]; then
             mv /tmp/.buildx-cache-out /tmp/.buildx-cache
           fi
+      - name: Verify Python runtime in image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python "$IMAGE" -c \
+            'import sys; print(sys.version); assert sys.version_info[:2] == (3, 12), sys.version'
       - name: Verify PostgreSQL client tools in image
         run: |
           set -euo pipefail

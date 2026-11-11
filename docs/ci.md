@@ -7,12 +7,12 @@ proving upload and recovery integrity against object storage.
 
 Python **3.12** is the single supported/tested runtime line for the backend,
 not a runtime matrix. The production `Dockerfile` uses the official
-`python:3.12.16-slim-trixie` image pinned to its multi-platform index digest.
+`python:3.12.<patch>-slim-trixie` image pinned to its multi-platform index digest.
 All `setup-python` steps select `3.12`, including unit/migration/S3 tests,
 Playwright's API/seed interpreter, dependency auditing, the CodeQL SARIF gate
-and the exact-commit publication gate. OpenAPI exports use that same interpreter
-(`sys.executable` in contract tests; `.venv/bin/python` locally); TypeScript
-artifact generation itself uses Node, not a second Python runtime.
+and the exact-commit publication gate. OpenAPI response/artifact contracts run
+in the Python suite; local exports use `.venv/bin/python` as documented below.
+TypeScript artifact generation itself uses Node, not a second Python runtime.
 
 The image keeps Debian trixie (the previous base's distribution), PGDG's explicit
 `postgresql-client-16` and the existing OS upgrades/pip removal. PR CI checks the
