@@ -4548,7 +4548,7 @@ def _process_free_space(job: dict[str, Any]) -> None:
             # Same lock order as admission: Vault, then Job. A concurrent policy
             # disable/extension or cancellation must win before this last check,
             # or wait until the already-authorized unlink has finished.
-            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (job["vault_id"],))
+            connection.execute("SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE", (job["vault_id"],))
             ensure_job_claim_owned_in_transaction(connection, job, "Freeing local space claim was lost")
             fresh = _checked_local_release_target(job, connection=connection)
             if (

@@ -3238,7 +3238,7 @@ def update_vault_operation_policy(
         try:
             # Independent panels must never replay a stale local-release value
             # when saving upload rules. Serialize read/merge/write per Vault.
-            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
+            connection.execute("SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault["id"],))
             before = get_policy(connection, vault["id"])
             values = before.as_dict()
             values.update(action.model_dump(exclude_unset=True))

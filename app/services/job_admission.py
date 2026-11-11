@@ -18,8 +18,7 @@ def lock_vault(
     """Serialize admission and reject normal work for a quiesced Vault."""
     row = connection.execute(
         """
-        UPDATE vaults SET name=name WHERE id=%s
-        RETURNING id, decommission_state
+        SELECT id, decommission_state FROM vaults WHERE id=%s FOR NO KEY UPDATE
         """,
         (vault_id,),
     ).fetchone()

@@ -182,11 +182,10 @@ class CatalogEventStore:
         self.connection = connection
 
     def _lock_vault(self, vault_id: int) -> None:
-        # The existing Vault row is the cross-backend serialization point.  An
-        # Even a same-value UPDATE takes a PostgreSQL row lock without
-        # changing canonical data.
+        # The Vault row serializes writers. An explicit lock has the former
+        # non-key UPDATE's strength without writing another tuple/WAL image.
         result = self.connection.execute(
-            "UPDATE vaults SET name=name WHERE id=%s",
+            "SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE",
             (vault_id,),
         )
         if result.rowcount != 1:

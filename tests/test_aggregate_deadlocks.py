@@ -460,6 +460,43 @@ class AggregateDeadlockTests(unittest.TestCase):
             self.assertIn(sql, combined)
         self.assertNotIn("for key share", combined, "Lifecycle/admission need SHARE, not KEY SHARE")
 
+    def test_target_waits_for_path_writer_then_reads_committed_path(self):
+        from app.services import upload_provenance as provenance
+        job_id = self.seed()[0]
+        with PostgresConnection(self.path) as c:
+            job = c.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job_id,)).fetchone()
+        started = threading.Event()
+        def read_target():
+            with PostgresConnection(self.path) as c:
+                c.execute("SET LOCAL statement_timeout='10s'")
+                started.set()
+                return provenance.target(c, job, key="key", provider="fake", shared=True)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with PostgresConnection(self.path) as writer:
+                # Deliberately do not UPDATE vaults. A joined locking SELECT
+                # must not accidentally rely on a changed Vault tuple/EPQ to
+                # refresh its snapshot after waiting on this explicit lock.
+                writer.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
+                writer.execute("UPDATE file_paths SET path='renamed' WHERE vault_file_id=%s AND valid_to IS NULL", (job["vault_file_id"],))
+                future = pool.submit(read_target)
+                self.assertTrue(started.wait(5))
+            with self.assertRaises(provenance.UploadBlocked) as caught:
+                future.result(timeout=15)
+            self.assertEqual(caught.exception.reason, "identity_changed")
+
+    def test_admission_and_catalog_locks_do_not_rewrite_the_vault(self):
+        from app.services import job_admission, operation_policies
+        from app.services.catalog_events import CatalogEventStore
+        self.seed()
+        with PostgresConnection(self.path) as c:
+            before = c.execute("SELECT xmin::text AS xmin,ctid::text AS ctid FROM vaults WHERE id=2").fetchone()
+            job_admission.lock_vault(c, 2)
+            ArchiveCatalog(c)._vault_lock_touch(2)
+            CatalogEventStore(c)._lock_vault(2)
+            operation_policies.set_policy(c, 2, operation_policies.get_policy(c, 2))
+            after = c.execute("SELECT xmin::text AS xmin,ctid::text AS ctid FROM vaults WHERE id=2").fetchone()
+            self.assertEqual(after, before)
+
     def test_551_shared_catalog_units_overlap_on_one_vault(self):
         jobs = self.seed(2)
         with PostgresConnection(self.path) as c:

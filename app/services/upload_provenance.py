@@ -218,14 +218,26 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
     from .upload_remediation import require_job
     require_job(connection, job)
-    row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
-    current = connection.execute("SELECT status,vault_file_id,path,claim_token FROM jobs WHERE id=%s", (job["id"],)).fetchone()
-    if current and current["status"] == "cancelled":
+    # Read the children AFTER acquiring the Vault lock. Joining them into the
+    # locking statement would use its pre-wait READ COMMITTED snapshot: a path
+    # writer that only locked (rather than updated) the Vault could commit while
+    # we wait, leaving the joined path stale. One post-lock statement sees the
+    # Job, current path, file state and conflict together without that race.
+    row = connection.execute("""SELECT j.status AS job_status,
+            j.vault_file_id AS job_file_id,j.path AS job_path,
+            vf.status AS file_status,fp.path,fp.valid_from,lc.cloud_only_version_id
+        FROM jobs j
+        LEFT JOIN vault_files vf ON vf.id=%s AND vf.vault_id=%s
+        LEFT JOIN file_paths fp ON fp.vault_file_id=vf.id
+            AND fp.vault_id=vf.vault_id AND fp.valid_to IS NULL
+        LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
+        WHERE j.id=%s""", (job["vault_file_id"], job["vault_id"], job["id"])).fetchone()
+    if row and row["job_status"] == "cancelled":
         raise UploadBlocked("owner_cancelled")
-    if current and current["status"] in {"failed", "completed"}:
+    if row and row["job_status"] in {"failed", "completed"}:
         raise UploadBlocked("already_resolved")
-    if (not vault or not row or row["status"] != "active" or not current
-            or current["vault_file_id"] != job["vault_file_id"] or current["path"] != job["path"]
+    if (not vault or not row or row["file_status"] != "active"
+            or row["job_file_id"] != job["vault_file_id"] or row["job_path"] != job["path"]
             or row["path"] != job["path"] or vault["source_root"] != job["source_root"]
             or vault["s3_bucket"] != job["s3_bucket"] or vault["s3_prefix"] != job["s3_prefix"]
             ):
@@ -233,11 +245,10 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     if (not vault["enabled"] or vault["decommission_state"] != "active"
             or vault["relocation_state"] != "ready" or vault.get("root_released_at")):
         raise UploadBlocked("vault_suspended")
-    incompatible = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND id<>%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (job["vault_file_id"], job["id"])).fetchone()
-    conflict = connection.execute("SELECT cloud_only_version_id FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
-    if incompatible:
-        raise UploadBlocked("active_operation")
-    if conflict and conflict["cloud_only_version_id"]:
+    # The current Job is nonterminal and jobs_one_active_file_uq covers every
+    # action. Another active operation on this file is impossible by constraint;
+    # a second history query adds no authority.
+    if row["cloud_only_version_id"]:
         raise UploadBlocked("cloud_only_conflict")
     return {"vault_id": job["vault_id"], "vault_file_id": job["vault_file_id"],
             "bucket": vault["s3_bucket"], "prefix": vault["s3_prefix"], "key": key,

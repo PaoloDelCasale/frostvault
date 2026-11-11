@@ -143,9 +143,8 @@ def set_policy(
     validate_policy(policy)
     locked = connection.execute(
         """
-        UPDATE vaults SET name=name
-        WHERE id=%s
-        RETURNING id, decommission_state
+        SELECT id, decommission_state FROM vaults
+        WHERE id=%s FOR NO KEY UPDATE
         """,
         (vault_id,),
     ).fetchone()

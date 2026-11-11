@@ -33,6 +33,72 @@ class ProvenanceLockModeTests(unittest.TestCase):
                 self.assertEqual(connection.execute.call_args_list[0].args[0],
                     "SELECT * FROM vaults WHERE id=%s " + expected)
 
+    def test_target_reads_children_after_lock_with_one_joined_statement(self):
+        from app.services import upload_provenance as provenance
+        job = {"id": 1, "vault_id": 2, "vault_file_id": "file", "path": "a",
+               "source_root": "/source", "s3_bucket": "bucket", "s3_prefix": "prefix"}
+        vault = {**job, "enabled": True, "decommission_state": "active",
+                 "relocation_state": "ready", "root_released_at": None,
+                 "root_identity": "root", "root_identity_version": "v1"}
+        children = {"job_status": "uploading", "job_file_id": "file", "job_path": "a",
+                    "file_status": "active", "path": "a", "valid_from": "generation",
+                    "cloud_only_version_id": None}
+        for shared in (False, True):
+            with self.subTest(shared=shared), patch("app.services.upload_remediation.require_job"):
+                connection = MagicMock()
+                connection.execute.return_value.fetchone.side_effect = [vault, children]
+                result = provenance.target(connection, job, key="key", provider="fake", shared=shared)
+                self.assertEqual(result["path_since"], "generation")
+                self.assertEqual(result["root_identity"], "root")
+                calls = connection.execute.call_args_list
+                self.assertEqual(len(calls), 2)
+                self.assertIn("FROM vaults", calls[0].args[0])
+                self.assertIn("FOR SHARE" if shared else "FOR NO KEY UPDATE", calls[0].args[0])
+                self.assertIn("LEFT JOIN file_paths", calls[1].args[0])
+                self.assertEqual(calls[1].args[1], ("file", 2, 1))
+
+    def test_joined_target_retains_cancellation_lifecycle_path_and_conflict_gates(self):
+        from app.services import upload_provenance as provenance
+        job = {"id": 1, "vault_id": 2, "vault_file_id": "file", "path": "a",
+               "source_root": "/source", "s3_bucket": "bucket", "s3_prefix": "prefix"}
+        vault = {**job, "enabled": True, "decommission_state": "active",
+                 "relocation_state": "ready", "root_released_at": None}
+        children = {"job_status": "uploading", "job_file_id": "file", "job_path": "a",
+                    "file_status": "active", "path": "a", "valid_from": "generation",
+                    "cloud_only_version_id": None}
+        cases = [
+            ({}, {"job_status": "cancelled"}, "owner_cancelled"),
+            ({}, {"job_status": "completed"}, "already_resolved"),
+            ({}, {"job_status": "failed"}, "already_resolved"),
+            ({}, {"job_file_id": "other"}, "identity_changed"),
+            ({}, {"job_path": "other"}, "identity_changed"),
+            ({}, {"path": "renamed"}, "identity_changed"),
+            ({}, {"path": None}, "identity_changed"),
+            ({}, {"file_status": None}, "identity_changed"),
+            ({"source_root": "/reconnected"}, {}, "identity_changed"),
+            ({"s3_bucket": "other"}, {}, "identity_changed"),
+            ({"s3_prefix": "other"}, {}, "identity_changed"),
+            ({"enabled": False}, {}, "vault_suspended"),
+            ({"relocation_state": "scan_required"}, {}, "vault_suspended"),
+            ({"decommission_state": "released"}, {}, "vault_suspended"),
+            ({"root_released_at": "released"}, {}, "vault_suspended"),
+            ({}, {"cloud_only_version_id": "conflict"}, "cloud_only_conflict"),
+        ]
+        for vault_change, child_change, reason in cases:
+            with self.subTest(reason=reason, change=(vault_change, child_change)), \
+                    patch("app.services.upload_remediation.require_job"):
+                connection = MagicMock()
+                connection.execute.return_value.fetchone.side_effect = [
+                    {**vault, **vault_change}, {**children, **child_change}]
+                with self.assertRaises(UploadBlocked) as caught:
+                    provenance.target(connection, job, key="key", provider="fake")
+                self.assertEqual(caught.exception.reason, reason)
+        # Pause is a claim boundary, not a lifecycle revocation.
+        with patch("app.services.upload_remediation.require_job"):
+            connection = MagicMock()
+            connection.execute.return_value.fetchone.side_effect = [{**vault, "paused": True}, children]
+            self.assertEqual(provenance.target(connection, job, key="key", provider="fake")["path"], "a")
+
     def test_nested_target_checks_keep_the_requested_mode(self):
         from app.services import upload_provenance as provenance
         pinned = {"key": "key", "provider": "fake"}

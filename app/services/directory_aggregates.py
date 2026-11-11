@@ -335,9 +335,9 @@ def lock_vaults_in_order(connection: Any, vault_ids: Iterable[int]) -> None:
     ``CatalogEventStore._lock_vault`` / ``lock_vault`` and produced the #485
     deadlock (``INSERT INTO directory_aggregates`` vs ``UPDATE vaults``).
 
-    ``FOR NO KEY UPDATE`` is exactly the mode of the ``UPDATE vaults SET
-    name=name`` touch and stays compatible with FK ``KEY SHARE`` inserts. The
-    lock is reentrant inside one transaction, so later touches are free. Several
+    ``FOR NO KEY UPDATE`` is the mode used by the other Vault writers and stays
+    compatible with FK ``KEY SHARE`` inserts, without a same-value UPDATE. The
+    lock is reentrant inside one transaction, so later locks are free. Several
     Vaults are locked in one ordered statement so concurrent global flushes
     cannot cross each other either.
     """

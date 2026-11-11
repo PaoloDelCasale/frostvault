@@ -170,12 +170,12 @@ class ArchiveCatalog:
 
     def _vault_lock_touch(self, vault_id: int) -> None:
         # Serialize identity creation per Vault across scanner and worker
-        # transactions.  The row-lock "touch" is a single UPDATE that locks the
-        # Vault row (PostgreSQL FOR UPDATE semantics via the write) so two
-        # concurrent writers cannot mint duplicate identities for the same
-        # path.  It must be taken once per batch, never once per file.
+        # transactions. NO KEY UPDATE has the same lock strength as the former
+        # non-key UPDATE, without creating a dead tuple or a WAL row image. Two
+        # writers cannot mint duplicate identities for the same path. Take it
+        # once per batch, never once per file.
         self.connection.execute(
-            "UPDATE vaults SET name=name WHERE id=%s",
+            "SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE",
             (vault_id,),
         )
 
@@ -385,7 +385,7 @@ class ArchiveCatalog:
     ) -> dict[str, str]:
         """Resolve many logical paths to Vault File ids in a few statements.
 
-        One Vault row-lock touch (``UPDATE vaults SET name=name``) replaces the
+        One Vault row lock (``SELECT ... FOR NO KEY UPDATE``) replaces the
         per-file touch in ``_get_or_create_file``: identity creation is
         serialized per Vault by that single lock, so a whole scan batch can
         resolve existing paths with one bulk ``IN (...)`` lookup and mint only
