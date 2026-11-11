@@ -57,10 +57,18 @@ class WorkerCompletionRefillTests(unittest.TestCase):
         _, database_patch, handler_patch = self.worker._worker_patches(handler)
         real_sleep = asyncio.sleep
 
-        async def startup_sleep(_seconds):
-            # Only background_loop's startup uses sleep; its poll deadline must
-            # stay real. Do not fast-forward the five-second refill interval.
-            await real_sleep(0)
+        starting = True
+
+        async def startup_sleep(seconds):
+            nonlocal starting
+            # Skip only startup. Older implementations also sleep at the end of
+            # each cycle; keeping those sleeps real makes this test distinguish
+            # completion-driven refill from the baseline polling implementation.
+            if starting:
+                starting = False
+                await real_sleep(0)
+            else:
+                await real_sleep(seconds)
 
         with ExitStack() as stack:
             stack.enter_context(database_patch)
