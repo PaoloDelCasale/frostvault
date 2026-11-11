@@ -49,7 +49,7 @@ from .backoff import (
 )
 from .breakglass import is_break_glass_allowed
 from .catalog import ArchiveCatalog
-from .database import db, initialize_database
+from .database import close_pools, db, initialize_database
 from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (
     get_sources_root,
@@ -223,6 +223,8 @@ async def lifespan(_: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
         if not await drain_background_executors():
             raise RuntimeError("Background workers exceeded the shutdown drain budget")
+        # Workers are drained: close the idle pooled connections (#535).
+        close_pools()
 
 
 app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)

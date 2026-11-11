@@ -21,8 +21,14 @@ class PostgreSQLConfigurationTests(unittest.TestCase):
         self.assertFalse(hasattr(database, "SQLiteConnection"))
 
     def test_database_uses_native_psycopg_and_pg_environment_by_default(self):
-        with patch.object(database, "settings", replace(config.settings, database_dsn="")), patch.object(database.psycopg, "connect") as connect:
-            database.db()
+        self.addCleanup(database.close_pools)
+        with patch.object(database, "settings", replace(config.settings, database_dsn="")):
+            pool = database._pool_for("")
+        self.assertEqual(pool.conninfo, "")
+        self.assertEqual(pool.kwargs["row_factory"], database.dict_row)
+        self.assertEqual(pool.min_size, 0)
+        with patch.object(database.psycopg, "connect") as connect:
+            database._direct_connection("")
         self.assertEqual(connect.call_args.args, ("",))
         self.assertEqual(connect.call_args.kwargs["row_factory"], database.dict_row)
 

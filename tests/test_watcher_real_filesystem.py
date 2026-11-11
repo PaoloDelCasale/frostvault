@@ -188,6 +188,7 @@ class Harness(RealTreeCase):
         self.applied: list[set[tuple[Change, str]]] = []
         self.registrations: list[tuple[str, ...]] = []
         self.ready_registrations: list[tuple[str, ...]] = []
+        self.ready_recursive_registrations: list[tuple[str, ...]] = []
         connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
         self.stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
@@ -209,7 +210,10 @@ class Harness(RealTreeCase):
                 observer = real_awatch(*paths, **kwargs)
                 try:
                     first = await anext(observer)
-                    self.ready_registrations.append(tuple(str(p) for p in paths))
+                    registered_paths = tuple(str(p) for p in paths)
+                    self.ready_registrations.append(registered_paths)
+                    if kwargs.get("recursive", True):
+                        self.ready_recursive_registrations.append(registered_paths)
                     yield first
                     async for changes in observer:
                         yield changes
@@ -267,9 +271,14 @@ class UnreadableFolderLifecycleTests(Harness):
             await self.settle(lambda: {str(root / "a1" / "one.txt"), str(root / "a2" / "two.txt")} <= self.applied_paths())
             # Repair the permission: only the reported path is looked at, then
             # the Vault is scanned and the tree registered again as a whole.
+            recursive_before_repair = len(self.ready_recursive_registrations)
             (root / "0denied").chmod(0o755)
             await self.settle(lambda: scan.call_count >= 2)
-            await self.settle(lambda: self.ready_registrations[-1] == (str(root),))
+            # The old flat observer also reports (root,), and its barrier can
+            # arrive after the sibling observers'. Require a NEW recursive
+            # root barrier, not that stale path-only match, before writing.
+            await self.settle(lambda: (str(root),) in
+                              self.ready_recursive_registrations[recursive_before_repair:])
             (root / "0denied" / "late.txt").write_text("x")
             await self.settle(lambda: str(root / "0denied" / "late.txt") in self.applied_paths())
         finally:
