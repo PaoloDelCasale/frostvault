@@ -78,9 +78,11 @@ PY
    Validate counts and schema revision with the matching release. Point PGDATABASE
    at frostvault_restored and UNSET DATABASE_URL (or securely replace it with the
    restored DSN): FrostVault's DATABASE_URL takes precedence over PG*. Verify the
-   target, then run python -m app.backup_upgrade if an upgrade is
-   required. Never force-stamp an unknown/ahead revision. Preserve deployment
-   settings independently; changes after the backup must be reapplied manually.
+   target and require this release's exact schema revision. Backups without a
+   compatible format/revision are refused even when the key decrypts them. Use
+   the matching older application for old artifacts; never upgrade, reset or
+   force-stamp an old catalog into a new baseline. Preserve deployment settings
+   independently; changes after the backup must be reapplied manually.
 5. BEFORE starting FrostVault, register the backup date in that restored database:
    python - <<'PY'
 import json
@@ -180,6 +182,12 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
     stamp = datetime.fromisoformat(backup_created_at)
     if stamp.tzinfo is None:
         raise ValueError("Backup date must include its timezone")
+    from ..database import DatabaseSchemaError, HEAD_SCHEMA_REVISION, read_schema_revision
+    if read_schema_revision(connection) != HEAD_SCHEMA_REVISION:
+        raise DatabaseSchemaError(
+            "Metadata restore requires this release's exact schema revision; "
+            "keep incompatible catalogs unchanged and use their matching release"
+        )
     # The app must be stopped. Old Jobs and local inode/mtime evidence cannot
     # acquire authority on a replacement server, even if pathnames still match.
     connection.execute("""

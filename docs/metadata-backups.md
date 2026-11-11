@@ -43,7 +43,15 @@ Custody never authorizes cloud deletion or suppresses the warning below.
 Every daily backup is a Fernet-encrypted archive containing a consistent
 PostgreSQL 16 custom dump (`pg_dump --format=custom --no-owner --no-acl`), an
 allow-listed non-secret configuration snapshot and a manifest with timestamps
-and content digests. The artifact excludes `ARCHIVE_MASTER_KEY`, OIDC/bootstrap
+and content digests. New artifacts declare `metadata_format=frostvault-metadata-v2`
+and the exact schema revision. That revision is checked against the captured
+dump itself, not a separate live-database read. `decrypt_backup_file` refuses
+missing/old/unknown formats or revisions and digest mismatches before exposing a
+dump for restore: possession of the decryption key is not schema compatibility.
+Use the matching older application for older artifacts; do not rewrite their
+manifest, force-stamp their catalog or reset an existing database. New-format
+artifacts require this release's exact schema; no artifact upgrade is implied.
+The artifact excludes `ARCHIVE_MASTER_KEY`, OIDC/bootstrap
 secrets and database credentials/DSNs, including arbitrary caller snapshot keys.
 Sessions, catalog and pending workflows are in the encrypted database dump.
 
@@ -72,7 +80,13 @@ Use `python -m app.backup_upgrade` (or `--skip-upgrade` for backup only). Failur
 blocks Alembic. Automatic startup (`AUTO_MIGRATE=1`) first proves that the
 recorded schema is a known ancestor of the single local expected head. Unknown,
 ahead, divergent or multiple revisions stop before any backup or upgrade.
-Fresh databases still validate the migration graph.
+Fresh databases still validate the migration graph. An absent/empty Alembic
+version table is not sufficient: unversioned catalogs with existing relations,
+routines or standalone types in any user schema are rejected before DDL. This
+preflight also applies to direct online Alembic commands. Manual upgrade checks
+catalog identity before creating a backup or opening the object store. A truly
+empty database can be initialized without trying to back up nonexistent tables;
+`--skip-upgrade` instead refuses it because there is no catalog to back up.
 
 A configured non-placeholder bucket requires an encrypted off-host pre-upgrade
 artifact with verified readback of its ciphertext digest and sidecar. Missing
@@ -127,11 +141,13 @@ the private scratch directory. The downloaded kit includes these steps offline.
    `PGDATABASE` at the restored database and **unset `DATABASE_URL`**, or securely
    replace that DSN with the restored database's DSN: a configured `DATABASE_URL`
    takes precedence over `PG*` for FrostVault commands. Verify the target before
-   any application command. For a supported older revision use
-   `python -m app.backup_upgrade`; unknown/ahead revisions require the matching
-   release, never forced stamps. Reapply non-secret deployment settings as needed.
+   any application command. The new-format manifest and captured catalog must
+   match this release's exact revision; older artifacts require their matching
+   older application, not an upgrade/reset or a forced stamp into a new baseline.
+   Reapply non-secret deployment settings as needed.
 5. **Before starting the app**, register the actual backup date from the saved
-   manifest against that restored database (after migration to 0058 or newer):
+   manifest against that restored database. Registration independently rejects
+   an incompatible or divergent catalog before any mutation:
 
    ```bash
    python - <<'PY'

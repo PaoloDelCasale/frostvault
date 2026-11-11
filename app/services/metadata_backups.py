@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from ..config import Settings, is_placeholder, settings
 
 
 S3_BACKUP_PREFIX = "system/backups/"
+METADATA_FORMAT = "frostvault-metadata-v2"
 
 
 class BackupError(RuntimeError):
@@ -288,6 +290,67 @@ def _dump_postgres_bytes(database_dsn: str | None = None) -> bytes:
     return completed.stdout
 
 
+def _dump_schema_revision(database_bytes: bytes) -> str:
+    """Prove the revision from the captured dump, never from a second DB read.
+
+    pg_restore renders only the version table's data to stdout; it does not
+    connect to any database or execute the rendered SQL. Treat a missing,
+    duplicate, malformed or differently versioned catalog as incompatible.
+    """
+    from ..database import HEAD_SCHEMA_REVISION
+
+    try:
+        result = subprocess.run(
+            ["pg_restore", "--data-only", "--table=alembic_version", "--file=-"],
+            input=database_bytes, check=False, capture_output=True,
+        )
+    except (OSError, ValueError):
+        raise BackupError("pg_restore is required to prove metadata backup compatibility") from None
+    if result.returncode != 0:
+        raise BackupError("Metadata backup schema compatibility could not be proven")
+    try:
+        rendered = result.stdout.decode("utf-8")
+    except (UnicodeError, AttributeError):
+        raise BackupError("Metadata backup schema compatibility could not be proven") from None
+    # pg_dump custom-format table data is COPY by default. Deliberately do not
+    # accept arbitrary INSERT/SQL as a substitute for one exact revision row.
+    copies = re.findall(
+        r"^COPY [^\n]+\.alembic_version \(version_num\) FROM stdin;\n(.*?)^\\\.\s*$",
+        rendered, re.MULTILINE | re.DOTALL,
+    )
+    if len(copies) != 1 or copies[0].splitlines() != [HEAD_SCHEMA_REVISION]:
+        raise BackupError(
+            "Metadata backup schema is incompatible with this release; "
+            "use the matching older release without modifying its catalog"
+        )
+    return HEAD_SCHEMA_REVISION
+
+
+def validate_backup_payload(payload: dict[str, Any]) -> None:
+    """Compatibility and digest gate BEFORE exposing a dump for restore.
+
+    Successful decryption establishes possession of the key, not compatibility.
+    The authenticated manifest and the actual captured catalog must both match.
+    """
+    from ..database import HEAD_SCHEMA_REVISION
+
+    manifest = payload.get("manifest")
+    if (not isinstance(manifest, dict)
+            or manifest.get("metadata_format") != METADATA_FORMAT
+            or manifest.get("schema_revision") != HEAD_SCHEMA_REVISION
+            or manifest.get("backend") != "postgresql"
+            or manifest.get("schema_format") != "postgresql-custom"):
+        raise BackupError(
+            "Metadata backup format/schema is incompatible with this release; "
+            "use its matching application release and keep the original unchanged"
+        )
+    database_bytes = payload.get("database")
+    if not isinstance(database_bytes, bytes) or hashlib.sha256(database_bytes).hexdigest() != manifest.get("database_sha256"):
+        raise BackupError("Metadata backup database digest mismatch")
+    if _dump_schema_revision(database_bytes) != manifest["schema_revision"]:
+        raise BackupError("Metadata backup manifest/catalog revision mismatch")
+
+
 def _pack_payload(
     *,
     database_bytes: bytes,
@@ -343,6 +406,7 @@ def create_metadata_backup(
     }
 
     database_bytes = _dump_postgres_bytes(database_dsn)
+    schema_revision = _dump_schema_revision(database_bytes)
     schema_format = "postgresql-custom"
 
     created_at = now_iso()
@@ -352,6 +416,8 @@ def create_metadata_backup(
         "reason": reason,
         "backend": backend,
         "schema_format": schema_format,
+        "metadata_format": METADATA_FORMAT,
+        "schema_revision": schema_revision,
         "database_sha256": content_digest,
         "s3_prefix": S3_BACKUP_PREFIX,
     }
@@ -390,7 +456,9 @@ def decrypt_backup_file(path: str | Path, master_key: str | None = None) -> dict
         plaintext = _fernet(key).decrypt(ciphertext)
     except InvalidToken:
         raise BackupError("Unable to decrypt backup with the provided master key") from None
-    return unpack_backup_payload(plaintext)
+    payload = unpack_backup_payload(plaintext)
+    validate_backup_payload(payload)
+    return payload
 
 
 def list_local_backup_files(backup_dir: str | Path) -> list[Path]:
@@ -481,9 +549,11 @@ def verify_restore_isolated(
     Never writes to the live database path and never mutates production vault
     object keys (anything under ``vaults/``).
     """
+    payload = decrypt_backup_file(artifact_path, master_key=master_key)
+    # Reject incompatible artifacts before even materializing a scratch dump,
+    # creating databases, or making optional provider observations.
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
-    payload = decrypt_backup_file(artifact_path, master_key=master_key)
     backend = payload["manifest"].get("backend")
     if backend != "postgresql" or payload["manifest"].get("schema_format") != "postgresql-custom":
         raise BackupError("Only PostgreSQL custom-format backups are supported")

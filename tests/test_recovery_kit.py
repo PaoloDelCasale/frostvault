@@ -2,7 +2,7 @@
 import json
 import unittest
 from dataclasses import replace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
 
@@ -75,7 +75,9 @@ class RecoveryKitTests(unittest.TestCase):
 
     def test_manual_restore_retires_deletion_items_before_cancelling_jobs(self):
         connection = Mock()
-        recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        from app.database import HEAD_SCHEMA_REVISION
+        with patch("app.database.read_schema_revision", return_value=HEAD_SCHEMA_REVISION):
+            recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         statements = [" ".join(call.args[0].split()) for call in connection.execute.call_args_list]
         items = [sql for sql in statements if sql.startswith("UPDATE cloud_deletion_items")]
         self.assertEqual(len(items), 1, "Cancelled restore Jobs must not leave pending deletion consent")
@@ -84,6 +86,15 @@ class RecoveryKitTests(unittest.TestCase):
         self.assertIn("action='cloud-purge'", items[0])
         self.assertIn("status<>'completed'", items[0])
         self.assertLess(statements.index(items[0]), next(i for i, sql in enumerate(statements) if sql.startswith("UPDATE jobs")))
+
+    def test_manual_restore_rejects_incompatible_catalog_before_mutating(self):
+        from app.database import DatabaseSchemaError
+        for revision in (None, "0058_reconnect_recovery_kit", "unknown"):
+            with self.subTest(revision=revision), patch("app.database.read_schema_revision", return_value=revision):
+                connection = Mock()
+                with self.assertRaises(DatabaseSchemaError):
+                    recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+                connection.execute.assert_not_called()
 
     def test_manual_restore_rejects_an_undated_manifest_before_mutating(self):
         connection = Mock()
