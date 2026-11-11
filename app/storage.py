@@ -148,6 +148,7 @@ NOTIFICATION_MAX_LATENCY_SECONDS = 5.0
 _operation_executor: ThreadPoolExecutor | None = None
 _operation_futures: dict[int, Future[Any]] = {}
 _operation_lock = threading.Lock()
+_operation_completion_notify: Callable[[], None] | None = None
 _maintenance_executor: ThreadPoolExecutor | None = None
 _maintenance_futures: dict[str, Future[Any]] = {}
 _maintenance_lock = threading.Lock()
@@ -5887,6 +5888,53 @@ def _restore_due_before(runtime: Any, *, current: datetime | None = None) -> str
     return (reference - timedelta(seconds=interval)).isoformat()
 
 
+def _operation_completed(_future: Future[Any]) -> None:
+    # A callback may run synchronously inside add_done_callback while the
+    # operation lock is held. Notify only: never acquire that lock or do DB I/O.
+    notify = _operation_completion_notify
+    if notify is not None:
+        notify()
+
+
+@contextmanager
+def _operation_completion_event(loop: asyncio.AbstractEventLoop):
+    global _operation_completion_notify
+    wakeup = asyncio.Event()
+
+    def notify() -> None:
+        try:
+            loop.call_soon_threadsafe(wakeup.set)
+        except RuntimeError:
+            # A request can finish after the loop's cancellation/closure. The
+            # durable Job and ordinary scheduler poll remain authoritative.
+            pass
+
+    _operation_completion_notify = notify
+    try:
+        yield wakeup
+    finally:
+        if _operation_completion_notify is notify:
+            _operation_completion_notify = None
+
+
+async def _refill_until_deadline(wakeup: asyncio.Event, delay: float) -> None:
+    """Coalesce completions without postponing heartbeat/maintenance deadlines."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + delay
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        try:
+            await asyncio.wait_for(wakeup.wait(), timeout=remaining)
+        except TimeoutError:
+            return
+        wakeup.clear()
+        # Use the same candidate/claim path. Never claim directly from a private
+        # upload queue: pause, fair turns and all operation tiers still apply.
+        await asyncio.to_thread(process_jobs_once, wait=False)
+
+
 def _reap_operation_futures() -> None:
     with _operation_lock:
         finished = [
@@ -6359,7 +6407,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
                         break
                     if job_id in _operation_futures and not _operation_futures[job_id].done():
                         continue
-                    _operation_futures[job_id] = executor.submit(process_job, job)
+                    future = executor.submit(process_job, job)
+                    _operation_futures[job_id] = future
+                    future.add_done_callback(_operation_completed)
     if claimed_jobs:
         _queue_progress.note_progress()
     return len(claimed_jobs)
@@ -7360,6 +7410,25 @@ def initial_maintenance_marks(
 async def background_loop() -> None:
     await asyncio.sleep(5)
     loop = asyncio.get_running_loop()
+    with _operation_completion_event(loop) as wakeup:
+        await _background_loop(loop, wakeup)
+
+
+def _record_background_loop_error(exc: Exception) -> None:
+    # Never include paths/provider messages in logs. The existing bounded error
+    # store and counter own diagnostics for ordinary and fast-refill cycles.
+    try:
+        with db() as connection:
+            worker_error_store.record_worker_error(
+                connection, component="background_loop", exc=exc,
+            )
+        metrics_service.inc("worker_errors_total")
+    except Exception:
+        pass
+    metrics_service.set_gauge("worker_up", 0)
+
+
+async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Event) -> None:
     try:
         ages = await asyncio.to_thread(persisted_maintenance_ages)
     except Exception:
@@ -7371,6 +7440,9 @@ async def background_loop() -> None:
     last_backup_verify = marks["backup_verify"]
     try:
         while True:
+            # Clear before dispatch, not before waiting: a completion arriving
+            # during the normal cycle must still trigger a prompt refill.
+            wakeup.clear()
             runnable_count = 0
             runtime = settings
             health_service.mark_worker_heartbeat()
@@ -7439,19 +7511,7 @@ async def background_loop() -> None:
                     last_backup_verify = current
                 await asyncio.to_thread(_deliver_notifications_once)
             except Exception as exc:
-                # Surface a generic internal-error problem instead of failing silently.
-                try:
-                    with db() as connection:
-                        worker_error_store.record_worker_error(
-                            connection,
-                            component="background_loop",
-                            exc=exc,
-                        )
-                    metrics_service.inc("worker_errors_total")
-                except Exception:
-                    # Last-resort: never let error accounting crash the loop.
-                    pass
-                metrics_service.set_gauge("worker_up", 0)
+                await asyncio.to_thread(_record_background_loop_error, exc)
             batch_size = max(10, runtime.operation_concurrency * 10)
             # Poll fast only for work the worker can start now: Jobs set aside as
             # not runnable must not keep the loop spinning every 100 ms (#493).
@@ -7463,7 +7523,10 @@ async def background_loop() -> None:
                     max(0.1, float(runtime.queue_poll_interval or 2)),
                 )
             )
-            await asyncio.sleep(delay)
+            try:
+                await _refill_until_deadline(wakeup, delay)
+            except Exception as exc:
+                await asyncio.to_thread(_record_background_loop_error, exc)
     except asyncio.CancelledError:
         # Lifespan owns pool draining after all producers have been cancelled.
         # Detaching here would lose the running futures before they can drain.
