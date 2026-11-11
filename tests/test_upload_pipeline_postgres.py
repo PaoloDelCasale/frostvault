@@ -387,8 +387,10 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.pipeline.uncertain_journals(), ())
         with PostgresConnection(self.worker.db_path) as connection:
             self.assertTrue(provenance.load_for_job(connection, first)["send_started"])
-            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (first,))
-        self.worker.run_job(first)
+        # The malformed response is a terminal per-file failure, so resume via
+        # the real reconciliation admission rather than claiming a failed Job.
+        resumed = self.worker.resume()
+        self.worker.assert_keeper(resumed)
         self.assertEqual(self.worker.provider.puts, 2)
         self.assert_empty()
 

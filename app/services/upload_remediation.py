@@ -565,7 +565,7 @@ def sweep_health(db: Any) -> dict[str, Any]:
 
 
 def observe(db: Any) -> None:
-    from . import metrics, notifications, upload_pipeline
+    from . import health, metrics, notifications, upload_pipeline
     current = datetime.now(timezone.utc)
     def age(value: str | None) -> float:
         return max(0.0,(current-datetime.fromisoformat(value)).total_seconds()) if value else 0.0
@@ -582,6 +582,7 @@ def observe(db: Any) -> None:
                                   active=status["stale"], email=False)
         notifications.set_problem(connection, key="upload_journal_unavailable", event="upload_journal_unavailable",
                                   active=journal["held"], email=False)
+    health.set_upload_remediation_status(status)
     metrics.set_gauge("upload_remediation_discovery_backlog",inbox["n"])
     metrics.set_gauge("upload_remediation_discovery_oldest_age_seconds",age(inbox["oldest"]))
     metrics.set_gauge("upload_remediation_due_queue",due["n"])

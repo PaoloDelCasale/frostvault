@@ -15,6 +15,24 @@ WORKER_STALE_SECONDS = 120.0
 
 
 _queue_status: dict[str, Any] = {"stalled": False, "queued": 0, "seconds_without_progress": 0.0}
+_remediation_status: dict[str, Any] = {"available": False, "stale": True}
+
+
+def set_upload_remediation_status(status: dict[str, Any]) -> None:
+    with _lock:
+        _remediation_status.clear()
+        _remediation_status.update(status)
+
+
+def upload_remediation_status() -> dict[str, Any]:
+    from .upload_remediation import SWEEP_STALE_SECONDS
+    with _lock:
+        status = dict(_remediation_status)
+    last_tick = status.get("last_tick_unixtime", 0.0)
+    age = max(0.0, time.time() - last_tick) if last_tick else None
+    status["oldest_tick_age_seconds"] = age
+    status["stale"] = not last_tick or age > SWEEP_STALE_SECONDS
+    return status
 
 
 def set_queue_status(*, stalled: bool, queued: int, idle_seconds: float) -> None:
@@ -70,7 +88,7 @@ def check_config() -> bool:
 
 
 def readiness_report() -> dict[str, Any]:
-    from . import upload_pipeline, upload_remediation
+    from . import upload_pipeline
     checks = {
         "database": check_database(),
         "worker": worker_is_healthy(),
@@ -84,6 +102,7 @@ def readiness_report() -> dict[str, Any]:
         # healthy process into a failing container health check.
         "queue": queue_status(),
         "upload_journal": upload_pipeline.journal_status(),
-        "upload_remediation": (upload_remediation.sweep_health(db) if checks["database"]
-                               else {"available": False, "stale": True}),
+        # No extra DB checkout on public readiness (including cold/native
+        # probes). Derive staleness from the last observed durable tick instead.
+        "upload_remediation": upload_remediation_status(),
     }

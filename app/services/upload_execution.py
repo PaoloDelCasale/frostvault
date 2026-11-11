@@ -20,6 +20,7 @@ import time
 import psycopg
 
 from . import snapshot_cleanup, upload_pipeline, upload_provenance as provenance
+from .database_retry import owned_connection
 from .upload_snapshot import CHUNK_SIZE, UploadSnapshot, UploadProofMismatch, unsupported_checksum_api
 
 
@@ -263,7 +264,7 @@ class UploadExecution:
         if not pending:
             return
         try:
-            with self.worker.db() as connection:
+            with owned_connection(self.worker.db()) as connection:
                 connection.execute("SET LOCAL lock_timeout='100ms'")
                 connection.execute("SET LOCAL statement_timeout='2s'")
                 provenance.probe_receipt_journal(connection)

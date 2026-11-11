@@ -105,12 +105,13 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertNotIn("crypt_custody", body)
 
     def test_upload_health_is_informational_and_public_readiness_exposes_no_workload(self) -> None:
-        from app.services import upload_pipeline
+        from app.services import upload_pipeline, upload_remediation
         coordinator = upload_pipeline._Pipeline(1)
         coordinator.journal_failed("private-intent", "private-fact-hash")
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute("DELETE FROM upload_remediation_sweep")
         with patch.dict(upload_pipeline._registry, {self.test_settings.database_dsn: coordinator}):
+            upload_remediation.observe(main.db)
             report = health_service.readiness_report()
             response = self.client.get("/ready")
         self.assertEqual(response.status_code, 200, response.text)
