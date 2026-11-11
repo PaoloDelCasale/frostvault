@@ -4,17 +4,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, createAppQueryClient, configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
+import type { BulkUploadAdmissionResponse } from "@/api/types";
+import { translate } from "@/i18n/translate";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 
 describe("explicit failed upload retry", () => {
   afterEach(resetApiClientForTests);
-  function show(vaultId?: number, failure = false) {
+  function show(vaultId?: number, failure = false, admission?: BulkUploadAdmissionResponse) {
     const calls: { url: string; body: unknown }[] = [];
     configureApiClient({ fetch: vi.fn(async (input, init) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages: loadCatalog() });
       calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-      return failure ? jsonResponse({ detail: "Protection is suspended" }, 409) : jsonResponse({ item_count: 3 });
+      if (url.includes("/api/upload/admissions/") && admission) return jsonResponse(admission);
+      return failure ? jsonResponse({ detail: "Protection is suspended" }, 409) : jsonResponse({ item_count: 3, ...(admission ? { admission } : {}) });
     }) });
     render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><UploadRetryActions vaultId={vaultId} /></I18nProvider></ApiQueryProvider>);
     return calls;
@@ -33,6 +36,19 @@ describe("explicit failed upload retry", () => {
     await userEvent.click(screen.getByRole("button", { name: "Upload whole Vault" }));
     await screen.findByText(loadCatalog()["uploads.whole_started"]);
     expect(calls).toEqual([{ url: "/api/upload/retry-failed?vault_id=7", body: null }, { url: "/api/upload?vault_id=7", body: { path: "", is_directory: true, request_id: expect.any(String) } }]);
+  });
+  it.each(["pending", "completed", "cancelled", "invalidated"] as const)("shows durable %s admission progress separately from transfers", async (status) => {
+    const admission: BulkUploadAdmissionResponse = {
+      group_id: "55000000-0000-4000-8000-000000000001", vault_id: 7, path: "", status, reason: null,
+      origin: "manual", verification_mode: "read_back", requested_at: "2026-11-11", updated_at: "2026-11-11",
+      selected_count: 200, processed_count: 100, admitted_count: 90, total_bytes: 900,
+    };
+    const calls = show(7, false, admission);
+    await userEvent.click(await screen.findByRole("button", { name: "Upload whole Vault" }));
+    const label = translate(loadCatalog(), `uploads.admission.${status}`, { selected: 200, processed: 100, admitted: 90 });
+    expect(await screen.findByText(label)).toBeVisible();
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/upload/admissions/${admission.group_id}?vault_id=7`)).toBe(true));
+    if (status === "pending") expect(screen.getByRole("button", { name: "Upload whole Vault" })).toBeDisabled();
   });
   it("reuses the stable request key when an upload response is uncertain", async () => {
     const calls = show(2, true);
