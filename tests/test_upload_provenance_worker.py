@@ -28,6 +28,25 @@ A = b"immutable content A"
 B = b"immutable content B"
 
 
+def prepare_unsent(case, job_id):
+    """Legacy/crash fixture: an already committed prepared-but-unsent intent.
+
+    Fresh UploadExecution commits prepare+send-started atomically, so injecting
+    a failure in mark_send_started no longer manufactures this historical state.
+    Keep exercising its immutability and closure with real persisted facts.
+    """
+    snapshot, _ = storage.prepare_upload_snapshot(case.file, lambda: None)
+    with PostgresConnection(case.db_path) as connection:
+        job = connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job_id,)).fetchone()
+        pinned = provenance.target(connection, job,
+            key=storage.expected_cloud_key(job["path"], job["s3_prefix"]),
+            provider=provenance.provider_identity(case.provider))
+        ArchiveCatalog(connection).set_upload_snapshot(job_id, snapshot_json=snapshot.as_json())
+        return provenance.prepare(connection, job, pinned=pinned, snapshot=snapshot,
+            requested=job["upload_verification_requested"],
+            before={"versions": [], "markers": []}, timestamp=storage.now_iso())
+
+
 class UploadProvenanceWorkerTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -102,6 +121,24 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual((version["integrity"], version["availability"]), ("verified", "available"))
         self.assertIn((version["object_key"], version["provider_version_id"]), self.provider.objects)
         return version
+
+    def test_module_run_accepts_a_claimed_job_and_returns_its_durable_outcome(self):
+        from app.services.upload_execution import UploadExecution
+        job_id = self.queue()
+        with PostgresConnection(self.db_path) as connection:
+            claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
+                claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
+                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                restore_due_before=storage.now_iso())
+            self.assertIsNotNone(claimed)
+            job = connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job_id,)).fetchone()
+        self.assertIsNone(storage._claim_token_for(job_id))
+        outcome = UploadExecution(storage).run(job)
+        version = self.assert_keeper(job_id)
+        self.assertEqual((outcome.job_id, outcome.status, outcome.archive_version_id),
+                         (job_id, "completed", version["id"]))
+        self.assertIsNone(storage._claim_token_for(job_id), "The caller's context is restored")
+        self.assertEqual(self.provider.puts, 1)
 
     def test_committed_intent_send_snapshot_and_token_precede_provider_mutation(self):
         def inspect(stage, **kwargs):
@@ -181,6 +218,58 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             self.run_job(job)
         self.assertEqual(self.provider.puts, 0)
         self.assertEqual(self.provider.objects, {})
+        with PostgresConnection(self.db_path) as connection:
+            self.assertIsNone(provenance.load_for_job(connection, job),
+                "Prepare and send-started roll back together before any PUT")
+
+    def test_callback_and_return_append_only_one_positively_committed_receipt(self):
+        job = self.queue()
+        original = provenance.append_receipt
+        with patch.object(provenance, "append_receipt", wraps=original) as append:
+            self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(append.call_count, 1)
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_unknown_receipt_commit_retries_the_retained_ack_not_the_send(self):
+        import psycopg
+        original = provenance.append_receipt
+        appends = []
+        def uncertain(*args, **kwargs):
+            original(*args, **kwargs)
+            appends.append(1)
+            if len(appends) == 1:
+                raise psycopg.OperationalError("connection lost after receipt commit")
+        def send(job, *, source, key):
+            # Same retained-response contract as the SDK Adapter: an uncertain
+            # callback commit exposes the response for the caller's DB fallback.
+            self.provider.puts += 1
+            version = self.provider.add(key, source.read_bytes(), job["_upload_metadata"])
+            raw = self.provider.head_object(Bucket=job["s3_bucket"], Key=key, VersionId=version)
+            try:
+                job["_on_upload_acknowledged"](raw)
+            except BaseException as exc:
+                exc.upload_response = raw
+                raise
+            return raw
+        job = self.queue()
+        with patch.object(provenance, "append_receipt", side_effect=uncertain), \
+                patch.object(storage, "upload_s3_file", side_effect=send):
+            self.run_job(job)
+        # The operation failed, but the ack survived the fallback after an
+        # unknown commit; a later Job reconciles this one exact provider write.
+        self.assertEqual(len(appends), 2)
+        self.assertEqual(self.provider.puts, 1)
+        with PostgresConnection(self.db_path) as connection:
+            intent = provenance.load_for_job(connection, job)
+            self.assertIsNotNone(provenance.receipt(connection, intent["id"]))
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_receipts").fetchone()["n"], 1)
+        self.assertEqual(self.row(job)["status"], "retrying")
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (job,))
+        self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(self.provider.puts, 1)
 
     def test_provider_accepted_lost_response_reconciles_token_without_second_put(self):
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("lost response")) if stage == "accepted" else None
@@ -743,6 +832,32 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.row(job)["status"], "cancelled")
         self.assertEqual(self.provider.deletes, 0)
         self.assertEqual(len(self.provider.objects), 2)
+
+    def test_proof_metadata_integrity_and_local_CAS_retry_as_one_DB_unit(self):
+        method = ArchiveCatalog.set_version_verification_method
+        verified = ArchiveCatalog.mark_version_verified
+        method_transactions, verification_transactions = [], []
+        def save_method(catalog, version_id, **kwargs):
+            method(catalog, version_id, **kwargs)
+            method_transactions.append(catalog.connection.execute("SELECT txid_current() AS id").fetchone()["id"])
+        def save_verified(catalog, version_id, **kwargs):
+            verified(catalog, version_id, **kwargs)
+            verification_transactions.append(catalog.connection.execute("SELECT txid_current() AS id").fetchone()["id"])
+            row = catalog.connection.execute("SELECT verification_method,integrity FROM archive_versions WHERE id=%s", (version_id,)).fetchone()
+            self.assertEqual(row, {"verification_method": "s3_checksum", "integrity": "verified"})
+            if len(verification_transactions) == 1:
+                catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'proof commit abort' USING ERRCODE='40001'; END $$")
+        inspector = storage._inspect_local_copy_for_upload_snapshot
+        job = self.queue()
+        with patch.object(ArchiveCatalog, "set_version_verification_method", save_method), \
+                patch.object(ArchiveCatalog, "mark_version_verified", save_verified), \
+                patch.object(storage, "_inspect_local_copy_for_upload_snapshot", wraps=inspector) as inspect:
+            self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(method_transactions, verification_transactions)
+        self.assertEqual(len(verification_transactions), 2)
+        self.assertEqual(inspect.call_count, 1, "A DB retry cannot replay filesystem observation")
+        self.assertEqual((self.provider.puts, self.provider.gets), (1, 0))
 
     def test_db_transaction_and_commit_retry_never_replays_provider(self):
         for code in ("40P01", "40001"):

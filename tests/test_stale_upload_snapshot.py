@@ -99,6 +99,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         # The send never started: the next attempt builds a new snapshot instead of
         # failing against A until UPLOAD_RETRY_MAX_ATTEMPTS (job.source_changed_stalled).
         job = self.queue()
+        base.prepare_unsent(self, job)
         with PostgresConnection(self.db_path) as connection:
             # One retry left: a single stale comparison would fail the Job.
             connection.execute("UPDATE jobs SET retry_count=%s WHERE id=%s", (storage.UPLOAD_RETRY_MAX_ATTEMPTS - 1, job))

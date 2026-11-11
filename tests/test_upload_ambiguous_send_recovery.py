@@ -591,8 +591,9 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
     def test_an_unsent_intent_is_refreshed_when_the_cloud_inventory_changed_meanwhile(self):
         # Same Job: the intent was prepared but never sent; an external write landed since.
         self.stable_content()
+        job = self.queue()
+        fixtures.prepare_unsent(self, job)
         with patch.object(provenance, "mark_send_started", side_effect=psycopg.OperationalError("connection is bad")):
-            job = self.queue()
             self.run_job(job)
         self.assertEqual(self.row(job)["status"], "retrying")
         stale = self.intent()

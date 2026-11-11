@@ -104,6 +104,31 @@ class UploadModeTests(unittest.TestCase):
         self.set_mode(None)
         self.assertEqual(self.rows()[1][0]["verification_method"], "read_back")
 
+    def test_valid_ordinary_HEAD_proof_is_reused_with_its_actual_source(self):
+        import json
+        self.upload_response.pop("ChecksumSHA256")
+        self.head_before_read = {"ChecksumType": "FULL_OBJECT", "ChecksumSHA256": sha256_b64(self.payload)}
+        # A redundant checksum-enabled HEAD would fail: the ordinary exact HEAD
+        # has already supplied independently validated cryptographic evidence.
+        self.proof = AssertionError("redundant checksum HEAD")
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(versions[0]["verification_method"], "s3_checksum")
+        self.assertEqual(json.loads(versions[0]["provider_checksums"])["source"], "ordinary_head")
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.puts, 1)
+
+    def test_ordinary_HEAD_proof_never_overrides_an_explicit_read_back(self):
+        self.set_mode("read_back")
+        self.upload_response.pop("ChecksumSHA256")
+        self.head_before_read = {"ChecksumType": "FULL_OBJECT", "ChecksumSHA256": sha256_b64(self.payload)}
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(versions[0]["verification_method"], "read_back")
+        self.assertEqual(len(self.s3.reads), 1)
+
     def test_checksum_missing_falls_back_visibly_exact_GET(self):
         self.upload_response.pop("ChecksumSHA256")
         self.proof = {"VersionId": "raw-version", "ContentLength": len(self.payload)}
@@ -227,6 +252,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(len(self.s3.reads), 1)
         self.assertEqual(self.s3.deleted, [])
         self.assertEqual(self.verification_failures, ["mismatch"])
+        self.assertEqual(versions[0]["verification_egress_bytes"], len(self.payload))
 
     def test_wrong_checksum_on_post_read_HEAD_never_verifies_or_cleans(self):
         self.assert_final_HEAD_contradiction_blocks_cleanup({"ChecksumSHA256": "wrong"})
@@ -244,6 +270,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["provider_version_id"], "raw-version")
         self.assertEqual(len(self.s3.reads), 1)
         self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(versions[0]["verification_egress_bytes"], len(self.payload))
 
     def test_wrong_identity_on_post_read_HEAD_never_verifies_or_cleans(self):
         self.assert_final_HEAD_identity_or_size_blocks_cleanup({"VersionId": "other-version"})

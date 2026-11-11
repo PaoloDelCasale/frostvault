@@ -270,18 +270,21 @@ class UploadRemediationFrontierTests(unittest.TestCase):
     def test_cleanup_checkpoint_survives_failure_before_completion_and_explicit_retry(self):
         self.fail_after_ack()
         resumed = self.admit()
-        real = storage.set_job
-        def fault(job_id,status,*args,**kwargs):
+        real = storage._set_job_in_transaction
+        def fault(connection,job_id,status,*args,**kwargs):
             if status == "completed":
                 raise RuntimeError("injected before completion")
-            return real(job_id,status,*args,**kwargs)
-        with patch("app.storage.set_job",side_effect=fault):
+            return real(connection,job_id,status,*args,**kwargs)
+        with patch("app.storage._set_job_in_transaction",side_effect=fault):
             self.run_job(resumed)
         self.assertEqual(self.row(resumed)["status"], "failed")
         with self.db() as connection:
             row = connection.execute("SELECT * FROM upload_remediations").fetchone()
-            self.assertEqual(row["phase"], "completion")
-            self.assertIsNotNone(connection.execute("SELECT completed_at FROM snapshot_cleanup_inventories WHERE job_id=%s", (row["cleanup_inventory_job_id"],)).fetchone()["completed_at"])
+            # Cleanup itself is durable, but its remediation linkage shares the
+            # completion/progress commit. Never leave a partial completion unit.
+            self.assertEqual(row["phase"], "cleanup")
+            self.assertIsNone(row["cleanup_inventory_job_id"])
+            self.assertIsNotNone(connection.execute("SELECT completed_at FROM snapshot_cleanup_inventories WHERE keeper_id=%s", (self.row(resumed)["archive_version_id"],)).fetchone()["completed_at"])
         final = self.admit(); self.run_job(final); self.assert_keeper(final)
         self.assertEqual(self.row(resumed)["status"], "failed")
         self.assertEqual((self.provider.puts,self.provider.gets),(1,0))
@@ -291,9 +294,18 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         with self.db() as connection:
             connection.execute("CREATE SEQUENCE remediation_commit_attempt")
             connection.execute("""CREATE FUNCTION abort_remediation_commit() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN IF NEW.status='completed' AND NEW.upload_reconcile_only
-                    AND nextval('remediation_commit_attempt')=1 THEN
-                    RAISE EXCEPTION 'injected completion commit' USING ERRCODE='40001';
+                BEGIN IF NEW.status='completed' AND NEW.upload_reconcile_only THEN
+                    IF NEW.transferred_bytes IS DISTINCT FROM NEW.total_bytes OR NOT EXISTS (
+                        SELECT 1 FROM upload_remediations r
+                        JOIN snapshot_cleanup_inventories c ON c.job_id=r.cleanup_inventory_job_id
+                        WHERE r.resolved_by_job_id=NEW.id AND r.state='resolved'
+                          AND c.keeper_id=NEW.archive_version_id AND c.completed_at IS NOT NULL
+                    ) THEN
+                        RAISE EXCEPTION 'partial completion/progress/linkage' USING ERRCODE='23514';
+                    END IF;
+                    IF nextval('remediation_commit_attempt')=1 THEN
+                        RAISE EXCEPTION 'injected completion commit' USING ERRCODE='40001';
+                    END IF;
                 END IF; RETURN NEW; END $$""")
             connection.execute("""CREATE CONSTRAINT TRIGGER abort_remediation_completion AFTER UPDATE ON jobs
                 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION abort_remediation_commit()""")

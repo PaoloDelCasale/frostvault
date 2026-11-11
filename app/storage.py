@@ -415,6 +415,8 @@ class _ThrottledByteProgress:
         self.claim_token = str(job["claim_token"]) if job.get("claim_token") else None
         self.transferred = 0
         self._lock = threading.Lock()
+        self._report_lock = threading.Lock()
+        self._committed: int | None = None
         self._last_report = 0.0
         interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
         self._min_interval = max(0.05, interval_ms / 1000.0)
@@ -430,23 +432,25 @@ class _ThrottledByteProgress:
             if now - self._last_report >= self._min_interval:
                 self._last_report = now
                 should_report = True
-                value = self.transferred
         if should_report:
-            set_job_progress(
-                self.job_id,
-                value,
-                claim_token=self.claim_token,
-            )
+            self._report()
+
+    def _report(self) -> None:
+        # Serialize SDK callbacks and flush so an older value cannot commit after
+        # a newer one. Dedup only a positively committed CAS, never an attempted
+        # write (including a commit whose outcome is unknown).
+        with self._report_lock:
+            with self._lock:
+                value = self.transferred
+                if value == self._committed:
+                    return
+            if set_job_progress(self.job_id, value, claim_token=self.claim_token) is True:
+                self._committed = value
 
     def flush(self) -> None:
         with self._lock:
-            value = self.transferred
             self._last_report = time.monotonic()
-        set_job_progress(
-            self.job_id,
-            value,
-            claim_token=self.claim_token,
-        )
+        self._report()
 
 
 def s3_client(*, preflight: bool = False, non_idempotent: bool = False):
@@ -2242,6 +2246,32 @@ def set_job(
     Direct administrative/test callers without a claim retain the historic
     update behavior.
     """
+    if _claim_is_lost(job_id):
+        return False
+    with _defer_job_counters():
+        with owned_connection(db()) as connection:
+            return _set_job_in_transaction(
+                connection, job_id, status, message,
+                message_key=message_key, message_params=message_params,
+                remediation_suspension=remediation_suspension,
+                remediation_reason=remediation_reason,
+            )
+
+
+def _set_job_in_transaction(
+    connection: Any, job_id: int, status: str, message: str = "", *,
+    message_key: str | None = None,
+    message_params: dict[str, Any] | None = None,
+    remediation_suspension: str | None = None,
+    remediation_reason: str | None = None,
+    transferred_bytes: int | None = None,
+) -> bool:
+    """DB-only transition; caller owns commit/retry and deferred counters.
+
+    This is the same transition used by set_job, not a second completion path.
+    Terminal/retry transitions still lock the Vault exclusively; never invoke
+    from an audited SHARE callback. Final upload progress can share its CAS.
+    """
     params = message_params or {}
     if message_key and not message:
         message = translate(message_key, locale=DEFAULT_LOCALE, **params)
@@ -2252,125 +2282,64 @@ def set_job(
     held = status in JOB_LEASE_HELD_STATUSES
     previous_status = None
     action = None
-    with owned_connection(db()) as connection:
-        # Non-key changes serialize with admission without blocking notification
-        # FK KEY SHARE locks (Owner episode -> Vault vs Vault -> Owner).
-        vault_lock = "NO KEY UPDATE"
-        if (
-            held
-            and claim_token
-            and remediation_suspension is None
-            and remediation_reason is None
-            and _held_transition_may_share_vault(connection, job_id)
-        ):
-            # ADR-0031 (#535): a worker's own step between held statuses
-            # (uploading -> verifying ...) keeps the Job active and writes only
-            # its Job row and append-only dirty marks, so it needs no exclusion
-            # from admission, provenance or aggregate maintenance. KEY SHARE
-            # still keeps the Vault-first lock order: FOR UPDATE holders
-            # (cancel-pending, Stop Protection, deletions) wait for it or make
-            # it wait, before it locks the Job row and before the dirty-mark
-            # FK would ask for the same lock.
-            vault_lock = "KEY SHARE"
-        connection.execute(
-            f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
-            (job_id,),
-        )
-        current = connection.execute(
-            "SELECT status, action, vault_id, path FROM jobs WHERE id=%s",
-            (job_id,),
-        ).fetchone()
-        if current is not None:
-            previous_status = current["status"]
-            action = current["action"]
-        notify_sql = ""
-        if status in {"completed", "failed"}:
-            notify_sql = ", terminal_notification_status='pending'"
-        if claim_token:
-            lease_set = (
-                "claim_expires_at=%s"
-                if held
-                else "claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL"
-            )
-            lease_params: list[Any] = (
-                [_claim_expiry_at(timestamp)] if held else []
-            )
-            result = connection.execute(
-                f"""
-                UPDATE jobs
-                SET status=%s,
-                    message=%s,
-                    message_key=%s,
-                    message_params=%s,
-                    updated_at=%s,
-                    {lease_set}{notify_sql}
-                WHERE id=%s
-                  AND claim_token=%s
-                  AND claim_expires_at IS NOT NULL
-                  AND claim_expires_at > %s
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                """,
-                (
-                    status,
-                    message,
-                    message_key,
-                    format_message_params(params) if message_key else None,
-                    timestamp,
-                    *lease_params,
-                    job_id,
-                    claim_token,
-                    timestamp,
-                ),
-            )
-        else:
-            result = connection.execute(
-                f"""
-                UPDATE jobs
-                SET status=%s,
-                    message=%s,
-                    message_key=%s,
-                    message_params=%s,
-                    updated_at=%s{notify_sql}
-                WHERE id=%s
-                """,
-                (
-                    status,
-                    message,
-                    message_key,
-                    format_message_params(params) if message_key else None,
-                    timestamp,
-                    job_id,
-                ),
-            )
-        updated = _claim_write_succeeded(result)
-        if updated and action == "upload":
-            from .services import upload_remediation
-            upload_remediation.transition(
-                connection, job_id, status, timestamp,
-                suspension=remediation_suspension, closing_reason=remediation_reason,
-            )
-            _dirty_job_protection(connection, job_id)
-            if remediation_reason == "file_removed" and current is not None:
-                # Record the absence with the closure: if the same bytes come back
-                # the presence change re-opens the stability window and the
-                # cancelled Job no longer blocks re-admission (review of #503).
-                ArchiveCatalog(connection).mark_local_path_missing(
-                    vault_id=int(current["vault_id"]), path=current["path"],
-                    observed_at=timestamp,
-                )
-        if updated and status in {"completed", "failed"}:
-            notification_service.enqueue_job_terminal_notification_best_effort(
-                connection, job_id=job_id
-            )
+    vault_lock = "NO KEY UPDATE"
     if (
-        updated
-        and status in {"completed", "failed"}
-        and previous_status not in JOB_TERMINAL_STATUSES
+        held and claim_token
+        and remediation_suspension is None and remediation_reason is None
+        and _held_transition_may_share_vault(connection, job_id)
     ):
-        _record_committed_job_counter(
-            "completed" if status == "completed" else "failed",
-            action,
+        # ADR-0031: a held step changes no admission predicate. Keep Vault-first
+        # order before locking Jobs or append-only aggregate dirty FK marks.
+        vault_lock = "KEY SHARE"
+    connection.execute(
+        f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
+        (job_id,),
+    )
+    current = connection.execute(
+        "SELECT status, action, vault_id, path FROM jobs WHERE id=%s", (job_id,),
+    ).fetchone()
+    if current is not None:
+        previous_status, action = current["status"], current["action"]
+    notify_sql = ", terminal_notification_status='pending'" if status in {"completed", "failed"} else ""
+    progress_sql = ", transferred_bytes=%s" if transferred_bytes is not None else ""
+    progress_params = [max(0, transferred_bytes)] if transferred_bytes is not None else []
+    if claim_token:
+        lease_set = "claim_expires_at=%s" if held else "claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL"
+        lease_params = [_claim_expiry_at(timestamp)] if held else []
+        result = connection.execute(
+            f"""UPDATE jobs SET status=%s, message=%s, message_key=%s,
+                message_params=%s, updated_at=%s, {lease_set}{notify_sql}{progress_sql}
+            WHERE id=%s AND claim_token=%s
+              AND claim_expires_at IS NOT NULL AND claim_expires_at > %s
+              AND status NOT IN ('completed', 'failed', 'cancelled')""",
+            (status, message, message_key,
+             format_message_params(params) if message_key else None,
+             timestamp, *lease_params, *progress_params, job_id, claim_token, timestamp),
         )
+    else:
+        result = connection.execute(
+            f"""UPDATE jobs SET status=%s, message=%s, message_key=%s,
+                message_params=%s, updated_at=%s{notify_sql}{progress_sql} WHERE id=%s""",
+            (status, message, message_key,
+             format_message_params(params) if message_key else None,
+             timestamp, *progress_params, job_id),
+        )
+    updated = _claim_write_succeeded(result)
+    if updated and action == "upload":
+        from .services import upload_remediation
+        upload_remediation.transition(
+            connection, job_id, status, timestamp,
+            suspension=remediation_suspension, closing_reason=remediation_reason,
+        )
+        _dirty_job_protection(connection, job_id)
+        if remediation_reason == "file_removed" and current is not None:
+            ArchiveCatalog(connection).mark_local_path_missing(
+                vault_id=int(current["vault_id"]), path=current["path"], observed_at=timestamp,
+            )
+    if updated and status in {"completed", "failed"}:
+        notification_service.enqueue_job_terminal_notification_best_effort(connection, job_id=job_id)
+        if previous_status not in JOB_TERMINAL_STATUSES:
+            _record_committed_job_counter("completed" if status == "completed" else "failed", action)
     return updated
 
 
@@ -3578,8 +3547,13 @@ def _complete_verified_upload(
     mark_verified: bool,
     local_digest: str | None = None,
     local_stat: os.stat_result | None = None,
+    verification: dict[str, Any] | None = None,
 ) -> None:
-    """Persist Integrity for snapshot A without claiming a later Local Copy."""
+    """Persist proof/Integrity for A, then complete atomically AFTER cleanup.
+
+    Source observation happens once outside DB retries. Catalog generation CAS
+    protects a newer Local Copy B; a replay never moves or re-reads filesystem.
+    """
     _require_upload_source_identity(job)
     with db() as connection:
         local_before = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
@@ -3604,6 +3578,8 @@ def _complete_verified_upload(
             provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
             ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
             catalog = ArchiveCatalog(connection)
+            if verification is not None:
+                catalog.set_version_verification_method(version_id, **verification)
             if mark_verified:
                 catalog.mark_version_verified(
                     version_id, plaintext_sha256=upload_digest, verified_at=verified_at,
@@ -3635,14 +3611,20 @@ def _complete_verified_upload(
         client=s3_client(),
     )
     from .services import upload_remediation
-    _upload_catalog_unit(job, lambda catalog: upload_remediation.record_cleanup(
-        catalog.connection, job["id"], inventory_job_id,
-    ))
     progress_bytes = int(job.get("total_bytes") or 0)
     if local_stat is not None and progress_bytes <= 0:
         progress_bytes = int(local_stat.st_size)
-    set_job_progress(job["id"], progress_bytes)
-    set_job(job["id"], "completed", message_key="job.upload_verified")
+
+    def finish(catalog: ArchiveCatalog) -> None:
+        # Exclusive from entry: remediation/notifications may write catalog
+        # events and aggregate state. No SHARE -> exclusive lock upgrade.
+        upload_remediation.record_cleanup(catalog.connection, job["id"], inventory_job_id)
+        if not _set_job_in_transaction(
+            catalog.connection, job["id"], "completed",
+            message_key="job.upload_verified", transferred_bytes=progress_bytes,
+        ):
+            raise JobLeaseLost("Upload completion claim was lost")
+    _upload_catalog_unit(job, finish)
 
 
 UPLOAD_READY = "ready"
@@ -3799,11 +3781,18 @@ def _upload_catalog_unit(
     Receipt publication and persist_verification deliberately stay exclusive.
     """
     from .services import upload_provenance as provenance
-    with owned_connection(db()) as connection:
-        # Same Vault -> Job/file order as admission/cleanup, in either mode.
-        provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence", shared=shared)
-        ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
-        return mutation(ArchiveCatalog(connection))
+    with _defer_job_counters():
+        with owned_connection(db()) as connection:
+            # Same Vault -> Job/file order as admission/cleanup, in either mode.
+            # The private capability exists only inside this DB unit and still
+            # compares every pin; nested prepare/send/publication checks need
+            # not re-query the same fenced target. It is revoked before commit.
+            with provenance._validated_target(
+                connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]),
+                provider="db-fence", shared=shared,
+            ):
+                ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
+                return mutation(ArchiveCatalog(connection))
 
 
 def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], response: dict[str, Any]) -> str:
@@ -3900,37 +3889,35 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
     from .services import upload_provenance as provenance
     pinned = json.loads(intent["target_json"])
     try:
-        _upload_catalog_unit(job, lambda catalog: provenance.require_target(
-            catalog.connection, job, pinned, shared=True), shared=True)
-        with db() as connection:
-            linked = ArchiveCatalog(connection).get_job_target(job["id"])
+        def inspect(catalog: ArchiveCatalog) -> tuple[dict[str, Any] | None, list[str]]:
+            connection = catalog.connection
+            provenance.require_target(connection, job, pinned, shared=True)
+            linked = catalog.get_job_target(job["id"])
             raw = provenance.receipt(connection, intent["id"])
-        # A crash after publication but before proof evaluation must not turn
-        # a durable contradictory receipt into a mere identity check on retry.
-        # This also applies to already-verified cleanup-only continuations.
-        if raw is not None:
-            try:
-                validated_s3_proof(raw, version_id=raw["VersionId"],
-                    snapshot=UploadSnapshot.from_json(intent["snapshot_json"]),
-                    source="upload_response", completion=True)
-            except UploadProofMismatch as exc:
-                raise provenance.UploadBlocked("proof_mismatch") from exc
-        if intent["archive_version_id"]:
-            with db() as connection:
+            # A crash after publication cannot erase a contradictory raw receipt,
+            # including already-verified cleanup-only continuations.
+            if raw is not None:
+                try:
+                    validated_s3_proof(raw, version_id=raw["VersionId"],
+                        snapshot=UploadSnapshot.from_json(intent["snapshot_json"]),
+                        source="upload_response", completion=True)
+                except UploadProofMismatch as exc:
+                    raise provenance.UploadBlocked("proof_mismatch") from exc
+            if intent["archive_version_id"]:
                 exact = connection.execute("SELECT * FROM archive_versions WHERE id=%s AND vault_file_id=%s AND vault_id=%s", (intent["archive_version_id"], job["vault_file_id"], job["vault_id"])).fetchone()
-            if (not exact or not raw or exact["object_key"] != pinned["key"]
-                    or exact["provider_version_id"] != raw["VersionId"]
-                    or exact["upload_snapshot_json"] != intent["snapshot_json"]
-                    or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"]))):
-                raise provenance.UploadBlocked("ambiguous_receipt")
-            if not linked or not linked["archive_version_id"]:
-                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(
-                    job["id"], intent["archive_version_id"]), shared=True)
-            # VERSION baseline remains immutable, including cleanup-only retries.
+                if (not exact or not raw or exact["object_key"] != pinned["key"]
+                        or exact["provider_version_id"] != raw["VersionId"]
+                        or exact["upload_snapshot_json"] != intent["snapshot_json"]
+                        or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"]))):
+                    raise provenance.UploadBlocked("ambiguous_receipt")
+                if not linked or not linked["archive_version_id"]:
+                    catalog.link_job_version(job["id"], intent["archive_version_id"])
+                return raw, []
+            return raw, provenance.open_multiparts(connection, intent["id"])
+        raw, owned = _upload_catalog_unit(job, inspect, shared=True)
+        if intent["archive_version_id"]:
             return
         try:
-            with db() as connection:
-                owned = provenance.open_multiparts(connection, intent["id"])
             response = provenance.reconcile(
                 client, intent, raw, lambda: ensure_job_active(job["id"], "Upload reconciliation stopped"),
                 owned_multiparts=owned,
@@ -3962,394 +3949,10 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
 
 
 def process_upload(job: dict[str, Any]) -> None:
-    ensure_job_active(job["id"], "Upload stopped")
-    if job.get("origin") == "automatic":
-        state = _automatic_upload_state(job)
-        if state == UPLOAD_SOURCE_REMOVED:
-            _close_removed_upload(job)
-            return
-        if state != UPLOAD_READY:
-            set_job(job["id"], "queued", "Automatic upload waits for enabled protection and stable content")
-            return
-    validate_cloud_vault(job)
-    _require_upload_source_identity(job)
-    # The enrolled root was read again: an outage problem raised by a waiting Job ends.
-    _clear_source_volume_problem(job)
-    source = safe_local_path(job["source_root"], job["path"])
-    local_present = source.is_file()
-    from .services import upload_provenance as provenance
-    def load_intent_and_target(catalog: ArchiveCatalog) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        intent = provenance.load_for_job(catalog.connection, job["id"])
-        if intent is None:
-            intent = provenance.outstanding(catalog.connection, job["vault_file_id"])
-            if intent:
-                provenance.bind_for_resume(catalog.connection, job["id"], intent)
-        return intent, catalog.get_job_target(job["id"])
-    intent, linked_target = _upload_catalog_unit(job, load_intent_and_target, shared=True)
+    """Compatibility hook: the UploadExecution Module owns the per-file protocol."""
     import sys
-    from .services import snapshot_cleanup
-    if intent and intent["send_started"]:
-        client = s3_client()
-        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
-        _resume_materialized_upload(job, intent, client)
-        # Reconciliation can publish/link a version. Only this branch needs a
-        # fresh read; the ordinary path loaded both facts in one DB-only unit.
-        linked_target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]), shared=True)
-    linked_version_id = linked_target.get("archive_version_id") if linked_target else None
-    if job.get("upload_reconcile_only") and not linked_version_id:
-        raise provenance.UploadBlocked("ambiguous_send")
-    if not local_present and not linked_version_id:
-        raise UploadSourceRemoved("The file is no longer available in the source folder")
-    if not linked_version_id and linked_target and linked_target.get(
-        "cloud_only_version_id"
-    ):
-        # A Job queued before the path became cloud-only must not replace
-        # the only cloud copy; the owner decides (#411, #363 D7).
-        raise RuntimeError(
-            "Upload held back: the path holds different content than a file "
-            "kept only in the cloud"
-        )
-    verification_started = False
-    verification_failure_reason: str | None = None
-    local_plaintext_sha256: str | None = None
-    source_stat: os.stat_result | None = None
-    snapshot: UploadSnapshot | None = None
-    requested_mode = str(intent["requested"] if intent else (linked_target or {}).get("job_upload_verification_requested") or "read_back")
-
-    def version_head() -> dict[str, Any]:
-        head = _verification_version_head(client,job,target)
-        token = (head.get("Metadata") or {}).get(provenance.TOKEN_KEY)
-        if token:
-            with db() as connection:
-                known = connection.execute("SELECT * FROM upload_intents WHERE archive_version_id=%s AND vault_file_id=%s AND token=%s", (target["archive_version_id"],job["vault_file_id"],token)).fetchone()
-            if not known:
-                raise provenance.UploadBlocked("ambiguous_receipt")
-            scope = json.loads(known["target_json"])
-            if scope["provider"] != provenance.provider_identity(client) or scope["bucket"] != job["s3_bucket"] or scope["key"] != target["object_key"]:
-                raise provenance.UploadBlocked("identity_changed")
-        return head
-
-    def evaluate_provider_proof(proof: dict[str, Any], *, source: str,
-                                completion: bool = False) -> dict[str, str] | None:
-        # Every evidence origin, including the post-read HEAD, obeys the same
-        # contradiction policy and records one verification-failure metric.
-        nonlocal verification_started, verification_failure_reason
-        assert snapshot is not None
-        verification_started = True
-        try:
-            return validated_s3_proof(
-                proof, version_id=target["provider_version_id"],
-                snapshot=snapshot, source=source, completion=completion,
-            )
-        except UploadProofMismatch:
-            verification_failure_reason = "mismatch"
-            _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
-                version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
-            ))
-            raise
-
-    try:
-        if not linked_version_id:
-            if not local_present:
-                raise UploadSourceRemoved(
-                    "The file is no longer available in the source folder"
-                )
-            set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-            snapshot, source_stat = prepare_upload_snapshot(
-                source, lambda: ensure_job_active(job["id"], "Upload claim was lost"),
-            )
-            local_plaintext_sha256 = snapshot.plaintext_sha256
-            old_snapshot = (linked_target or {}).get("job_upload_snapshot_json")
-            if old_snapshot is not None and old_snapshot != snapshot.as_json():
-                raise RuntimeError("Local file changed since fingerprinting")
-            ensure_job_active(job["id"], "Upload claim was lost")
-            # Preflight and hashing can take time. A watcher edit in between
-            # must earn a fresh stability window before the first cloud write.
-            if job.get("origin") == "automatic":
-                state = _automatic_upload_state(job)
-                if state == UPLOAD_SOURCE_REMOVED:
-                    _close_removed_upload(job)
-                    return
-                if state != UPLOAD_READY:
-                    set_job(job["id"], "queued", "Automatic upload waits for stable content")
-                    return
-
-        version_id: str
-        target: dict[str, Any]
-        head: dict[str, Any]
-        client = s3_client()
-        namespace = snapshot_cleanup.pin_upload_namespace(sys.modules[__name__], job, client)
-        if linked_version_id:
-            # A retry after catalog linkage is verification-only. Uploading
-            # again here would create a second provider VersionId and split the
-            # durable Archive Version history. The persisted upload digest
-            # identifies snapshot A; a later Local Copy is archived separately.
-            target = dict(linked_target)
-            version_id = str(linked_version_id)
-            integrity = str(target.get("integrity") or "unverified")
-            upload_digest = _require_linked_upload_digest(target)
-            if integrity == "mismatch":
-                raise RuntimeError("The linked Archive Version already mismatches the Local Copy")
-            if target.get("availability") not in {None, "available"}:
-                raise RuntimeError("The linked Archive Version is no longer available")
-            if not target.get("object_key") or not target.get("provider_version_id"):
-                raise RuntimeError("The linked Archive Version cannot be verified safely")
-            if target.get("upload_snapshot_json") is not None:
-                snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"])
-                requested_mode = target.get("upload_verification_requested") or "read_back"
-                if snapshot.plaintext_sha256 != upload_digest:
-                    raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
-            head = version_head()
-            if integrity == "verified":
-                if snapshot is not None:
-                    evaluate_provider_proof(head, source="ordinary_head")
-                _complete_verified_upload(
-                    job,
-                    source=source,
-                    version_id=version_id,
-                    upload_digest=upload_digest,
-                    mark_verified=False,
-                )
-                return
-        else:
-            if local_plaintext_sha256 is None:
-                raise RuntimeError(
-                    "The file is no longer available in the source folder"
-                )
-            upload_digest = local_plaintext_sha256
-            # Keep the upload snapshot on the durable Job before contacting the
-            # provider.  Local Copy fingerprints are mutable scan observations
-            # and cannot identify a retry after the source changes.
-            reuse_provider = provenance.provider_identity(client)
-            def prepare_digest(catalog: ArchiveCatalog) -> dict[str, Any] | None:
-                assert snapshot is not None
-                catalog.set_upload_snapshot(job["id"], snapshot_json=snapshot.as_json())
-                vault_file_id = job.get("vault_file_id") or (linked_target or {}).get("vault_file_id")
-                return catalog.find_reusable_upload_version(
-                    vault_file_id=str(vault_file_id), plaintext_sha256=upload_digest,
-                    bucket=job["s3_bucket"], provider=reuse_provider,
-                ) if vault_file_id else None
-
-            reusable = _upload_catalog_unit(job, prepare_digest, shared=True)
-            job["upload_plaintext_sha256"] = upload_digest
-            reusable_integrity = (
-                str(reusable.get("integrity") or "") if reusable is not None else ""
-            )
-            if reusable is not None and reusable_integrity == "verified":
-                version_id = str(reusable["id"])
-                def link_reused_version(catalog: ArchiveCatalog) -> dict[str, Any]:
-                    catalog.link_job_version(job["id"], version_id)
-                    return catalog.get_job_target(job["id"])
-                target = _upload_catalog_unit(job, link_reused_version, shared=True)
-                # A cleanup-only reuse retains the VERSION's original baseline,
-                # never today's newly hashed multipart layout or verification mode.
-                if target.get("upload_snapshot_json") is not None:
-                    snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"])
-                    if snapshot.plaintext_sha256 != upload_digest:
-                        raise RuntimeError("Upload Snapshot digest differs from durable upload digest")
-                    evaluate_provider_proof(
-                        version_head(), source="ordinary_head",
-                    )
-                _complete_verified_upload(
-                    job,
-                    source=source,
-                    version_id=version_id,
-                    upload_digest=upload_digest,
-                    mark_verified=False,
-                    local_digest=local_plaintext_sha256,
-                    local_stat=source_stat,
-                )
-                return
-            if reusable is not None and reusable_integrity == "unverified":
-                if not reusable.get("object_key") or not reusable.get(
-                    "provider_version_id"
-                ):
-                    raise RuntimeError(
-                        "The linked Archive Version cannot be verified safely"
-                    )
-                version_id = str(reusable["id"])
-                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id), shared=True)
-                target = {
-                    "archive_version_id": version_id,
-                    "object_key": reusable["object_key"],
-                    "provider_version_id": reusable["provider_version_id"],
-                    "cloud_size": reusable["cloud_size"],
-                    "upload_plaintext_sha256": upload_digest,
-                    "integrity": "unverified",
-                    "availability": reusable.get("availability") or "available",
-                    "upload_snapshot_json": reusable.get("upload_snapshot_json"),
-                    "upload_verification_requested": reusable.get("upload_verification_requested"),
-                }
-                # Reusing a prior intent never substitutes today's Local Copy
-                # or policy for its historical expected evidence.
-                snapshot = UploadSnapshot.from_json(target["upload_snapshot_json"]) if target.get("upload_snapshot_json") else None
-                requested_mode = target.get("upload_verification_requested") or "read_back"
-                head = version_head()
-            else:
-                set_job(job["id"], "uploading", message_key="job.plain_upload")
-                key = expected_cloud_key(job["path"], job["s3_prefix"])
-                assert snapshot is not None
-                provider = provenance.provider_identity(client)
-                fresh = namespace.take_for_upload(job, client)
-                if fresh is None:
-                    # Resume/historical pins are not fresh observations. Preserve
-                    # the ordinary independent pair, without rebasing cleanup.
-                    with db() as connection:
-                        pinned = provenance.target(connection, job, key=key, provider=provider, shared=True)
-                    before = provenance.inventory(client, job["s3_bucket"], key)
-                    if before != provenance.inventory(client, job["s3_bucket"], key):
-                        raise provenance.UploadBlocked("inventory_changed")
-                else:
-                    pinned, before = fresh
-                intent = _upload_catalog_unit(job, lambda catalog: provenance.prepare(
-                    catalog.connection, job, pinned=pinned, snapshot=snapshot,
-                    requested=requested_mode, before=before, timestamp=now_iso(), shared=True), shared=True)
-                if intent["snapshot_json"] != snapshot.as_json() or intent["inventory_json"] != provenance.canonical(before):
-                    raise provenance.UploadBlocked("identity_changed")
-                # This transaction commits BEFORE PutObject/CreateMultipartUpload.
-                _upload_catalog_unit(job, lambda catalog: provenance.mark_send_started(
-                    catalog.connection, job, intent, shared=True), shared=True)
-
-                def acknowledge(response: dict[str, Any]) -> None:
-                    provenance.append_receipt(db, intent["id"], response, now_iso())
-
-                def journal_multipart(event: str, upload_id: str) -> None:
-                    # "created" commits before s3transfer sees the UploadId (#491).
-                    if event == "created":
-                        provenance.journal_multipart(db, intent["id"], upload_id, now_iso())
-                    else:
-                        provenance.close_multipart(db, intent["id"], upload_id, now_iso())
-
-                transfer_job = {**job, "_upload_snapshot": snapshot, "_upload_provider": provider,
-                                "_upload_metadata": {provenance.TOKEN_KEY: intent["token"]},
-                                "_on_upload_acknowledged": acknowledge,
-                                "_on_upload_multipart": journal_multipart}
-                try:
-                    response = upload_s3_file(transfer_job, source=source, key=key)
-                except BaseException as exc:
-                    # Shutdown joins late acknowledgments, even after cancellation.
-                    # Retry only appending the retained fact, never the provider send.
-                    raw = getattr(exc, "upload_response", None)
-                    if raw is not None:
-                        acknowledge(raw)
-                    no_write = getattr(exc,'upload_no_write_operation',None)
-                    if raw is None and no_write and cloud_preflight_gate.is_readiness_error(exc):
-                        # Definitive refusal is journaled before rearming send.
-                        # All ambiguous/lost-response outcomes stay reconcile-only.
-                        _upload_catalog_unit(job,lambda catalog: provenance.record_no_write(
-                            catalog.connection,job,intent,no_write,now_iso()))
-                    raise
-                acknowledge(response)
-                version_id = _publish_upload_receipt(job, intent, response)
-                target = {
-                    "archive_version_id": version_id, "object_key": key,
-                    "provider_version_id": response["VersionId"], "cloud_size": snapshot.size,
-                    "upload_plaintext_sha256": upload_digest,
-                    "upload_snapshot_json": snapshot.as_json(),
-                    "upload_verification_requested": requested_mode,
-                    "integrity": "unverified", "availability": "available",
-                }
-                # Present contradictory completion evidence blocks even when
-                # read_back was requested; absence alone is not a mismatch.
-                target["_provider_proof"] = evaluate_provider_proof(
-                    response, source="upload_response", completion=True,
-                )
-                head = version_head()
-
-        if snapshot is not None:
-            # A normal HEAD may also contain checksum fields. Any present
-            # contradictory evidence blocks, even when full Read-back was
-            # requested or completion already supplied a valid proof.
-            evaluate_provider_proof(head, source="ordinary_head")
-        ensure_job_active(job["id"], "Upload stopped")
-        # Snapshot A is identified by the persisted upload digest. A later
-        # Local Copy must not abort verification or be treated as a mismatch
-        # of the already-linked Archive Version.
-        set_job(job["id"], "verifying", message_key="job.verifying_cloud_copy")
-        ensure_job_active(job["id"], "Upload claim was lost")
-        verification_started = True
-        source_size = (
-            source_stat.st_size
-            if source_stat is not None
-            else int(job.get("total_bytes") or target.get("cloud_size") or 0)
-        )
-        fallback_reason = None
-        checksum_proven = False
-        provider_proof = target.get("_provider_proof")
-        if requested_mode == "s3_checksum" and snapshot is not None:
-            checksum_proven = provider_proof is not None
-            if not checksum_proven:
-                try:
-                    proof = client.head_object(Bucket=job["s3_bucket"], Key=target["object_key"],
-                                               VersionId=target["provider_version_id"], ChecksumMode="ENABLED")
-                    provider_proof = evaluate_provider_proof(proof, source="exact_head")
-                    checksum_proven = provider_proof is not None
-                    if not checksum_proven:
-                        fallback_reason = "checksum_missing"
-                except Exception as exc:
-                    if not unsupported_checksum_api(exc):
-                        raise
-                    fallback_reason = "checksum_api_unsupported"
-        elif snapshot is None:
-            fallback_reason = "legacy_expected_missing"
-        method = "s3_checksum" if checksum_proven else "read_back"
-        _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
-            version_id, method=method, fallback_reason=fallback_reason, egress_bytes=0 if checksum_proven else None,
-            provider_proof=provider_proof if checksum_proven else None,
-        ), shared=True)
-        if checksum_proven:
-            _complete_verified_upload(
-                job, source=source, version_id=version_id, upload_digest=upload_digest,
-                mark_verified=True, local_digest=local_plaintext_sha256, local_stat=source_stat,
-            )
-            return
-        if fallback_reason:
-            set_job(job["id"], "verifying", message_key="job.verifying_cloud_fallback")
-        remote_digest, remote_size = _stream_plaintext_for_verification(
-            job, target=target, source_size=source_size,
-        )
-        _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
-            version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
-        ), shared=True)
-        final_head = version_head()
-        if snapshot is not None:
-            evaluate_provider_proof(final_head, source="ordinary_head")
-        expected_stream_size = target.get("cloud_size")
-        if expected_stream_size is not None and remote_size != int(expected_stream_size):
-            verification_failure_reason = "truncated"
-            raise RuntimeError(
-                "Cloud verification stream length did not match the Archive Version"
-            )
-        if remote_digest != upload_digest:
-            verification_failure_reason = "mismatch"
-            ensure_job_active(job["id"], "Upload claim was lost")
-            _upload_catalog_unit(job, lambda catalog: catalog.mark_version_mismatch(
-                version_id, plaintext_sha256=upload_digest, checked_at=now_iso(),
-            ))
-            _record_upload_reconciliation_block(job, "proof_mismatch")
-            raise RuntimeError("Cloud copy digest does not match local file")
-        _complete_verified_upload(
-            job,
-            source=source,
-            version_id=version_id,
-            upload_digest=upload_digest,
-            mark_verified=True,
-            local_digest=local_plaintext_sha256,
-            local_stat=source_stat,
-        )
-    except OperationCancelled:
-        raise
-    except provenance.UploadBlocked as exc:
-        _record_upload_reconciliation_block(job, exc.reason)
-        raise
-    except UploadProofMismatch:
-        _record_upload_reconciliation_block(job, "proof_mismatch")
-        _record_verification_failure("mismatch")
-        raise
-    except Exception:
-        if verification_started:
-            _record_verification_failure(verification_failure_reason or "stream")
-        raise
+    from .services.upload_execution import UploadExecution
+    UploadExecution(sys.modules[__name__]).run(job)
 
 
 def ensure_scheduled_current_version(
