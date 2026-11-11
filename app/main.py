@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import (
@@ -1931,11 +1931,12 @@ def build_job_groups(
 @app.get("/api/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def jobs(
     request: Request,
-    action: list[str] | None = Query(default=None),
-    active_only: bool = Query(default=False),
-    path: str | None = Query(default=None),
-    groups_before_id: int | None = Query(default=None, ge=1),
     vault: dict[str, Any] = Depends(current_vault),
+    *,
+    action: Annotated[list[str] | None, Query()] = None,
+    active_only: bool = False,
+    path: str | None = None,
+    groups_before_id: Annotated[int | None, Query(ge=1)] = None,
 ):
     """At most 50 recent Jobs and 50 complete group summaries, never all members.
 

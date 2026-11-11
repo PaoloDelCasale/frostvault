@@ -92,6 +92,9 @@ export function createVaultAccessFetch(
       return typeof byUrl === "function" ? byUrl(init) : byUrl;
     }
 
+    if (url.startsWith("/api/jobs?")) {
+      return jsonResponse({ items: [], groups: [], next_groups_before_id: null });
+    }
     if (url === "/api/vault/operation-policy") {
       return jsonResponse(defaultPolicy);
     }
