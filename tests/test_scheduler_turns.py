@@ -189,6 +189,61 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertEqual(connection.execute('SELECT count(*) AS n FROM jobs WHERE claim_token IS NOT NULL')
                              .fetchone()['n'], 1)
 
+    def test_claim_waiting_for_accounting_never_holds_a_bulk_writers_next_job(self):
+        first, second = self.auto_job(), self.auto_job(path='b.txt')
+        self.observe()
+        self.observe(600)
+        waiting = threading.Event()
+        test = self
+
+        def claim_after_writer():
+            with PostgresConnection(test.path) as connection:
+                class ObserveLock:
+                    def execute(self, sql, params=()):
+                        if 'SELECT generation FROM scheduler_vault_turns' in sql:
+                            waiting.set()
+                        return connection.execute(sql, params)
+                return ArchiveCatalog(ObserveLock()).claim_job(
+                    job_id=second, claim_token='contender', claimed_at=test.stamp(700),
+                    claim_expires_at=test.stamp(1000), now=test.stamp(700),
+                    restore_due_before=test.stamp(700))
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with PostgresConnection(self.path) as writer:
+                writer.execute("SET LOCAL lock_timeout='2s'")
+                writer.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (first,))
+                future = pool.submit(claim_after_writer)
+                self.assertTrue(waiting.wait(timeout=10))
+                # This would deadlock/time out if claim held second's Job row
+                # while waiting for the writer's accounting lock.
+                writer.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (second,))
+            self.assertIsNone(future.result(timeout=10))
+        self.assertEqual(self.state()['generation'], 0)
+        self.assertEqual(self.state()['wait_seconds'], 600)
+
+    def test_contended_purge_member_cannot_split_a_group_or_consume_a_turn(self):
+        ids = [self.auto_job(), self.auto_job(path='b.txt')]
+        with PostgresConnection(self.path) as connection:
+            connection.execute("UPDATE jobs SET action='cloud-purge', origin='manual', group_id='turn-552'")
+        self.observe()
+        self.observe(900)
+        before = self.state()
+
+        def claim_group():
+            with PostgresConnection(self.path) as connection:
+                return ArchiveCatalog(connection).claim_purge_group(
+                    lead_job_id=ids[0], claim_token='purge', claimed_at=self.stamp(900),
+                    claim_expires_at=self.stamp(1200), now=self.stamp(900),
+                    message='deleting', message_key='job.cloud_purge_deleting')
+
+        with PostgresConnection(self.path) as blocker:
+            blocker.execute('SELECT id FROM jobs WHERE id=%s FOR UPDATE', (ids[1],))
+            self.assertEqual(claim_group(), [])
+        self.assertEqual(self.state(), before)
+        self.assertEqual(len(claim_group()), 2)
+        self.assertEqual(self.state()['generation'], 1)  # one group, not two Jobs
+        self.assertEqual(self.state()['wait_seconds'], 0)
+
     def test_concurrent_base_claims_both_succeed_without_a_vault_quota(self):
         ids = [self.auto_job(), self.auto_job(path='b.txt')]
         barrier = threading.Barrier(2)

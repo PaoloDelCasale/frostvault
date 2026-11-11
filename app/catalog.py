@@ -3071,16 +3071,16 @@ class ArchiveCatalog:
         ).fetchone() is not None
 
     def _lock_scheduler_turn(self, job_id: int, generation: int | None) -> bool:
-        """Job before turn lock, matching eligibility-invalidation triggers.
+        """Lock accounting before acquiring any Job locks.
 
-        Never wait for a Job while holding its turn row: a status writer may
-        already hold that Job and be invalidating the same turn. Both locks are
-        nonblocking for aged nominations. Base claims can briefly queue on the
-        turn row (no Job locks are acquired after it); ordinary progress retains
-        ADR-0031 shared Vault fences.
+        Base claims can briefly queue here; aged nominations skip contention.
+        Once holding the turn row, callers MUST use SKIP LOCKED on Jobs: a bulk
+        status writer can already hold Jobs and need this row to invalidate an
+        interval. Never wait for its Jobs, nor hold a Job while waiting here.
+        Ordinary progress retains ADR-0031 shared Vault fences.
         """
         job = self.connection.execute(
-            "SELECT vault_id FROM jobs WHERE id=%s FOR UPDATE SKIP LOCKED", (job_id,),
+            "SELECT vault_id FROM jobs WHERE id=%s", (job_id,),
         ).fetchone()
         if job is None:
             return False
@@ -3122,6 +3122,10 @@ class ArchiveCatalog:
         if not self._lock_claim_vault(job_id):
             return None
         if not self._lock_scheduler_turn(job_id, scheduler_generation):
+            return None
+        if self.connection.execute(
+            'SELECT id FROM jobs WHERE id=%s FOR UPDATE SKIP LOCKED', (job_id,),
+        ).fetchone() is None:
             return None
         claimable_sql, claimable_params = self._claimable_job_predicate_sql(
             prefix="",
@@ -3176,10 +3180,8 @@ class ArchiveCatalog:
             raise ValueError("A Job claim token is required")
         if not self._lock_claim_vault(lead_job_id):
             return []
-        # Do not lock the nominated lead first on PostgreSQL: two schedulers can
-        # nominate different members of the same group.  Both instead acquire
-        # the full group below in requested_at/id order, avoiding an AB/BA row
-        # lock deadlock while still rechecking the durable group identity.
+        # Resolve the group before taking Job locks. The advisory fence below
+        # serializes different lead nominations for the same destructive group.
         lead = self.connection.execute(
             """
             SELECT vault_id, group_id
@@ -3206,16 +3208,25 @@ class ArchiveCatalog:
             (lead_job_id,),
         ).fetchone():
             return []
+        if not self._lock_scheduler_turn(lead_job_id, scheduler_generation):
+            return []
+        expected = self.connection.execute(
+            "SELECT id FROM jobs WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'",
+            (lead['vault_id'], lead['group_id']),
+        ).fetchall()
         rows = self.connection.execute(
-            f"""
+            """
             SELECT id, status, pending_until, claim_token, claim_expires_at,
                    requested_at
             FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-            ORDER BY requested_at ASC, id ASC FOR UPDATE
+            ORDER BY requested_at ASC, id ASC FOR UPDATE SKIP LOCKED
             """,
             (lead["vault_id"], lead["group_id"]),
         ).fetchall()
+        # Never split a purge group when a status writer holds one member.
+        if {row['id'] for row in rows} != {row['id'] for row in expected}:
+            return []
         active = [
             row
             for row in rows
@@ -3228,8 +3239,6 @@ class ArchiveCatalog:
         ):
             return []
 
-        if not self._lock_scheduler_turn(lead_job_id, scheduler_generation):
-            return []
         ids = [int(row["id"]) for row in active]
         placeholders = ", ".join(["%s"] * len(ids))
         claimed = self.connection.execute(

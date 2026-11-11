@@ -66,11 +66,14 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
    This deliberately discards an unobserved partial runnable interval rather
    than accidentally credit blocked time; it does not reset banked credit.
    No trigger runs on heartbeat/progress updates or queue admission INSERTs.
-   Claims lock Jobs before the turn row, matching state invalidation, with
-   nonblocking aged-turn acquisition. Ordinary base-tier claims can briefly queue
-   on the turn row so simultaneous different-Job claims still succeed; no Job
-   lock is acquired after it, and progress never holds it. Claims do not upgrade
-   the shared Vault fence of ADR-0031/0033.
+   Claims lock accounting before Jobs and acquire Job locks **only with SKIP
+   LOCKED**: a multi-Job status writer may hold Jobs before invalidating the turn,
+   so a claimant must neither hold a Job while waiting for accounting nor wait
+   for a Job while holding accounting. A purge group claims all its members or
+   none (including under partial row contention). Aged nominations also skip a
+   contended turn row. Ordinary base-tier claims can briefly queue on accounting
+   so simultaneous different-Job claims still succeed. Claims do not upgrade the
+   shared Vault fence of ADR-0031/0033.
 6. **Deferral with backoff and deeper scans.** An automatic upload that is not
    runnable now (paused, excluded path, unstable, not a regular file, unreadable,
    changed) is excluded from the candidate query, in memory, keyed by database
