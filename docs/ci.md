@@ -3,6 +3,31 @@
 This repository uses layered CI so pull requests stay deterministic while still
 proving upload and recovery integrity against object storage.
 
+## Python runtime alignment
+
+Python **3.12** is the single supported/tested runtime line for the backend,
+not a runtime matrix. The production `Dockerfile` uses the official
+`python:3.12.16-slim-trixie` image pinned to its multi-platform index digest.
+All `setup-python` steps select `3.12`, including unit/migration/S3 tests,
+Playwright's API/seed interpreter, dependency auditing, the CodeQL SARIF gate
+and the exact-commit publication gate. OpenAPI exports use that same interpreter
+(`sys.executable` in contract tests; `.venv/bin/python` locally); TypeScript
+artifact generation itself uses Node, not a second Python runtime.
+
+The image keeps Debian trixie (the previous base's distribution), PGDG's explicit
+`postgresql-client-16` and the existing OS upgrades/pip removal. PR CI checks the
+built image's Python runtime and all five PostgreSQL 16 client utilities before
+exercising encrypted metadata backup/restore. Image/security builds and
+publication all use the same pinned `Dockerfile`; scan severity, publication
+checks and the main-only exact-SHA full-stress requirement are unchanged.
+
+The root Docker ecosystem in `.github/dependabot.yml` already maintains literal
+`FROM python:<version>-slim-trixie@sha256:<digest>` references. Digest refreshes
+and Python 3.12 patch updates remain ordinary reviewed dependency PRs. A move to
+another Python runtime line must update CI and the alignment contracts together;
+it must not silently ship through a base-tag update. `tests/test_ci_contracts.py`
+checks the versioned digest pin and runtime alignment without registry access.
+
 ## Pull request and push to `main`
 
 Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.yml)
