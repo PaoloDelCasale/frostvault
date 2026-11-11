@@ -74,6 +74,23 @@ class VaultPauseTests(QueueFixture):
         self.assertEqual(process.call_args.args[0]["id"], other["id"])
         self.assertEqual(len(self.jobs(2)), 26)
 
+    def test_full_scan_catalogues_unwatched_local_copy_during_hold(self):
+        self.pause()
+        target = self.roots[2] / "missed-by-watcher.txt"
+        target.write_bytes(b"scan catch-up")
+        with patch("app.storage.scan_cloud", return_value=0), \
+                patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client"), \
+                patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0):
+            result = storage.scan_vault(self.vaults[2])
+        self.assertEqual(result["local"], 1)
+        with self.db() as c:
+            row = c.execute("SELECT lc.presence FROM local_copies lc JOIN file_paths fp ON fp.vault_file_id=lc.vault_file_id WHERE fp.vault_id=2 AND fp.path='missed-by-watcher.txt'").fetchone()
+            self.assertEqual(row["presence"], "present")
+            self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
+        self.advance(300)
+        self.assertEqual(self.queue(2), 1)
+        self.assertEqual(self.candidates(limit=10), [])
+
     def test_all_new_cloud_jobs_wait_including_owner_uploads_but_recoveries_continue(self):
         jobs = self.seed_jobs(count=9)
         cases = [("upload", "queued", "manual"), ("rename", "queued", "automatic"),
@@ -92,6 +109,18 @@ class VaultPauseTests(QueueFixture):
             self.assertEqual(ArchiveCatalog(c).claimable_queue_depth(now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()), 3)
             for job in jobs:
                 self.assertEqual(self.claim(c, job["id"]) is not None, job["id"] in expected)
+        for job in self.jobs(2):
+            if job["id"] in expected:
+                with storage._job_claim_context(job):
+                    self.assertTrue(storage.set_job(job["id"], "downloading"))
+                    self.assertTrue(storage.set_job(job["id"], "completed"))
+        self.assertTrue(all(j["status"] == "completed" for j in self.jobs(2) if j["id"] in expected))
+
+    def test_notification_failure_does_not_rollback_the_hold(self):
+        with patch("app.services.vault_pause.notifications.enqueue_notification", side_effect=RuntimeError("mail unavailable")):
+            self.assertTrue(self.pause()["paused"])
+        with self.db() as c:
+            self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
 
     def test_pause_preserves_claim_and_running_job_finishes(self):
         job = self.seed_jobs()[0]
