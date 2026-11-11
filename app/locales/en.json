@@ -138,7 +138,7 @@
   "job.recovery_stopped": "Recovery stopped",
   "job.recovery_approval_expired": "Recovery cancelled: approval was not given before the deadline. No cloud restore was started by this request.",
   "notification.recovery_approval.title": "Recovery needs approval",
-  "notification.recovery_approval.body": "One recovery request for {count} files needs your approval (estimated cost: €{cost}). Open Active operations to approve or cancel it. If unanswered before its deadline, the whole request is cancelled; no cloud restore starts automatically.",
+  "notification.recovery_approval.body": "One recovery request for {count} files needs your approval (estimated cost: {cost}). Open Active operations to approve or cancel it. If unanswered before its deadline, the whole request is cancelled; no cloud restore starts automatically.",
   "job.cleanup_stopped": "Freeing local space stopped",
   "job.operation_failed": "Operation failed",
   "job.operation_stopped": "Operation stopped",

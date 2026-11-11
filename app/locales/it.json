@@ -138,7 +138,7 @@
   "job.recovery_stopped": "Recupero interrotto",
   "job.recovery_approval_expired": "Recupero annullato: approvazione non data entro la scadenza. Nessun ripristino cloud è stato avviato da questa richiesta.",
   "notification.recovery_approval.title": "Il recupero richiede approvazione",
-  "notification.recovery_approval.body": "Una richiesta di recupero per {count} file richiede approvazione (costo stimato: €{cost}). Apri Operazioni attive per approvarla o annullarla. Senza risposta entro la scadenza, l’intera richiesta viene annullata; nessun ripristino cloud parte automaticamente.",
+  "notification.recovery_approval.body": "Una richiesta di recupero per {count} file richiede approvazione (costo stimato: {cost}). Apri Operazioni attive per approvarla o annullarla. Senza risposta entro la scadenza, l’intera richiesta viene annullata; nessun ripristino cloud parte automaticamente.",
   "job.cleanup_stopped": "Liberazione spazio locale interrotta",
   "job.operation_failed": "Operazione non riuscita",
   "job.operation_stopped": "Operazione interrotta",

@@ -3160,14 +3160,16 @@ def observe_stuck_lease_jobs() -> tuple[int, float]:
 
 
 def observe_failed_job_backlog() -> tuple[int, float]:
-    """Count durable failed Jobs so scrapers see pre-restart failures."""
+    """Count unresolved durable failures, without rewriting historical Jobs."""
+    from .services.upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL
     now = datetime.now(timezone.utc)
     with db() as connection:
         row = connection.execute(
-            """
-            SELECT COUNT(*) AS total, MIN(updated_at) AS oldest_update
-            FROM jobs
-            WHERE status='failed'
+            f"""
+            SELECT COUNT(*) AS total, MIN(original.updated_at) AS oldest_update
+            FROM jobs original
+            WHERE original.status='failed'
+              AND NOT {CLOSED_UPLOAD_FAILURE_SQL}
             """
         ).fetchone()
     count = int(row["total"] or 0) if row is not None else 0

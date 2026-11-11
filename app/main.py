@@ -2177,7 +2177,7 @@ def recovery_request_impact(
     return {
         "requires_restore": priced,
         "size_bytes": size_bytes,
-        "estimated_cost_eur": round(cost, 6),
+        "estimated_cost_eur": cost,
         "estimated_hours": hours,
         "high_impact": priced and is_high_impact_restore(
             size_bytes=size_bytes,

@@ -4,7 +4,7 @@ from datetime import timedelta
 from decimal import Decimal
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app import main, storage
 from app.catalog import ArchiveCatalog
@@ -13,6 +13,30 @@ from app.services import protection_notifications as monitor
 from app.services.cost_estimates import estimate_restore_cost, list_prices
 from tests.postgres import PostgresConnection
 from tests.test_protection_notifications import NOW, ONLINE
+
+
+class NotificationMonitorRaceUnitTests(unittest.TestCase):
+    def test_candidate_whose_timer_was_deleted_is_not_counted_as_pending(self):
+        from app.services.operation_policies import OperationPolicy
+        c = MagicMock()
+        candidate = {"id": "uploaded", "path": "a.txt", "mtime_ns": 1,
+                     "observed_at": (NOW-timedelta(days=2)).isoformat()}
+        def execute(query, params=None):
+            result = MagicMock()
+            result.fetchone.return_value = None
+            result.fetchall.return_value = [candidate] if "SELECT vf.id, fp.path" in query else []
+            # Later protection_pending read is empty: successful publication
+            # deleted the timer between the monitor's READ COMMITTED statements.
+            return result
+        c.execute.side_effect = execute
+        with patch.object(monitor, "get_policy", return_value=OperationPolicy()), \
+             patch("app.services.source_layout.vault_local_access", return_value=ONLINE), \
+             patch.object(inbox, "set_problem") as problem:
+            monitor.monitor_vault(c, {"id": 1, "source_root": "/unused"}, now=NOW)
+        delay = problem.call_args.kwargs
+        self.assertEqual(delay["event"], "protection_delayed")
+        self.assertFalse(delay["active"])
+        self.assertEqual(delay["params"]["pending"], 0)
 
 
 class RecoveryApprovalCostTests(unittest.TestCase):
@@ -106,6 +130,8 @@ class ProtectionProblemClosureTests(unittest.TestCase):
 
     def test_current_unprotected_content_or_unavailable_version_never_closes_problem(self):
         for mutation in ("UPDATE local_copies SET plaintext_sha256=NULL",
+                         "UPDATE local_copies SET matched_archive_version_id=NULL",
+                         "UPDATE local_copies SET plaintext_sha256=repeat('b',64)",
                          "UPDATE local_copies SET cloud_only_version_id=matched_archive_version_id",
                          "UPDATE archive_versions SET availability='missing'",
                          "UPDATE archive_versions SET integrity='unverified'"):
@@ -121,6 +147,75 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             _, version = self.protect(c)
             c.execute("UPDATE jobs SET archive_version_id=%s WHERE id=%s", (version,self.job_id))
             self.assertEqual(self.state(c), "open")
+
+    def test_send_started_or_receipt_even_on_unbound_intent_requires_remediation(self):
+        for sent, receipt in ((True, False), (False, True)):
+            with self.subTest(sent=sent, receipt=receipt), self.connect() as c:
+                c.execute("SAVEPOINT scenario")
+                self.protect(c)
+                # No upload_intent_jobs binding: old per-attempt intents remain
+                # historical cloud facts, not permission to hide the failure.
+                c.execute("""INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,
+                    target_json,snapshot_json,requested,inventory_json,send_started,created_at)
+                    VALUES ('intent','token',%s,%s,%s,'{}','{}','read_back','{}',%s,%s)""",
+                    (self.vault_id,self.file_id,self.job_id,sent,NOW.isoformat()))
+                if receipt:
+                    c.execute("INSERT INTO upload_receipts VALUES ('intent','hash','{}',%s)", (NOW.isoformat(),))
+                self.assertEqual(self.state(c), "open")
+                c.execute("ROLLBACK TO SAVEPOINT scenario")
+
+    def test_unsent_intent_can_be_superseded_but_reconcile_only_or_discovery_cannot(self):
+        with self.connect() as c:
+            self.protect(c)
+            c.execute("""INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,
+                target_json,snapshot_json,requested,inventory_json,send_started,created_at)
+                VALUES ('intent','token',%s,%s,%s,'{}','{}','read_back','{}',FALSE,%s)""",
+                (self.vault_id,self.file_id,self.job_id,NOW.isoformat()))
+            c.execute("UPDATE jobs SET upload_reconcile_only=TRUE WHERE id=%s", (self.job_id,))
+            self.assertEqual(self.state(c), "open")
+            c.execute("UPDATE jobs SET upload_reconcile_only=FALSE WHERE id=%s", (self.job_id,))
+            c.execute("INSERT INTO upload_remediation_discovery(job_id,vault_id,discovered_at) VALUES (%s,%s,%s)",
+                      (self.job_id,self.vault_id,NOW.isoformat()))
+            self.assertEqual(self.state(c), "open")
+            c.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s", (self.job_id,))
+            self.assertEqual(self.state(c), "resolved")
+
+    def test_later_local_edit_does_not_resurrect_closed_historical_backlog(self):
+        with self.connect() as c:
+            self.protect(c)
+            self.assertEqual(self.state(c), "resolved")
+            c.execute("UPDATE local_copies SET matched_archive_version_id=NULL,plaintext_sha256=NULL")
+            self.assertEqual(self.state(c), "resolved")
+        with patch.object(storage, "db", self.db):
+            self.assertEqual(storage.observe_failed_job_backlog(), (0, 0.0))
+
+    def test_successful_recovery_is_not_successful_upload_protection(self):
+        with self.connect() as c:
+            successor, _ = self.protect(c)
+            c.execute("UPDATE jobs SET action='recover' WHERE id=%s", (successor,))
+            self.assertEqual(self.state(c), "open")
+
+    def test_group_closes_only_when_all_its_failed_files_are_superseded(self):
+        with self.connect() as c, patch.object(inbox, "now_iso", return_value=NOW.isoformat()):
+            c.execute("UPDATE jobs SET updated_at=%s WHERE id=%s", (NOW.isoformat(),self.job_id))
+            for _ in range(inbox.GROUP_THRESHOLD + 2):
+                failed = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                    VALUES (%s,%s,'a.txt','upload','failed',%s,%s) RETURNING id""",
+                    (self.vault_id,self.file_id,NOW.isoformat(),NOW.isoformat())).fetchone()["id"]
+                inbox.enqueue_job_terminal_notification(c, job_id=failed)
+            group = c.execute("SELECT id FROM notifications WHERE event='job_failed_group'").fetchone()
+            self.assertIsNotNone(group)
+            self.assertEqual(self.state(c), "open")
+            self.protect(c)
+            self.assertEqual(self.state(c), "resolved")
+            self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 0)
+            c.execute("UPDATE local_copies SET matched_archive_version_id=NULL")
+            # A delayed outbox replay for a formerly folded failure must keep
+            # its durable group closure even when it gains its own history row.
+            inbox.enqueue_job_terminal_notification(c, job_id=failed)
+            self.assertEqual(c.execute("SELECT problem_status FROM notifications WHERE job_id=%s", (failed,)).fetchone()["problem_status"], "resolved")
+        with patch.object(storage, "db", self.db):
+            self.assertEqual(storage.observe_failed_job_backlog(), (0, 0.0))
 
     def test_late_outbox_materializes_resolved_problem_and_does_not_reopen(self):
         with self.connect() as c:
