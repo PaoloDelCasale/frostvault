@@ -3527,6 +3527,8 @@ class ArchiveCatalog:
         target_storage_class: str | None = None,
         whole_vault: bool = False,
         recovery_selection: Sequence[tuple[str, bool]] | None = None,
+        admission_path_ids: Sequence[int] | None = None,
+        admission_verification_mode: str | None = None,
     ) -> tuple[list[int], int, int]:
         # This write is deliberately first: take the Vault row lock before
         # the candidate read and inserts.
@@ -3538,6 +3540,13 @@ class ArchiveCatalog:
             raise ValueError("Unsupported Job origin")
         clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
         params: list[Any] = [vault_id]
+        if admission_path_ids is not None:
+            if action != "upload" or origin != "manual":
+                raise ValueError("Bounded admission is only for manual uploads")
+            clauses.append("fp.id=ANY(%s::bigint[])")
+            params.append(list(admission_path_ids))
+        if admission_verification_mode not in {None, "s3_checksum", "read_back"}:
+            raise ValueError("Invalid admission verification mode")
         clauses.append(
             """
             NOT EXISTS (
@@ -3727,7 +3736,7 @@ class ArchiveCatalog:
         total_bytes = sum(int(row["total_bytes"] or 0) for row in self.connection.execute(
             "SELECT total_bytes FROM jobs WHERE id=ANY(%s)", (remediation_job_ids,),
         ).fetchall()) if remediation_job_ids else 0
-        upload_mode = self._upload_verification_mode(vault_id) if action == "upload" else None
+        upload_mode = (admission_verification_mode or self._upload_verification_mode(vault_id)) if action == "upload" else None
         for row in eligible:
             size = int(
                 row["cloud_size"]

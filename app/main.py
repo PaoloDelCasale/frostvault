@@ -153,6 +153,7 @@ from .storage import (
     auto_upload_loop,
     cloud_preflight_loop,
     upload_remediation_loop,
+    bulk_upload_admission_loop,
     drain_background_executors,
     stop_background_executors,
     now_iso,
@@ -209,7 +210,8 @@ async def lifespan(_: FastAPI):
     reconcile_interrupted_jobs()
     protection_stop_service.reconcile_all()
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
-             asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop())]
+             asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop()),
+             asyncio.create_task(bulk_upload_admission_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     shutdown_state.register_producers(tasks)
@@ -586,6 +588,10 @@ class FileAction(BaseModel):
     archive_version_id: str | None = None
     restore_tier: str | None = None
     restore_days: int | None = Field(default=None, ge=1, le=30)
+
+
+class UploadAction(FileAction):
+    request_id: uuid.UUID | None = None
 
 
 class UploadReconciliationAction(BaseModel):
@@ -2629,14 +2635,37 @@ def recover_estimate(
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def upload(
-    action: FileAction,
+    action: UploadAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], action.is_directory,
-                        whole_vault=action.path == "" and action.is_directory)
+    if action.is_directory:
+        from .services import bulk_upload_admission
+        path = normalize_directory(action.path, api=True)
+        try:
+            with db() as connection:
+                admission = bulk_upload_admission.create(
+                    connection, vault_id=vault["id"], path=path, user_id=user["id"],
+                    request_id=str(action.request_id) if action.request_id else None)
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"group_id": admission["group_id"], "job_ids": [], "item_count": admission["admitted_count"],
+                "total_bytes": admission["total_bytes"], "admission": admission,
+                **_api_message(request, "api.upload_admission_started")}
+    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], False)
     return {**queued, **_api_message(request, "api.upload_started")}
+
+
+@app.get("/api/upload/admissions/{group_id}", response_model=response_model("BulkUploadAdmissionResponse"))
+def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(current_user),
+                            vault: dict[str, Any] = Depends(current_vault)):
+    from .services import bulk_upload_admission
+    with db() as connection:
+        result = bulk_upload_admission.get(connection, vault_id=vault["id"], group_id=str(group_id))
+    if result is None:
+        raise HTTPException(404, "Upload admission not found")
+    return result
 
 
 @app.post("/api/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
@@ -2779,12 +2808,18 @@ def cancel_job_group(
             (vault["id"], group_id, job_action),
         ).fetchall()
         job_ids = [int(row["id"]) for row in rows]
-        if not job_ids:
+        stopped_admissions = 0
+        if job_action == "upload":
+            from .services import bulk_upload_admission
+            stopped_admissions = bulk_upload_admission.cancel(connection, vault_id=vault["id"], group_id=group_id)
+        if not job_ids and not stopped_admissions:
             raise HTTPException(409, "The operation is no longer running")
-        _cancel_active_jobs(connection, vault, job_action, job_ids, actor_user_id)
+        if job_ids:
+            _cancel_active_jobs(connection, vault, job_action, job_ids, actor_user_id)
     return {
         "message": message,
         "cancelled_count": len(job_ids),
+        "stopped_admissions": stopped_admissions,
     }
 
 
@@ -2899,8 +2934,10 @@ def cancel_pending_uploads(
     is not re-queued until the file's content changes, like a single cancel.
     """
     folder = normalize_directory(action.path, api=True)
+    from .services import bulk_upload_admission
     with db() as connection:
         connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        stopped_admissions = bulk_upload_admission.cancel(connection, vault_id=vault["id"], path=folder)
         scope_sql, scope_params = "", []
         if folder:
             scope_sql = "AND (j.path=%s OR starts_with(j.path, %s))"
@@ -2915,6 +2952,7 @@ def cancel_pending_uploads(
     return {
         "message": translate("job.upload_stopped", locale=DEFAULT_LOCALE),
         "cancelled_count": len(job_ids),
+        "stopped_admissions": stopped_admissions,
     }
 
 

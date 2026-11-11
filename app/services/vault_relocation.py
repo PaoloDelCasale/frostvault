@@ -206,6 +206,9 @@ def _reject_overlap(connection: Any, *, vault_id: int, destination: Path) -> Non
 
 
 def _active_jobs(connection: Any, vault_id: int) -> bool:
+    from .bulk_upload_admission import has_pending
+    if has_pending(connection, vault_id):
+        return True
     placeholders = ",".join("%s" for _ in _TERMINAL_JOB_STATES)
     row = connection.execute(
         f"SELECT 1 FROM jobs WHERE vault_id=%s AND status NOT IN ({placeholders}) LIMIT 1",

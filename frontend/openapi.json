@@ -197,6 +197,112 @@
           "null"
         ]
       },
+      "BulkUploadAdmissionActivity": {
+        "properties": {
+          "admitted_files": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "processed_files": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requests": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selected_files": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requests",
+          "selected_files",
+          "processed_files",
+          "admitted_files"
+        ],
+        "type": "object"
+      },
+      "BulkUploadAdmissionResponse": {
+        "properties": {
+          "admitted_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "manual"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "processed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "selected_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "completed",
+              "cancelled",
+              "invalidated"
+            ],
+            "type": "string"
+          },
+          "total_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "integer"
+          },
+          "verification_mode": {
+            "enum": [
+              "s3_checksum",
+              "read_back"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id",
+          "vault_id",
+          "path",
+          "status",
+          "reason",
+          "requested_at",
+          "updated_at",
+          "origin",
+          "verification_mode",
+          "selected_count",
+          "processed_count",
+          "admitted_count",
+          "total_bytes"
+        ],
+        "type": "object"
+      },
       "CatalogRevisionResponse": {
         "additionalProperties": true,
         "properties": {
@@ -1127,6 +1233,10 @@
           },
           "message_key": {
             "type": "string"
+          },
+          "stopped_admissions": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -2870,6 +2980,71 @@
         ],
         "type": "object"
       },
+      "UploadAction": {
+        "properties": {
+          "archive_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Version Id"
+          },
+          "is_directory": {
+            "default": false,
+            "title": "Is Directory",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "restore_days": {
+            "anyOf": [
+              {
+                "maximum": 30.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Days"
+          },
+          "restore_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Tier"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "UploadAction",
+        "type": "object"
+      },
       "UploadActivityResponse": {
         "properties": {
           "global": {
@@ -2938,6 +3113,9 @@
           "awaiting_admission_files": {
             "minimum": 0,
             "type": "integer"
+          },
+          "bulk_admission": {
+            "$ref": "#/components/schemas/BulkUploadAdmissionActivity"
           },
           "next_stable_at": {
             "type": [
@@ -5650,7 +5828,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FileAction"
+                "$ref": "#/components/schemas/UploadAction"
               }
             }
           },
@@ -5697,6 +5875,63 @@
           }
         },
         "summary": "Upload Activity Overview"
+      }
+    },
+    "/api/upload/admissions/{group_id}": {
+      "get": {
+        "operationId": "upload_admission_status_api_upload_admissions__group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkUploadAdmissionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Admission Status"
       }
     },
     "/api/upload/cancel": {

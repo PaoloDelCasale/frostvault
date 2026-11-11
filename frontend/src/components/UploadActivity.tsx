@@ -12,11 +12,17 @@ import { vaultFilesUrl } from "@/router";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
-const busy = (activity: UploadActivitySummary) => stages.some((stage) => activity[stage].files > 0);
+const admitting = (activity: UploadActivitySummary) => (activity.bulk_admission?.requests ?? 0) > 0;
+const busy = (activity: UploadActivitySummary) => admitting(activity) || stages.some((stage) => activity[stage].files > 0);
 
 function Summary({ activity, observedAt, t }: { activity: UploadActivitySummary; observedAt: string; t: Translate }) {
   const remaining = activity.next_stable_at ? Date.parse(activity.next_stable_at) - Date.parse(observedAt) : NaN;
   return <>
+    {admitting(activity) && <p className="text-sm" role="status">{t("activity.bulk_admission", {
+      processed: activity.bulk_admission?.processed_files ?? 0,
+      selected: activity.bulk_admission?.selected_files ?? 0,
+      admitted: activity.bulk_admission?.admitted_files ?? 0,
+    })}</p>}
     <ul className="grid gap-1.5">
       {stages.filter((stage) => activity[stage].files > 0).map((stage) => <li key={stage} className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span className="font-semibold">{t(`activity.${stage}`, { count: activity[stage].files })}</span>
@@ -64,14 +70,14 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
   const bytes = stages.reduce((sum, stage) => sum + data.global[stage].bytes, 0);
   const selected = data.vaults?.find((vault) => vault.vault_id === vaultId && busy(vault));
   const others = data.vaults?.filter((vault) => vault !== selected && busy(vault)) ?? [];
-  const label = t("activity.indicator", { count: files, size: formatBytes(bytes) });
+  const label = files > 0 ? t("activity.indicator", { count: files, size: formatBytes(bytes) }) : t("activity.preparing");
   return <>
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setNotice(""); }} align="end" label={t("activity.heading")} className="w-[min(26rem,calc(100vw-1rem))] p-4"
       trigger={<button type="button" data-testid="upload-indicator" aria-label={label} title={label}
         className={buttonVariants({ variant: "secondary", className: "min-w-11 gap-2 px-3" })}>
         <ArrowUpFromLine className="size-4 animate-pulse text-green motion-reduce:animate-none" aria-hidden="true" />
         <span className="hidden tabular-nums lg:inline">{label}</span>
-        <span className="tabular-nums lg:hidden" aria-hidden="true">{files}</span>
+        <span className="tabular-nums lg:hidden" aria-hidden="true">{files || t("activity.preparing")}</span>
       </button>}>
       <section className="grid min-w-0 gap-3" data-testid="upload-activity">
         <h2 className="font-bold">{t("activity.heading")}</h2>
@@ -80,7 +86,7 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
         {selected && <div className="grid gap-2 border-t border-line pt-3" data-testid="selected-vault-activity">
           <h3 className="break-words font-bold">{selected.vault_name}</h3>
           <Summary activity={selected} observedAt={data.observed_at} t={t} />
-          {selected.queued.files > 0 && <Button variant="secondary" className="w-fit" disabled={cancelling} onClick={() => { setOpen(false); setConfirm(true); }}>{t("activity.cancel_pending")}</Button>}
+          {(selected.queued.files > 0 || admitting(selected)) && <Button variant="secondary" className="w-fit" disabled={cancelling} onClick={() => { setOpen(false); setConfirm(true); }}>{t("activity.cancel_pending")}</Button>}
         </div>}
         {notice && <p className="text-sm" role="status">{notice}</p>}
         {others.length > 0 && <details className="border-t border-line pt-2">

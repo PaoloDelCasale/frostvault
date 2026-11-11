@@ -395,7 +395,13 @@ class PreflightQueueTests(unittest.TestCase):
     def test_whole_upload_root_is_narrow_and_auth_csrf_preserved(self):
         response = self.client.post('/api/upload?vault_id=1', json={'path': '', 'is_directory': True}, headers=self.headers)
         self.assertEqual(response.status_code, 202, response.text)
-        self.assertEqual(response.json()['item_count'], 2)
+        self.assertEqual(response.json()['item_count'], 0)
+        self.assertEqual(response.json()['admission']['selected_count'], 2)
+        self.assertEqual(response.json()['admission']['status'], 'pending')
+        from app.services import bulk_upload_admission
+        bulk_upload_admission.tick(self.db)
+        with self.db() as c:
+            self.assertEqual(bulk_upload_admission.get(c, vault_id=1, group_id=response.json()['group_id'])['admitted_count'], 2)
         for path in ('', '.', '..', '/', '../outside', 'nested/../../outside'):
             response = self.client.post('/api/upload?vault_id=2', json={'path': path}, headers=self.headers)
             self.assertIn(response.status_code, (400, 422), response.text)

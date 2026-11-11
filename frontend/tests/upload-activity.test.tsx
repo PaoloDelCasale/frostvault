@@ -81,6 +81,18 @@ describe("aggregate upload activity", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ path: "" });
   });
 
+  it("shows separate admission progress and cancellation before the first transfer Job", async () => {
+    const activity = empty();
+    activity.bulk_admission = { requests: 1, selected_files: 26236, processed_files: 200, admitted_files: 100 };
+    show(activity, 2);
+    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.preparing"));
+    await openPanel();
+    const selected = await screen.findByTestId("selected-vault-activity");
+    expect(within(selected).getByText(t("activity.bulk_admission", { selected: 26236, processed: 200, admitted: 100 }))).toBeVisible();
+    expect(within(selected).getByRole("button", { name: t("activity.cancel_pending") })).toBeVisible();
+    expect(screen.queryByText(/files uploading/)).not.toBeInTheDocument();
+  });
+
   it("offers no cancel action when no upload is waiting", async () => {
     const activity = empty(); activity.uploading = { files: 3, bytes: 30, transferred_bytes: 10 };
     show(activity, 2);

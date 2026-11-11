@@ -11,6 +11,7 @@ from typing import Any
 from ..database import db
 from . import cloud_deletion, source_directories
 from .audit_events import record_audit_event
+from .bulk_upload_admission import has_pending
 
 
 def local_work_suspended(vault: dict[str, Any]) -> bool:
@@ -61,7 +62,7 @@ def stop_protection(connection: Any, *, vault_id: int, actor_user_id: int,
         raise ValueError("Folder protection has already stopped")
     if cloud_disposition == "delete" and vault["relocation_state"] != "ready":
         raise ValueError("Reconnect must complete before deleting cloud content")
-    if connection.execute("""SELECT 1 FROM jobs WHERE vault_id=%s
+    if has_pending(connection, vault_id) or connection.execute("""SELECT 1 FROM jobs WHERE vault_id=%s
         AND status NOT IN ('completed','failed','cancelled') LIMIT 1""", (vault_id,)).fetchone():
         raise ValueError("Wait for active Jobs or cancel pending work first")
     at = cloud_deletion.now_iso()
