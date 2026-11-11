@@ -171,7 +171,13 @@ CLOUD_DELETE_BATCH_SIZE = 1000
 # it during transfers; a dead process becomes recoverable once the lease expires,
 # without waiting for another restart.
 JOB_CLAIM_LEASE_SECONDS = 5 * 60
+# A foreground checkpoint extends the lease at most this often and otherwise
+# only reads it. Far below the keeper's lease/3 cadence, so a claim that passes
+# checkpoints is never closer to expiry than one that only has its keeper.
+CLAIM_CHECKPOINT_RENEW_SECONDS = 15.0
 EXPIRED_LEASE_RECONCILE_BATCH = 100
+# How often the backlog gauges and the stall detector re-read a deep queue.
+BACKLOG_OBSERVE_SECONDS = 10.0
 JOB_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 JOB_LEASE_HELD_STATUSES = frozenset(
     {"downloading", "uploading", "verifying", "cleaning"}
@@ -282,6 +288,36 @@ def _renew_claim_if_owned(job_id: int, claim_token: str) -> dict[str, Any] | Non
         )
 
 
+@retry_database_unit
+def _claim_is_live(job_id: int, claim_token: str) -> bool:
+    with owned_connection(db()) as connection:
+        return ArchiveCatalog(connection).job_claim_is_live(
+            job_id=int(job_id), claim_token=claim_token, now=now_iso(),
+        )
+
+
+def _checkpoint_claim(job_id: int, claim_token: str) -> bool:
+    """Durable ownership checkpoint of the foreground worker's own claim.
+
+    Every checkpoint still asks PostgreSQL whether the claim is live, so
+    cancellation, takeover and expiry are observed exactly as before. Only the
+    lease *extension* is amortized: a small upload passes ~20 checkpoints in a
+    few seconds, and extending a five-minute lease each time cost one WAL-logged
+    non-HOT ``jobs`` update and a synchronous commit per checkpoint.
+    """
+    renewed = getattr(_worker_claim, "renewed", None)
+    current = time.monotonic()
+    if (
+        renewed is not None and renewed[0] == (int(job_id), claim_token)
+        and current - renewed[1] < CLAIM_CHECKPOINT_RENEW_SECONDS
+    ):
+        return _claim_is_live(job_id, claim_token)
+    if _renew_claim_if_owned(job_id, claim_token) is None:
+        return False
+    _worker_claim.renewed = ((int(job_id), claim_token), current)
+    return True
+
+
 class _ClaimLeaseHeartbeat:
     """Renew a claimed Job while CPU/provider work has no progress callback."""
 
@@ -349,7 +385,7 @@ def ensure_job_active(job_id: int, message: str) -> None:
     if _claim_is_lost(job_id):
         raise JobLeaseLost(message)
     claim_token = _claim_token_for(job_id)
-    if claim_token and _renew_claim_if_owned(job_id, claim_token) is None:
+    if claim_token and not _checkpoint_claim(job_id, claim_token):
         _mark_claim_lost(job_id)
         raise JobLeaseLost(message)
 
@@ -7046,6 +7082,8 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_audit = marks["audit"]
     last_backup = marks["backup"]
     last_backup_verify = marks["backup_verify"]
+    backlog_observed_at: float | None = None
+    backlog_runnable = 0
     try:
         while True:
             # Clear before dispatch, not before waiting: a completion arriving
@@ -7070,28 +7108,41 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck
                 # intermediate Jobs with expired leases are a separate series.
-                queued_count = await asyncio.to_thread(claimable_queue_depth)
-                metrics_service.set_gauge("queue_depth", float(queued_count))
-                runnable_count = await asyncio.to_thread(
-                    claimable_queue_depth, exclude_deferred=True
-                )
-                await asyncio.to_thread(observe_queue_stall, runnable_count)
-                stuck_count, stuck_age = await asyncio.to_thread(
-                    observe_stuck_lease_jobs
-                )
-                metrics_service.set_gauge("jobs_stuck", float(stuck_count))
-                metrics_service.set_gauge(
-                    "jobs_stuck_oldest_age_seconds", stuck_age
-                )
-                failed_count, failed_age = await asyncio.to_thread(
-                    observe_failed_job_backlog
-                )
-                metrics_service.set_gauge(
-                    "jobs_failed_backlog", float(failed_count)
-                )
-                metrics_service.set_gauge(
-                    "jobs_failed_oldest_age_seconds", failed_age
-                )
+                # Each of these counts reads the whole backlog. While the queue
+                # is deep the loop spins every 100 ms, so counting on every
+                # cycle costs more the more work is waiting. A deep queue is
+                # sampled; a short one is still counted exactly every cycle.
+                current = loop.time()
+                if (
+                    backlog_observed_at is None
+                    or backlog_runnable < max(10, runtime.operation_concurrency * 10)
+                    or current - backlog_observed_at >= BACKLOG_OBSERVE_SECONDS
+                ):
+                    queued_count = await asyncio.to_thread(claimable_queue_depth)
+                    metrics_service.set_gauge("queue_depth", float(queued_count))
+                    runnable_count = await asyncio.to_thread(
+                        claimable_queue_depth, exclude_deferred=True
+                    )
+                    await asyncio.to_thread(observe_queue_stall, runnable_count)
+                    stuck_count, stuck_age = await asyncio.to_thread(
+                        observe_stuck_lease_jobs
+                    )
+                    metrics_service.set_gauge("jobs_stuck", float(stuck_count))
+                    metrics_service.set_gauge(
+                        "jobs_stuck_oldest_age_seconds", stuck_age
+                    )
+                    failed_count, failed_age = await asyncio.to_thread(
+                        observe_failed_job_backlog
+                    )
+                    metrics_service.set_gauge(
+                        "jobs_failed_backlog", float(failed_count)
+                    )
+                    metrics_service.set_gauge(
+                        "jobs_failed_oldest_age_seconds", failed_age
+                    )
+                    backlog_observed_at, backlog_runnable = current, runnable_count
+                else:
+                    runnable_count = backlog_runnable
                 current = loop.time()
                 if current - last_scan >= runtime.scan_interval:
                     _submit_maintenance("scan", scan_all_vaults)

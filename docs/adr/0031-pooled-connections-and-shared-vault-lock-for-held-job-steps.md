@@ -112,6 +112,38 @@ prove overlap and fencing against exclusive/admission/lifecycle writers, and
 the unchanged 2048-file/16-worker burst also bounds pause/cancel/resume writer
 latency. Stress profiles, throughput floors and publication gates are unchanged.
 
+### Snapshot cleanup read units and the claim checkpoint
+
+Five more DB-only units of one upload take the Vault row `FOR SHARE`. They are
+the namespace pin read and the keeper pin read of `snapshot_cleanup`, the unit
+that checks the pin before the provider listing, and the two units that save
+the listed inventory and bind the keeper. Each one reads the target, extends
+the Job's own lease and, for the last two, writes the
+`snapshot_cleanup_inventories` row of this upload (one active Job per Vault
+File; the insert and the keeper binding are conditional on that row, so a
+replay cannot overwrite another observation). Lifecycle, identity and
+admission writers still conflict with `SHARE`. None creates file identity, publishes a
+version, writes catalog events or aggregate rows, or calls `set_job`, so none
+can ask for a stronger Vault lock. The units that record proof, the
+destructive delete, the purge result and the terminal status keep
+`FOR NO KEY UPDATE`. One upload now takes five exclusive Vault locks instead
+of ten.
+
+A foreground checkpoint (`ensure_job_active`) still asks PostgreSQL at every
+call whether the claim is live, with the predicate of the renewal. It extends
+the lease only when its last extension is older than
+`CLAIM_CHECKPOINT_RENEW_SECONDS` (15 s). The keeper thread still renews every
+third of the lease, and `ensure_job_claim_owned_in_transaction` still renews
+inside every catalog unit. Cancellation, takeover and expiry are observed at
+the same checkpoints as before; a small upload stops writing about twenty
+lease extensions, each of which was a non-HOT `jobs` update with its own
+commit.
+
+`tests.test_small_upload_cost` pins both numbers, audits that a transaction
+holding the shared lock never asks for a stronger one, and requires every
+statement of an upload to be servable by an index on the tables that grow with
+history (migration 0072).
+
 ## Consequences
 
 - A burst of small uploads reuses a handful of server sessions instead of opening
