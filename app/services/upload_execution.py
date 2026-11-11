@@ -78,8 +78,9 @@ class UploadExecution:
         source = w.safe_local_path(job["source_root"], job["path"])
         local_present = source.is_file()
         intent, target = self._load(job)
-        client = w.s3_client()
+        client = None
         if intent and intent["send_started"]:
+            client = w.s3_client()
             snapshot_cleanup.pin_inventory(w, job, client)
             w._resume_materialized_upload(job, intent, client)
             target = self._db(job, lambda catalog: catalog.get_job_target(job["id"]), shared=True)
@@ -97,9 +98,13 @@ class UploadExecution:
                 waiting = self._snapshot(attempt)
                 if waiting is not None:
                     return waiting
+            # Removed/unstable local-only work must not initialize cloud work.
+            # Reconciliation above alone needs a client before the hashing gate.
+            if attempt.client is None:
+                attempt.client = w.s3_client()
             # Only a freshly inserted, same-attempt namespace can supply the
             # intent inventory. Historical cleanup authority is never rebased.
-            attempt.namespace = snapshot_cleanup.pin_upload_namespace(w, job, client)
+            attempt.namespace = snapshot_cleanup.pin_upload_namespace(w, job, attempt.client)
             if linked:
                 self._linked(attempt, str(linked), dict(target))
             else:

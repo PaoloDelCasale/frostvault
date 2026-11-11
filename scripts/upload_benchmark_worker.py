@@ -283,7 +283,7 @@ def run_sample(config):
                           "max_waiting_backends": max(row["locks"] for row in samples)},
                 "scope": {"provider": "real SDK orchestration + in-memory API emulator; no HTTP/AWS",
                           "timed": "synchronized burst: real claim/load through process_job return after completion/cleanup",
-                          "excluded": "migration, seed, warmup, worker/client connection setup, post-run validation, readiness probe, scheduler nomination, pause/cancel and aggregate maintenance",
+                          "excluded": "migration, seed, warmup, initial harness claim connections, post-run validation, readiness probe, scheduler nomination, pause/cancel and aggregate maintenance; per-file SDK client construction remains timed",
                           "automatic_aggregate_scheduling": False, "bandwidth_limit_kibps": 0}}
 
 

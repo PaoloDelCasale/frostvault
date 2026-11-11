@@ -61,12 +61,12 @@ class UploadRemediationFrontierTests(unittest.TestCase):
 
     def completion_gap(self):
         original = self.queue()
-        real = storage.set_job
-        def before_completion(job_id, status, *args, **kwargs):
+        real = storage._set_job_in_transaction
+        def before_completion(connection, job_id, status, *args, **kwargs):
             if status == "completed":
                 raise RuntimeError("injected completion boundary")
-            return real(job_id, status, *args, **kwargs)
-        with patch("app.storage.set_job", side_effect=before_completion):
+            return real(connection, job_id, status, *args, **kwargs)
+        with patch("app.storage._set_job_in_transaction", side_effect=before_completion):
             self.run_job(original)
         self.assertEqual(self.row(original)["status"], "failed")
         with self.db() as connection:

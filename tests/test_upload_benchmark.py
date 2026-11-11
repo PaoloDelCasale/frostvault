@@ -130,7 +130,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertNotIn("do-not-export", json.dumps(env))
             self.assertNotIn("PGPASSWORD", env)
             self.assertEqual(env["AWS_ENDPOINT_URL"], "http://127.0.0.1:9")
-        for dsn in ("", "postgresql://test@production.invalid/db", "postgresql://test@localhost/db?hostaddr=192.0.2.1"):
+        for dsn in ("", "postgresql://test@example.com/db", "postgresql://test@localhost/db?hostaddr=192.0.2.1"):
             with patch.dict(os.environ, {"TEST_POSTGRES_URL": dsn}, clear=True), self.assertRaises(ValueError):
                 benchmark.worker_env()
 
