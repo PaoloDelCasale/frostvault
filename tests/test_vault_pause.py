@@ -1,6 +1,7 @@
 """Persistent hold and Vault-first races on disposable PostgreSQL16 (#537)."""
 from __future__ import annotations
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -78,6 +79,7 @@ class VaultPauseTests(QueueFixture):
         self.pause()
         target = self.roots[2] / "missed-by-watcher.txt"
         target.write_bytes(b"scan catch-up")
+        os.utime(target, (1_500_000_000, 1_500_000_000))
         with patch("app.storage.scan_cloud", return_value=0), \
                 patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client"), \
                 patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0):

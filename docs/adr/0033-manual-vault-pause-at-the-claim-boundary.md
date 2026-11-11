@@ -43,4 +43,6 @@ Overview and settings show the separate pause badge and an explicit pause/resume
 control. Each real transition records a localized inbox/optional email notice;
 repeated POSTs are idempotent. No scheduled pause and no duplicate bulk-cancel API:
 `POST /api/upload/cancel-pending` with empty path already exists (ADR-0026).
-Downgrade refuses an active hold rather than silently restarting cloud work.
+Downgrade refuses an active-lifecycle hold rather than silently restarting cloud
+work. A Stop Protection tombstone's historical flag does not strand downgrade:
+it cannot resume and has no ordinary cloud Jobs to restart.

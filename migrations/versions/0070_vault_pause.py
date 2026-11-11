@@ -13,6 +13,6 @@ def upgrade():
 
 
 def downgrade():
-    if op.get_bind().execute(sa.text("SELECT 1 FROM vaults WHERE paused LIMIT 1")).first():
+    if op.get_bind().execute(sa.text("SELECT 1 FROM vaults WHERE paused AND decommission_state='active' LIMIT 1")).first():
         raise RuntimeError("Resume paused Vaults before downgrade; refusing to silently restart cloud work")
     op.drop_column("vaults", "paused")
