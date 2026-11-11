@@ -58,26 +58,23 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             )
             now = 1000.0
             clock = SimpleNamespace(time=lambda: now)
-            cycles = 0
+            cycles = []
             expected = {(vault["id"], "new/b.bin") for vault in vaults}
 
             async def refill(wakeup, delay):
-                nonlocal now, cycles
-                cycles += 1
-                if cycles == 1:
-                    self.assertEqual(scanned, [v["id"] for v in vaults])
+                nonlocal now
+                cycles.append((list(scanned), set(observed)))
+                if len(cycles) == 1:
                     for root in roots:
                         (root / "new").mkdir()
                         (root / "new" / "b.bin").write_bytes(b"no native event delivered")
                     # No watcher is running and no event is submitted anywhere.
                     now += runtime.scan_interval - 0.01
-                elif cycles == 2:
-                    self.assertEqual(len(scanned), 2, "must not rescan before the interval")
-                    self.assertTrue(expected.isdisjoint(observed))
+                elif len(cycles) == 2:
                     now += 0.02
                 else:
-                    self.assertTrue(expected <= observed, "missed files must not need a restart")
-                    self.assertEqual(scanned, [v["id"] for v in vaults] * 2)
+                    # Always stop, even on regression: assertions inside the
+                    # worker's exception handlers would otherwise be swallowed.
                     raise asyncio.CancelledError
 
             for owner, name in (
@@ -102,6 +99,11 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await storage._background_loop(clock, asyncio.Event())
             errors.assert_not_called()
+            self.assertEqual(cycles[0][0], [v["id"] for v in vaults])
+            self.assertEqual(cycles[1][0], cycles[0][0], "must not rescan before the interval")
+            self.assertTrue(expected.isdisjoint(cycles[1][1]))
+            self.assertTrue(expected <= cycles[2][1], "missed files must not need a restart")
+            self.assertEqual(cycles[2][0], [v["id"] for v in vaults] * 2)
             self.assertEqual([call.args[0] for call in submit.call_args_list], ["scan", "scan"])
             queries = [call.args[0] for call in connection.execute.call_args_list]
             self.assertTrue(any("enabled=TRUE AND decommission_state='active'" in sql for sql in queries))
