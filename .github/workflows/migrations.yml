@@ -111,9 +111,12 @@ jobs:
         run: test "${SHARD_RESULT}" = "success" && test "${MIGRATION_RESULT}" = "success"
 
   postgresql-tests:
+    # Historical branch-protection name: bounded stress on PRs, full on main.
     name: PostgreSQL migration and concurrency tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    outputs:
+      profile: ${{ steps.stress.outputs.profile }}
     services:
       postgres:
         image: postgres:16
@@ -130,6 +133,7 @@ jobs:
           --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      FROSTVAULT_STRESS_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -140,11 +144,29 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: PostgreSQL-only migration tests
+        id: stress
         run: |
           python -m unittest \
             tests.test_migrations_postgresql.PostgreSQLMigrationTests \
             tests.test_aggregate_deadlocks \
             -v
+          echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"
+
+  # Attest the full workload already run above, without repeating setup/tests.
+  # Skipped on PRs; required by the publisher on its exact main/tag SHA. Do not
+  # add this main-only check to PR branch protection.
+  full-postgresql-stress:
+    name: Full PostgreSQL concurrency stress
+    needs: [postgresql-tests]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful full stress before publication
+        env:
+          RESULT: ${{ needs.postgresql-tests.result }}
+          PROFILE: ${{ needs.postgresql-tests.outputs.profile }}
+        run: test "$RESULT" = success && test "$PROFILE" = full
 
   frontend-typecheck:
     name: Frontend generate and typecheck

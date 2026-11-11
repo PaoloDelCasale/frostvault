@@ -20,6 +20,7 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import directory_aggregates as aggregates
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.stress_profile import stress_file_count
 
 PAYLOAD = b"nested concurrent upload content"
 STAMP = "2026-07-21T10:00:00+00:00"
@@ -220,7 +221,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],1)
 
     def test_16_workers_1024_nested_uploads_with_concurrent_maintenance(self):
-        jobs = self.seed(1024)
+        count = stress_file_count(1024)
+        jobs = self.seed(count)
         stop = threading.Event()
         maintenance_passes = []
         start = threading.Barrier(17)
@@ -248,14 +250,14 @@ class AggregateDeadlockTests(unittest.TestCase):
             upkeep.result(timeout=30)
         aggregates.process_directory_aggregate_maintenance(vault_id=2)
         self.assertTrue(maintenance_passes)
-        self.assert_completed(1024)
+        self.assert_completed(count)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM directory_aggregate_dirty").fetchone()["n"], 0)
             actual = connection.execute("SELECT * FROM directory_aggregates ORDER BY path").fetchall()
             root = next(row for row in actual if row["path"] == "0")
-            self.assertEqual(root["item_count"], 1024)
-            self.assertEqual(root["state_protected"], 1024)
-            self.assertEqual(root["cloud_size"], len(PAYLOAD) * 1024)
+            self.assertEqual(root["item_count"], count)
+            self.assertEqual(root["state_protected"], count)
+            self.assertEqual(root["cloud_size"], len(PAYLOAD) * count)
             self.assertEqual(root["action_upload"], 0)
             aggregates.rebuild_vault_directory_aggregates(connection, 2)
             expected = connection.execute("SELECT * FROM directory_aggregates ORDER BY path").fetchall()
@@ -263,7 +265,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         def semantic(rows):
             return [{k: v for k, v in row.items() if k != "updated_at"} for row in rows]
         self.assertEqual(semantic(actual), semantic(expected))
-        print(f"#458 acceptance: 16 workers / 1024 completed / {len(maintenance_passes)} maintenance passes / exact full-rebuild parity")
+        print(f"#458 acceptance: 16 workers / {count} completed / {len(maintenance_passes)} maintenance passes / exact full-rebuild parity")
 
     def test_535_held_step_shares_vault_but_completion_stays_exclusive(self):
         from app import database
@@ -331,7 +333,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                                 SimpleNamespace(database_dsn=dsn, operation_concurrency=16)))
         database.close_pools()
         self.addCleanup(database.close_pools)
-        jobs = self.seed(self.THROUGHPUT_FILES, prefix="535")
+        count = stress_file_count(self.THROUGHPUT_FILES)
+        jobs = self.seed(count, prefix="535")
         # The harness claims through its own long-lived connections, opened
         # before counting starts, so every counted connection is FrostVault's.
         claimers = [PostgresConnection(self.path) for _ in range(16)]
@@ -353,12 +356,13 @@ class AggregateDeadlockTests(unittest.TestCase):
             return module_connect(*args, **kwargs)
 
         stop = threading.Event()
+        maintenance_passes = []
         start = threading.Barrier(18)
 
         def maintenance():
             start.wait(timeout=20)
             while not stop.is_set():
-                aggregates.process_directory_aggregate_maintenance(vault_id=2)
+                maintenance_passes.append(aggregates.process_directory_aggregate_maintenance(vault_id=2))
                 stop.wait(self.THROUGHPUT_MAINTENANCE_SECONDS)
 
         def worker(claimer, batch):
@@ -390,12 +394,13 @@ class AggregateDeadlockTests(unittest.TestCase):
                 elapsed = time.monotonic() - started
                 stop.set()
             upkeep.result(timeout=30)
-        rate = self.THROUGHPUT_FILES / elapsed
+        self.assertTrue(maintenance_passes)
+        rate = count / elapsed
         stats = database._pool_for(dsn).get_stats()
-        print(f"#535 throughput: {self.THROUGHPUT_FILES} small files / 16 workers / "
+        print(f"#535 throughput: {count} small files / 16 workers / "
               f"{elapsed:.1f} s / {rate:.1f} files/s / {len(opened)} new PostgreSQL connections "
               f"/ {stats.get('requests_num', 0)} pooled checkouts")
-        self.assert_completed(self.THROUGHPUT_FILES)
+        self.assert_completed(count)
         self.assertGreaterEqual(rate, self.THROUGHPUT_MIN_FILES_PER_SECOND)
         self.assertLessEqual(len(opened), self.THROUGHPUT_MAX_NEW_CONNECTIONS)
 

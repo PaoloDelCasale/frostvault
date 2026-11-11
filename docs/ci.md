@@ -10,7 +10,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Job | What it proves | Credentials |
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against isolated `postgres:16` services, partitioned across twelve parallel shards by packing largest test modules first. The stable aggregate requires all shards and the dedicated migration/concurrency job below. Each fixture uses its own database, with a migrated HEAD template for fresh fixtures; populated upgrades/downgrades still run Alembic. No database regression skips without configuration. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
-| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: 1,024 nested uploads through `process_job` on 16 workers with concurrent aggregate maintenance, full-rollup parity, a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions, and #535: a 2,048-file small-upload burst with a conservative files/second floor and a bound on new PostgreSQL connections (pooled `db()`). Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
+| PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: nested uploads through `process_job` on all 16 workers with concurrent aggregate maintenance and full-rollup parity (64 uploads on PRs; the full 1,024 on `main`), a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions on every PR, and #535: a small-upload burst (64 files on PRs; the full 2,048 on `main`) with the unchanged conservative files/second floor and bound on new PostgreSQL connections (pooled `db()`). Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
@@ -18,6 +18,47 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | Playwright e2e (mobile-375 / desktop-1280) | Chromium Playwright against uvicorn + isolated PostgreSQL 16 with seeded fixtures, split into two parallel projects: 375×667 and 1280×800. | None. Placeholder AWS env only; no live cloud calls. Browsers cached under `~/.cache/ms-playwright`. Uses `E2E_PYTHON=python` (setup-python on PATH; no repo `.venv` in CI). Failure screenshots upload as `playwright-e2e-failures-<project>`; successful 375px shots as `playwright-e2e-375px`. |
 | Production image PostgreSQL backup | Builds the production Docker image, checks `pg_dump`/`pg_restore`/`createdb`/`dropdb`/`psql`, verifies the inherited exec-form readiness healthcheck and runs focused Host/HTTP/failure tests against the packaged probe as numeric UID/GID on a read-only rootfs (no DB/S3 needed for those tests), then runs Alembic + `backup_upgrade --skip-upgrade` + isolated restore verification against `postgres:16` | Ephemeral Postgres service only. |
 | S3-compatible integrity (MinIO) | Real SDK upload/recovery SHA-256 proofs against a versioned S3-compatible endpoint (plaintext, empty, Unicode, multipart cutoff; all four bucket BPA flags required) plus prefix cleanup | Ephemeral PostgreSQL 16 and moto S3 server (`moto[server]` pinned, from PyPI) on `127.0.0.1:9000`. No AWS account. The job keeps its historical name because release gates require it; MinIO no longer publishes community images (Docker Hub `minio/minio` is gone and `quay.io/minio/minio` refuses anonymous pulls). |
+
+### Upload stress profiles and publication safety
+
+Only the **quantity** of the long upload bursts changes between profiles:
+
+- `FROSTVAULT_STRESS_PROFILE=pr`: 64 nested uploads per stress case, four Jobs
+  per each of the same 16 workers, with the same concurrent maintenance,
+  completed/verified exact-version/no-extra-PUT assertions and rollup parity.
+- `FROSTVAULT_STRESS_PROFILE=full`: the original full acceptance sizes (1,024
+  nested uploads and the pooled-connection burst's 2,048 files). Explicit local
+  test invocations default to `full`; an empty or
+  unknown value raises an error, never a skip or a smaller fallback.
+
+The historical **PostgreSQL migration and concurrency tests** check stays stable
+for branch protection. Its workflow explicitly chooses `pr` only for
+`pull_request`; pushes to `main` use `full`. All deterministic migration,
+real-deadlock, transaction-abort, race and retry tests remain selected unchanged
+on every PR. All twelve Python shards, both Node versions, E2E, image/backup,
+S3 integrity and security checks remain intact. A contract test executes the
+actual shard selector and proves that every ordinary module is selected exactly
+once and the dedicated modules are not duplicated in the shards.
+
+A lightweight **Full PostgreSQL concurrency stress** check runs **only on pushes
+to `main`**, after the existing concurrency job. It requires both a successful
+job and its `full` profile output (written only after the tests succeed). This
+attests the completed full workload without repeating it on another runner.
+It is intentionally skipped on PRs: **do not add it to PR branch protection**.
+The publisher requires it in addition to every previous check on the **exact
+commit being published/promoted**. Missing, skipped, pending, cancelled, failed
+or wrong-SHA full-stress evidence cannot publish, including a manual dispatch
+or a version tag using the updated gate. The updated gate also refuses a
+pre-change historical commit without this new evidence; it has no legacy bypass.
+The gate's optional `--check` arguments add requirements, never replace the
+mandatory publication checks. Full stress is not merely a nightly or
+optional test. No new release or deployment trigger is introduced.
+
+The tradeoff is deliberate: PRs find deterministic concurrency failures quickly,
+while high-volume/long-tail effects remain a blocking pre-publication check on
+`main`. Main and image publication still pay the full stress cost. Measurements
+and hypothesis ranking are recorded in the
+[CI-latency session report](../sessioni/2026-11-11-ci-latency/report.md).
 
 Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
@@ -55,7 +96,8 @@ Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-i
   `workflow_run` and `pull_request_target` are forbidden.
 - A `require-ci` job gates publish on the **exact commit SHA** (or the git tag
   `vX.Y.Z` when promoting). It waits for GitHub check runs from [CI](../.github/workflows/migrations.yml):
-  PostgreSQL unit/migration aggregate, PostgreSQL concurrency, MinIO S3-compatible integrity, frontend
+  PostgreSQL unit/migration aggregate, PostgreSQL concurrency and its main-only
+  **Full PostgreSQL concurrency stress** attestation, MinIO S3-compatible integrity, frontend
   generate/typecheck/lint/unit/Node 24/build, Playwright (375 and 1280), and
   the production-image PostgreSQL backup. Missing, pending, cancelled, skipped,
   or failed checks block the image. The script is
