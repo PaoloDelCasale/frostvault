@@ -27,6 +27,21 @@ class StressProfileTests(unittest.TestCase):
             self.assertEqual(stress_file_count(1024), 1024)
             self.assertEqual(stress_file_count(2048), 2048)
 
+    def test_profile_is_used_only_by_quantitative_bursts_not_deterministic_races(self):
+        import ast
+        from pathlib import Path
+        tree = ast.parse(Path(__file__).with_name("test_aggregate_deadlocks.py").read_text())
+        methods = {node.name: node for node in ast.walk(tree)
+                   if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")}
+        expected = {
+            "test_16_workers_1024_nested_uploads_with_concurrent_maintenance",
+            "test_535_small_file_burst_keeps_throughput_and_reuses_connections",
+        } & methods.keys()
+        profiled = {name for name, method in methods.items()
+                    if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                           and node.func.id == "stress_file_count" for node in ast.walk(method))}
+        self.assertEqual(profiled, expected)
+
     def test_unknown_or_empty_profile_fails_closed(self):
         for profile in ("", "PR", "bounded", "none", "full ", "0"):
             with self.subTest(profile=profile), patch.dict(

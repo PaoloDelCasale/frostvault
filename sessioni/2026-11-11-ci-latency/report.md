@@ -20,7 +20,9 @@ Saved `gh run view <id> --json jobs,headSha,createdAt,updatedAt,conclusion` and 
 
 Job timing comes from GitHub start/end times; unittest timing is the test runner's own elapsed measurement. The per-stress interval is between the previous test's completion timestamp and stress completion in the GitHub log, **including fixture/setup overhead**, not an instrumented method-only benchmark. Buffered diagnostic prints are not used to derive start time. Workflow wall time is `updatedAt - createdAt` for completed runs.
 
-Main baseline reproduction: job 22:54:06–23:05:08 UTC; test step starts 22:54:34. Migrations finish around 22:55:42; nested stress finishes 23:04:52; remaining deterministic tests finish 23:05:04. Stress accounts for ~87.5% of unittest duration. This is not a frontend/browser/security bottleneck. These historical snapshots show both the introduction of the full stress and later growth in per-file production work, **not** a controlled attribution of each production change's cost.
+Main baseline reproduction: job 22:54:06–23:05:08 UTC; test step starts 22:54:34. Migrations finish around 22:55:42; nested stress finishes 23:04:52; remaining deterministic tests finish 23:05:04. Stress accounts for ~87.5% of unittest duration. This is not a frontend/browser/security bottleneck. These historical snapshots show both the introduction of the full stress and later growth in per-file production work, **not** a controlled attribution of each production change's cost. The 1,024-upload method itself kept its workload between `0a65c09f` and `c066c127`; its fake provider gained durable acknowledgment, metadata and integrity evidence, and production gained verification/provenance/remediation (#468–#471). Those are meaningful safety work, not redundant setup to delete.
+
+The requested contemporaneous #536 PR baseline is also reproduced: run **42925573299** (`8a335e87`), successful, PostgreSQL job **710 s**, unittest **669.688 s**, nested interval **582.076 s**, entire CI **751 s**. Its twelve shard test durations were 19.412–70.884 s: PostgreSQL remains the critical path.
 
 ## Hypotheses ranked before implementation
 
@@ -38,7 +40,7 @@ Main baseline reproduction: job 22:54:06–23:05:08 UTC; test step starts 22:54:
 
 ## Regression/validation evidence
 
-Recorded red tests in `profile-red.log`, `contracts-red.log` and `additive-check-red.log` before profile/gate implementation. Then 50 targeted tests pass:
+Recorded red tests in `profile-red.log`, `contracts-red.log` and `additive-check-red.log` before profile/gate implementation. Then 51 targeted tests pass:
 
 ```sh
 .venv/bin/python -m unittest \
@@ -61,3 +63,5 @@ First PR CI run **42926609582**, exact HEAD `88ac70523fc937a8bfaafcb647da192186c
 Log confirms 16 workers, 64 completed uploads, 173 maintenance passes, exact full-rebuild parity. Last shard/setup/runner queueing is now relevant to remaining wall time; no arbitrary shard-count adjustment is justified by this single run. This first measured improvement does **not** include #546's second stress or pooled implementation.
 
 Final verification still pending incorporation of eventual PR #546 merge and exact final-HEAD CI. Full stress on main has not been run by this session: it is deliberately not triggered via release/publication.
+
+Incoming #546's full-profile PostgreSQL job has now completed successfully in run **42926967114**, HEAD `ae561f55c1dea8c055c018b66872dd6ef0f7f004`: **1,052 s** job, **1,024.907 s** unittest / 48 tests, **263.490 s** nested-stress interval, plus **674.8 s** for the 2,048-file burst (3.0 files/s, 17 new connections, 132,091 pooled checkouts). The workflow as a whole failed on an unrelated watcher timing assertion in Python shard 10; do not call that whole run green. The existing 20-minute concurrency timeout leaves little headroom for 3,072 total full-profile uploads: this PR allows 30 minutes for the full job without reducing any rate/connection/safety bound. Both burst sizes must be profiled once #546 merges. This observation is separate from the latency change: pooling reduced per-file cost but the additional full burst increased total full-workload wall time.

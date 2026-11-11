@@ -48,15 +48,16 @@ It is intentionally skipped on PRs: **do not add it to PR branch protection**.
 The publisher requires it in addition to every previous check on the **exact
 commit being published/promoted**. Missing, skipped, pending, cancelled, failed
 or wrong-SHA full-stress evidence cannot publish, including a manual dispatch
-or a version tag. A pre-change historical commit without this new evidence is
-also refused; there is no legacy bypass. The gate's optional `--check` arguments
+or a version tag using the updated gate. The updated gate also refuses a
+pre-change historical commit without this new evidence; it has no legacy bypass. The gate's optional `--check` arguments
 add requirements, never replace the mandatory publication checks. Full stress is not merely a nightly or
 optional test. No new release or deployment trigger is introduced.
 
 The tradeoff is deliberate: PRs find deterministic concurrency failures quickly,
 while high-volume/long-tail effects remain a blocking pre-publication check on
 `main`. Main and image publication still pay the full stress cost. Measurements
-and hypothesis ranking are recorded in the CI-latency session report.
+and hypothesis ranking are recorded in the
+[CI-latency session report](../sessioni/2026-11-11-ci-latency/report.md).
 
 Failed S3-compatible cleanup writes `artifacts/s3-cleanup-report.json` and uploads it as a
 workflow artifact. Rerun cleanup locally or in CI with:
