@@ -694,6 +694,53 @@ in a local Compose override for a known long upgrade rather than weakening the
 probe. Docker health status alone does not restart a container under
 `restart: unless-stopped`; investigate the failed dependency before any restart.
 
+## HTTP diagnostics
+
+Diagnostics are **closed by default**, independently of Owner sign-in:
+
+| Endpoint | Default / opt-in behavior |
+| --- | --- |
+| `/docs`, `/redoc`, `/openapi.json` (including Swagger's `/docs/oauth2-redirect`) | 404; `API_DOCS_ENABLED=true` enables anonymous HTTP docs/schema for isolated development only, not production |
+| `/metrics` | 404 without `METRICS_TOKEN`; when set, only a valid `Authorization: Bearer` credential returns Prometheus text (missing, malformed or invalid credentials return 401) |
+| `/health` | Anonymous minimal process liveness, `{"status":"ok"}` |
+| `/ready` | Anonymous dependency status and boolean checks only; 200 ready / 503 not ready, no queue/workload details |
+
+An Owner Session does **not** authorize metrics. Use a separate, strong random
+scraper secret, not an Emergency Password, OIDC secret or Session credential.
+Keep it outside version control and logs; never send it in a query string.
+Responses containing metrics and credential errors use `Cache-Control: no-store`.
+Host/origin/CSRF and trusted-proxy rules are unchanged; there is no loopback or
+forwarded-header authentication exception. Disabled diagnostics never serve SPA
+HTML. Local schema tooling remains usable without HTTP opt-in or any token:
+
+```bash
+.venv/bin/python scripts/export_openapi.py frontend/openapi.json
+```
+
+**Scraper migration:** previously anonymous scraping now fails closed. To retain
+it, supply `METRICS_TOKEN` securely in the deployment environment and the same
+value in the scraper's protected credential file, then apply the environment
+change in an authorized restart/redeploy. Do not enable HTTP docs for scraping.
+For example, through an existing HTTPS hostname (no new port or route):
+
+```yaml
+scrape_configs:
+  - job_name: frostvault
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/frostvault_metrics_token
+    static_configs:
+      - targets: ["frostvault.example.com:443"]
+```
+
+The credential file contains only the secret, not the `Bearer` prefix; it is
+operator-provisioned, not supplied by this repository. Leave `METRICS_TOKEN`
+empty if scraping is not needed. Prefer a private scrape path and deny diagnostic
+paths at the public reverse proxy when not needed there; see
+[the public-surface guidance](docs/traefik.md#public-http-surface). The packaged
+local healthcheck needs no credential or public diagnostic route and is unchanged.
+
 ## Configuration
 
 Start from `.env.local.example` for local PostgreSQL use or `.env.example` for a
@@ -706,6 +753,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `FORWARDED_ALLOW_IPS` (Uvicorn) |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
+| Diagnostics | `API_DOCS_ENABLED` (default false; isolated development only), `METRICS_TOKEN` (default empty; independent Bearer scraper secret) |
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
@@ -724,7 +772,9 @@ problems in the notification center. The real scan/watcher reports every
 unreadable path there; inaccessible roots block protection. No background
 diagnostic walker or filesystem banner runs. `/metrics` retains process-local
 Job, queue, worker, verification, notification delivery and backup signals,
-without per-file labels or filesystem/listing performance diagnostics.
+without per-file labels or filesystem/listing performance diagnostics, behind the
+explicit Bearer opt-in described above. Queue stalls remain visible in protected
+metrics and Owner problems, not the anonymous readiness payload.
 
 OIDC is configured only through the `OIDC_*` variables and binds the Owner on
 the first login. See [ADR-0017](docs/adr/0017-single-owner.md).

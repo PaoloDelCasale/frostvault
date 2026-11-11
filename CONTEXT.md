@@ -169,7 +169,7 @@ _Avoid_: File missing error, Orphan job
 
 **Stalled Queue**:
 A queue with runnable Jobs, nothing running and no claim for five minutes.
-Reported as a metric, an informational readiness field and a problem.
+Reported as a protected metric and an Owner problem.
 _Avoid_: Deadlock, Hang
 
 **Cost Estimate**:
