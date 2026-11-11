@@ -228,12 +228,19 @@ class PullRequestCiContractTests(unittest.TestCase):
         job = workflow["jobs"]["postgresql-tests"]
         self.assertEqual(job["env"]["FROSTVAULT_STRESS_PROFILE"],
                          "${{ github.event_name == 'pull_request' && 'pr' || 'full' }}")
+        self.assertNotIn("if", job)
+        self.assertFalse(job.get("continue-on-error", False))
         stress = next(step for step in job["steps"] if step.get("id") == "stress")
         self.assertNotIn("if", stress)
         self.assertFalse(stress.get("continue-on-error", False))
         self.assertIn("tests.test_aggregate_deadlocks", stress["run"])
         self.assertIn("PostgreSQLMigrationTests", stress["run"])
-        self.assertIn('echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"', stress["run"])
+        output = 'echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"'
+        self.assertIn(output, stress["run"])
+        self.assertLess(stress["run"].index("python -m unittest"), stress["run"].index(output))
+        self.assertNotIn("shell", stress)  # GitHub's default bash -e is required.
+        self.assertNotIn("||", stress["run"])
+        self.assertNotIn("set +e", stress["run"])
         self.assertEqual(job["outputs"]["profile"], "${{ steps.stress.outputs.profile }}")
         full = workflow["jobs"]["full-postgresql-stress"]
         self.assertEqual(full["name"], "Full PostgreSQL concurrency stress")
