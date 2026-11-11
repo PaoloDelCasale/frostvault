@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import stat
@@ -92,7 +93,8 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
     part_size = ChunksizeAdjuster().adjust_chunksize(DEFAULT_PART_SIZE, before.st_size)
     if part_size > MAX_PART_SIZE:
         raise RuntimeError("Upload Snapshot exceeds bounded part size")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK prevents a regular-file -> FIFO race from blocking open().
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
     plaintext = hashlib.sha256()
     parts: list[str] = []
     size = 0
@@ -122,6 +124,48 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
                               composite_checksum(tuple(parts)) if multipart else base64.b64encode(plaintext.digest()).decode("ascii"),
                               part_size, tuple(parts))
     return snapshot, before
+
+
+def validated_snapshot_buffer(source: Path, snapshot: UploadSnapshot,
+                              check_active: Callable[[], None]) -> io.BytesIO:
+    """Re-read a small snapshot into a bounded buffer, validated BEFORE any send.
+
+    This is deliberately a second read, not a capture carried in durable evidence.
+    Caller owns/closes the buffer and must reserve its process-wide count/byte
+    budget before calling. No source FD remains open while the socket is blocked.
+    """
+    if snapshot.size >= MULTIPART_THRESHOLD:
+        raise ValueError("Only single-PUT snapshots can be buffered")
+    before = source.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_size != snapshot.size:
+        raise RuntimeError("Local file changed since fingerprinting")
+    buffer = io.BytesIO()
+    digest = hashlib.sha256()
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
+        with os.fdopen(os.open(source, flags), "rb") as stream:
+            if fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
+                raise RuntimeError("Local file changed since fingerprinting")
+            left = snapshot.size
+            while left:
+                check_active()
+                chunk = stream.read(min(CHUNK_SIZE, left))
+                if not chunk:
+                    raise RuntimeError("Local file changed since fingerprinting")
+                digest.update(chunk)
+                buffer.write(chunk)
+                left -= len(chunk)
+            check_active()
+            if stream.read(1) or fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
+                raise RuntimeError("Local file changed since fingerprinting")
+        if (fingerprint(source.stat(follow_symlinks=False)) != fingerprint(before)
+                or base64.b64encode(digest.digest()).decode("ascii") != snapshot.checksum_sha256):
+            raise RuntimeError("Local file changed since fingerprinting")
+        buffer.seek(0)
+        return buffer
+    except BaseException:
+        buffer.close()
+        raise
 
 
 class UploadProofMismatch(RuntimeError):

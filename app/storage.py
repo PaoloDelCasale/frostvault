@@ -23,7 +23,7 @@ from typing import Any, Callable, NamedTuple
 import boto3
 import psycopg
 from boto3.s3.transfer import TransferConfig
-from botocore.config import Config
+from .services.s3_clients import s3_client as _cached_s3_client
 from .services.s3_upload import upload_file
 from .services.upload_snapshot import (
     UploadSnapshot, prepare_upload_snapshot, validated_s3_proof, UploadProofMismatch,
@@ -466,11 +466,8 @@ def s3_client(*, preflight: bool = False, non_idempotent: bool = False):
         "REPLACE-WITH-SECRET-KEY",
     ):
         raise RuntimeError("AWS credentials are not configured in the .env file")
-    config = (Config(connect_timeout=2, read_timeout=3,
-                     retries={"mode": "standard", "total_max_attempts": 1})
-              if preflight else Config(retries={"mode": "standard", "total_max_attempts": 1})
-              if non_idempotent else Config(retries={"mode": "standard", "max_attempts": 4}))
-    return boto3.client("s3", region_name=settings.aws_region, config=config)
+    return _cached_s3_client(region=settings.aws_region, preflight=preflight,
+                             non_idempotent=non_idempotent, factory=boto3.client)
 
 
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:

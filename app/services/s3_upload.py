@@ -6,35 +6,160 @@ CRC32 supports FULL_OBJECT multipart checksums (SHA256 is composite in S3).
 """
 from __future__ import annotations
 
+import atexit
 import base64
 import logging
 import io
 import hashlib
+import os
+import stat
 import threading
+import time
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 from botocore.client import BaseClient
-from s3transfer.bandwidth import BandwidthLimiter, LeakyBucket
+from botocore.hooks import HierarchicalEmitter
+from s3transfer.bandwidth import BandwidthLimiter, BandwidthLimitedStream, LeakyBucket, TimeUtils
+from s3transfer.futures import TransferCoordinator
 from s3transfer.manager import TransferManager
 from s3transfer.subscribers import BaseSubscriber
 from s3transfer.upload import InterruptReader
-from s3transfer.utils import ReadFileChunk
+from s3transfer.utils import OSUtils, ReadFileChunk
 
-from .upload_snapshot import UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD
+from .s3_clients import configure_upload_client
+from .upload_snapshot import (
+    UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD, validated_snapshot_buffer,
+)
 
 _budget_lock = threading.Lock()
 _budgets: dict[int, BandwidthLimiter] = {}
+
+# Reserve BEFORE allocating a body or submitting work. Thus both the executor's
+# queue and the live buffers are bounded, even with arbitrarily many callers.
+# At most 32 buffers <8 MiB (<256 MiB total); no source FD survives validation.
+_SMALL_UPLOAD_SLOTS = 32
+_small_slots = threading.BoundedSemaphore(_SMALL_UPLOAD_SLOTS)
+_small_lock = threading.Lock()
+_small_executor: ThreadPoolExecutor | None = None
+_inherited_transport: list[Any] = []
+
+
+def _after_fork() -> None:
+    global _budget_lock, _budgets, _small_slots, _small_lock, _small_executor
+    _inherited_transport.append((_small_executor, _budgets))
+    _budget_lock = threading.Lock()
+    _budgets = {}
+    _small_slots = threading.BoundedSemaphore(_SMALL_UPLOAD_SLOTS)
+    _small_lock = threading.Lock()
+    _small_executor = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+
+
+def _small_pool() -> ThreadPoolExecutor:
+    global _small_executor
+    with _small_lock:
+        if _small_executor is None:
+            _small_executor = ThreadPoolExecutor(max_workers=_SMALL_UPLOAD_SLOTS,
+                                                 thread_name_prefix="s3-small-put")
+        return _small_executor
+
+
+def shutdown_upload_transport() -> None:
+    """Drain the process-wide small-PUT executor (after upload callers drain)."""
+    global _small_executor
+    with _small_lock:
+        executor, _small_executor = _small_executor, None
+    if executor is not None:
+        executor.shutdown(wait=True)
+
+
+atexit.register(shutdown_upload_transport)
+
+
+class _BandwidthSchedule:
+    """SDK ConsumptionScheduler protocol, without retaining dead stream tokens.
+
+    LeakyBucket serializes these methods. Its default scheduler otherwise keeps
+    a cancelled stream's reservation forever, accumulating memory and wait time.
+    """
+    def __init__(self) -> None:
+        self.pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+    def is_scheduled(self, token: Any) -> bool:
+        return token in self.pending
+
+    def schedule_consumption(self, amt: int, token: Any, time_to_consume: float) -> float:
+        wait = sum(self.pending.values()) + time_to_consume
+        self.pending[token] = time_to_consume
+        return wait
+
+    def process_scheduled_consumption(self, token: Any) -> None:
+        self.pending.pop(token, None)
+
+
+class _CancellableTime(TimeUtils):
+    def __init__(self, coordinator: TransferCoordinator) -> None:
+        self.coordinator = coordinator
+
+    def sleep(self, value: float) -> None:
+        deadline = time.monotonic() + value
+        while True:
+            if self.coordinator.exception is not None:
+                raise self.coordinator.exception
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, 0.05))
+
+
+class _SharedLimiter(BandwidthLimiter):
+    def __init__(self, rate: int) -> None:
+        self.bucket = LeakyBucket(rate, consumption_scheduler=_BandwidthSchedule())
+        super().__init__(self.bucket)
+
+    def get_bandwith_limited_stream(self, fileobj: Any, transfer_coordinator: TransferCoordinator,
+                                   enabled: bool = True) -> BandwidthLimitedStream:
+        # Public SDK extension points only: no mutation of a shared limiter's
+        # clock/coordinator and no transfer-specific state on shared clients.
+        stream = BandwidthLimitedStream(fileobj, self.bucket, transfer_coordinator,
+                                        time_utils=_CancellableTime(transfer_coordinator))
+        if not enabled:
+            stream.disable_bandwidth_limiting()
+        return stream
 
 
 def _shared_budget(rate: int) -> BandwidthLimiter:
     with _budget_lock:
         if rate not in _budgets:
-            _budgets[rate] = BandwidthLimiter(LeakyBucket(rate))
+            _budgets[rate] = _SharedLimiter(rate)
         return _budgets[rate]
+
+
+class _SnapshotOSUtils(OSUtils):
+    def open(self, filename: str, mode: str):
+        # A filename can become a pipe/symlink between the caller's lstat and a
+        # deferred SDK open. Never follow it or block before cancellation exists.
+        if mode != "rb":
+            raise ValueError("Upload Snapshot sources are read-only")
+        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(filename, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise RuntimeError("Local file changed since fingerprinting")
+            return os.fdopen(fd, mode)
+        except BaseException:
+            os.close(fd)
+            raise
 
 
 class _UploadClient:
@@ -46,6 +171,14 @@ class _UploadClient:
                  on_multipart: Callable[[str, str], None] | None = None) -> None:
         self.client = client
         self.write_client = write_client if write_client is not None else client
+        configure_upload_client(client)
+        configure_upload_client(self.write_client)
+        # TransferManager registers its static stream handlers on meta.events.
+        # Keep that registration local: shared SDK clients were configured once
+        # at construction, before concurrent requests could start. No response,
+        # metadata, callback or event state is ever attached to a shared client.
+        self.meta = SimpleNamespace(events=HierarchicalEmitter(),
+                                    config=getattr(getattr(client, "meta", None), "config", None))
         if isinstance(self.write_client, BaseClient) and self.write_client.meta.config.retries.get("total_max_attempts") != 1:
             raise RuntimeError("Non-idempotent S3 writes require total_max_attempts=1")
         self.snapshot = snapshot
@@ -116,11 +249,14 @@ class _UploadClient:
             kwargs["ChecksumSHA256"] = self.snapshot.checksum_sha256
             with self._validated_body(kwargs["Body"], 1) as body:
                 kwargs["Body"] = body
+                body.signal_transferring()
                 return self._acknowledge(self.write_client.put_object(**kwargs))
+        kwargs["Body"].signal_transferring()
         return self._acknowledge(self.write_client.put_object(**kwargs))
 
     def upload_part(self, **kwargs: Any) -> dict[str, Any]:
         if self.snapshot is None:
+            kwargs["Body"].signal_transferring()
             return self.client.upload_part(**kwargs)
         number = int(kwargs["PartNumber"])
         expected = self.snapshot.part_checksums[number - 1]
@@ -128,6 +264,7 @@ class _UploadClient:
         kwargs["ChecksumSHA256"] = expected
         with self._validated_body(kwargs["Body"], number) as body:
             kwargs["Body"] = body
+            body.signal_transferring()
             result = self.client.upload_part(**kwargs)
         if result.get("ChecksumSHA256") is not None and result["ChecksumSHA256"] != expected:
             raise RuntimeError("S3 upload part checksum mismatch")
@@ -211,6 +348,116 @@ def abort_refused(error: BaseException | None) -> bool:
             or error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)
 
 
+class _Completion(BaseSubscriber):
+    def __init__(self) -> None:
+        self.event = threading.Event()
+
+    def on_done(self, future: Any, **kwargs: Any) -> None:
+        self.event.set()
+
+
+def _record_failure(failure: BaseException, facade: _UploadClient,
+                    snapshot: UploadSnapshot | None) -> None:
+    # Call only after every in-flight request has been joined. Preserve the
+    # exception object and classification; a late receipt beats absence proof.
+    if abort_refused(facade.abort_error):
+        failure.upload_abort_refused = True
+    if facade.response is not None:
+        failure.upload_response = dict(facade.response)
+    elif snapshot is not None and isinstance(failure, ClientError):
+        from .cloud_preflight_gate import is_readiness_error
+        if (failure.operation_name in {'PutObject', 'CreateMultipartUpload', 'UploadPart', 'CompleteMultipartUpload'}
+                and is_readiness_error(failure)):
+            failure.upload_no_write_operation = failure.operation_name
+
+
+def _small_put(facade: _UploadClient, *, source: Path, bucket: str, key: str,
+               snapshot: UploadSnapshot, metadata: dict[str, str] | None,
+               on_progress: Callable[[int], None]) -> dict[str, Any]:
+    # The caller thread remains free to observe cancellation/lease loss while a
+    # pooled worker is inside a blocking SDK socket. Never return until joined.
+    while not _small_slots.acquire(timeout=0.1):
+        facade.check_active()
+    future = body = buffer = None
+    failure = None
+    body_owned_by_worker = False
+    coordinator = TransferCoordinator()
+    try:
+        facade.check_active()
+        buffer = validated_snapshot_buffer(source, snapshot, facade.check_active)
+        stream = InterruptReader(buffer, coordinator)
+        if facade.max_bandwidth:
+            stream = _shared_budget(facade.max_bandwidth).get_bandwith_limited_stream(stream, coordinator)
+        body = ReadFileChunk(stream, snapshot.size, snapshot.size,
+                             callbacks=[lambda bytes_transferred: on_progress(bytes_transferred)])
+        args = {"Bucket": bucket, "Key": key, "Body": body,
+                "ChecksumAlgorithm": "SHA256", "ChecksumSHA256": snapshot.checksum_sha256}
+        if metadata is not None:
+            args["Metadata"] = dict(metadata)
+        done = threading.Event()
+
+        def send() -> dict[str, Any]:
+            nonlocal body_owned_by_worker
+            body_owned_by_worker = True
+            send_failed = False
+            try:
+                facade.check_active()
+                # No check, proof, progress or validation between response and
+                # receipt hook, including when cancellation already happened.
+                return facade._acknowledge(facade.write_client.put_object(**args))
+            except BaseException:
+                send_failed = True
+                raise
+            finally:
+                try:
+                    # Small bodies may be charged by the shared limiter on close.
+                    # Do that in the worker too, keeping lease/cancel checks live.
+                    body.close()
+                except BaseException:
+                    if not send_failed:
+                        raise
+
+        future = _small_pool().submit(send)
+        future.add_done_callback(lambda _: done.set())
+        while not done.wait(0.1):
+            facade.check_active()
+        response = future.result()
+        facade.check_active()
+        if not response or not response.get("VersionId") or response["VersionId"] == "null":
+            raise RuntimeError("Upload stored without an S3 VersionId; bucket Versioning is required")
+        return response
+    except BaseException as exc:
+        failure = exc
+        coordinator.set_exception(exc)
+        if future is not None:
+            future.cancel()
+        raise
+    finally:
+        try:
+            if future is not None:
+                try:
+                    # Join a running socket BEFORE touching its body. A failure
+                    # cannot replace an already observed cancellation/lease loss.
+                    future.result()
+                except BaseException:
+                    if failure is None:
+                        raise
+            if body is not None and not body_owned_by_worker:
+                try:
+                    # A queued future cancelled before send never owned its body.
+                    body.close()
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
+                        raise
+        finally:
+            if buffer is not None:
+                buffer.close()
+            _small_slots.release()
+            if failure is not None:
+                _record_failure(failure, facade, snapshot)
+
+
 class _Progress(BaseSubscriber):
     def __init__(self, callback: Callable[[int], None]) -> None:
         self.callback = callback
@@ -237,6 +484,8 @@ def upload_file(
     Completed versions are NEVER deleted here, even after cancellation.
     """
     check_active()
+    if max_bandwidth is not None and max_bandwidth <= 0:
+        raise ValueError("max_bandwidth must be greater than 0")
     checksum = None
     if snapshot is None:
         # Shared rename/copy/recovery callers retain the pre-existing CRC32
@@ -260,6 +509,9 @@ def upload_file(
     facade = _UploadClient(client, snapshot=snapshot, check_active=check_active,
                            max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged,
                            write_client=write_client, on_multipart=on_multipart)
+    if snapshot is not None and snapshot.size < MULTIPART_THRESHOLD:
+        return _small_put(facade, source=source, bucket=bucket, key=key,
+                          snapshot=snapshot, metadata=metadata, on_progress=on_progress)
     config = TransferConfig(max_bandwidth=max_bandwidth, preferred_transfer_client="classic")
     if snapshot is not None:
         config.multipart_threshold = MULTIPART_THRESHOLD
@@ -267,7 +519,7 @@ def upload_file(
         # Hard bounded buffers: at most two parts per upload, no whole-file
         # materialization, plus <=10,000 small independent part digests.
         config.max_request_concurrency = min(config.max_request_concurrency, 2)
-    manager = TransferManager(facade, config)
+    manager = TransferManager(facade, config, osutil=_SnapshotOSUtils() if snapshot is not None else None)
     if max_bandwidth:
         # One limiter across managers, not one cap per concurrent Job. This
         # narrow private seam is covered by targeted tests against pinned SDK.
@@ -284,12 +536,11 @@ def upload_file(
         # fields at their distinct API boundaries instead.
         if metadata is not None:
             extra_args["Metadata"] = dict(metadata)
+        completion = _Completion()
         future = manager.upload(str(source), bucket, key, extra_args=extra_args,
-                                subscribers=[_Progress(on_progress)])
-        waiter = threading.Event()
-        while not future.done():
+                                subscribers=[_Progress(on_progress), completion])
+        while not completion.event.wait(0.1):
             check_active()
-            waiter.wait(0.1)
         future.result()
         check_active()
         response = facade.response
@@ -346,17 +597,5 @@ def upload_file(
             # shutdown joins in-flight requests: their acknowledgments can arrive
             # AFTER cancellation was raised. Attach the final receipt only now,
             # keeping the original exception object and retry classification.
-            if failure is not None and abort_refused(facade.abort_error):
-                # The write failed AND the cleanup abort was refused: whatever the
-                # worker reports for the failure, the incomplete parts remain stored.
-                failure.upload_abort_refused = True
-            if failure is not None and facade.response is not None:
-                failure.upload_response = dict(facade.response)
-            elif snapshot is not None and isinstance(failure, ClientError):
-                # Only after shutdown joined every request, and only an explicit
-                # auth refusal from the write pipeline. A timeout, cancellation,
-                # HEAD error or any late acknowledgment is NOT absence proof.
-                from .cloud_preflight_gate import is_readiness_error
-                if (failure.operation_name in {'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload'}
-                        and is_readiness_error(failure)):
-                    failure.upload_no_write_operation = failure.operation_name
+            if failure is not None:
+                _record_failure(failure, facade, snapshot)
