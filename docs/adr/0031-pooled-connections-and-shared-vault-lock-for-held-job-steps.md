@@ -77,11 +77,40 @@ These keep `FOR NO KEY UPDATE` (or stronger):
 - `schedule_upload_retry`. It releases the lease and returns the Job to the
   unstarted set that cancel-pending and the scheduler select. Sharing the lock
   there was not proven safe, and retries are rare;
-- `upload_provenance.target`. It fences the Vault identity and lifecycle checks
-  against relocation, moves and decommissioning. It also anchors the Vault-first
-  order of the catalog unit that publishes the upload's results and directory
-  aggregates (ADR-0021, ADR-0023, ADR-0024);
+- `upload_provenance.target` by default, including receipt/version publication
+  and `persist_verification` (Local Copy observation touches the Vault through
+  `_get_or_create_file`). The audited exceptions below do not change publication
+  or directory-aggregate writer authority (ADR-0021, ADR-0023, ADR-0024);
 - every admission, result publication and directory-aggregate writer.
+
+### Audited upload catalog units (#551)
+
+`target`, `require_target`, `prepare`, `mark_send_started` and
+`_upload_catalog_unit` accept explicit `shared=True`, using **FOR SHARE**, not
+KEY SHARE. This still conflicts with lifecycle/identity changes and admission's
+`UPDATE vaults SET name=name` (NO KEY UPDATE), so their checks remain fenced
+until commit; shared upload units on the same Vault can overlap. Pause stays at
+the claim boundary (ADR-0033): an already leased upload still finishes.
+
+Opted-in DB-only units are intent read/resume binding plus Job target read;
+resume target checks and exact-version linkage; snapshot/digest persistence and
+reusable-version lookup (including lineage/receipt reads); verified reuse
+linkage plus target read; unverified reuse linkage; pre-send target pinning;
+intent preparation and send-started (including discovery fact capture);
+verification-method/proof/egress metadata; and the admitted rename digest.
+Nested target checks explicitly retain SHARE. No such unit creates file
+identity, writes catalog events/aggregate rows/status/rebuild requests, or calls
+`set_job`; those would upgrade the Vault lock and can deadlock with another
+shared holder. Dirty aggregate invalidations retain their durable append-only
+contract. Exclusive remains the default for all unaudited callbacks.
+
+Consecutive intent/target reads and verified reuse link/target reads share one
+transaction. No unit crosses provider I/O: send-started commits **before** send,
+and post-provider DB retries retain the exact VersionId without another PUT.
+SQL-recording regressions audit complete shared callbacks, PostgreSQL tests
+prove overlap and fencing against exclusive/admission/lifecycle writers, and
+the unchanged 2048-file/16-worker burst also bounds pause/cancel/resume writer
+latency. Stress profiles, throughput floors and publication gates are unchanged.
 
 ## Consequences
 

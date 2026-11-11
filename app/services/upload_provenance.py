@@ -203,12 +203,15 @@ def _is_provider_unreachable(error: BaseException) -> bool:
     return is_readiness_error(error) or is_provider_transient(error)
 
 
-def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> dict[str, Any]:
-    # Stays exclusive (ADR-0031, #535): it fences the Vault identity and
-    # lifecycle checks below against relocation, moves and decommissioning,
-    # and anchors the Vault-first order of the catalog unit that publishes
-    # this upload's results and directory aggregates in the same transaction.
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (job["vault_id"],)).fetchone()
+def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
+           shared: bool = False) -> dict[str, Any]:
+    # Exclusive by default. Opt in only after auditing the COMPLETE DB unit:
+    # no Vault touch, aggregate/event/rebuild writer or terminal Job transition.
+    # SHARE (not KEY SHARE) fences lifecycle/identity and admission's NO KEY
+    # UPDATE writers. Nested target checks must retain the mode: two SHARE
+    # holders upgrading to NO KEY UPDATE would deadlock (ADR-0031, #551).
+    lock = "SHARE" if shared else "NO KEY UPDATE"
+    vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
     from .upload_remediation import require_job
     require_job(connection, job)
     row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
@@ -239,8 +242,9 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str) -> 
             "root_identity_version": vault.get("root_identity_version")}
 
 
-def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any]) -> None:
-    if target(connection, job, key=pinned["key"], provider=pinned["provider"]) != pinned:
+def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
+                   shared: bool = False) -> None:
+    if target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared) != pinned:
         raise UploadBlocked("identity_changed")
 
 
@@ -315,8 +319,9 @@ def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> Non
 
 
 def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], snapshot: UploadSnapshot,
-            requested: str, before: dict[str, Any], timestamp: str) -> dict[str, Any]:
-    require_target(connection, job, pinned)
+            requested: str, before: dict[str, Any], timestamp: str,
+            shared: bool = False) -> dict[str, Any]:
+    require_target(connection, job, pinned, shared=shared)
     existing = load_for_job(connection, job["id"])
     if existing:
         current = (canonical(pinned), snapshot.as_json(), requested, canonical(before))
@@ -343,8 +348,9 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
     return row
 
 
-def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, Any]) -> None:
-    require_target(connection, job, json.loads(intent["target_json"]))
+def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, Any], *,
+                      shared: bool = False) -> None:
+    require_target(connection, job, json.loads(intent["target_json"]), shared=shared)
     if receipt(connection, intent['id']) is not None:
         raise UploadBlocked('ambiguous_receipt')
     changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
