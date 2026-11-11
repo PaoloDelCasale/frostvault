@@ -333,12 +333,14 @@ class BulkAdmissionPostgresTests(QueueFixture):
             before_commit = time.monotonic()
         timings.append(("commit/close", time.monotonic() - before_commit))
         elapsed = time.monotonic() - started
+        print(f"[DEBUG-550-admission] elapsed={elapsed:.6f}; statements={timings}", flush=True)
         plan = []
-        if elapsed >= 5:
+        if any(duration >= 1 for _, duration in timings):
             with self.db() as c:
                 for statement, params in statements:
                     if "SELECT COALESCE(max(fp.id)" in statement:
                         plan = c.execute("EXPLAIN (ANALYZE, BUFFERS) " + statement, params).fetchall()
+            print(f"[DEBUG-550-admission-plan] {plan}", flush=True)
         self.assertLess(elapsed, 5, f"[DEBUG-550-admission] {timings}; plan={plan}")
         self.assertEqual(request["selected_count"], 10000)
         self.assertEqual(self.jobs(), [])
