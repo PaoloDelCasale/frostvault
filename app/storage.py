@@ -2702,8 +2702,9 @@ def purge_current_snapshot_superseded(
     """Upload and rename share exact durable per-VersionId authority."""
     import sys
     from .services import snapshot_cleanup, upload_provenance
+    from .services.upload_pipeline import catalog_capacity, catalog_worker
     try:
-        inventory_job_id = snapshot_cleanup.cleanup(sys.modules[__name__], job, keep_version_id, client)
+        inventory_job_id = snapshot_cleanup.cleanup(catalog_worker(sys.modules[__name__], job), job, keep_version_id, client)
     except upload_provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
         raise
@@ -2712,7 +2713,7 @@ def purge_current_snapshot_superseded(
     except Exception:
         _record_upload_reconciliation_block(job, "cleanup_unavailable")
         raise
-    with db() as connection:
+    with catalog_capacity(job), db() as connection:
         notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
     return inventory_job_id
 
@@ -3554,15 +3555,19 @@ def _complete_verified_upload(
     _require_upload_source_identity(job)
     with db() as connection:
         local_before = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
-    observed_digest, observed_stat, matches_snapshot = (
-        _inspect_local_copy_for_upload_snapshot(
-            job,
-            source=source,
-            upload_digest=upload_digest,
-            local_digest=local_digest,
-            local_stat=local_stat,
+    from .services.upload_pipeline import catalog_capacity, preparation_capacity
+    # A changed Local Copy can require another bounded hashing pass. Borrow
+    # preparation capacity before reading it, never during a catalog transaction.
+    with preparation_capacity(job):
+        observed_digest, observed_stat, matches_snapshot = (
+            _inspect_local_copy_for_upload_snapshot(
+                job,
+                source=source,
+                upload_digest=upload_digest,
+                local_digest=local_digest,
+                local_stat=local_stat,
+            )
         )
-    )
     # Filesystem stability is observed outside the DB replay. A newer catalog
     # observation can still win; the DB CAS below never overwrites that generation.
     local_observation_stable = observed_stat is not None and _local_stat_unchanged(source, observed_stat)
@@ -3570,7 +3575,7 @@ def _complete_verified_upload(
 
     @retry_database_unit
     def persist_verification() -> None:
-        with owned_connection(db()) as connection:
+        with catalog_capacity(job), owned_connection(db()) as connection:
             from .services import upload_provenance as provenance
             provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
             ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
@@ -3778,7 +3783,10 @@ def _upload_catalog_unit(
     Receipt publication and persist_verification deliberately stay exclusive.
     """
     from .services import upload_provenance as provenance
-    with _defer_job_counters():
+    from .services.upload_pipeline import catalog_capacity
+    # Acquired before connection checkout/Vault locks, released after COMMIT
+    # (or rollback), and outside the retry decorator's sleep between attempts.
+    with catalog_capacity(job), _defer_job_counters():
         with owned_connection(db()) as connection:
             # Same Vault -> Job/file order as admission/cleanup, in either mode.
             # The private capability exists only inside this DB unit and still

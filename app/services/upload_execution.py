@@ -5,17 +5,21 @@ owns their ordering and the DB-only replay stages. ``worker`` is the existing
 storage Adapter (also used by snapshot_cleanup), not a bag of injected callbacks:
 its claim/status/source/transport hooks remain the production and test seams.
 There is deliberately no import of storage, executor, queue or heartbeat here.
+Stage permits are borrowed by the existing claimed foreground threads.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+import hashlib
 import json
 import os
+import threading
+import time
 
-from . import snapshot_cleanup, upload_provenance as provenance
-from .upload_snapshot import UploadSnapshot, UploadProofMismatch, unsupported_checksum_api
+from . import snapshot_cleanup, upload_pipeline, upload_provenance as provenance
+from .upload_snapshot import CHUNK_SIZE, UploadSnapshot, UploadProofMismatch, unsupported_checksum_api
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,33 @@ class UploadOutcome:
     job_id: int
     status: str
     archive_version_id: str | None = None
+
+
+class _UploadCheckpoint:
+    """Only hashing/permit waits amortize renewals; effects still fence durably.
+
+    Remote cancellation can take at most one second to stop these effect-free
+    loops (plus a DB call's own duration). Same-process cancel, shutdown and the
+    keeper's loss signal are checked every turn. Send/publication retain their
+    unconditional durable claim checks; this changes no other Job/heartbeat.
+    """
+
+    def __init__(self, worker: Any, job: dict[str, Any]):
+        self.worker, self.job = worker, job
+        self.lost = worker._claim_lost_event_for(job["id"])
+        self.next_remote = 0.0
+
+    def __call__(self) -> None:
+        w, job_id = self.worker, self.job["id"]
+        w.shutdown_state.checkpoint()
+        if w.job_cancelled(job_id):
+            raise w.OperationCancelled("Upload stopped")
+        if self.lost is not None and self.lost.is_set():
+            raise w.JobLeaseLost("Upload claim was lost")
+        now = time.monotonic()
+        if now >= self.next_remote:
+            w.ensure_job_active(job_id, "Upload claim was lost")
+            self.next_remote = now + 1.0
 
 
 @dataclass
@@ -33,6 +64,8 @@ class _Attempt:
     intent: dict[str, Any] | None
     target: dict[str, Any] | None
     requested: str
+    pipeline: upload_pipeline._Pipeline
+    check_active: Callable[[], None]
     snapshot: UploadSnapshot | None = None
     local_digest: str | None = None
     local_stat: os.stat_result | None = None
@@ -64,9 +97,13 @@ class UploadExecution:
         with self.worker._job_claim_context(
             job, lost_event=self.worker._claim_lost_event_for(job["id"]),
         ):
-            return self._run_claimed(job)
+            pipeline = upload_pipeline.pipeline_for(self.worker)
+            check = _UploadCheckpoint(self.worker, job)
+            with upload_pipeline.bind(pipeline, job, check):
+                return self._run_claimed(job, pipeline, check)
 
-    def _run_claimed(self, job: dict[str, Any]) -> UploadOutcome:
+    def _run_claimed(self, job: dict[str, Any], pipeline: upload_pipeline._Pipeline,
+                     check: Callable[[], None]) -> UploadOutcome:
         w = self.worker
         w.ensure_job_active(job["id"], "Upload stopped")
         waiting = self._automatic_gate(job)
@@ -79,10 +116,14 @@ class UploadExecution:
         local_present = source.is_file()
         intent, target = self._load(job)
         client = None
+        catalog_worker = upload_pipeline.catalog_worker(w, job)
         if intent and intent["send_started"]:
             client = w.s3_client()
-            snapshot_cleanup.pin_inventory(w, job, client)
+            snapshot_cleanup.pin_inventory(catalog_worker, job, client)
             w._resume_materialized_upload(job, intent, client)
+            # Successful reconciliation established an exact journaled result or
+            # definitive no-write. It needs no new-send permit to repair facts.
+            pipeline.journal_safe(intent["id"])
             target = self._db(job, lambda catalog: catalog.get_job_target(job["id"]), shared=True)
         linked = target.get("archive_version_id") if target else None
         if job.get("upload_reconcile_only") and not linked:
@@ -92,7 +133,8 @@ class UploadExecution:
         if not linked and target and target.get("cloud_only_version_id"):
             raise RuntimeError("Upload held back: the path holds different content than a file kept only in the cloud")
         attempt = _Attempt(job, source, client, intent, target,
-            str(intent["requested"] if intent else (target or {}).get("job_upload_verification_requested") or "read_back"))
+            str(intent["requested"] if intent else (target or {}).get("job_upload_verification_requested") or "read_back"),
+            pipeline, check)
         try:
             if not linked:
                 waiting = self._snapshot(attempt)
@@ -104,7 +146,7 @@ class UploadExecution:
                 attempt.client = w.s3_client()
             # Only a freshly inserted, same-attempt namespace can supply the
             # intent inventory. Historical cleanup authority is never rebased.
-            attempt.namespace = snapshot_cleanup.pin_upload_namespace(w, job, attempt.client)
+            attempt.namespace = snapshot_cleanup.pin_upload_namespace(catalog_worker, job, attempt.client)
             if linked:
                 self._linked(attempt, str(linked), dict(target))
             else:
@@ -160,8 +202,10 @@ class UploadExecution:
     def _snapshot(self, a: _Attempt) -> UploadOutcome | None:
         w, job = self.worker, a.job
         w.set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-        a.snapshot, a.local_stat = w.prepare_upload_snapshot(
-            a.source, lambda: w.ensure_job_active(job["id"], "Upload claim was lost"))
+        # Admission precedes the very first read/buffer allocation. Snapshot
+        # evidence, not payload, survives this scope; its size is format-bounded.
+        with a.pipeline.prepare.take(a.check_active, 2 * CHUNK_SIZE):
+            a.snapshot, a.local_stat = w.prepare_upload_snapshot(a.source, a.check_active)
         a.local_digest = a.snapshot.plaintext_sha256
         old = (a.target or {}).get("job_upload_snapshot_json")
         if old is not None and old != a.snapshot.as_json():
@@ -211,20 +255,60 @@ class UploadExecution:
             return
         self._send(a, provider)
 
+    def _refresh_journal_gate(self, pipeline: upload_pipeline._Pipeline) -> None:
+        # Recovery facts bypass nonurgent catalog capacity, just like their
+        # original appends. This query cannot publish or grant deletion rights.
+        pending = pipeline.uncertain_journals()
+        if pending:
+            with self.worker.db() as connection:
+                for intent_id, receipt_hash in pending:
+                    # Confirm THIS failed fact, not merely another response
+                    # already stored for the same VersionId/intent. Hashes are
+                    # append-only identities, not retained response payloads.
+                    stored = connection.execute("SELECT 1 FROM upload_receipts WHERE intent_id=%s AND receipt_hash=%s", (intent_id, receipt_hash)).fetchone()
+                    intent = connection.execute("SELECT send_started FROM upload_intents WHERE id=%s", (intent_id,)).fetchone()
+                    if stored is not None or (intent is not None and not intent["send_started"]):
+                        pipeline.journal_safe(intent_id, receipt_hash)
+
     def _send(self, a: _Attempt, provider: str) -> None:
         w, job = self.worker, a.job
         w.set_job(job["id"], "uploading", message_key="job.plain_upload")
+        self._refresh_journal_gate(a.pipeline)
+        # Capacity exists BEFORE arming send-started and BEFORE the transport
+        # materializes its validated buffers. Waiting cannot manufacture an
+        # ambiguous intent. Returning/throwing joins SDK I/O before release.
+        with a.pipeline.sending(a.snapshot, a.check_active):
+            key, response = self._send_bytes(a, provider)
+        # Never retain scarce network capacity while waiting to publish a fact
+        # already safely journaled; preparation/other sends may now overlap.
+        a.version_id = w._publish_upload_receipt(job, a.intent, response)
+        a.target = {"archive_version_id": a.version_id, "object_key": key,
+            "provider_version_id": response["VersionId"], "cloud_size": a.snapshot.size,
+            "upload_plaintext_sha256": a.digest, "upload_snapshot_json": a.snapshot.as_json(),
+            "upload_verification_requested": a.requested,
+            "integrity": "unverified", "availability": "available"}
+        a.provider_proof = self._proof(a, response, source="upload_response", completion=True)
+        head = self._head(a)
+        # Always check contradictions, even with a valid response proof/read_back.
+        head_proof = self._proof(a, head, source="ordinary_head")
+        a.provider_proof = a.provider_proof or head_proof
+
+    def _send_bytes(self, a: _Attempt, provider: str) -> tuple[str, dict[str, Any]]:
+        w, job = self.worker, a.job
         key = w.expected_cloud_key(job["path"], job["s3_prefix"])
         fresh = a.namespace.take_for_upload(job, a.client) if a.namespace is not None else None
         if fresh is None:
-            with w.db() as connection:
-                pinned = provenance.target(connection, job, key=key, provider=provider, shared=True)
+            pinned = self._db(job, lambda catalog: provenance.target(
+                catalog.connection, job, key=key, provider=provider, shared=True), shared=True)
             before = provenance.inventory(a.client, job["s3_bucket"], key)
             if before != provenance.inventory(a.client, job["s3_bucket"], key):
                 raise provenance.UploadBlocked("inventory_changed")
         else:
             pinned, before = fresh
         def prepare_send(catalog: Any):
+            # Recheck after any catalog-capacity/row-lock wait, before arming
+            # an intent. A journal failure elsewhere is not an ambiguous send.
+            a.pipeline.require_send_admission()
             intent = provenance.prepare(catalog.connection, job, pinned=pinned,
                 snapshot=a.snapshot, requested=a.requested, before=before,
                 timestamp=w.now_iso(), shared=True)
@@ -236,7 +320,22 @@ class UploadExecution:
             provenance.mark_send_started(catalog.connection, job, intent, shared=True)
             return intent
         a.intent = self._db(job, prepare_send, shared=True)
-        acknowledge = provenance.ReceiptJournal(w.db, a.intent["id"], w.now_iso)
+        journal = provenance.ReceiptJournal(w.db, a.intent["id"], w.now_iso)
+        # Explicit captures: this callback may run on an SDK thread with NONE
+        # of the foreground thread's token/lost/cancel/context-local state.
+        pipeline, intent_id = a.pipeline, a.intent["id"]
+        journal_lock = threading.Lock()
+        def acknowledge(response: dict[str, Any]) -> None:
+            with journal_lock:
+                fingerprint = "unencodable"  # Never matches a durable fact hash.
+                try:
+                    fingerprint = hashlib.sha256(provenance.canonical(provenance._receipt_fact(response)).encode()).hexdigest()
+                    journal(response)
+                except BaseException:
+                    pipeline.journal_failed(intent_id, fingerprint)
+                    raise
+                else:
+                    pipeline.journal_safe(intent_id, fingerprint)
         def multipart(event: str, upload_id: str):
             if event == "created":
                 provenance.journal_multipart(w.db, a.intent["id"], upload_id, w.now_iso())
@@ -245,6 +344,10 @@ class UploadExecution:
         transfer_job = {**job, "_upload_snapshot": a.snapshot, "_upload_provider": provider,
             "_upload_metadata": {provenance.TOKEN_KEY: a.intent["token"]},
             "_on_upload_acknowledged": acknowledge, "_on_upload_multipart": multipart}
+        # A journal elsewhere may have failed while this DB commit waited.
+        # Never send in that case, even if this intent now needs reconciliation.
+        w.ensure_job_active(job["id"], "Upload claim was lost")
+        pipeline.require_send_admission()
         try:
             response = w.upload_s3_file(transfer_job, source=a.source, key=key)
         except BaseException as exc:
@@ -257,17 +360,7 @@ class UploadExecution:
                     catalog.connection, job, a.intent, no_write, w.now_iso()))
             raise
         acknowledge(response)
-        a.version_id = w._publish_upload_receipt(job, a.intent, response)
-        a.target = {"archive_version_id": a.version_id, "object_key": key,
-            "provider_version_id": response["VersionId"], "cloud_size": a.snapshot.size,
-            "upload_plaintext_sha256": a.digest, "upload_snapshot_json": a.snapshot.as_json(),
-            "upload_verification_requested": a.requested,
-            "integrity": "unverified", "availability": "available"}
-        a.provider_proof = self._proof(a, response, source="upload_response", completion=True)
-        head = self._head(a)
-        # Always check contradictions, even with a valid response proof/read_back.
-        head_proof = self._proof(a, head, source="ordinary_head")
-        a.provider_proof = a.provider_proof or head_proof
+        return key, response
 
     def _head(self, a: _Attempt) -> dict[str, Any]:
         w, job, target = self.worker, a.job, a.target
