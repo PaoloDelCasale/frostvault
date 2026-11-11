@@ -6479,6 +6479,24 @@ async def upload_remediation_loop() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+async def bulk_upload_admission_loop() -> None:
+    # Durable state lives in PostgreSQL, not this executor. One tick advances
+    # bounded transactions independently of transfer slots/cloud readiness.
+    from .services import bulk_upload_admission
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bulk-upload-admission")
+    try:
+        while True:
+            try:
+                await loop.run_in_executor(executor, bulk_upload_admission.tick, db)
+            except Exception as exc:
+                await asyncio.to_thread(_report_worker_error, "bulk_upload_admission", exc)
+            await asyncio.sleep(bulk_upload_admission.POLL_SECONDS)
+    finally:
+        # Do not let a committing batch outlive shutdown/pool closure.
+        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+
+
 async def auto_upload_loop() -> None:
     # Separate from scanning and cloud maintenance, including when a long scan
     # or lifecycle request occupies their worker. Catalog observations persist.

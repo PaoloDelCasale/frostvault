@@ -31,8 +31,18 @@ describe("explicit failed upload retry", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Retry failed uploads" }));
     await screen.findByText("New upload Jobs queued: 3");
     await userEvent.click(screen.getByRole("button", { name: "Upload whole Vault" }));
-    await screen.findByText("Eligible Vault uploads queued");
-    expect(calls).toEqual([{ url: "/api/upload/retry-failed?vault_id=7", body: null }, { url: "/api/upload?vault_id=7", body: { path: "", is_directory: true } }]);
+    await screen.findByText(loadCatalog()["uploads.whole_started"]);
+    expect(calls).toEqual([{ url: "/api/upload/retry-failed?vault_id=7", body: null }, { url: "/api/upload?vault_id=7", body: { path: "", is_directory: true, request_id: expect.any(String) } }]);
+  });
+  it("reuses the stable request key when an upload response is uncertain", async () => {
+    const calls = show(2, true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Upload whole Vault" }));
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "Upload whole Vault" }));
+    await screen.findByRole("alert");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(calls[1]);
   });
   it("surfaces ineligible errors and reenables retry", async () => {
     show(2, true);

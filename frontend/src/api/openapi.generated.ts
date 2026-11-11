@@ -803,6 +803,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upload/admissions/{group_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Upload Admission Status */
+        get: operations["upload_admission_status_api_upload_admissions__group_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/upload/cancel": {
         parameters: {
             query?: never;
@@ -1332,6 +1349,30 @@ export interface components {
             [key: string]: unknown;
         };
         AuthMethod: string | null;
+        BulkUploadAdmissionActivity: {
+            admitted_files: number;
+            processed_files: number;
+            requests: number;
+            selected_files: number;
+        };
+        BulkUploadAdmissionResponse: {
+            admitted_count: number;
+            group_id: string;
+            /** @enum {string} */
+            origin: "manual";
+            path: string;
+            processed_count: number;
+            reason: string | null;
+            requested_at: string;
+            selected_count: number;
+            /** @enum {string} */
+            status: "pending" | "completed" | "cancelled" | "invalidated";
+            total_bytes: number;
+            updated_at: string;
+            vault_id: number;
+            /** @enum {string} */
+            verification_mode: "s3_checksum" | "read_back";
+        };
         CatalogRevisionResponse: {
             changed: boolean;
             domains: string[];
@@ -1616,6 +1657,7 @@ export interface components {
             cancelled_count: number;
             message: string;
             message_key?: string;
+            stopped_admissions?: number;
         } & {
             [key: string]: unknown;
         };
@@ -2118,6 +2160,24 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** UploadAction */
+        UploadAction: {
+            /** Archive Version Id */
+            archive_version_id?: string | null;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Path */
+            path: string;
+            /** Request Id */
+            request_id?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
+            /** Restore Tier */
+            restore_tier?: string | null;
+        };
         UploadActivityResponse: {
             global: components["schemas"]["UploadActivitySummary"];
             observed_at: string;
@@ -2133,6 +2193,7 @@ export interface components {
         };
         UploadActivitySummary: {
             awaiting_admission_files: number;
+            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
             next_stable_at: string | null;
             queued: components["schemas"]["UploadActivityStage"];
             stability_wait: components["schemas"]["UploadActivityStage"];
@@ -3633,7 +3694,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FileAction"];
+                "application/json": components["schemas"]["UploadAction"];
             };
         };
         responses: {
@@ -3673,6 +3734,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadActivityResponse"];
+                };
+            };
+        };
+    };
+    upload_admission_status_api_upload_admissions__group_id__get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkUploadAdmissionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

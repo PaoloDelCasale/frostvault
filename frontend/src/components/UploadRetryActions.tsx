@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/api";
 import { vaultApi } from "@/api/vault";
 import type { RetryFailedUploadsResponse } from "@/api/types";
@@ -8,6 +9,8 @@ import { Button } from "@/components/ui/button";
 /** No Session-selected Vault fallback: omitted identity explicitly means global. */
 export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: number; showHelp?: boolean }) {
   const { t } = useI18n();
+  const client = useQueryClient();
+  const pendingRequest = useRef<{ vaultId: number; requestId: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState(false);
@@ -15,8 +18,15 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
     setBusy(true); setError(false); setNotice("");
     try {
       if (wholeVault && vaultId !== undefined) {
-        await vaultApi(vaultId).post("/api/upload", { path: "", is_directory: true });
+        // Keep the key after an uncertain HTTP outcome so retry cannot start a
+        // second producer. A successful response allows a new explicit request.
+        if (pendingRequest.current?.vaultId !== vaultId) {
+          pendingRequest.current = { vaultId, requestId: crypto.randomUUID() };
+        }
+        await vaultApi(vaultId).post("/api/upload", { path: "", is_directory: true, request_id: pendingRequest.current.requestId });
+        pendingRequest.current = null;
         setNotice(t("uploads.whole_started"));
+        await client.invalidateQueries({ queryKey: ["upload-activity"] });
       } else {
         const result = await apiRequest<RetryFailedUploadsResponse>(`/api/upload/retry-failed${vaultId === undefined ? "" : `?vault_id=${vaultId}`}`, { method: "POST" });
         setNotice(t("uploads.retry_result", { count: result.item_count }));

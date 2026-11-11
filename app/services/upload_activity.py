@@ -17,16 +17,26 @@ STAGES = ("stability_wait", "queued", "uploading", "verifying")
 
 def _empty() -> dict[str, Any]:
     return {**{stage: {"files": 0, "bytes": 0, "transferred_bytes": 0} for stage in STAGES},
-            "awaiting_admission_files": 0, "next_stable_at": None}
+            "awaiting_admission_files": 0, "next_stable_at": None,
+            "bulk_admission": {"requests": 0, "selected_files": 0, "processed_files": 0, "admitted_files": 0}}
 
 
 def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     stamp = now.isoformat()
     vaults = connection.execute(
-        "SELECT id,name,enabled,decommission_state,relocation_state FROM vaults ORDER BY lower(name),id"
+        """SELECT v.id,v.name,v.enabled,v.decommission_state,v.relocation_state,
+            a.requests,a.selected_files,a.processed_files,a.admitted_files
+        FROM vaults v LEFT JOIN (
+            SELECT vault_id,count(*) AS requests,sum(selected_count) AS selected_files,
+                sum(processed_count) AS processed_files,sum(admitted_count) AS admitted_files
+            FROM bulk_upload_admissions WHERE status='pending' GROUP BY vault_id
+        ) a ON a.vault_id=v.id ORDER BY lower(v.name),v.id"""
     ).fetchall()
     items = {row["id"]: {"vault_id": row["id"], "vault_name": row["name"], **_empty()} for row in vaults}
+    for row in vaults:
+        items[row["id"]]["bulk_admission"] = {
+            key: int(row.get(key) or 0) for key in _empty()["bulk_admission"]}
     # A single grouped query, with progress clamped per Job before summation.
     # Reconciliation/cleanup is verification work, not another network upload.
     # While the installation S3 gate is blocked no transfer can start: a Job still
@@ -99,6 +109,8 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
             for key in ("files", "bytes", "transferred_bytes"):
                 total[stage][key] += item[stage][key]
         total["awaiting_admission_files"] += item["awaiting_admission_files"]
+        for key in total["bulk_admission"]:
+            total["bulk_admission"][key] += item["bulk_admission"][key]
         deadline = item["next_stable_at"]
         if deadline and (not total["next_stable_at"] or deadline < total["next_stable_at"]):
             total["next_stable_at"] = deadline
