@@ -9,7 +9,7 @@ Stage permits are borrowed by the existing claimed foreground threads.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 import json
@@ -210,8 +210,14 @@ class UploadExecution:
             a.snapshot, a.local_stat = w.prepare_upload_snapshot(a.source, a.check_active)
         a.local_digest = a.snapshot.plaintext_sha256
         old = (a.target or {}).get("job_upload_snapshot_json")
-        if old is not None and old != a.snapshot.as_json():
-            raise RuntimeError("Local file changed since fingerprinting")
+        if old is not None:
+            # Unsent pre-#573 admissions retain their immutable legacy evidence;
+            # do not invent a historical mtime from today's Local Copy.
+            previous = UploadSnapshot.from_json(old)
+            if previous.mtime_ns is None:
+                a.snapshot = replace(a.snapshot, mtime_ns=None)
+            if old != a.snapshot.as_json():
+                raise RuntimeError("Local file changed since fingerprinting")
         w.ensure_job_active(job["id"], "Upload claim was lost")
         return self._automatic_gate(job, after_hash=True)
 
@@ -355,7 +361,7 @@ class UploadExecution:
             else:
                 provenance.close_multipart(w.db, a.intent["id"], upload_id, w.now_iso())
         transfer_job = {**job, "_upload_snapshot": a.snapshot, "_upload_provider": provider,
-            "_upload_metadata": {provenance.TOKEN_KEY: a.intent["token"]},
+            "_upload_metadata": {provenance.TOKEN_KEY: a.intent["token"], **a.snapshot.file_metadata()},
             "_on_upload_acknowledged": acknowledge, "_on_upload_multipart": multipart}
         # A journal elsewhere may have failed while this DB commit waited.
         # Never send in that case, even if this intent now needs reconciliation.

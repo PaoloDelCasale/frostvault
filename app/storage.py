@@ -4843,6 +4843,8 @@ def process_recover(job: dict[str, Any]) -> None:
     if target["local_presence"] == "present":
         raise RuntimeError("A local copy is already present")
 
+    from .services.upload_snapshot import recovery_mtime_ns
+
     expected_digest = str(target["version_sha256"]).lower()
     object_key = str(target["object_key"])
     provider_version_id = str(target["provider_version_id"])
@@ -4860,6 +4862,7 @@ def process_recover(job: dict[str, Any]) -> None:
         Key=object_key,
         VersionId=provider_version_id,
     )
+    original_mtime_ns = recovery_mtime_ns(target.get("upload_snapshot_json"), head.get("Metadata") or {})
     head_class = head.get("StorageClass") or storage_class
     restore_state, restore_expiry = restore_header_state(head.get("Restore"))
     if storage_class_requires_restore(head_class) and restore_state != "available":
@@ -4929,6 +4932,10 @@ def process_recover(job: dict[str, Any]) -> None:
         )
         ensure_job_active(job["id"], "Recovery stopped")
         set_job(job["id"], "verifying", "Verifying recovered plaintext")
+        if original_mtime_ns is not None:
+            # Apply before hashing so the publication guard and catalog observe
+            # the final fingerprint, while recovered_at owns local retention.
+            os.utime(temporary, ns=(temporary.stat().st_atime_ns, original_mtime_ns), follow_symlinks=False)
         recovered_digest, recovered_stat = hash_stable_regular_file(temporary)
         if recovered_digest != expected_digest:
             raise RuntimeError(

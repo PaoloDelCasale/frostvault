@@ -24,6 +24,14 @@ DEFAULT_PART_SIZE = 8 * CHUNK_SIZE
 MAX_PART_SIZE = 1024 * CHUNK_SIZE
 MAX_OBJECT_SIZE = 5 * 1024**4
 MODES = frozenset({"s3_checksum", "read_back"})
+MTIME_METADATA_KEY = "frostvault-mtime-ns"
+
+
+def validate_mtime_ns(value: Any) -> int:
+    """Signed nanoseconds since Unix epoch; never accept rounded floats/bools."""
+    if type(value) is not int or not -(2**63) <= value < 2**63:
+        raise ValueError("Invalid original file modification time")
+    return value
 
 
 def fingerprint(value: os.stat_result) -> tuple[int, ...]:
@@ -42,12 +50,21 @@ class UploadSnapshot:
     checksum_sha256: str
     part_size: int
     part_checksums: tuple[str, ...]
+    mtime_ns: int | None = None
 
     def as_json(self) -> str:
-        return json.dumps({"format": 1, "size": self.size, "plaintext_sha256": self.plaintext_sha256,
-                           "algorithm": "SHA256", "checksum_type": self.checksum_type,
-                           "checksum_sha256": self.checksum_sha256, "part_size": self.part_size,
-                           "part_checksums": list(self.part_checksums)}, separators=(",", ":"))
+        data = {"format": 1, "size": self.size, "plaintext_sha256": self.plaintext_sha256,
+                "algorithm": "SHA256", "checksum_type": self.checksum_type,
+                "checksum_sha256": self.checksum_sha256, "part_size": self.part_size,
+                "part_checksums": list(self.part_checksums)}
+        # Preserve the exact encoding of immutable pre-#573 snapshots.
+        if self.mtime_ns is not None:
+            data["mtime_ns"] = validate_mtime_ns(self.mtime_ns)
+        return json.dumps(data, separators=(",", ":"))
+
+    def file_metadata(self) -> dict[str, str]:
+        return ({MTIME_METADATA_KEY: str(validate_mtime_ns(self.mtime_ns))}
+                if self.mtime_ns is not None else {})
 
     @classmethod
     def from_json(cls, raw: str) -> UploadSnapshot:
@@ -55,7 +72,8 @@ class UploadSnapshot:
         if data.get("format") != 1 or data.get("algorithm") != "SHA256":
             raise ValueError("Unsupported Upload Snapshot evidence")
         snapshot = cls(data["size"], data["plaintext_sha256"], data["checksum_type"],
-                       data["checksum_sha256"], data["part_size"], tuple(data["part_checksums"]))
+                       data["checksum_sha256"], data["part_size"], tuple(data["part_checksums"]),
+                       validate_mtime_ns(data["mtime_ns"]) if "mtime_ns" in data else None)
         if not 0 <= snapshot.size <= MAX_OBJECT_SIZE or not DEFAULT_PART_SIZE <= snapshot.part_size <= MAX_PART_SIZE:
             raise ValueError("Invalid Upload Snapshot layout")
         digest = bytes.fromhex(snapshot.plaintext_sha256)
@@ -74,6 +92,27 @@ class UploadSnapshot:
         if not 1 <= number <= len(self.part_checksums):
             raise RuntimeError("Upload Snapshot part number mismatch")
         return min(self.part_size, self.size - (number - 1) * self.part_size)
+
+
+def recovery_mtime_ns(snapshot_json: str | None, metadata: dict[str, str]) -> int | None:
+    """Use immutable catalog evidence, or metadata from the exact S3 version.
+
+    LastModified and current/missing Local Copy observations are not the source
+    file's modification time. Legacy objects without evidence remain unknown.
+    """
+    if snapshot_json:
+        value = UploadSnapshot.from_json(snapshot_json).mtime_ns
+        if value is not None:
+            return value
+    raw = metadata.get(MTIME_METADATA_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or len(raw) > 20:
+        raise ValueError("Invalid original file modification time")
+    value = validate_mtime_ns(int(raw))
+    if str(value) != raw:
+        raise ValueError("Invalid original file modification time")
+    return value
 
 
 def composite_checksum(parts: tuple[str, ...]) -> str:
@@ -122,7 +161,7 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
     multipart = size >= MULTIPART_THRESHOLD
     snapshot = UploadSnapshot(size, plaintext.hexdigest(), "COMPOSITE" if multipart else "FULL_OBJECT",
                               composite_checksum(tuple(parts)) if multipart else base64.b64encode(plaintext.digest()).decode("ascii"),
-                              part_size, tuple(parts))
+                              part_size, tuple(parts), before.st_mtime_ns)
     return snapshot, before
 
 
