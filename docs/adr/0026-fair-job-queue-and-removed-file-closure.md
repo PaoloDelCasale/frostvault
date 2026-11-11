@@ -101,4 +101,6 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 
 The per-file cost of small uploads (many S3 round trips per object and the Vault
 row lock taken by every status write) was not measured and is not changed. A
-change would need measurements against a real bucket.
+change would need measurements against a real bucket. [ADR-0031](0031-pooled-connections-and-shared-vault-lock-for-held-job-steps.md)
+later pooled the database connections and shared the Vault lock for held Job
+steps (#535); the S3 round trips are still unchanged.
