@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from contextlib import ExitStack, aclosing
 from pathlib import Path
@@ -594,6 +595,39 @@ class UndecodablePathErrorTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(storage._is_undecodable_path_error(failure), repr(failure))
 
 
+class WatcherDeniedDirectoriesTests(unittest.TestCase):
+    def test_native_notify_path_list_survives_repair_and_escaped_path_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            names = ['briefly-denied', 'quotes" and about spaces']
+            for name in names:
+                (root / name).mkdir()
+            # Native watchfiles PermissionError supplies no errno/filename.
+            error = PermissionError('Permission denied (os error 13) about ' + json.dumps(
+                [str(root / name) for name in names],
+            ))
+            self.assertEqual(storage._watcher_denied_directories(error, root), set(names))
+
+    def test_polling_errors_and_nested_exception_groups_are_recognized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "denied").mkdir()
+            error = ExceptionGroup("watcher stopped", [RuntimeError(
+                f'IO error for operation on {root / "denied"}: Permission denied (os error 13)',
+            )])
+            self.assertEqual(storage._watcher_denied_directories(error, root), {"denied"})
+
+    def test_native_error_does_not_enroll_outside_paths_files_or_malformed_lists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "vault"
+            root.mkdir()
+            (root / "file").touch()
+            for encoded in (json.dumps([str(root.parent), str(root), str(root / "file"), 13]),
+                            'not a path list', '{"path": "denied"}'):
+                error = PermissionError('Permission denied (os error 13) about ' + encoded)
+                self.assertEqual(storage._watcher_denied_directories(error, root), set())
+
+
 class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
     """Issues #494-#497: every healthy watcher start is paired with a scan."""
 
@@ -686,9 +720,19 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await self.stop(task)
 
-    async def test_an_unreadable_subfolder_does_not_stop_the_observer(self):
+    async def test_native_registration_does_not_silently_ignore_permission_gaps(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             task = self.start(stack, directory, [self.quiet], [{}])
+            try:
+                await self.settle(lambda: self.awatch_kwargs)
+                self.assertFalse(self.awatch_kwargs[0]["ignore_permission_denied"])
+            finally:
+                await self.stop(task)
+
+    async def test_polling_keeps_its_permission_tolerance(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            task = self.start(stack, directory, [self.quiet], [{}])
+            stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True)))
             try:
                 await self.settle(lambda: self.awatch_kwargs)
                 self.assertTrue(self.awatch_kwargs[0]["ignore_permission_denied"])

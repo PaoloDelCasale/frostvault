@@ -6339,16 +6339,28 @@ _DENIED_WATCH_PATH = re.compile(r"IO error for operation on (.+?): Permission de
 
 
 def _watcher_denied_directories(exc: BaseException, root: Path) -> set[str]:
-    """Folders a failed observer named as not enterable, relative to ``root``.
+    """Folders a native or polling observer could not enroll, relative to root.
 
-    The polling backend ignores ``ignore_permission_denied`` for a folder that
-    appears unreadable while it runs, and stops. Registering around the folder
-    at the restart keeps it from stopping again before a scan has named it.
+    Native registration raises PermissionError with notify's path list; polling
+    reports an IO error naming one path. Keep the discovery even if permissions
+    have already been repaired: a later readable walk cannot prove coverage.
     """
     found: set[str] = set()
     for inner in _flattened_exceptions(exc):
-        for match in _DENIED_WATCH_PATH.finditer(str(inner)):
-            path = Path(match.group(1))
+        paths = [match.group(1) for match in _DENIED_WATCH_PATH.finditer(str(inner))]
+        if isinstance(inner, PermissionError):
+            # watchfiles 1.3: PermissionError has neither errno nor filename;
+            # notify appends `about ["/path"]` to its message instead.
+            _message, separator, encoded = str(inner).partition(" about ")
+            if separator:
+                try:
+                    native_paths = json.loads(encoded)
+                except (ValueError, TypeError):
+                    native_paths = []
+                if isinstance(native_paths, list):
+                    paths.extend(value for value in native_paths if isinstance(value, str))
+        for value in paths:
+            path = Path(value)
             try:
                 relative = path.relative_to(root).as_posix()
             except ValueError:
@@ -6528,12 +6540,12 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                     debounce=runtime.filesystem_watch_debounce_ms,
                     force_polling=settings.filesystem_watch_force_polling,
                     poll_delay_ms=runtime.filesystem_watch_poll_ms,
-                    # A folder that cannot be entered must not stop the watcher
-                    # of the whole Vault (#495). The flag alone is not enough:
-                    # the native registration stops at the first such folder
-                    # and leaves its siblings unwatched, so the readable part
-                    # of the tree is registered around the known ones.
-                    ignore_permission_denied=True,
+                    # Native EACCES MUST surface (#565): ignoring it can yield
+                    # a successful barrier with a new directory silently left
+                    # unwatched. A later chmod/chown raises no topology event.
+                    # Record the named gap and restart around it instead. Keep
+                    # polling's existing snapshot/permission behavior unchanged.
+                    ignore_permission_denied=settings.filesystem_watch_force_polling,
                     # awatch is lazy: its first yield (including a timeout)
                     # is the registration barrier, for inotify AND polling.
                     yield_on_timeout=True,
@@ -6669,6 +6681,14 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
             denied = await asyncio.to_thread(_watcher_denied_directories, exc, root)
             if denied:
                 watch_plan.note_unreadable_directories(vault_id, denied)
+                # Registration can fail before any batch/scan sees the denial,
+                # and the folder can already be readable by the next walk.
+                # Publish its path now, independently of the retry scan.
+                with db() as connection:
+                    for relative in sorted(denied):
+                        report_problem(
+                            connection, event="file_unreadable", vault_id=vault_id, path=relative,
+                        )
             if _is_undecodable_path_error(exc):
                 # A filename that is not UTF-8 stopped the native observer and the
                 # events around it are lost: not an internal error. The Vault is
@@ -6682,9 +6702,9 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                     error="Source watcher stopped on a file name that is not valid UTF-8",
                 )
             elif denied:
-                # A folder that cannot be entered appeared (the polling backend
-                # stops on it): a path problem, not an internal error. The restart
-                # registers around it and the next scan names it (#495).
+                # Native registration or the polling backend could not enter
+                # a folder: a path problem, not an internal error. The restart
+                # registers around it and the cheap retry repairs coverage.
                 worker_error_store.log_worker_error("source_watcher", exc, vault_id)
                 await asyncio.to_thread(
                     _record_scan_component_health, vault_id, "source",

@@ -148,8 +148,19 @@ notification center, without a sample limit. An incomplete scan never marks
 unseen Local Copies missing. An inaccessible or unverifiable Vault root blocks
 protection. FrostVault never changes ownership or permissions automatically.
 
-An unreadable subdirectory is reported by name. It is not watched, but the
-watcher of the rest of the Vault keeps running, whichever folders sit next to it:
+An unreadable subdirectory is reported by name, including a directory briefly
+inaccessible during native watcher registration. Native registration does not
+ignore permission errors: a successful timeout must not conceal a directory it
+failed to enroll. The named gap is retained even if permissions are repaired
+before the next batch or scan, and the watcher restarts with the readable tree
+registered around it (using the existing bounded restart backoff). No chmod,
+chown, later directory creation, or application restart is needed to trigger
+recovery: the same once-a-minute gap recheck restores coverage and a paired
+catch-up scan reconciles files written before registration. A manual scan can
+repair the desired plan, but cannot erase this registration debt.
+
+An unreadable directory is not watched, but the watcher of the rest of the
+Vault resumes, whichever folders sit next to it:
 the readable part of the tree is registered around the gap, and registered as a
 whole again once the folder is repaired. The Vault stays `unconfirmed` while a path
 is unreadable: the other files are still uploaded, but no local space is freed
