@@ -317,9 +317,29 @@ class BulkAdmissionPostgresTests(QueueFixture):
                 SELECT id,2,id,%s FROM vault_files WHERE vault_id=2 ORDER BY id""", (self.clock.isoformat(),))
             c.execute("""INSERT INTO local_copies(vault_file_id,presence,file_type,size,mtime_ns,observed_at)
                 SELECT id,'present','regular',12,1,%s FROM vault_files WHERE vault_id=2""", (self.clock.isoformat(),))
+        timings = []
+        statements = []
         started = time.monotonic()
-        request = self.create()
-        self.assertLess(time.monotonic() - started, 5)
+        with self.db() as c:
+            timings.append(("connect", time.monotonic() - started))
+            class Probe:
+                def execute(self, statement, params=()):
+                    before = time.monotonic()
+                    result = c.execute(statement, params)
+                    timings.append((statement.strip().splitlines()[0], time.monotonic() - before))
+                    statements.append((statement, params))
+                    return result
+            request = bulk.create(Probe(), vault_id=2, path="", user_id=1)
+            before_commit = time.monotonic()
+        timings.append(("commit/close", time.monotonic() - before_commit))
+        elapsed = time.monotonic() - started
+        plan = []
+        if elapsed >= 5:
+            with self.db() as c:
+                for statement, params in statements:
+                    if "SELECT COALESCE(max(fp.id)" in statement:
+                        plan = c.execute("EXPLAIN (ANALYZE, BUFFERS) " + statement, params).fetchall()
+        self.assertLess(elapsed, 5, f"[DEBUG-550-admission] {timings}; plan={plan}")
         self.assertEqual(request["selected_count"], 10000)
         self.assertEqual(self.jobs(), [])
         with self.db() as c:
