@@ -74,6 +74,13 @@ writes derived aggregate/status rows. Foreign-key locks do not upgrade SHARE.
   assertions and profiles/gates remain unchanged. PR profile remains 64; full
   2048-file stress remains the exact-main publication gate, coordinator-owned.
 
+The first complete implementation CI (`f0516a7d`, run `42996057585`) passed
+all ordinary Python/S3/frontend/image/security checks and the SQL recording,
+overlap/fencing, pause/cancel and pre-send commit tests. Its only failing case
+was the new shared statement fault injector: a MagicMock replaced catalog method
+descriptor binding and dropped `self`. It now patches with a real function;
+assertions, fault coverage, sizes and floors were not relaxed.
+
 ## Integration concerns
 
 1. Rebase/cherry-pick only this branch's commits. Preserve any coordinator changes

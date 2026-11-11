@@ -549,7 +549,9 @@ class AggregateDeadlockTests(unittest.TestCase):
                         if len(attempts) == 1:
                             connection.execute(f"DO $$ BEGIN RAISE EXCEPTION 'shared unit abort' USING ERRCODE='{code}'; END $$")
                         return result
-                    with patch.object(owner, name, side_effect=fail_once):
+                    # A real function retains descriptor binding for catalog
+                    # methods; MagicMock.side_effect would drop their `self`.
+                    with patch.object(owner, name, fail_once):
                         self.assertTrue(self.run_job(job_id))
                     self.assertGreaterEqual(len(attempts), 2)
                     with PostgresConnection(self.path) as c:
