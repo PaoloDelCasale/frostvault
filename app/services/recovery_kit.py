@@ -113,6 +113,16 @@ Use any authorized S3 tool; first list prefixes, then set PREFIX to vaults/UUID/
    aws s3 ls "s3://$BUCKET/$PREFIX" --recursive --region "$REGION"
    aws s3 cp "s3://$BUCKET/$PREFIX" ./recovered/ --recursive --region "$REGION"
 Use an empty destination. These commands do not remove anything from S3.
+AWS CLI does NOT apply FrostVault's original file modification time automatically.
+New uploads store signed Unix nanoseconds in S3 metadata frostvault-mtime-ns.
+After each download, read metadata from the SAME exact VersionId (not LastModified)
+and apply it, for example after setting KEY and VERSION for ./recovered-file:
+   MTIME_NS=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" --region "$REGION" --query 'Metadata."frostvault-mtime-ns"' --output text)
+   if [ "$MTIME_NS" != None ] && [ -n "$MTIME_NS" ]; then
+     python3 -c 'import os,sys; p=sys.argv[1]; ns=int(sys.argv[2]); os.utime(p, ns=(os.stat(p).st_atime_ns,ns), follow_symlinks=False)' ./recovered-file "$MTIME_NS"
+   fi
+Older uploads may lack this metadata: their original modification time is unknown.
+S3 LastModified is the upload/copy time, NOT the original file modification time.
 For GLACIER/DEEP_ARCHIVE, set KEY to the exact key and VERSION to its VersionId:
    aws s3api list-object-versions --bucket "$BUCKET" --prefix "$PREFIX" --region "$REGION"
    aws s3api restore-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" --restore-request '{"Days":7,"GlacierJobParameters":{"Tier":"Bulk"}}' --region "$REGION"

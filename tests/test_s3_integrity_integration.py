@@ -53,6 +53,11 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 root, relative_path=relative_path, payload=payload, bucket=self.bucket,
                 prefix=self.prefix,
             )
+            local = source / relative_path
+            original_mtime_ns = 1_597_614_120_123_456_789
+            os.utime(local, ns=(original_mtime_ns, original_mtime_ns))
+            with PostgresConnection(str(database_path)) as connection:
+                connection.execute("UPDATE local_copies SET mtime_ns=%s", (original_mtime_ns,))
             database_settings = SimpleNamespace(database_dsn=database_dsn(str(database_path)))
             worker_settings = SimpleNamespace(
                 aws_region=self.env["AWS_DEFAULT_REGION"],
@@ -72,7 +77,10 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     self.assertEqual(version["object_key"], f"{self.prefix}/{relative_path}")
                     head = s3_client().head_object(Bucket=self.bucket, Key=version["object_key"], VersionId=version["provider_version_id"])
                     self.assertEqual(head["VersionId"], version["provider_version_id"])
-                    local = source / relative_path
+                    self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
+                    from app.services.upload_snapshot import UploadSnapshot
+                    snapshot_json = connection.execute("SELECT upload_snapshot_json FROM archive_versions WHERE id=%s", (version["id"],)).fetchone()["upload_snapshot_json"]
+                    self.assertEqual(UploadSnapshot.from_json(snapshot_json).mtime_ns, original_mtime_ns)
                 if move:
                     from contextlib import ExitStack
                     with PostgresConnection(str(database_path)) as connection:
@@ -110,6 +118,16 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='recover'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
                 self.assertEqual(hashlib.sha256(local.read_bytes()).hexdigest(), digest)
+                self.assertEqual(local.stat().st_mtime_ns, original_mtime_ns)
+                with PostgresConnection(str(database_path)) as connection:
+                    recovered = connection.execute("SELECT mtime_ns,recovered_at FROM local_copies WHERE vault_file_id=%s", (observed["id"],)).fetchone()
+                    self.assertEqual(recovered["mtime_ns"], original_mtime_ns)
+                    self.assertIsNotNone(recovered["recovered_at"])
+                    # Even a catalogless recovery has exact metadata after a
+                    # single/multipart storage-class copy (MetadataDirective).
+                    latest = ArchiveCatalog(connection).get_file_by_path(2, relative_path)["latest_version"]
+                    head = s3_client().head_object(Bucket=self.bucket, Key=latest["object_key"], VersionId=latest["provider_version_id"])
+                    self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
 
     def test_raw_receipt_after_real_sdk_upload_survives_flush_failure_without_extra_version(self):
         from app.services import upload_provenance

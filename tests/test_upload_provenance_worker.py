@@ -148,6 +148,8 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                     self.assertTrue(intent["send_started"])
                     self.assertEqual(intent["snapshot_json"], kwargs["snapshot"].as_json())
                     self.assertEqual(kwargs["metadata"][provenance.TOKEN_KEY], intent["token"])
+                    self.assertEqual(kwargs["metadata"]["frostvault-mtime-ns"], str(self.file.stat().st_mtime_ns))
+                    self.assertEqual(UploadSnapshot.from_json(intent["snapshot_json"]).mtime_ns, self.file.stat().st_mtime_ns)
                     self.assertIsNotNone(connection.execute("SELECT job_id FROM snapshot_cleanup_inventories").fetchone())
         self.provider.hook = inspect
         job = self.queue()
