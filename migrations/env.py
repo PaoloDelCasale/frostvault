@@ -4,8 +4,13 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from alembic.script import ScriptDirectory
+from alembic.script.revision import ResolutionError
+from alembic.util.exc import CommandError
 from psycopg.conninfo import conninfo_to_dict
 from sqlalchemy import URL, engine_from_config, pool
+
+from app.schema_state import DatabaseSchemaError, read_schema_revision
 
 
 config = context.config
@@ -48,6 +53,24 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
         )
         with context.begin_transaction():
+            # Run before Alembic creates/stamps its version table or executes
+            # DDL, including direct CLI invocations (not only application start).
+            # The raw driver's tuple rows are supported without mutating its
+            # row factory underneath SQLAlchemy.
+            revision = read_schema_revision(connection.connection.driver_connection)
+            scripts = ScriptDirectory.from_config(config)
+            if len(scripts.get_heads()) != 1:
+                raise DatabaseSchemaError("The local Alembic migration graph is divergent; mutation is blocked.")
+            if revision is not None:
+                try:
+                    known = scripts.get_revision(revision)
+                except (ResolutionError, CommandError):
+                    known = None
+                if known is None:
+                    raise DatabaseSchemaError(
+                        "The database schema revision is unknown to this application build; "
+                        "keep the catalog unchanged and use its matching release."
+                    ) from None
             context.run_migrations()
 
 

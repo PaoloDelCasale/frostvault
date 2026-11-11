@@ -14,7 +14,13 @@ import sys
 from pathlib import Path
 
 from .config import settings, settings_snapshot
-from .database import db
+from .database import DatabaseSchemaError, db, read_schema_revision
+from .migrate_on_start import (
+    SchemaMigrationError,
+    _alembic_script_directory,
+    _validate_local_migration_graph,
+    _verify_database_revision_ancestry,
+)
 from .services import metadata_backups
 
 
@@ -33,6 +39,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Only create the pre-upgrade backup",
     )
     args = parser.parse_args(argv)
+
+    # Inspect before even creating a backup/run record or opening S3. A
+    # decryptable artifact cannot legitimize an unknown/divergent catalog.
+    try:
+        with db() as connection:
+            revision = read_schema_revision(connection)
+        scripts = _alembic_script_directory()
+        _validate_local_migration_graph(scripts)
+        if revision is not None:
+            _verify_database_revision_ancestry(revision)
+        target = scripts.get_revision(args.revision)
+        if target is None:
+            raise SchemaMigrationError("The requested schema target is not supported.")
+    except (DatabaseSchemaError, SchemaMigrationError) as exc:
+        print(f"Schema upgrade blocked: {exc}", file=sys.stderr)
+        return 2
+    except Exception:
+        # Driver/graph failures can contain DSN details. Never echo them.
+        print("Schema upgrade blocked: unable to validate catalog and migration target.", file=sys.stderr)
+        return 2
+
+    if revision is None:
+        if args.skip_upgrade:
+            print("Pre-upgrade backup blocked: the database has no catalog to back up.", file=sys.stderr)
+            return 2
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", args.revision], check=False,
+        ).returncode
 
     backup_dir = Path(settings.metadata_backup_dir)
     try:

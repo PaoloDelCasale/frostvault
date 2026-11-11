@@ -16,6 +16,7 @@ from psycopg_pool import ConnectionPool, PoolClosed, PoolTimeout
 from . import config
 from .config import settings
 from .security import hash_password, verify_password
+from .schema_state import DatabaseSchemaError, read_schema_revision
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
@@ -31,10 +32,6 @@ POOL_HEADROOM = 8
 POOL_CHECKOUT_TIMEOUT_SECONDS = 1.0
 # A burst's surplus connections close one per idle period, down to zero.
 POOL_MAX_IDLE_SECONDS = 60.0
-
-
-class DatabaseSchemaError(RuntimeError):
-    pass
 
 
 def pool_max_size() -> int:
@@ -262,24 +259,6 @@ def transaction(connection: Any) -> Iterator[Any]:
         connection.execute("BEGIN")
     with connection.transaction():
         yield connection
-
-
-def read_schema_revision(connection: Any) -> str | None:
-    """Return the recorded Alembic revision, or None when unversioned."""
-    version_table = connection.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema=current_schema() AND table_name='alembic_version'
-        ) AS present
-        """
-    ).fetchone()
-    if not version_table["present"]:
-        return None
-    revision_row = connection.execute(
-        "SELECT version_num FROM alembic_version"
-    ).fetchone()
-    return revision_row["version_num"] if revision_row else None
 
 
 def initialize_database() -> None:

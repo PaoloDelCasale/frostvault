@@ -259,6 +259,8 @@ def ensure_schema_current() -> str:
             _verify_single_database_revision(connection, revision)
     except SchemaMigrationError:
         raise
+    except DatabaseSchemaError as exc:
+        raise SchemaMigrationError(str(exc) + " " + _manual_recovery_guidance()) from None
     except Exception:  # noqa: BLE001 - do not expose database/driver details at startup
         raise SchemaMigrationError(
             "Unable to inspect the database schema state. "
@@ -269,7 +271,7 @@ def ensure_schema_current() -> str:
         # Fresh databases have no ancestry to prove, but the local graph must
         # still be coherent before any Alembic mutation is executed.
         _validate_local_migration_graph(_alembic_script_directory())
-        print("AUTO_MIGRATE: unversioned database — running alembic upgrade head")
+        print("AUTO_MIGRATE: empty database — running alembic upgrade head")
         _alembic_upgrade()
         return "bootstrapped"
 
