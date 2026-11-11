@@ -220,6 +220,84 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("PostgreSQLMigrationTests", postgres_runs)
         self.assertIn("tests.test_aggregate_deadlocks", postgres_runs)
 
+    def test_upload_stress_is_bounded_only_on_prs_and_attested_on_main(self) -> None:
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        triggers = _workflow_on(workflow)
+        self.assertEqual(triggers["push"]["branches"], ["main"])
+        self.assertNotIn("paths", triggers["pull_request"] or {})
+        job = workflow["jobs"]["postgresql-tests"]
+        self.assertEqual(job["env"]["FROSTVAULT_STRESS_PROFILE"],
+                         "${{ github.event_name == 'pull_request' && 'pr' || 'full' }}")
+        self.assertNotIn("if", job)
+        self.assertFalse(job.get("continue-on-error", False))
+        stress = next(step for step in job["steps"] if step.get("id") == "stress")
+        self.assertNotIn("if", stress)
+        self.assertFalse(stress.get("continue-on-error", False))
+        self.assertIn("tests.test_aggregate_deadlocks", stress["run"])
+        self.assertIn("PostgreSQLMigrationTests", stress["run"])
+        output = 'echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"'
+        self.assertIn(output, stress["run"])
+        self.assertLess(stress["run"].index("python -m unittest"), stress["run"].index(output))
+        self.assertNotIn("shell", stress)  # GitHub's default bash -e is required.
+        self.assertNotIn("||", stress["run"])
+        self.assertNotIn("set +e", stress["run"])
+        self.assertEqual(job["outputs"]["profile"], "${{ steps.stress.outputs.profile }}")
+        full = workflow["jobs"]["full-postgresql-stress"]
+        self.assertEqual(full["name"], "Full PostgreSQL concurrency stress")
+        self.assertEqual(full["needs"], ["postgresql-tests"])
+        self.assertEqual(full["if"], "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}")
+        step = full["steps"][0]
+        self.assertEqual(step["env"]["RESULT"], "${{ needs.postgresql-tests.result }}")
+        self.assertEqual(step["env"]["PROFILE"], "${{ needs.postgresql-tests.outputs.profile }}")
+        self.assertIn('test "$RESULT" = success', step["run"])
+        self.assertIn('test "$PROFILE" = full', step["run"])
+        import os
+        import subprocess
+        for result, profile, expected in (
+            ("success", "full", 0), ("success", "pr", 1),
+            ("success", "", 1), ("skipped", "full", 1),
+            ("failure", "full", 1), ("cancelled", "full", 1),
+        ):
+            with self.subTest(result=result, profile=profile):
+                command = subprocess.run(["bash", "-e", "-c", step["run"]],
+                                         env={**os.environ, "RESULT": result, "PROFILE": profile})
+                self.assertEqual(command.returncode, expected)
+
+    def test_every_python_module_is_selected_once_without_importing_database_tests(self) -> None:
+        # Execute the actual workflow selector for all shards: a newly added
+        # regression must not disappear or run repeatedly due to sharding.
+        import ast
+        import contextlib
+        import io
+        import os
+        from collections import Counter
+        from unittest.mock import patch
+
+        workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["python-unit-tests"]
+        run = job["steps"][-1]["run"]
+        selector = run.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        selected = []
+        for shard in job["strategy"]["matrix"]["shard"]:
+            out = io.StringIO()
+            with patch.dict(os.environ, {"SHARD_INDEX": str(shard), "SHARD_COUNT": "12"}), contextlib.redirect_stdout(out):
+                exec(compile(selector, "workflow-selector", "exec"), {})
+            selected.extend(out.getvalue().splitlines())
+        dedicated = {"tests.test_migrations_postgresql", "tests.test_aggregate_deadlocks"}
+        expected = {f"tests.{path.stem}" for path in (ROOT / "tests").glob("test_*.py")} - dedicated
+        self.assertEqual(Counter(selected), Counter({module: 1 for module in expected}))
+        postgres = workflow["jobs"]["postgresql-tests"]
+        runs = "\n".join(step.get("run", "") for step in postgres["steps"])
+        self.assertIn("tests.test_migrations_postgresql.PostgreSQLMigrationTests", runs)
+        self.assertIn("tests.test_aggregate_deadlocks", runs)
+        # The class-qualified migration selection must remain exhaustive if
+        # someone introduces another test class in that dedicated module.
+        tree = ast.parse((ROOT / "tests" / "test_migrations_postgresql.py").read_text())
+        classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)
+                   and any(isinstance(item, ast.FunctionDef) and item.name.startswith("test_")
+                           for item in node.body)}
+        self.assertEqual(classes, {"PostgreSQLMigrationTests"})
+
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["playwright-e2e"]
@@ -663,11 +741,19 @@ class ContainerPublishContractTests(unittest.TestCase):
         for name in (
             "Unit and migration tests",
             "PostgreSQL migration and concurrency tests",
+            "Full PostgreSQL concurrency stress",
             "S3-compatible integrity (MinIO)",
             "Frontend generate and typecheck",
             "Frontend production build",
         ):
             self.assertIn(name, script)
+        require_steps = workflow["jobs"]["require-ci"]["steps"]
+        gate_step = next(step for step in require_steps
+                         if "scripts/require_commit_checks.py" in step.get("run", ""))
+        self.assertNotIn("if", gate_step)
+        self.assertFalse(gate_step.get("continue-on-error", False))
+        self.assertEqual(gate_step["run"].strip(),
+                         'python scripts/require_commit_checks.py --sha "${{ steps.resolve.outputs.sha }}"')
         self.assertIn('ref: ${{ needs.require-ci.outputs.sha }}', text)
         self.assertIn('git rev-parse "v${PROMOTE_TAG}^{commit}"', text)
 
