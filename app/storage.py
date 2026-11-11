@@ -3787,13 +3787,20 @@ def _close_removed_upload(job: dict[str, Any]) -> bool:
 
 @retry_database_unit
 def _upload_catalog_unit(
-    job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any],
+    job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any], *,
+    shared: bool = False,
 ) -> Any:
-    """One owned, replayable transaction; callbacks must contain DB work only."""
+    """Replay DB work only, never provider I/O.
+
+    SHARE is an audited opt-in, not a property of all per-file writes. The full
+    callback (including nested target checks) must never upgrade the Vault lock:
+    no identity creation, aggregate/event/rebuild writers or set_job transitions.
+    Receipt publication and persist_verification deliberately stay exclusive.
+    """
     from .services import upload_provenance as provenance
     with owned_connection(db()) as connection:
-        # Same Vault-first lock order as admission/cleanup; this is DB-only.
-        provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
+        # Same Vault -> Job/file order as admission/cleanup, in either mode.
+        provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence", shared=shared)
         ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
         return mutation(ArchiveCatalog(connection))
 
@@ -3892,7 +3899,8 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
     from .services import upload_provenance as provenance
     pinned = json.loads(intent["target_json"])
     try:
-        _upload_catalog_unit(job, lambda catalog: provenance.require_target(catalog.connection, job, pinned))
+        _upload_catalog_unit(job, lambda catalog: provenance.require_target(
+            catalog.connection, job, pinned, shared=True), shared=True)
         with db() as connection:
             linked = ArchiveCatalog(connection).get_job_target(job["id"])
             raw = provenance.receipt(connection, intent["id"])
@@ -3915,7 +3923,8 @@ def _resume_materialized_upload(job: dict[str, Any], intent: dict[str, Any], cli
                     or (linked and linked["archive_version_id"] and str(linked["archive_version_id"]) != str(intent["archive_version_id"]))):
                 raise provenance.UploadBlocked("ambiguous_receipt")
             if not linked or not linked["archive_version_id"]:
-                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], intent["archive_version_id"]))
+                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(
+                    job["id"], intent["archive_version_id"]), shared=True)
             # VERSION baseline remains immutable, including cleanup-only retries.
             return
         try:
@@ -3968,21 +3977,23 @@ def process_upload(job: dict[str, Any]) -> None:
     source = safe_local_path(job["source_root"], job["path"])
     local_present = source.is_file()
     from .services import upload_provenance as provenance
-    def load_intent(catalog: ArchiveCatalog) -> dict[str, Any] | None:
+    def load_intent_and_target(catalog: ArchiveCatalog) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         intent = provenance.load_for_job(catalog.connection, job["id"])
         if intent is None:
             intent = provenance.outstanding(catalog.connection, job["vault_file_id"])
             if intent:
                 provenance.bind_for_resume(catalog.connection, job["id"], intent)
-        return intent
-    intent = _upload_catalog_unit(job, load_intent)
+        return intent, catalog.get_job_target(job["id"])
+    intent, linked_target = _upload_catalog_unit(job, load_intent_and_target, shared=True)
     import sys
     from .services import snapshot_cleanup
     if intent and intent["send_started"]:
         client = s3_client()
         snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
         _resume_materialized_upload(job, intent, client)
-    linked_target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
+        # Reconciliation can publish/link a version. Only this branch needs a
+        # fresh read; the ordinary path loaded both facts in one DB-only unit.
+        linked_target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]), shared=True)
     linked_version_id = linked_target.get("archive_version_id") if linked_target else None
     if job.get("upload_reconcile_only") and not linked_version_id:
         raise provenance.UploadBlocked("ambiguous_send")
@@ -4118,15 +4129,17 @@ def process_upload(job: dict[str, Any]) -> None:
                     bucket=job["s3_bucket"], provider=reuse_provider,
                 ) if vault_file_id else None
 
-            reusable = _upload_catalog_unit(job, prepare_digest)
+            reusable = _upload_catalog_unit(job, prepare_digest, shared=True)
             job["upload_plaintext_sha256"] = upload_digest
             reusable_integrity = (
                 str(reusable.get("integrity") or "") if reusable is not None else ""
             )
             if reusable is not None and reusable_integrity == "verified":
                 version_id = str(reusable["id"])
-                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
-                target = _upload_catalog_unit(job, lambda catalog: catalog.get_job_target(job["id"]))
+                def link_reused_version(catalog: ArchiveCatalog) -> dict[str, Any]:
+                    catalog.link_job_version(job["id"], version_id)
+                    return catalog.get_job_target(job["id"])
+                target = _upload_catalog_unit(job, link_reused_version, shared=True)
                 # A cleanup-only reuse retains the VERSION's original baseline,
                 # never today's newly hashed multipart layout or verification mode.
                 if target.get("upload_snapshot_json") is not None:
@@ -4154,7 +4167,7 @@ def process_upload(job: dict[str, Any]) -> None:
                         "The linked Archive Version cannot be verified safely"
                     )
                 version_id = str(reusable["id"])
-                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id))
+                _upload_catalog_unit(job, lambda catalog: catalog.link_job_version(job["id"], version_id), shared=True)
                 target = {
                     "archive_version_id": version_id,
                     "object_key": reusable["object_key"],
@@ -4177,17 +4190,18 @@ def process_upload(job: dict[str, Any]) -> None:
                 assert snapshot is not None
                 provider = provenance.provider_identity(client)
                 with db() as connection:
-                    pinned = provenance.target(connection, job, key=key, provider=provider)
+                    pinned = provenance.target(connection, job, key=key, provider=provider, shared=True)
                 before = provenance.inventory(client, job["s3_bucket"], key)
                 if before != provenance.inventory(client, job["s3_bucket"], key):
                     raise provenance.UploadBlocked("inventory_changed")
                 intent = _upload_catalog_unit(job, lambda catalog: provenance.prepare(
                     catalog.connection, job, pinned=pinned, snapshot=snapshot,
-                    requested=requested_mode, before=before, timestamp=now_iso()))
+                    requested=requested_mode, before=before, timestamp=now_iso(), shared=True), shared=True)
                 if intent["snapshot_json"] != snapshot.as_json() or intent["inventory_json"] != provenance.canonical(before):
                     raise provenance.UploadBlocked("identity_changed")
                 # This transaction commits BEFORE PutObject/CreateMultipartUpload.
-                _upload_catalog_unit(job, lambda catalog: provenance.mark_send_started(catalog.connection, job, intent))
+                _upload_catalog_unit(job, lambda catalog: provenance.mark_send_started(
+                    catalog.connection, job, intent, shared=True), shared=True)
 
                 def acknowledge(response: dict[str, Any]) -> None:
                     provenance.append_receipt(db, intent["id"], response, now_iso())
@@ -4275,7 +4289,7 @@ def process_upload(job: dict[str, Any]) -> None:
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method=method, fallback_reason=fallback_reason, egress_bytes=0 if checksum_proven else None,
             provider_proof=provider_proof if checksum_proven else None,
-        ))
+        ), shared=True)
         if checksum_proven:
             _complete_verified_upload(
                 job, source=source, version_id=version_id, upload_digest=upload_digest,
@@ -4289,7 +4303,7 @@ def process_upload(job: dict[str, Any]) -> None:
         )
         _upload_catalog_unit(job, lambda catalog: catalog.set_version_verification_method(
             version_id, method="read_back", fallback_reason=fallback_reason, egress_bytes=remote_size,
-        ))
+        ), shared=True)
         final_head = version_head()
         if snapshot is not None:
             evaluate_provider_proof(final_head, source="ordinary_head")
@@ -4563,7 +4577,8 @@ def process_rename(job: dict[str, Any]) -> None:
         if plaintext_sha256:
             # The admitted rename pins independently verified old content, not
             # scan membership/origin. Persist that lineage for replacement cleanup.
-            _upload_catalog_unit(job, lambda catalog: catalog.set_upload_plaintext_digest(job["id"], plaintext_sha256=plaintext_sha256))
+            _upload_catalog_unit(job, lambda catalog: catalog.set_upload_plaintext_digest(
+                job["id"], plaintext_sha256=plaintext_sha256), shared=True)
 
         if live_destination is not None:
             version_id = str(live_destination["id"])

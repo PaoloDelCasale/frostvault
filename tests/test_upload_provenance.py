@@ -20,6 +20,38 @@ from app.services.s3_copy import _object_version_entries
 from tests.upload_provenance_provider import VersionedProvider
 
 
+class ProvenanceLockModeTests(unittest.TestCase):
+    def test_target_is_exclusive_by_default_and_share_is_explicit(self):
+        from app.services import upload_provenance as provenance
+        for kwargs, expected in (({}, "FOR NO KEY UPDATE"), ({"shared": True}, "FOR SHARE")):
+            with self.subTest(kwargs=kwargs), patch("app.services.upload_remediation.require_job"):
+                connection = MagicMock()
+                connection.execute.return_value.fetchone.return_value = None
+                with self.assertRaises(UploadBlocked):
+                    provenance.target(connection, {"id": 1, "vault_id": 2, "vault_file_id": "file"},
+                        key="key", provider="fake", **kwargs)
+                self.assertEqual(connection.execute.call_args_list[0].args[0],
+                    "SELECT * FROM vaults WHERE id=%s " + expected)
+
+    def test_nested_target_checks_keep_the_requested_mode(self):
+        from app.services import upload_provenance as provenance
+        pinned = {"key": "key", "provider": "fake"}
+        intent = {"id": "intent", "target_json": canonical(pinned), "send_started": True}
+        job = {"id": 1}
+        for shared in (False, True):
+            with self.subTest(shared=shared), patch.object(provenance, "target", return_value=pinned) as target, \
+                    patch.object(provenance, "load_for_job", return_value=intent), \
+                    patch.object(provenance, "receipt", return_value=None), \
+                    patch("app.services.upload_remediation_discovery.capture"):
+                connection = MagicMock()
+                provenance.require_target(connection, job, pinned, shared=shared)
+                provenance.prepare(connection, job, pinned=pinned, snapshot=MagicMock(),
+                    requested="read_back", before={}, timestamp="now", shared=shared)
+                provenance.mark_send_started(connection, job, intent, shared=shared)
+                self.assertEqual(target.call_count, 3)
+                self.assertTrue(all(call.kwargs["shared"] is shared for call in target.call_args_list))
+
+
 class ProvenanceProviderTests(unittest.TestCase):
     def setUp(self):
         self.provider = VersionedProvider()

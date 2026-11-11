@@ -175,7 +175,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
 
     def test_prewrite_commit_failure_never_sends(self):
         job = self.queue()
-        def fail(connection, *args):
+        def fail(connection, *args, **kwargs):
             raise RuntimeError("prewrite commit unavailable")
         with patch.object(provenance, "mark_send_started", side_effect=fail):
             self.run_job(job)
