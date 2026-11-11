@@ -71,6 +71,7 @@ class QueryResult:
 class JobQueueResult:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
+        self.rowcount = len(rows)
 
     def fetchall(self):
         return self.rows

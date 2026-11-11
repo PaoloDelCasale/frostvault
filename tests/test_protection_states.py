@@ -240,6 +240,9 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
                   for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
         column = "SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_unsupported'"
+        # Release snapshot read locks before a separate connection performs DDL
+        # (HEAD also owns a file_paths index after #550).
+        self.connection.commit()
         result = run_alembic(self.path, '0067_upload_multipart_journal', 'downgrade')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.connection.execute(column).fetchone()['n'], 0)
@@ -416,6 +419,8 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.connection.commit()
         before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
                   for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
+        # DDL must not wait behind this fixture's idle snapshot transaction.
+        self.connection.commit()
         result = run_alembic(self.path, '0065_upload_remediation', 'downgrade')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 0)

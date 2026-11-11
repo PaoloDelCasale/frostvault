@@ -145,7 +145,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         with self.db() as c:
             row = c.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=2 AND path='foo%_/b.jpg'").fetchone()
             c.execute("UPDATE file_paths SET valid_to=%s WHERE vault_file_id=%s", (self.clock.isoformat(), row["vault_file_id"]))
-            c.execute("INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from) VALUES (%s,2,'foo%_/renamed.jpg',%s)", (row["vault_file_id"], self.clock.isoformat()))
+            c.execute("INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from) VALUES (%s,2,%s,%s)", (row["vault_file_id"], "foo%_/renamed.jpg", self.clock.isoformat()))
         self.seed(["foo%_/new.jpg", "foo%_/b.jpg"])
         result = self.finish(group)
         self.assertEqual(result["processed_count"], result["selected_count"])
