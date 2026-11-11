@@ -19,7 +19,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "scheduler_turns_552"
+HEAD_SCHEMA_REVISION = "0071_bulk_scheduler_merge"
 
 CONNECT_TIMEOUT_SECONDS = 10
 # Each operation slot may hold two handles at once (a unit opened while an

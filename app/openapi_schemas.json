@@ -1054,6 +1054,7 @@
     "JobCancelResponse": {
       "additionalProperties": true,
       "properties": {
+        "stopped_admissions": { "type": "integer", "minimum": 0 },
         "cancelled_count": {
           "type": "number"
         },
@@ -2374,6 +2375,35 @@
       "properties": { "item_count": { "type": "integer" } },
       "required": ["item_count"]
     },
+    "BulkUploadAdmissionResponse": {
+      "type": "object",
+      "properties": {
+        "group_id": { "type": "string" },
+        "vault_id": { "type": "integer" },
+        "path": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "completed", "cancelled", "invalidated"] },
+        "reason": { "type": ["string", "null"] },
+        "requested_at": { "type": "string" },
+        "updated_at": { "type": "string" },
+        "origin": { "type": "string", "enum": ["manual"] },
+        "verification_mode": { "type": "string", "enum": ["s3_checksum", "read_back"] },
+        "selected_count": { "type": "integer", "minimum": 0 },
+        "processed_count": { "type": "integer", "minimum": 0 },
+        "admitted_count": { "type": "integer", "minimum": 0 },
+        "total_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["group_id", "vault_id", "path", "status", "reason", "requested_at", "updated_at", "origin", "verification_mode", "selected_count", "processed_count", "admitted_count", "total_bytes"]
+    },
+    "BulkUploadAdmissionActivity": {
+      "type": "object",
+      "properties": {
+        "requests": { "type": "integer", "minimum": 0 },
+        "selected_files": { "type": "integer", "minimum": 0 },
+        "processed_files": { "type": "integer", "minimum": 0 },
+        "admitted_files": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["requests", "selected_files", "processed_files", "admitted_files"]
+    },
     "UploadActivityStage": {
       "type": "object",
       "properties": {
@@ -2390,6 +2420,7 @@
         "queued": { "$ref": "#/components/schemas/UploadActivityStage" },
         "uploading": { "$ref": "#/components/schemas/UploadActivityStage" },
         "verifying": { "$ref": "#/components/schemas/UploadActivityStage" },
+        "bulk_admission": { "$ref": "#/components/schemas/BulkUploadAdmissionActivity" },
         "awaiting_admission_files": { "type": "integer", "minimum": 0 },
         "next_stable_at": { "type": ["string", "null"] }
       },

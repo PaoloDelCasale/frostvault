@@ -122,6 +122,30 @@ identity; downgrade refuses a still-paused Vault. See ADR-0033 for exact scope.
 Bulk cancellation remains the existing `POST /api/upload/cancel-pending` (empty
 `path` for the entire Vault), not pause/resume.
 
+**Upload whole Vault** and manual directory uploads return HTTP 202 after
+persisting an admission request, not after creating every transfer Job. A dedicated
+DB-only producer creates at most 100 candidates per transaction, releasing the
+Vault lock between batches. Upload activity shows paths considered and Jobs
+admitted separately from transfer progress. The accepted response includes
+`admission` and a stable `group_id`; read durable progress with
+`GET /api/upload/admissions/{group_id}?vault_id=…`. Optional UUID `request_id` on
+`POST /api/upload` makes retries return the same request, including terminal
+requests; reuse for a different scope is rejected. Acceptance is catalog-only, not
+a confirmation of mount availability: transfer workers retain Source Volume checks
+and wait safely when unavailable. Single-file behavior is unchanged.
+
+Each request freezes manual origin, verification mode, Vault identity and a finite
+catalog path watermark. New or renamed paths are not added; unavailable, protected
+or busy files can be skipped, so selected paths need not equal admitted Jobs.
+Restart resumes the committed cursor without reproducing completed batches.
+Remediation still uses its original frozen proof and reconcile-only restrictions.
+Group cancellation also stops unproduced work; cancel-pending records folder
+exclusions for later batches (or stops all admissions for an empty path), without
+cancelling ambiguous sends. Stop Protection and Reconnect require pending admission
+to finish or be cancelled first. Paused Vaults can prepare Jobs but cannot claim
+them. Migration `bulk_upload_admission_550` is metadata-only and refuses downgrade
+while admission remains pending. See [the admission decision](docs/adr/bulk-upload-admission-550.md).
+
 Filesystem watcher observations are the upload input. After five minutes without
 changes, an independent scheduler admits them to the durable Job queue (checked
 every ten seconds), without waiting for the default six-hour full scan. Both
