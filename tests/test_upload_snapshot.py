@@ -242,20 +242,20 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
             ack.assert_called_once()
             stub.assert_no_pending_responses()
 
-    def test_cancel_before_PUT_response_retains_late_ack_after_real_manager_shutdown(self):
-        snapshot = self.snapshot()
+    def test_cancel_before_multipart_response_retains_late_ack_after_real_manager_shutdown(self):
+        snapshot = self.snapshot(b"a" * MULTIPART_THRESHOLD + b"tail")
         entered = threading.Event()
         release = threading.Event()
         cancelled = OperationCancelled("cancelled before provider response")
         ack = Mock()
-        real_put = self.client.put_object
+        real_complete = self.client.complete_multipart_upload
         from s3transfer.manager import TransferManager as RealManager
 
-        def delayed_put(**kwargs):
+        def delayed_complete(**kwargs):
             entered.set()
             if not release.wait(5):
                 raise AssertionError("shutdown never released the provider")
-            return real_put(**kwargs)
+            return real_complete(**kwargs)
 
         def active():
             if entered.is_set():
@@ -270,10 +270,13 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
             manager.shutdown = shutdown_with_late_response
             return manager
 
-        with Stubber(self.client) as stub, patch.object(self.client, "put_object", side_effect=delayed_put), patch(
+        with Stubber(self.client) as stub, patch.object(self.client, "complete_multipart_upload", side_effect=delayed_complete), patch(
             "app.services.s3_upload.TransferManager", side_effect=manager_factory,
         ):
-            stub.add_response("put_object", {"VersionId": "late-response", "ChecksumSHA256": snapshot.checksum_sha256})
+            stub.add_response("create_multipart_upload", {"UploadId": "mpu"})
+            for number in range(2):
+                stub.add_response("upload_part", {"ETag": f"part-{number}"})
+            stub.add_response("complete_multipart_upload", {"VersionId": "late-response", "ChecksumSHA256": snapshot.checksum_sha256})
             with self.assertRaises(OperationCancelled) as caught:
                 self.upload(snapshot, check_active=active, on_acknowledged=ack)
             self.assertIs(caught.exception, cancelled)
@@ -318,6 +321,31 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
             with patch("app.services.s3_upload.TransferConfig", return_value=TransferConfig(max_concurrency=1)):
                 with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
                     self.upload(snapshot)
+            stub.assert_no_pending_responses()
+
+    def test_multipart_fifo_race_fails_without_blocking_a_file_open_and_aborts(self):
+        import builtins
+        import os
+        snapshot = self.snapshot(b"a" * MULTIPART_THRESHOLD)
+        real_create = self.client.create_multipart_upload
+        real_open = builtins.open
+        def create(**kwargs):
+            result = real_create(**kwargs)
+            self.path.unlink()
+            os.mkfifo(self.path)
+            return result
+        def guarded_open(path, mode="r", *args, **kwargs):
+            # Keep the RED test from hanging on the old blocking filename path.
+            if str(path) == str(self.path):
+                raise AssertionError("blocking open would hang on replacement FIFO")
+            return real_open(path, mode, *args, **kwargs)
+        with Stubber(self.client) as stub, patch.object(self.client, "create_multipart_upload", side_effect=create), patch(
+            "builtins.open", side_effect=guarded_open,
+        ):
+            stub.add_response("create_multipart_upload", {"UploadId": "mpu"})
+            stub.add_response("abort_multipart_upload", {})
+            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                self.upload(snapshot)
             stub.assert_no_pending_responses()
 
     def test_A_to_B_between_hashing_and_transport_cannot_send_B(self):

@@ -26,3 +26,26 @@ class SDKBandwidthTests(unittest.TestCase):
             self.assertEqual(report.call_count, 1)
             progress.flush()
         report.assert_called_with(1, 90, claim_token="claim")
+
+    def test_flush_deduplicates_only_a_positively_committed_value(self):
+        with patch("app.storage.set_job_progress", side_effect=[True, False, True]) as report, \
+                patch("app.storage.time.monotonic", return_value=100):
+            progress = _ThrottledByteProgress({"id": 1})
+            progress.add(10)
+            progress.flush()
+            self.assertEqual(report.call_count, 1, "A committed progress value needs no second transaction")
+            progress.add(5)
+            progress.flush()  # A rejected CAS is not a committed value.
+            progress.flush()
+            progress.flush()
+            self.assertEqual([call.args[1] for call in report.call_args_list], [10, 15, 15])
+
+    def test_progress_commit_failure_does_not_suppress_the_next_flush(self):
+        with patch("app.storage.set_job_progress", side_effect=[RuntimeError("commit uncertain"), True]) as report, \
+                patch("app.storage.time.monotonic", return_value=100):
+            progress = _ThrottledByteProgress({"id": 1})
+            with self.assertRaises(RuntimeError):
+                progress.add(10)
+            progress.flush()
+            progress.flush()
+            self.assertEqual(report.call_count, 2)

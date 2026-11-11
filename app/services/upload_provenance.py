@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -242,9 +245,54 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
             "root_identity_version": vault.get("root_identity_version")}
 
 
+class _ValidatedTarget:
+    """Transaction-local capability, never a caller-controlled bypass flag.
+
+    Only _validated_target can install one. It captures the actual locked row
+    validation, one connection and one immutable Job identity. A nested check
+    still compares the complete pin, including path generation/root identity.
+    No capability is stored on pooled connections or survives commit/rollback.
+    """
+
+    def __init__(self, connection: Any, job: dict[str, Any], pinned: dict[str, Any], shared: bool):
+        self.connection = connection
+        self.job = dict(job)
+        self.pinned = dict(pinned)
+        self.shared = shared
+
+    def matches(self, connection: Any, job: dict[str, Any]) -> bool:
+        return connection is self.connection and job == self.job
+
+    def require(self, pinned: dict[str, Any], shared: bool) -> None:
+        if self.shared and not shared:
+            raise RuntimeError("An audited SHARE upload unit cannot upgrade its Vault lock")
+        # provider/key are supplied namespace labels, not values read by target.
+        # Identity/lifecycle/ownership checks remain the actual locked facts.
+        current = {**self.pinned, "key": pinned["key"], "provider": pinned["provider"]}
+        if current != pinned:
+            raise UploadBlocked("identity_changed")
+
+
+_validated: ContextVar[_ValidatedTarget | None] = ContextVar("upload_validated_target", default=None)
+
+
+@contextmanager
+def _validated_target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
+                      shared: bool = False):
+    pinned = target(connection, job, key=key, provider=provider, shared=shared)
+    token = _validated.set(_ValidatedTarget(connection, job, pinned, shared))
+    try:
+        yield pinned
+    finally:
+        _validated.reset(token)
+
+
 def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
                    shared: bool = False) -> None:
-    if target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared) != pinned:
+    validated = _validated.get()
+    if validated is not None and validated.matches(connection, job):
+        validated.require(pinned, shared)
+    elif target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared) != pinned:
         raise UploadBlocked("identity_changed")
 
 
@@ -328,12 +376,14 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
         if (existing["send_started"] or existing["settled"] or existing["archive_version_id"]
                 or current == (existing["target_json"], existing["snapshot_json"], existing["requested"], existing["inventory_json"])):
             return existing
-        # Prepared (or re-armed after a proven absence) but never sent, and the
-        # content or cloud inventory moved on: re-pin it in place with a new
-        # token rather than failing every later attempt with a false identity change.
+        # A prepared/absence-rearmed intent may refresh its namespace, not its
+        # admitted content or requested proof. ADR-0030 closes stale snapshots
+        # as separate immutable attempts; prepare must not rewrite history.
+        if (existing["snapshot_json"], existing["requested"]) != (snapshot.as_json(), requested):
+            raise RuntimeError("Local file changed since fingerprinting")
         if receipt(connection, existing["id"]) is not None:
             raise UploadBlocked("ambiguous_receipt")
-        refreshed = connection.execute("UPDATE upload_intents SET token=%s,target_json=%s,snapshot_json=%s,requested=%s,inventory_json=%s,created_at=%s,blocked_reason=NULL WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING *", (str(uuid.uuid4()), *current, timestamp, existing["id"])).fetchone()
+        refreshed = connection.execute("UPDATE upload_intents SET token=%s,target_json=%s,inventory_json=%s,created_at=%s,blocked_reason=NULL WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING *", (str(uuid.uuid4()), current[0], current[3], timestamp, existing["id"])).fetchone()
         if not refreshed:
             raise UploadBlocked("ambiguous_send")
         _settle_unstarted(connection, job["vault_file_id"], keep_intent_id=refreshed["id"])
@@ -353,7 +403,7 @@ def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, An
     require_target(connection, job, json.loads(intent["target_json"]), shared=shared)
     if receipt(connection, intent['id']) is not None:
         raise UploadBlocked('ambiguous_receipt')
-    changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started RETURNING id", (intent["id"],)).fetchone()
+    changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING id", (intent["id"],)).fetchone()
     if not changed:
         raise UploadBlocked("ambiguous_send")
     from datetime import datetime, timezone
@@ -361,13 +411,46 @@ def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, An
     capture(connection, datetime.now(timezone.utc).isoformat(), intent_id=intent["id"])
 
 
+def _receipt_fact(response: dict[str, Any]) -> dict[str, Any]:
+    # Allowlist facts: never HTTP headers, cookies, credentials or provider errors.
+    return {k: response[k] for k in ("VersionId", "ETag", "ChecksumSHA256", "ChecksumType", "ContentLength", "StorageClass") if k in response}
+
+
+def receipt_identity(response: dict[str, Any]) -> tuple[str, str]:
+    """One allowlisted encoding for the journal, positive dedup and failure latch."""
+    text = canonical(_receipt_fact(response))
+    return text, hashlib.sha256(text.encode()).hexdigest()
+
+
+class ReceiptJournal:
+    """Immediate append-only callback, independent of claim/cancel/publication.
+
+    The transport callback, synchronous return and late-ack fallback share this
+    recorder. Only successful return from append_receipt confirms the commit.
+    On an unknown commit outcome the retained ack retries DB, never the PUT.
+    Holds one committed fact hash, not a receiver batch or pending receipt queue.
+    """
+
+    def __init__(self, db: Any, intent_id: str, clock: Any):
+        self._db, self._intent_id, self._clock = db, intent_id, clock
+        self._committed: str | None = None
+        self._lock = threading.Lock()
+
+    def __call__(self, response: dict[str, Any]) -> None:
+        fact = _receipt_fact(response)
+        _, fingerprint = receipt_identity(fact)
+        with self._lock:
+            if fingerprint == self._committed:
+                return
+            append_receipt(self._db, self._intent_id, fact, self._clock())
+            self._committed = fingerprint
+
+
 @retry_database_unit
 def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp: str) -> None:
-    # Allowlist facts: never HTTP headers, cookies, credentials or provider errors.
-    allowed = {k: response[k] for k in ("VersionId", "ETag", "ChecksumSHA256", "ChecksumType", "ContentLength", "StorageClass") if k in response}
-    text = canonical(allowed)
+    text, fingerprint = receipt_identity(response)
     with owned_connection(db()) as connection:
-        connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
+        connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, fingerprint, text, timestamp))
 
 
 @retry_database_unit

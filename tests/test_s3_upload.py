@@ -41,6 +41,16 @@ class ManagedUploadTests(unittest.TestCase):
             self.assertEqual(self.upload()["VersionId"], "response-not-current")
             stub.assert_no_pending_responses()
 
+    def test_manager_completion_notifies_waiter_without_polling_the_sdk_future(self):
+        checksum = base64.b64encode(zlib.crc32(b"content").to_bytes(4, "big")).decode()
+        with Stubber(self.client) as stub, patch(
+            "s3transfer.futures.TransferFuture.done",
+            side_effect=AssertionError("completion must notify, not poll the SDK future"),
+        ):
+            stub.add_response("put_object", {"VersionId": "notified", "ChecksumCRC32": checksum})
+            self.assertEqual(self.upload()["VersionId"], "notified")
+            stub.assert_no_pending_responses()
+
     def test_missing_version_or_checksum_fails_closed(self):
         for response in ({"VersionId": "v"}, {"ChecksumCRC32": "abc"}, {"VersionId": "null"}):
             with self.subTest(response=response), Stubber(self.client) as stub:
