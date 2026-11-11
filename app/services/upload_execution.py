@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-import hashlib
 import json
 import os
 import threading
@@ -329,7 +328,7 @@ class UploadExecution:
             with journal_lock:
                 fingerprint = "unencodable"  # Never matches a durable fact hash.
                 try:
-                    fingerprint = hashlib.sha256(provenance.canonical(provenance._receipt_fact(response)).encode()).hexdigest()
+                    _, fingerprint = provenance.receipt_identity(response)
                     journal(response)
                 except BaseException:
                     pipeline.journal_failed(intent_id, fingerprint)

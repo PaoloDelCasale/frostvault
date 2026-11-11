@@ -358,9 +358,13 @@ class AggregateDeadlockTests(unittest.TestCase):
         def audited(job, mutation, *, shared=False):
             if not shared:
                 return real_unit(job, mutation)
-            statements = []
-            recordings.append(statements)
-            with patch.object(storage, "db", side_effect=lambda: SharedSQLRecorder(real_db(), statements)), \
+            units = []
+            recordings.append(units)
+            def recorded_db():
+                statements = []
+                units.append(statements)
+                return SharedSQLRecorder(real_db(), statements)
+            with patch.object(storage, "db", side_effect=recorded_db), \
                     patch.object(storage, "set_job", side_effect=AssertionError("Shared callback called set_job")):
                 return real_unit(job, mutation, shared=True)
 
@@ -428,11 +432,23 @@ class AggregateDeadlockTests(unittest.TestCase):
                 snapshot=snapshot, requested="read_back", before=before, timestamp=STAMP, shared=True), shared=True)
 
         self.assertGreaterEqual(len(recordings), 20)
-        for statements in recordings:
-            self.assertTrue(statements)
-            self.assertIn("from vaults where id=%s for share", statements[0])
-            self.assertTrue(any("for share" in sql for sql in statements))
-        combined = "\n".join(sql for unit in recordings for sql in unit)
+        for units in recordings:
+            fenced_units = 0
+            for statements in units:
+                self.assertTrue(statements)
+                if statements[0].startswith("update jobs set claim_expires_at="):
+                    # Capacity waits checkpoint the lease BEFORE any connection
+                    # holding Vault locks. Audit this autonomous transaction too;
+                    # it must not be mistaken for the fenced mutation below.
+                    self.assertEqual(len(statements), 1)
+                    self.assertIn("and claim_token=%s", statements[0])
+                    self.assertIn("status not in ('completed', 'failed', 'cancelled')", statements[0])
+                else:
+                    self.assertIn("from vaults where id=%s for share", statements[0])
+                    self.assertTrue(any("for share" in sql for sql in statements))
+                    fenced_units += 1
+            self.assertGreaterEqual(fenced_units, 1)
+        combined = "\n".join(sql for units in recordings for unit in units for sql in unit)
         for sql in ("insert into upload_intent_jobs", "insert into upload_intents",
                     "update upload_intents set token=", "update upload_intents set settled=true",
                     "update upload_intents set send_started=true", "insert into upload_remediation_facts",

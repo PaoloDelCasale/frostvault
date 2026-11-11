@@ -416,6 +416,12 @@ def _receipt_fact(response: dict[str, Any]) -> dict[str, Any]:
     return {k: response[k] for k in ("VersionId", "ETag", "ChecksumSHA256", "ChecksumType", "ContentLength", "StorageClass") if k in response}
 
 
+def receipt_identity(response: dict[str, Any]) -> tuple[str, str]:
+    """One allowlisted encoding for the journal, positive dedup and failure latch."""
+    text = canonical(_receipt_fact(response))
+    return text, hashlib.sha256(text.encode()).hexdigest()
+
+
 class ReceiptJournal:
     """Immediate append-only callback, independent of claim/cancel/publication.
 
@@ -432,7 +438,7 @@ class ReceiptJournal:
 
     def __call__(self, response: dict[str, Any]) -> None:
         fact = _receipt_fact(response)
-        fingerprint = hashlib.sha256(canonical(fact).encode()).hexdigest()
+        _, fingerprint = receipt_identity(fact)
         with self._lock:
             if fingerprint == self._committed:
                 return
@@ -442,9 +448,9 @@ class ReceiptJournal:
 
 @retry_database_unit
 def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp: str) -> None:
-    text = canonical(_receipt_fact(response))
+    text, fingerprint = receipt_identity(response)
     with owned_connection(db()) as connection:
-        connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, hashlib.sha256(text.encode()).hexdigest(), text, timestamp))
+        connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, fingerprint, text, timestamp))
 
 
 @retry_database_unit
