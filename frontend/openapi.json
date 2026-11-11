@@ -3702,6 +3702,13 @@
         ],
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "MetricsBearer": {
+        "description": "Independent METRICS_TOKEN scraper credential; never an Owner Session",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -6833,7 +6840,7 @@
     },
     "/metrics": {
       "get": {
-        "description": "Prometheus text exposition (low-cardinality labels only).",
+        "description": "Prometheus exposition; disabled without METRICS_TOKEN, Bearer-only when set.",
         "operationId": "metrics_metrics_get",
         "responses": {
           "200": {
@@ -6845,8 +6852,19 @@
               }
             },
             "description": "Prometheus text exposition"
+          },
+          "401": {
+            "description": "Missing or invalid independent Bearer credential"
+          },
+          "404": {
+            "description": "Metrics disabled (METRICS_TOKEN is empty)"
           }
         },
+        "security": [
+          {
+            "MetricsBearer": []
+          }
+        ],
         "summary": "Metrics"
       }
     },

@@ -154,6 +154,35 @@ The reference labels set:
 Adjust middleware names or CSP if you front additional assets. Preserve existing
 routing/authentication middleware when adapting this reference deployment.
 
+## Public HTTP surface
+
+The reference Host-only router forwards paths to FrostVault; it is **not** a
+path allowlist or an authentication layer. Owner API access still requires the
+application's Session. Preserve OIDC/login routes and existing authentication,
+security-header and rate-limit middleware when adapting the router.
+
+- Keep `API_DOCS_ENABLED=false` in production: `/docs`, `/redoc`, `/openapi.json`
+  and Swagger's `/docs/oauth2-redirect` return 404 by default. Opt-in is anonymous
+  and intended only for isolated development, not as an Owner-only docs page.
+- `/metrics` returns 404 unless `METRICS_TOKEN` is configured, then requires its
+  independent Bearer credential (missing/malformed/invalid = 401). A browser
+  Session never grants scraper access. Prefer scraping privately, preserving an
+  authorized Host and existing narrow proxy trust. If using the existing HTTPS
+  router, ensure it forwards `Authorization` without logging it. Do not add a
+  public port/router or weaken authentication middleware for a scraper.
+- `/health` and `/ready` remain anonymous minimal probes; readiness exposes only
+  status/dependency booleans, not workload counts or queue state. If external
+  monitoring does not need them, deny them at the public edge along with metrics
+  and docs/schema paths (including their subpaths). This is an optional operator
+  restriction, not a change to the reference router or an app auth bypass.
+
+Public denials must leave the image's **internal loopback** readiness probe
+working; it never passes through Traefik. Do not add a Host or authentication
+exception in FrostVault. For the scraper credential-file example and upgrade
+steps, see [HTTP diagnostics](../README.md#http-diagnostics). No secret value is
+provided in the examples; provisioning and any production rollout are separate
+operator actions.
+
 ## Local readiness behind Traefik
 
 Both Compose templates inherit the image's Python healthcheck; no public port,

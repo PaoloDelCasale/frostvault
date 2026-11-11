@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,10 @@ class Settings:
         300, int(os.getenv("SESSION_ABSOLUTE_SECONDS", str(7 * 24 * 60 * 60)))
     )
     cookie_secure: bool = as_bool("COOKIE_SECURE", False)
+    # HTTP diagnostics are opt-in; programmatic OpenAPI export stays available.
+    api_docs_enabled: bool = as_bool("API_DOCS_ENABLED", False)
+    # Independent scraper credential, never a Session or a logged setting.
+    metrics_token: str = field(default=os.getenv("METRICS_TOKEN", ""), repr=False)
     allowed_hosts: str = os.getenv("ALLOWED_HOSTS", "")
     trusted_proxies: str = os.getenv("TRUSTED_PROXIES", "")
     reauth_window_seconds: int = max(

@@ -1218,7 +1218,7 @@ export interface paths {
         };
         /**
          * Metrics
-         * @description Prometheus text exposition (low-cardinality labels only).
+         * @description Prometheus exposition; disabled without METRICS_TOKEN, Bearer-only when set.
          */
         get: operations["metrics_metrics_get"];
         put?: never;
@@ -4508,6 +4508,20 @@ export interface operations {
                 content: {
                     "text/plain": string;
                 };
+            };
+            /** @description Missing or invalid independent Bearer credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metrics disabled (METRICS_TOKEN is empty) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

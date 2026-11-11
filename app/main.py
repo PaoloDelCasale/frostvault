@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
 from .config import settings, settings_snapshot, validate_settings
+from .diagnostics import require_metrics_token
 from .audit import audit_log
 from .i18n import (
     DEFAULT_LOCALE,
@@ -227,7 +228,13 @@ async def lifespan(_: FastAPI):
         close_pools()
 
 
-app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)
+app = FastAPI(
+    title=PRODUCT_NAME,
+    lifespan=lifespan,
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
+)
 
 
 def _openapi_schema() -> dict[str, Any]:
@@ -3397,29 +3404,40 @@ def ready():
     """Dependency-aware readiness: database, worker heartbeat, and config."""
     report = health_service.readiness_report()
     status_code = 200 if report["status"] == "ready" else 503
-    return JSONResponse(report, status_code=status_code)
+    # Public probes expose dependency booleans, never workload/queue internals.
+    return JSONResponse(
+        {"status": report["status"], "checks": report["checks"]},
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get(
     "/metrics",
     response_class=Response,
+    dependencies=[Depends(require_metrics_token)],
     responses={
         200: {
             "description": "Prometheus text exposition",
             "content": {"text/plain": {"schema": {"type": "string"}}},
-        }
+        },
+        401: {"description": "Missing or invalid independent Bearer credential"},
+        404: {"description": "Metrics disabled (METRICS_TOKEN is empty)"},
     },
 )
 def metrics():
-    """Prometheus text exposition (low-cardinality labels only)."""
+    """Prometheus exposition; disabled without METRICS_TOKEN, Bearer-only when set."""
     return Response(
         content=metrics_service.render_prometheus(),
         media_type="text/plain; version=0.0.4; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
     )
 
 
 _SPA_FALLBACK_EXCLUDED_PREFIXES = frozenset({
     "api", "auth", "static", "assets",
+    # Disabled diagnostics must remain 404, never the SPA or a built public file.
+    "docs", "redoc", "openapi.json", "metrics",
     "manifest.webmanifest", "pwa-192.png", "pwa-512.png",
 })
 

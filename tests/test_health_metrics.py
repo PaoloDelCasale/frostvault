@@ -110,7 +110,11 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         metrics_service.inc("notification_deliveries_total", channel="email", result="failed")
         metrics_service.set_gauge("worker_up", 1)
 
-        response = self.client.get("/metrics")
+        # Scrapers use their own explicit credential, not an Owner Session.
+        with patch("app.diagnostics.settings", replace(settings, metrics_token="test-only-metrics-credential")):
+            response = self.client.get("/metrics", headers={
+                "Authorization": "Bearer test-only-metrics-credential",
+            })
         self.assertEqual(response.status_code, 200, response.text)
         text = response.text
         self.assertIn("# TYPE jobs_completed_total counter", text)

@@ -83,8 +83,9 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 
 10. A queue with **runnable** work (Jobs the worker has set aside as not
     runnable are not counted), nothing running and no claim for five minutes is
-    **stalled**: gauge `queue_stalled`, informational `queue` object in `/ready`
-    (it never fails readiness), and an open `queue_stalled` problem whose text is
+    **stalled**: gauge `queue_stalled` and an open `queue_stalled` problem. Issue
+    #555 removes the informational `queue` object from anonymous HTTP `/ready`;
+    it stays in the internal report and never fails readiness. The problem text is
     refreshed every minute. A claim does not resolve the problem: it resolves
     after ten minutes without a stall, so a queue that alternates between
     claiming and idling raises one problem, not one unread alert per cycle. The
