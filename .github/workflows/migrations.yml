@@ -212,7 +212,7 @@ jobs:
             --candidate "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/upload-execution-comparison" \
             --disposable-postgres \
-            --mode s3_checksum --files 32 --concurrency 16 --warmup 16 --repetitions 3
+            --mode s3_checksum --files 128 --concurrency 16 --warmup 32 --repetitions 5
           cat "$RUNNER_TEMP/upload-execution-comparison/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload raw benchmark samples, manifest and summary
         if: ${{ always() }}

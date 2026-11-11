@@ -207,7 +207,7 @@ class WorkflowTests(unittest.TestCase):
         run = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertEqual(run.count("python scripts/upload_benchmark.py"), 1)
         self.assertIn("tests.upload_benchmark_postgres_contract", run)
-        self.assertIn("--mode s3_checksum --files 32 --concurrency 16 --warmup 16 --repetitions 3", run)
+        self.assertIn("--mode s3_checksum --files 128 --concurrency 16 --warmup 32 --repetitions 5", run)
         artifact = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
         self.assertEqual(artifact["if"], "${{ always() }}")
         self.assertEqual(artifact["with"]["retention-days"], 7)
