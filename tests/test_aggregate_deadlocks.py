@@ -102,7 +102,7 @@ class SharedSQLRecorder:
     def execute(self, query, *args, **kwargs):
         text = " ".join(str(query).lower().split())
         self.statements.append(text)
-        if re.search(r"\b(?:update|insert into|delete from) (?:vaults|directory_aggregates|directory_aggregate_status|catalog_events)\b", text):
+        if re.search(r"\b(?:update|insert into|delete from) (?:vaults|directory_aggregates|directory_aggregate_status|catalog_events|vault_catalog_revisions)\b", text):
             raise AssertionError(f"Shared upload unit wrote a Vault/derived row: {text}")
         if re.search(r"\bfrom vaults\b", text) and re.search(r"\bfor (?:no key update|update)\b", text):
             raise AssertionError(f"Shared upload unit upgraded its Vault lock: {text}")
@@ -360,7 +360,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 return real_unit(job, mutation)
             statements = []
             recordings.append(statements)
-            with patch.object(storage, "db", side_effect=lambda: SharedSQLRecorder(real_db(), statements)):
+            with patch.object(storage, "db", side_effect=lambda: SharedSQLRecorder(real_db(), statements)), \
+                    patch.object(storage, "set_job", side_effect=AssertionError("Shared callback called set_job")):
                 return real_unit(job, mutation, shared=True)
 
         jobs = self.seed(4)
@@ -385,7 +386,18 @@ class AggregateDeadlockTests(unittest.TestCase):
                         requested_by,requested_at,updated_at,total_bytes)
                         VALUES (2,%s,%s,'upload','queued',1,%s,%s,%s) RETURNING id""",
                         (old["vault_file_id"], old["path"], STAMP, STAMP, len(PAYLOAD))).fetchone()["id"]
-                self.assertTrue(self.run_job(new))
+                attempts = []
+                original_link = ArchiveCatalog.link_job_version
+                puts_before = len(self.provider.puts)
+                def abort_link_once(catalog, job_id, version_id):
+                    original_link(catalog, job_id, version_id)
+                    attempts.append(version_id)
+                    if len(attempts) == 1:
+                        catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'shared reuse linkage abort' USING ERRCODE='40001'; END $$")
+                with patch.object(ArchiveCatalog, "link_job_version", abort_link_once):
+                    self.assertTrue(self.run_job(new))
+                self.assertEqual(attempts, [old["archive_version_id"]] * 2)
+                self.assertEqual(len(self.provider.puts), puts_before, "Reuse linkage retry must never PUT")
 
             # Both linkage paths, including verified link+read coalescing and
             # find_reusable_upload_version -> _has_lineage -> receipt/proof.
@@ -432,6 +444,11 @@ class AggregateDeadlockTests(unittest.TestCase):
     def test_551_shared_catalog_units_overlap_on_one_vault(self):
         jobs = self.seed(2)
         with PostgresConnection(self.path) as c:
+            for job_id in jobs:
+                self.assertIsNotNone(ArchiveCatalog(c).claim_job(job_id=job_id,
+                    claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
+                    claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                    restore_due_before=storage.now_iso()))
             rows = c.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id ORDER BY j.id").fetchall()
         overlap = threading.Barrier(2)
         def run(job):
