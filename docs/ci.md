@@ -230,9 +230,15 @@ Workflow: [`.github/workflows/publish-image.yml`](../.github/workflows/publish-i
   or failed checks block the image. The script is
   [`scripts/require_commit_checks.py`](../scripts/require_commit_checks.py).
 - Publishes `ghcr.io/paolodelcasale/frostvault`: every build gets a short
-  `sha-` tag from the gated SHA; version tags also get the full semver,
-  major/minor, and `latest` tags. Ordinary `main` pushes do not move `latest`,
-  so it remains the newest published release.
+  `sha-` tag from the gated SHA; stable version tags also get the full semver
+  and major/minor tags. Starting with the incompatible **v0.6.0 baseline**, version
+  publication **does not move `latest`**. The old 0.5 line retains its historical
+  `latest` policy; newer lines require a separately requested manual promotion.
+  Ordinary `main` pushes also leave `latest` unchanged. The executable tag policy
+  is `scripts/image_tags.sh`, exercised by `tests.test_ci_contracts`.
+  Prerelease/malformed version tags are refused rather than promoted as stable.
+  This prevents automatic consumers of `latest` from silently crossing the
+  incompatible catalog/backup baseline (ADR-0035).
 - A manual dispatch may set `promote_tag` to an existing full semantic version
   such as `0.3.0`. The workflow resolves `v0.3.0` to a commit, requires that
   commit's checks, then promotes that exact manifest to `latest` without

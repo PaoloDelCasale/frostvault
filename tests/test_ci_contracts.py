@@ -12,6 +12,7 @@ import json
 import unittest
 from pathlib import Path
 import re
+import subprocess
 
 import yaml
 
@@ -787,12 +788,55 @@ class ContainerPublishContractTests(unittest.TestCase):
         self.assertIn("docker push", text)
         dispatch = _workflow_on(workflow)["workflow_dispatch"]
         self.assertIn("promote_tag", dispatch["inputs"])
-        self.assertIn('tags+=("${IMAGE}:${version}" "${IMAGE}:latest")', text)
+        self.assertIn('tag_output="$(bash scripts/image_tags.sh "$IMAGE" "$SHA_SHORT" "$GIT_REF")"', text)
+        self.assertIn('mapfile -t tags <<< "$tag_output"', text)
+        self.assertNotIn('tags+=("${IMAGE}:${version}" "${IMAGE}:latest")', text)
         self.assertNotIn('refs/heads/main")\n            tags+=("${IMAGE}:latest")', text)
         self.assertIn('docker pull "${IMAGE}:${PROMOTE_TAG}"', text)
         self.assertIn('pushed_digest" != "$source_digest', text)
         # Repo Actions allowlist blocks docker/* marketplace actions.
         self.assertNotRegex(text, r"(?m)^\s*uses:\s*docker/")
+
+    def test_new_baseline_and_future_releases_never_implicitly_advance_latest(self) -> None:
+        image = "ghcr.io/paolodelcasale/frostvault"
+        sha = "a" * 40
+        for version in ("0.6.0", "0.6.1", "0.7.0", "1.0.0"):
+            with self.subTest(version=version):
+                result = subprocess.run(
+                    ["bash", str(ROOT / "scripts/image_tags.sh"), image, sha, f"refs/tags/v{version}"],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(result.stdout.splitlines(), [
+                    f"{image}:sha-aaaaaaa", f"{image}:{version}",
+                    f"{image}:{'.'.join(version.split('.')[:2])}",
+                ])
+
+    def test_old_line_retains_tag_policy_and_branch_builds_are_commit_only(self) -> None:
+        image = "ghcr.io/paolodelcasale/frostvault"
+        sha = "b" * 40
+        for ref, expected in (
+            ("refs/tags/v0.5.6", [f"{image}:sha-bbbbbbb", f"{image}:0.5.6", f"{image}:0.5", f"{image}:latest"]),
+            ("refs/heads/main", [f"{image}:sha-bbbbbbb"]),
+        ):
+            with self.subTest(ref=ref):
+                result = subprocess.run(
+                    ["bash", str(ROOT / "scripts/image_tags.sh"), image, sha, ref],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(result.stdout.splitlines(), expected)
+
+    def test_invalid_or_prerelease_tags_fail_before_emitting_any_image_tags(self) -> None:
+        script = str(ROOT / "scripts/image_tags.sh")
+        for ref in ("refs/tags/v0.6.0-rc.1", "refs/tags/v0.6", "refs/tags/v00.6.0", "refs/tags/v0.06.0", "refs/tags/v0.6.00", "refs/tags/v0.6.0\nlatest", "refs/tags/0.6.0", "unknown"):
+            with self.subTest(ref=ref):
+                result = subprocess.run(["bash", script, "ghcr.io/p/f", "c" * 40, ref], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+        for sha in ("abc", "x" * 40, ""):
+            with self.subTest(sha=sha):
+                result = subprocess.run(["bash", script, "ghcr.io/p/f", sha, "refs/tags/v0.6.0"], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
 
     def test_publish_requires_commit_ci_without_privileged_triggers(self) -> None:
         path = WORKFLOWS / "publish-image.yml"

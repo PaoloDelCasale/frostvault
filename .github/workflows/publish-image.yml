@@ -122,7 +122,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.promote_tag == '' }}
         env:
           IMAGE: ghcr.io/paolodelcasale/frostvault
-          REF_NAME: ${{ github.ref_name }}
+          GIT_REF: ${{ github.ref }}
           SHA_SHORT: ${{ needs.require-ci.outputs.sha }}
         run: |
           set -euo pipefail
@@ -130,16 +130,9 @@ jobs:
             echo "refusing to build without the gated commit SHA" >&2
             exit 1
           fi
-          sha_tag="sha-${SHA_SHORT:0:7}"
-          tags=("${IMAGE}:${sha_tag}")
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            version="${REF_NAME#v}"
-            tags+=("${IMAGE}:${version}" "${IMAGE}:latest")
-            if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\. ]]; then
-              tags+=("${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}")
-            fi
-          fi
+          # Capture first: process-substitution alone would hide policy errors.
+          tag_output="$(bash scripts/image_tags.sh "$IMAGE" "$SHA_SHORT" "$GIT_REF")"
+          mapfile -t tags <<< "$tag_output"
 
           tag_args=()
           for tag in "${tags[@]}"; do
