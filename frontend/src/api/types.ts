@@ -99,6 +99,7 @@ export type VaultMoveEstimate = components["schemas"]["VaultMoveEstimate"];
 export type VaultMovePreview = components["schemas"]["VaultMovePreview"];
 export type VaultMoveRequest = components["schemas"]["VaultMoveRequest"];
 export type VaultMoveResponse = components["schemas"]["VaultMoveResponse"];
+export type VaultPauseResponse = components["schemas"]["VaultPauseResponse"];
 export type VaultReconnect = components["schemas"]["VaultReconnect"];
 export type VaultSelectRequest = components["schemas"]["VaultSelectRequest"];
 export type VaultSelectResponse = components["schemas"]["VaultSelectResponse"];

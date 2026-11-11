@@ -127,6 +127,16 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertNotIn("headers", operation["responses"]["200"])
         self.assertNotIn("offline_cache_generation", schema["components"]["schemas"]["MeResponse"]["properties"])
 
+    def test_pause_resume_have_explicit_post_contract_and_separate_inventory_flag(self) -> None:
+        schema = app.openapi()
+        for action in ("pause", "resume"):
+            path = schema["paths"][f"/api/vaults/{{vault_id}}/{action}"]
+            self.assertEqual(set(path), {"post"})
+            self.assertEqual(path["post"]["responses"]["200"]["content"]["application/json"]["schema"],
+                             {"$ref": "#/components/schemas/VaultPauseResponse"})
+        for name in ("GeneralVault", "VaultListItem"):
+            self.assertEqual(schema["components"]["schemas"][name]["properties"]["paused"], {"type": "boolean"})
+
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["GeneralVault"]
         self.assertFalse(vault["additionalProperties"])

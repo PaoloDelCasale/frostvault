@@ -2853,6 +2853,15 @@ class ArchiveCatalog:
         predicate = f"""
             {runnable_sql}
             AND (
+                    {action} = 'recover'
+                 OR ({action} = 'storage-class' AND {prefix}status = 'restoring')
+                 OR {prefix}origin = 'stop-protection'
+                 OR NOT COALESCE((
+                        SELECT pause_vault.paused FROM vaults pause_vault
+                        WHERE pause_vault.id={correlated_prefix}vault_id
+                    ), FALSE)
+            )
+            AND (
                     {prefix}action <> 'upload'
                  OR {prefix}origin <> 'automatic'
                  OR {prefix}archive_version_id IS NOT NULL
@@ -2999,6 +3008,19 @@ class ArchiveCatalog:
             and str(row["pending_until"]) <= now
         )
 
+    def _lock_claim_vault(self, job_id: int) -> bool:
+        """Vault-first shared fence against pause/lifecycle changes.
+
+        Skip a contended Vault instead of blocking the scheduler. The following
+        statement sees pause's committed flag, even after stale candidate reads.
+        Shared claims and held progress steps remain concurrent (ADR-0031).
+        """
+        return self.connection.execute(
+            """SELECT v.id FROM vaults v
+               WHERE v.id=(SELECT vault_id FROM jobs WHERE id=%s)
+               FOR KEY SHARE SKIP LOCKED""", (job_id,),
+        ).fetchone() is not None
+
     def claim_job(
         self,
         *,
@@ -3017,6 +3039,8 @@ class ArchiveCatalog:
         """
         if not claim_token:
             raise ValueError("A Job claim token is required")
+        if not self._lock_claim_vault(job_id):
+            return None
         claimable_sql, claimable_params = self._claimable_job_predicate_sql(
             prefix="",
             now=now,
@@ -3064,6 +3088,8 @@ class ArchiveCatalog:
         """
         if not claim_token:
             raise ValueError("A Job claim token is required")
+        if not self._lock_claim_vault(lead_job_id):
+            return []
         # Do not lock the nominated lead first on PostgreSQL: two schedulers can
         # nominate different members of the same group.  Both instead acquire
         # the full group below in requested_at/id order, avoiding an AB/BA row
@@ -3087,6 +3113,12 @@ class ArchiveCatalog:
             (f"frostvault:cloud-purge:{lead['vault_id']}:{lead['group_id']}",),
         ).fetchone()
         if not advisory or not advisory["acquired"]:
+            return []
+        if self.connection.execute(
+            """SELECT 1 FROM jobs j JOIN vaults v ON v.id=j.vault_id
+               WHERE j.id=%s AND v.paused AND j.origin<>'stop-protection'""",
+            (lead_job_id,),
+        ).fetchone():
             return []
         rows = self.connection.execute(
             f"""

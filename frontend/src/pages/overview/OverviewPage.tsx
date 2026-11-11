@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Plus, ShieldChec
 
 import { fetchGeneralVaults, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
+import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
@@ -53,7 +54,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const { t, locale } = useI18n();
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "state", ascending: true });
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
-  const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults });
+  const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: ["vault-stats", vault.id],
     queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
@@ -81,7 +82,8 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   ];
   const cell = (row: Row, key: SortKey): ReactNode => {
     if (key === "name") return <a href={vaultFilesUrl(row.id)} className="font-bold text-ink no-underline hover:underline">{row.name}</a>;
-    if (key === "state") return <VaultStateBadge state={row.state} t={t} />;
+    if (key === "state") return <div className="grid justify-items-start gap-2"><VaultStateBadge state={row.state} t={t} />
+      <VaultPauseControl vaultId={row.id} paused={general.data?.items.find((item) => item.id === row.id)?.paused} /></div>;
     if (!row.loaded && key !== "cost" && key !== "problems") return <span className="text-muted">—</span>;
     if (key === "protected") return `${number.format(row.protected)} / ${number.format(row.files)}`;
     if (key === "local") return formatBytes(row.local);
@@ -140,7 +142,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
               <span className="text-muted">{t("overview.col_cost")}</span><span className="text-right tabular-nums">{cell(row, "cost")}</span>
               {row.problems ? <><span className="text-muted">{t("overview.col_problems")}</span><span className="text-right">{cell(row, "problems")}</span></> : null}
             </span>
-          </a></li>)}</ul>
+          </a><div className="px-3 pb-3"><VaultPauseControl vaultId={row.id} paused={general.data?.items.find((item) => item.id === row.id)?.paused} /></div></li>)}</ul>
         <p className="text-xs text-muted">{t("essential.estimate_caveat")}</p>
       </section>
     </>}

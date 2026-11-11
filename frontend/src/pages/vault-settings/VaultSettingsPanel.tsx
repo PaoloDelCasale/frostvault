@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from "@/api";
+import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,9 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     finally { setBusy(false); }
   }
   return <div className="grid min-w-0 gap-4" data-testid="vault-settings">
+    {!stopped && <SettingsSection id="pause" title={t("vault_pause.pause")} summary={t("vault_pause.help")}>
+      <VaultPauseControl key={vaultId} vaultId={vaultId} paused={vault?.paused} />
+    </SettingsSection>}
     <SettingsSection id="protection" title={t("settings.protection_title")} summary={t("settings.protection_summary")}
       more={<><p>{t("essential.protection_help")}</p><p>{t("uploads.retry_help")}</p></>}>
       <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" className="size-5 accent-[var(--green)]" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>

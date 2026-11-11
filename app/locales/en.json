@@ -1,4 +1,11 @@
 {
+  "vault_pause.paused": "Paused Vault",
+  "vault_pause.resumed": "Vault resumed",
+  "vault_pause.pause": "Pause cloud work",
+  "vault_pause.resume": "Resume cloud work",
+  "vault_pause.help": "Holds new cloud Jobs until you resume, including queued Owner uploads. Running Jobs finish; recoveries, scans and watchers continue. Nothing is deleted and protection is not stopped.",
+  "vault_pause.paused_notice": "{name} is paused until you resume it. Queued cloud Jobs wait; running Jobs finish and recoveries continue. New Local Copies are catalogued but automatic uploads do not start. Nothing is deleted.",
+  "vault_pause.resumed_notice": "{name} is resumed. Existing queued cloud Jobs are eligible again; files are not requeued or duplicated.",
   "activity.heading": "Upload activity",
   "activity.by_vault": "Activity by Vault",
   "activity.idle": "No uploads waiting or running.",

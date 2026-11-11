@@ -100,12 +100,27 @@ Migration `0055_protection_states` rebuilds disposable directory projections onl
 it changes no file, cloud object, fingerprint or verification evidence.
 
 New Vaults enable automatic upload by default. The per-Vault **Enable automatic
-upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) pauses or
-resumes it. Pausing holds queued automatic uploads; an already uploaded Archive
-Version still finishes verification. Explicit manual uploads remain available.
-Migration `0054_watcher_auto_upload` preserves both explicit pauses and the old
-implicit pause of existing Vaults with no policy row; enable those deliberately.
-It changes no cloud content and performs no S3 calls.
+upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) enables or
+disables that policy only. Disabling holds queued automatic uploads; an already
+uploaded Archive Version still finishes verification. Explicit manual uploads
+remain available. Migration `0054_watcher_auto_upload` preserves both explicitly
+disabled policies and the old implicit off state of Vaults with no policy row;
+enable those deliberately. It changes no cloud content and performs no S3 calls.
+
+**Pause cloud work** in Overview or Vault settings is a separate manual hold,
+persisted across restart until **Resume cloud work**. Authenticated, CSRF-protected
+`POST /api/vaults/{id}/pause` and `/resume` leave queued Jobs unchanged, including
+Owner uploads, and let already claimed Jobs finish. Recoveries at every stage and
+storage-class Jobs already restoring remain runnable so temporary cloud copies
+are downloaded before expiry; pending Restore Approvals still expire. Local scans,
+watchers and automatic admission continue, but no new held cloud Job starts. Cloud
+inventory scans, shared Storage Plan synchronization and provider lifecycle
+transitions continue: this is not a zero-S3-call maintenance switch. No data is
+deleted, no protection is stopped, and resume does not create duplicate Jobs.
+Migration `0070_vault_pause` adds `paused=false` independently of lifecycle/source
+identity; downgrade refuses a still-paused Vault. See ADR-0033 for exact scope.
+Bulk cancellation remains the existing `POST /api/upload/cancel-pending` (empty
+`path` for the entire Vault), not pause/resume.
 
 Filesystem watcher observations are the upload input. After five minutes without
 changes, an independent scheduler admits them to the durable Job queue (checked
