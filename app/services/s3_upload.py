@@ -251,12 +251,14 @@ class _UploadClient:
                 kwargs["Body"] = body
                 body.signal_transferring()
                 return self._acknowledge(self.write_client.put_object(**kwargs))
-        kwargs["Body"].signal_transferring()
+        if hasattr(kwargs["Body"], "signal_transferring"):
+            kwargs["Body"].signal_transferring()
         return self._acknowledge(self.write_client.put_object(**kwargs))
 
     def upload_part(self, **kwargs: Any) -> dict[str, Any]:
         if self.snapshot is None:
-            kwargs["Body"].signal_transferring()
+            if hasattr(kwargs["Body"], "signal_transferring"):
+                kwargs["Body"].signal_transferring()
             return self.client.upload_part(**kwargs)
         number = int(kwargs["PartNumber"])
         expected = self.snapshot.part_checksums[number - 1]
