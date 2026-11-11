@@ -401,7 +401,7 @@ class NewDirectoryStartupTests(Harness):
 
 @NOT_ROOT
 class NativeRegistrationPermissionGapTests(Harness):
-    async def test_permission_repaired_before_batch_still_restores_native_coverage(self):
+    async def permission_gap(self, *, during_startup):
         """#565: EACCES at registration, readable by the subsequent walk.
 
         Keep the real unprivileged native backend and real batch/pinned walk.
@@ -414,8 +414,13 @@ class NativeRegistrationPermissionGapTests(Harness):
         constructions = 0
         catch_up = threading.Event()
         caught_up_paths = set()
+        unregistered_scans = []
+        live_observers = set()
+        peak_observers = 0
 
         def scan_outcome(found):
+            if repaired.is_set() and not self.ready_registrations:
+                unregistered_scans.append(found)
             if repaired.is_set() and not found and not watch_plan.scan_coverage_fence(VAULT_ID).excluded:
                 caught_up_paths.update(p.relative_to(root).as_posix() for p in root.rglob("*.txt"))
                 catch_up.set()
@@ -442,6 +447,9 @@ class NativeRegistrationPermissionGapTests(Harness):
                     repaired.set()
 
             async def wrapped():
+                nonlocal peak_observers
+                live_observers.add(index)
+                peak_observers = max(peak_observers, len(live_observers))
                 observer = counting_awatch(*paths, **options)
                 try:
                     async for changes in observer:
@@ -457,13 +465,17 @@ class NativeRegistrationPermissionGapTests(Harness):
                     raise
                 finally:
                     await observer.aclose()
+                    live_observers.remove(index)
             return wrapped()
 
         self.stack.enter_context(patch("app.storage.awatch", side_effect=repair_after_registration))
+        if during_startup:
+            os.mkdir(denied, 0o000)
         task = self.start(root)
         try:
-            await self.settle(lambda: scan.call_count == 1)
-            os.mkdir(denied, 0o000)
+            if not during_startup:
+                await self.settle(lambda: scan.call_count == 1)
+                os.mkdir(denied, 0o000)
             await self.settle(repaired.is_set)
             await self.settle(lambda: note_gap.called, timeout=4)
             self.assertIn("briefly-denied", note_gap.call_args.args[1])
@@ -482,10 +494,20 @@ class NativeRegistrationPermissionGapTests(Harness):
             (denied / "late.txt").write_text("must arrive by native event")
             await self.settle(lambda: "briefly-denied/late.txt" in observed, timeout=4)
             self.assertEqual(scan.call_count, scans_after_recovery)
+            self.assertFalse(unregistered_scans,
+                             "a repaired startup gap must not consume the paired scan before registration")
+            self.assertLessEqual(peak_observers, 2)
             self.report.assert_not_called()
         finally:
             denied.chmod(0o755)
             await self.stop(task)
+        self.assertFalse(live_observers)
+
+    async def test_permission_repaired_before_batch_still_restores_native_coverage(self):
+        await self.permission_gap(during_startup=False)
+
+    async def test_startup_permission_repair_waits_for_registration_and_catch_up(self):
+        await self.permission_gap(during_startup=True)
 
 
 @NOT_ROOT

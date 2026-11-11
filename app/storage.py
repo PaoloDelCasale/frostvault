@@ -6725,10 +6725,12 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                     )
                 else:
                     await asyncio.to_thread(_report_worker_error, "source_watcher", exc, vault_id)
-            if not recovered and next_scan_at is not None and loop.time() >= next_scan_at:
-                # The watcher could not even register, so no healthy run will
-                # trigger the scan. Reconcile anyway, rarely, so the unreadable
-                # path is named and the next registration can avoid it.
+            if not recovered and not denied and next_scan_at is not None and loop.time() >= next_scan_at:
+                # Unknown registration failures still need a scan to name the
+                # gap. A named permission gap already has a problem and plan:
+                # wait for registration around it before scanning. Otherwise a
+                # repair before this walk could clear source health without any
+                # registered observer, and consume the start's paired scan.
                 await reconcile()
             await asyncio.sleep(_watcher_restart_delay(failure_streak))
 
