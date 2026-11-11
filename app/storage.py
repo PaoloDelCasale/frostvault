@@ -6580,12 +6580,17 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         old, watcher = watcher, successor
                         successor = None
                         await old.aclose()
-                        # Topology added DURING registration may need another
-                        # handoff. No full-root walk, and at most two observers.
+                        # Every directory addition DURING registration needs
+                        # another handoff, even at a pathname in the original
+                        # batch: that directory may have been replaced after
+                        # the successor registered its old inode. A duplicate
+                        # notification costs one extra handoff; deduplicating by
+                        # pathname can silently leave the new inode unwatched.
+                        # No full-root walk, and at most two observers.
                         additions = await asyncio.to_thread(
                             _new_watcher_directories, root, first | tail,
                         )
-                        rearm_required = bool(additions - new_directories)
+                        rearm_required = bool(additions)
                     if pending_reconcile and not rearm_required:
                         # Reconcile only once every added subtree is covered by
                         # a registered successor, including additions made in
