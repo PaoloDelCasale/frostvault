@@ -274,6 +274,25 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.finish(group)
         self.assertEqual(len(self.jobs()), 4)
 
+    def test_failed_batch_rolls_back_without_preventing_other_vaults_from_advancing(self):
+        self.seed(["a.jpg"])
+        self.seed(["b.jpg"], vault_id=3)
+        first = self.create()["group_id"]
+        second = self.create(vault_id=3)["group_id"]
+        advance = bulk.advance
+        def fail_one(c, **kwargs):
+            result = advance(c, **kwargs)
+            if kwargs["vault_id"] == 2:
+                raise RuntimeError("batch interrupted")
+            return result
+        with patch.object(bulk, "advance", side_effect=fail_one), self.assertRaisesRegex(RuntimeError, "interrupted"):
+            bulk.tick(self.db)
+        self.assertEqual(self.status(first)["processed_count"], 0)
+        self.assertEqual(self.status(second, 3)["status"], "completed")
+        self.assertEqual(len(self.jobs()), 1)
+        self.finish(first)
+        self.assertEqual(len(self.jobs()), 2)
+
     def test_progress_is_distinct_from_transfers_and_migration_refuses_pending_downgrade(self):
         self.seed(["a.jpg", "b.jpg", "c.jpg"])
         group = self.create()["group_id"]

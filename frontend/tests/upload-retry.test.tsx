@@ -9,7 +9,7 @@ import { translate } from "@/i18n/translate";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 
 describe("explicit failed upload retry", () => {
-  afterEach(resetApiClientForTests);
+  afterEach(() => { resetApiClientForTests(); vi.unstubAllGlobals(); });
   function show(vaultId?: number, failure = false, admission?: BulkUploadAdmissionResponse) {
     const calls: { url: string; body: unknown }[] = [];
     configureApiClient({ fetch: vi.fn(async (input, init) => {
@@ -49,6 +49,13 @@ describe("explicit failed upload retry", () => {
     expect(await screen.findByText(label)).toBeVisible();
     await waitFor(() => expect(calls.some((call) => call.url === `/api/upload/admissions/${admission.group_id}?vault_id=7`)).toBe(true));
     if (status === "pending") expect(screen.getByRole("button", { name: "Upload whole Vault" })).toBeDisabled();
+  });
+  it("creates a stable UUID on plain-HTTP LAN contexts without crypto.randomUUID", async () => {
+    vi.stubGlobal("crypto", { getRandomValues: (bytes: Uint8Array) => bytes.fill(1) });
+    const calls = show(7);
+    await userEvent.click(await screen.findByRole("button", { name: "Upload whole Vault" }));
+    await screen.findByText(loadCatalog()["uploads.whole_started"]);
+    expect(calls[0]?.body).toEqual({ path: "", is_directory: true, request_id: "01010101-0101-4101-8101-010101010101" });
   });
   it("reuses the stable request key when an upload response is uncertain", async () => {
     const calls = show(2, true);

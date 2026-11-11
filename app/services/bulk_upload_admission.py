@@ -183,7 +183,15 @@ def tick(connection_factory: Callable[..., Any]) -> int:
             ORDER BY vault_id,requested_at,group_id
         ) r ORDER BY updated_at,vault_id LIMIT %s""", (VAULT_BATCH,)).fetchall()
     advanced = 0
+    failure = None
     for row in requests:
-        with connection_factory() as connection:
-            advanced += int(advance(connection, vault_id=row["vault_id"], group_id=row["group_id"]))
+        try:
+            with connection_factory() as connection:
+                advanced += int(advance(connection, vault_id=row["vault_id"], group_id=row["group_id"]))
+        except Exception as exc:
+            # Roll back only this batch and still serve other Vaults. The loop
+            # reports the failure and the persisted cursor retries next tick.
+            failure = exc
+    if failure is not None:
+        raise failure
     return advanced

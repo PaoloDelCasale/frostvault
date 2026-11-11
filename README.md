@@ -130,7 +130,9 @@ admitted separately from transfer progress. The accepted response includes
 `admission` and a stable `group_id`; read durable progress with
 `GET /api/upload/admissions/{group_id}?vault_id=…`. Optional UUID `request_id` on
 `POST /api/upload` makes retries return the same request, including terminal
-requests; reuse for a different scope is rejected. Single-file behavior is unchanged.
+requests; reuse for a different scope is rejected. Acceptance is catalog-only, not
+a confirmation of mount availability: transfer workers retain Source Volume checks
+and wait safely when unavailable. Single-file behavior is unchanged.
 
 Each request freezes manual origin, verification mode, Vault identity and a finite
 catalog path watermark. New or renamed paths are not added; unavailable, protected

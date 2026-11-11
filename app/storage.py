@@ -6489,6 +6489,7 @@ async def bulk_upload_admission_loop() -> None:
         while True:
             try:
                 await loop.run_in_executor(executor, bulk_upload_admission.tick, db)
+                await loop.run_in_executor(executor, _note_worker_ok, "bulk_upload_admission")
             except Exception as exc:
                 await asyncio.to_thread(_report_worker_error, "bulk_upload_admission", exc)
             await asyncio.sleep(bulk_upload_admission.POLL_SECONDS)
