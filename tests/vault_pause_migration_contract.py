@@ -23,7 +23,7 @@ def assert_vault_pause_migration(test, run, connection):
         c.execute("UPDATE vaults SET paused=FALSE WHERE id=2")
         # A Stop Protection tombstone cannot resume and has no ordinary cloud
         # work to restart: its historical flag must not strand downgrade.
-        c.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix,decommission_state,paused) VALUES (3,'stopped','Stopped','/old-source','bucket','stopped','decommissioned',TRUE)")
+        c.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix,decommission_state,decommissioned_at,root_released_at,paused) VALUES (3,'stopped','Stopped','/old-source','bucket','stopped','decommissioned','2026-11-01T00:00:00+00:00','2026-11-01T00:00:00+00:00',TRUE)")
     result = run("0069_upload_intent_per_attempt", "downgrade")
     test.assertEqual(result.returncode, 0, result.stderr)
     result = run("0070_vault_pause")
