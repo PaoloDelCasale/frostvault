@@ -3299,6 +3299,24 @@ class ArchiveCatalog:
             (claim_expires_at, job_id, claim_token, now),
         ).fetchone()
 
+    def job_claim_is_live(self, *, job_id: int, claim_token: str, now: str) -> bool:
+        """Read the exact predicate of :meth:`renew_job_claim` without writing.
+
+        The answer is the same point-in-time fact a renewal returns. It extends
+        nothing, so the caller must have renewed the lease recently.
+        """
+        return self.connection.execute(
+            """
+            SELECT 1 FROM jobs
+            WHERE id=%s
+              AND claim_token=%s
+              AND claim_expires_at IS NOT NULL
+              AND claim_expires_at > %s
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (job_id, claim_token, now),
+        ).fetchone() is not None
+
     def renew_purge_group_claim(
         self,
         *,

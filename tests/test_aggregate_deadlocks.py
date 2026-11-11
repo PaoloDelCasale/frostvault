@@ -436,11 +436,14 @@ class AggregateDeadlockTests(unittest.TestCase):
             fenced_units = 0
             for statements in units:
                 self.assertTrue(statements)
-                if statements[0].startswith("update jobs set claim_expires_at="):
+                if statements[0].startswith(("update jobs set claim_expires_at=", "select 1 from jobs where id=%s")):
                     # Capacity waits checkpoint the lease BEFORE any connection
                     # holding Vault locks. Audit this autonomous transaction too;
-                    # it must not be mistaken for the fenced mutation below.
+                    # it must not be mistaken for the fenced mutation below. A
+                    # checkpoint inside the renew window reads the same
+                    # predicate instead of extending the lease.
                     self.assertEqual(len(statements), 1)
+                    self.assertIn("claim_expires_at > %s", statements[0])
                     self.assertIn("and claim_token=%s", statements[0])
                     self.assertIn("status not in ('completed', 'failed', 'cancelled')", statements[0])
                 else:

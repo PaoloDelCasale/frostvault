@@ -223,7 +223,9 @@ def pin_upload_namespace(worker: Any, job: dict[str, Any], client: Any, *, keepe
                 return PinnedNamespace(prior[0])
         rows = connection.execute("SELECT object_key FROM archive_versions WHERE vault_file_id=%s AND availability<>'purged'", (job["vault_file_id"],)).fetchall()
         paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
-        pinned = target(connection, job, key=worker.expected_cloud_key(job["path"], job["s3_prefix"]), provider=provider_identity(client))
+        # Read-only unit: SHARE fences lifecycle/identity/admission writers and
+        # cannot upgrade (ADR-0031 audited units).
+        pinned = target(connection, job, key=worker.expected_cloud_key(job["path"], job["s3_prefix"]), provider=provider_identity(client), shared=True)
     keys = {pinned["key"]} | {r["object_key"] for r in rows if r["object_key"]}
     keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
     with worker.db() as connection:
@@ -234,7 +236,8 @@ def pin_upload_namespace(worker: Any, job: dict[str, Any], client: Any, *, keepe
     @retry_database_unit
     def save() -> tuple[dict[str, Any], bool]:
         with owned_connection(worker.db()) as connection:
-            require_target(connection, job, pinned)
+            # Writes this Job's own inventory row and lease only: audited SHARE.
+            require_target(connection, job, pinned, shared=True)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot inventory claim lost")
             created = connection.execute("INSERT INTO snapshot_cleanup_inventories(job_id,target_json,inventory_json,created_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *", (inventory_job, canonical(pinned), canonical(baseline), worker.now_iso())).fetchone()
             if created:
@@ -255,7 +258,8 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
     # Pin DB ownership first. Runtime source/root checks are outside replayable units.
     with worker.db() as connection:
         keeper = _keeper(connection, job, keeper_id, provider)
-        pinned = target(connection, job, key=keeper["object_key"], provider=provider)
+        # Read-only unit (audited SHARE). Later exclusive units compare this pin.
+        pinned = target(connection, job, key=keeper["object_key"], provider=provider, shared=True)
         rows = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND id<>%s AND availability<>'purged'", (job["vault_file_id"], keeper_id)).fetchall()
         paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
         catalog_markers = connection.execute("SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id", (job["vault_file_id"],)).fetchall()
@@ -265,7 +269,8 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
     @retry_database_unit
     def bind_keeper() -> None:
         with owned_connection(worker.db()) as connection:
-            require_target(connection, job, pinned)
+            # Writes this Job's own inventory row and lease only: audited SHARE.
+            require_target(connection, job, pinned, shared=True)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot inventory claim lost")
             result = connection.execute("UPDATE snapshot_cleanup_inventories SET keeper_id=%s WHERE job_id=%s AND (keeper_id IS NULL OR keeper_id=%s) RETURNING job_id", (keeper_id, batch["job_id"], keeper_id)).fetchone()
             if not result:
@@ -274,7 +279,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
     baseline = json.loads(batch["inventory_json"])
     require_pinned = json.loads(batch["target_json"])
     with worker.db() as connection:
-        require_target(connection, job, require_pinned)
+        require_target(connection, job, require_pinned, shared=True)  # read-only unit
     if provider != require_pinned["provider"] or set(baseline) != keys:
         raise UploadBlocked("identity_changed")
     expected = {key: inventory(client, job["s3_bucket"], key) for key in sorted(keys)}
