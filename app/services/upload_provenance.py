@@ -31,6 +31,7 @@ TERMINAL_JOB_REASONS = frozenset({"owner_cancelled", "already_resolved"})
 # Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
 REMEDIES = {
+    "upload_journal_unavailable": "The upload receipt journal is unavailable. Restore database write availability; the Job resumes automatically without spending transfer retries or repeating an uncertain send.",
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",
     "read_permission_denied": "S3 refused to read an object version of this file (HeadObject/GetObject), so its upload cannot be confirmed. Keep all copies, grant the archive IAM identity s3:GetObject and s3:GetObjectVersion on the bucket objects, then use Retry failed uploads.",
     "write_permission_denied": "S3 refused to write this file (PutObject or a multipart request) although the bucket itself is reachable. Nothing was stored and the file stays unprotected. Grant the archive IAM identity s3:PutObject and s3:AbortMultipartUpload on the bucket objects, then use Retry failed uploads.",
@@ -451,6 +452,17 @@ def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp:
     text, fingerprint = receipt_identity(response)
     with owned_connection(db()) as connection:
         connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, fingerprint, text, timestamp))
+
+
+def probe_receipt_journal(connection: Any) -> None:
+    """Exercise the journal's INSERT permission/read-write path, without a fact.
+
+    The caller must observe COMMIT before reopening send admission. A SELECT is
+    insufficient (read-only/failing writes); no fake response or no-write proof
+    may be manufactured merely to test availability.
+    """
+    connection.execute("""INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at)
+        SELECT intent_id,receipt_hash,response_json,received_at FROM upload_receipts WHERE false""")
 
 
 @retry_database_unit

@@ -251,6 +251,153 @@ class Harness(RealTreeCase):
     def applied_paths(self) -> set[str]:
         return {path for batch in self.applied for _change, path in batch}
 
+    def catalog_observations(self) -> set[str]:
+        """Use the real batch and pinned walk, replacing only persistence."""
+        observed = set()
+        catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+        catalog.observe_local_copy.side_effect = lambda **kw: observed.add(kw["path"]) or 1
+        catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.update(
+            entry[0] for entry in kw["entries"]
+        )
+        self.stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
+        self.stack.enter_context(patch("app.storage.record_catalog_revision"))
+        self.stack.enter_context(patch(
+            "app.storage.source_layout.vault_local_access",
+            return_value=SimpleNamespace(local_operations_allowed=True, volume_alias=None),
+        ))
+        self.stack.enter_context(patch(
+            "app.storage._apply_watcher_changes", side_effect=storage.apply_filesystem_changes,
+        ))
+        return observed
+
+
+class HandoffReplacementTests(Harness):
+    """#565 fault injection, NOT a reproduction of the reported FUSE behavior.
+
+    Model a backend that needs explicit re-registration for new directories.
+    Replacing a just-added directory after the successor snapshot must not be
+    mistaken for a duplicate event just because its pathname is unchanged.
+    The real watcher loop, batch application and pinned subtree walk run here;
+    only native notifications and catalog persistence are replaced.
+    """
+
+    async def replacement_during_handoff(self, *, in_successor):
+        root = self.make_root()
+        fresh = root / "fresh"
+        begin = asyncio.Event()
+        late_write = asyncio.Event()
+        registrations = []
+        closed = []
+        observed = self.catalog_observations()
+        scan = self.scanning(root)
+
+        def replace():
+            fresh.rename(root / "detached")
+            fresh.mkdir()
+            (fresh / "a.bin").write_bytes(b"new directory inode")
+            return {(Change.deleted, str(fresh)), (Change.added, str(fresh))}
+
+        def observer(*paths, **options):
+            async def generate():
+                index = len(registrations)
+                identity = fresh.stat().st_ino if fresh.exists() else None
+                registrations.append(identity)
+                try:
+                    if index == 1 and in_successor:
+                        yield replace()
+                    else:
+                        yield set()  # native registration / snapshot barrier
+                    if index == 0:
+                        await begin.wait()
+                        yield {(Change.added, str(fresh))}
+                        yield set() if in_successor else replace()  # old observer tail
+                    while True:
+                        await asyncio.sleep(0.01)
+                        # A stale observer stays healthy but cannot see new
+                        # files in the replacement inode, the reported symptom.
+                        if late_write.is_set() and identity == fresh.stat().st_ino:
+                            late_write.clear()
+                            yield {(Change.added, str(fresh / "b.bin"))}
+                        else:
+                            yield set()
+                finally:
+                    closed.append(index)
+            return generate()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=observer))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scan.call_count == 1)
+            fresh.mkdir()
+            (fresh / "a.bin").write_bytes(b"original inode")
+            begin.set()
+            await self.settle(lambda: "fresh/a.bin" in observed)
+            (fresh / "b.bin").write_bytes(b"written after subtree catch-up")
+            late_write.set()
+            await self.settle(lambda: "fresh/b.bin" in observed, timeout=1)
+            self.assertGreaterEqual(len(registrations), 3,
+                                    "the replacement needs a fresh registration")
+            self.assertEqual(scan.call_count, 1, "no full scan may rescue the late file")
+            self.report.assert_not_called()
+        finally:
+            await self.stop(task)
+        self.assertEqual(sorted(closed), list(range(len(registrations))))
+
+    async def test_same_path_recreated_in_successor_first_batch_is_rearmed(self):
+        await self.replacement_during_handoff(in_successor=True)
+
+    async def test_same_path_recreated_in_old_observer_tail_is_rearmed(self):
+        await self.replacement_during_handoff(in_successor=False)
+
+
+class NewDirectoryStartupTests(Harness):
+    """Real native observers, including writes while the startup scan is busy."""
+
+    async def test_sequential_new_folders_and_late_files_during_startup(self):
+        root = self.make_root()
+        observed = self.catalog_observations()
+        walked = threading.Event()
+        resume = threading.Event()
+        self.addCleanup(resume.set)
+
+        def scan(vault):
+            # Everything below is written AFTER the startup walk, while the
+            # watcher is busy waiting for its paired scan to finish. Only
+            # queued events / post-registration subtree catch-up can find it.
+            walked.set()
+            if not resume.wait(timeout=8):
+                raise AssertionError("startup scan was never released")
+            return {"local": 0, "cloud": 0}
+
+        scan_mock = self.stack.enter_context(patch("app.storage.scan_vault", side_effect=scan))
+        task = self.start(root)
+        try:
+            await self.settle(walked.is_set)
+            (root / "r2-0").mkdir()
+            (root / "r2-0" / "a.bin").write_bytes(b"during startup scan")
+            resume.set()
+            for index in range(4):
+                folder = root / f"r2-{index}"
+                if index:
+                    folder.mkdir()
+                    (folder / "a.bin").write_bytes(b"at directory creation")
+                await self.settle(lambda: f"r2-{index}/a.bin" in observed)
+                (folder / "b.bin").write_bytes(b"after subtree catch-up")
+                await self.settle(lambda: f"r2-{index}/b.bin" in observed)
+            # Revisit EVERY earlier directory after all the handoffs, rather
+            # than only the one belonging to the most recent registration.
+            for index in range(4):
+                (root / f"r2-{index}" / "late.bin").write_bytes(b"late")
+            (root / "sibling.bin").write_bytes(b"root sibling")
+            expected = {f"r2-{i}/{name}.bin" for i in range(4) for name in ("a", "b", "late")}
+            expected.add("sibling.bin")
+            await self.settle(lambda: expected <= observed)
+            self.assertEqual(scan_mock.call_count, 1, "no later scan may rescue missed events")
+            self.report.assert_not_called()
+        finally:
+            resume.set()
+            await self.stop(task)
+
 
 @NOT_ROOT
 class UnreadableFolderLifecycleTests(Harness):
