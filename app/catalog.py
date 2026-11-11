@@ -2921,6 +2921,7 @@ class ArchiveCatalog:
         limit: int,
         per_vault_limit: int | None = None,
         exclude_job_ids: Sequence[int] = (),
+        unserved_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Load scheduler candidates using the shared claimability definition.
 
@@ -2931,6 +2932,8 @@ class ArchiveCatalog:
         behind a flood of Owner operations) out of the candidate set (issues
         #493, #500). Tiers match ``job_scheduler.job_priority``. ``exclude_job_ids`` removes candidates
         the worker already found not runnable *before* the window is cut.
+        ``limit`` defaults the per-Vault window, not a global cut: every eligible
+        Vault must be visible to the turn selector, including aged tier-2 work.
         """
         if limit <= 0:
             return []
@@ -2942,6 +2945,15 @@ class ArchiveCatalog:
         )
         excluded = [int(job_id) for job_id in exclude_job_ids]
         tier = self._SCHEDULING_TIER_SQL
+        # When no slot is free we only need starvation observations, not the
+        # already-served bulk queue's windows or local readiness checks.
+        idle_filter = """
+            AND NOT EXISTS (
+                SELECT 1 FROM jobs serving WHERE serving.vault_id=v.id
+                  AND serving.claim_token IS NOT NULL AND serving.claim_expires_at > %s
+                  AND serving.status NOT IN ('completed', 'failed', 'cancelled')
+            )
+        """ if unserved_only else ""
         return self.connection.execute(
             f"""
             SELECT j.*, v.source_root, v.s3_bucket,
@@ -2969,13 +2981,50 @@ class ArchiveCatalog:
                 ) ranked
                 WHERE ranked.tier_rank <= {window}
             ) j
-            WHERE v.relocation_state='ready'
+            WHERE v.relocation_state='ready' {idle_filter}
             ORDER BY {tier} ASC,
                      j.requested_at ASC, j.id ASC
-            LIMIT {int(limit)}
             """,
-            [*params, excluded],
+            [*params, excluded, *([now] if unserved_only else [])],
         ).fetchall()
+
+    def observe_scheduler_turns(
+        self, *, now: str, runnable_vault_ids: Sequence[int],
+    ) -> dict[int, dict[str, Any]]:
+        """Bank only observed runnable/unserved time, durably across restarts.
+
+        The worker validates one runnable head per Vault (including the local
+        automatic-upload fence) before observing. A live lease pauses aging.
+        SQL state changes invalidate open intervals even between observations;
+        missing/non-runnable Vaults retain banked credit but earn nothing new.
+        SKIP LOCKED avoids blocking claims; a skipped turn gets no promotion.
+        """
+        runnable = sorted({int(vault_id) for vault_id in runnable_vault_ids})
+        rows = self.connection.execute(
+            "SELECT * FROM scheduler_vault_turns ORDER BY vault_id FOR UPDATE SKIP LOCKED"
+        ).fetchall()
+        active = self.active_job_counts(now=now)
+        result = {}
+        for row in rows:
+            vault_id = int(row["vault_id"])
+            eligible = vault_id in runnable and not active.get(vault_id, 0)
+            updated = self.connection.execute(
+                """UPDATE scheduler_vault_turns
+                   SET wait_seconds=wait_seconds + CASE
+                         WHEN %s AND eligible_since IS NOT NULL
+                         THEN GREATEST(0, EXTRACT(EPOCH FROM (%s::timestamptz-eligible_since)))
+                         ELSE 0 END,
+                       eligible_since=CASE WHEN %s THEN
+                         GREATEST(eligible_since, %s::timestamptz) ELSE NULL END
+                   WHERE vault_id=%s
+                   RETURNING wait_seconds AS scheduler_wait_seconds,
+                             last_served_at::text AS scheduler_last_served_at,
+                             generation AS scheduler_generation""",
+                (eligible, now, eligible, now, vault_id),
+            ).fetchone()
+            if vault_id in runnable:
+                result[vault_id] = dict(updated)
+        return result
 
     def active_job_counts(self, *, now: str) -> dict[int, int]:
         """Jobs currently holding a live lease, per Vault (scheduler fairness)."""
@@ -3021,6 +3070,36 @@ class ArchiveCatalog:
                FOR KEY SHARE SKIP LOCKED""", (job_id,),
         ).fetchone() is not None
 
+    def _lock_scheduler_turn(self, job_id: int, generation: int | None) -> bool:
+        """Lock accounting before acquiring any Job locks.
+
+        Base claims can briefly queue here; aged nominations skip contention.
+        Once holding the turn row, callers MUST use SKIP LOCKED on Jobs: a bulk
+        status writer can already hold Jobs and need this row to invalidate an
+        interval. Never wait for its Jobs, nor hold a Job while waiting here.
+        Ordinary progress retains ADR-0031 shared Vault fences.
+        """
+        job = self.connection.execute(
+            "SELECT vault_id FROM jobs WHERE id=%s", (job_id,),
+        ).fetchone()
+        if job is None:
+            return False
+        lock = "FOR UPDATE SKIP LOCKED" if generation is not None else "FOR UPDATE"
+        turn = self.connection.execute(
+            "SELECT generation FROM scheduler_vault_turns WHERE vault_id=%s " + lock,
+            (job["vault_id"],),
+        ).fetchone()
+        return turn is not None and (generation is None or turn["generation"] == generation)
+
+    def _consume_scheduler_turn(self, job_id: int, *, now: str) -> None:
+        self.connection.execute(
+            """UPDATE scheduler_vault_turns
+               SET wait_seconds=0, eligible_since=NULL,
+                   last_served_at=GREATEST(last_served_at, %s::timestamptz),
+                   generation=generation+1
+               WHERE vault_id=(SELECT vault_id FROM jobs WHERE id=%s)""", (now, job_id),
+        )
+
     def claim_job(
         self,
         *,
@@ -3030,6 +3109,7 @@ class ArchiveCatalog:
         claim_expires_at: str,
         now: str,
         restore_due_before: str,
+        scheduler_generation: int | None = None,
     ) -> dict[str, Any] | None:
         """Atomically lease one runnable Job.
 
@@ -3041,12 +3121,18 @@ class ArchiveCatalog:
             raise ValueError("A Job claim token is required")
         if not self._lock_claim_vault(job_id):
             return None
+        if not self._lock_scheduler_turn(job_id, scheduler_generation):
+            return None
+        if self.connection.execute(
+            'SELECT id FROM jobs WHERE id=%s FOR UPDATE SKIP LOCKED', (job_id,),
+        ).fetchone() is None:
+            return None
         claimable_sql, claimable_params = self._claimable_job_predicate_sql(
             prefix="",
             now=now,
             restore_due_before=restore_due_before,
         )
-        return self.connection.execute(
+        claimed = self.connection.execute(
             f"""
             UPDATE jobs
             SET claim_token=%s,
@@ -3066,6 +3152,9 @@ class ArchiveCatalog:
                 *claimable_params,
             ),
         ).fetchone()
+        if claimed is not None:
+            self._consume_scheduler_turn(job_id, now=claimed_at)
+        return claimed
 
     def claim_purge_group(
         self,
@@ -3077,6 +3166,7 @@ class ArchiveCatalog:
         now: str,
         message: str,
         message_key: str,
+        scheduler_generation: int | None = None,
     ) -> list[dict[str, Any]]:
         """Lease every active Job in one cloud-purge group as one operation.
 
@@ -3090,10 +3180,8 @@ class ArchiveCatalog:
             raise ValueError("A Job claim token is required")
         if not self._lock_claim_vault(lead_job_id):
             return []
-        # Do not lock the nominated lead first on PostgreSQL: two schedulers can
-        # nominate different members of the same group.  Both instead acquire
-        # the full group below in requested_at/id order, avoiding an AB/BA row
-        # lock deadlock while still rechecking the durable group identity.
+        # Resolve the group before taking Job locks. The advisory fence below
+        # serializes different lead nominations for the same destructive group.
         lead = self.connection.execute(
             """
             SELECT vault_id, group_id
@@ -3120,16 +3208,25 @@ class ArchiveCatalog:
             (lead_job_id,),
         ).fetchone():
             return []
+        if not self._lock_scheduler_turn(lead_job_id, scheduler_generation):
+            return []
+        expected = self.connection.execute(
+            "SELECT id FROM jobs WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'",
+            (lead['vault_id'], lead['group_id']),
+        ).fetchall()
         rows = self.connection.execute(
-            f"""
+            """
             SELECT id, status, pending_until, claim_token, claim_expires_at,
                    requested_at
             FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-            ORDER BY requested_at ASC, id ASC FOR UPDATE
+            ORDER BY requested_at ASC, id ASC FOR UPDATE SKIP LOCKED
             """,
             (lead["vault_id"], lead["group_id"]),
         ).fetchall()
+        # Never split a purge group when a status writer holds one member.
+        if {row['id'] for row in rows} != {row['id'] for row in expected}:
+            return []
         active = [
             row
             for row in rows
@@ -3169,6 +3266,8 @@ class ArchiveCatalog:
                 *ids,
             ),
         ).fetchall()
+        if claimed:
+            self._consume_scheduler_turn(lead_job_id, now=claimed_at)
         # RETURNING order is not a SQL contract.  Preserve the scheduler's
         # deterministic ordering for the selected lead and tests.
         return sorted(

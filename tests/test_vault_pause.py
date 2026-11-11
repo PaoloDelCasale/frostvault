@@ -31,11 +31,12 @@ class VaultPauseTests(QueueFixture):
         with self.db() as c:
             return vault_pause.set_paused(c, vault_id=vault_id, paused=paused, user_id=1)
 
-    def claim(self, c, job_id):
+    def claim(self, c, job_id, *, generation=None):
         return ArchiveCatalog(c).claim_job(
             job_id=job_id, claim_token=f"claim-{job_id}", claimed_at=self.clock.isoformat(),
             claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
             now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
+            scheduler_generation=generation,
         )
 
     def test_persistent_idempotent_hold_keeps_queue_and_resume_does_not_requeue(self):
@@ -165,15 +166,24 @@ class VaultPauseTests(QueueFixture):
         with ThreadPoolExecutor(max_workers=1) as pool:
             with self.db() as claimant:
                 self.assertIsNotNone(self.claim(claimant, jobs[0]["id"]))
-                # A second worker can claim the same Vault, not an exclusive lock.
+                # The Vault fence is still shared, not upgraded by accounting.
+                # #552's separate turn row serializes short claim commits; a
+                # contended nominee skips rather than waiting on that row.
                 with self.db() as second:
-                    self.assertIsNotNone(self.claim(second, jobs[1]["id"]))
+                    self.assertIsNotNone(second.execute(
+                        'SELECT id FROM vaults WHERE id=2 FOR KEY SHARE SKIP LOCKED'
+                    ).fetchone())
+                    self.assertIsNone(self.claim(second, jobs[1]["id"], generation=0))
                 future = pool.submit(pause_waiter)
                 self.assertTrue(entered.wait(3))
                 self.assertFalse(future.done())
             future.result(timeout=8)
-        self.assertTrue(all(j["claim_token"] for j in self.jobs(2)))
+        self.assertTrue(self.jobs(2)[0]['claim_token'])
+        self.assertIsNone(self.jobs(2)[1]['claim_token'])
         self.assertTrue(self.pause()["paused"])
+        self.pause(False)
+        with self.db() as second:
+            self.assertIsNotNone(self.claim(second, jobs[1]['id']))
 
     def test_pending_recovery_approval_still_expires_while_paused(self):
         job = self.seed_jobs()[0]

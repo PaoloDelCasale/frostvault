@@ -19,27 +19,61 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 1. **Candidates are windowed per Vault and per tier.** `ArchiveCatalog.list_claimable_jobs`
    takes the oldest runnable Jobs of *each Vault and scheduling tier* (a lateral
    window with `row_number()`), never one window over all Vaults, and applies
-   the exclusion list before the cut. A flood of Owner operations in a Vault
-   therefore cannot hide that Vault's own uploads from the candidate set.
+   the exclusion list before the cut. There is **no final global LIMIT** ordered
+   by base tier: that would hide eligible aged automatic turns behind enough
+   Owner work. The bounded per-Vault/per-tier windows of every eligible Vault
+   reach the turn selector. A flood of Owner operations in a Vault therefore
+   cannot hide that Vault's own uploads from the candidate set.
 2. **Scheduling tiers** (`job_scheduler.job_priority`, mirrored in SQL):
    0 Owner operations (restore, free-space, rename, storage-class, cloud purge,
    Stop Protection purges), 1 uploads the Owner asked for, 2 everything the
    system admitted on its own (automatic uploads **and automatic free-space
    cleanups**, which never outrank an Owner upload).
-3. **Aging.** Work that has waited 15 minutes moves up one tier (and one more per
-   further 15 minutes), so a huge Owner operation ("Move the whole Vault") cannot
-   stop every upload of every other Vault. Aging promotes a *Vault's turn*, not
-   single Jobs: a Vault competes with the best effective tier among its waiting
-   Jobs, and inside a Vault the original tier still orders Jobs, so neither an
-   Owner operation nor an Owner upload is ever queued behind aged automatic
-   work of its own Vault.
-4. **Fair sharing counts running work.** Inside a tier the next slot goes to the
-   Vault with the fewest running Jobs (live leases) plus Jobs already picked in
-   this pass, ties broken by the oldest waiting Job. With concurrency 1 and slots
-   freed one at a time, a Vault that already runs a Job yields to idle Vaults.
-5. **Capacity first, lazily.** With no free operation slot nothing is read. The
-   automatic-upload stability fence is evaluated lazily, only until the free slots
-   are filled.
+3. **Aging belongs to a runnable, unserved Vault turn (#552).** Job creation
+   time is not starvation evidence: 26,000 old manual uploads already occupying
+   workers must not all become tier 0. The durable `scheduler_vault_turns` row
+   banks only observed runnable time without a live lease. An automatic Vault's
+   next turn gets **one** tier-1 opportunity after 900 seconds, and **one** tier-0
+   anti-starvation opportunity after 1800 seconds, as already allowed here.
+   Manual turns can likewise age from tier 1 to 0; bulk manual work stays manual.
+   Successful acquisition (one Job or one purge group) atomically resets credit,
+   records last service and advances a generation; selecting, a failed CAS,
+   deferring, or a stale concurrent nomination never consumes credit. A stale
+   aged nomination must match that generation before it can claim. Remaining
+   backlog starts fresh rather than inheriting the promotion. Inside a Vault,
+   base tier and then oldest Job still order work: its Owner operations and
+   Owner uploads never fall behind its own automatic work.
+4. **Fair sharing counts running work and previous turns.** Equal effective
+   tiers prefer fewer live leases plus nominations in this pass, then longer
+   accounted unserved time, then least-recent service, then deterministic Job
+   timestamps/IDs and Vault ID. Thus even a genuinely idle single worker, where
+   every active count returns to zero between claims, serves competing turns
+   rather than always selecting the oldest backlog. Owner operations retain
+   precedence across Vaults **except** for the explicit aged-turn exception.
+   This bounds the next **claim opportunity**, not elapsed start time: no
+   preemption, hard latency guarantee, worker reservation, per-Vault quota or
+   operating window is introduced.
+5. **Observe one runnable head, then validate the backlog lazily.** Even when
+   every worker is busy, a bounded head per unserved Vault/tier is observed so
+   its clock can start before capacity returns; already leased Vaults' bulk
+   windows are not loaded for this accounting-only pass. The automatic-upload local
+   fence must pass before banking credit; additional backlog elements are checked
+   only until free slots are filled. Live service, pause, retry/delay, local
+   deferral, lifecycle/source suspension and the cloud gate earn no new credit.
+   Banked credit and last service survive restart. Eligibility-changing SQL
+   transitions invalidate the open observation interval even if pause/resume or
+   retry backoff happens entirely between polls (or while the scheduler is down).
+   This deliberately discards an unobserved partial runnable interval rather
+   than accidentally credit blocked time; it does not reset banked credit.
+   No trigger runs on heartbeat/progress updates or queue admission INSERTs.
+   Claims lock accounting before Jobs and acquire Job locks **only with SKIP
+   LOCKED**: a multi-Job status writer may hold Jobs before invalidating the turn,
+   so a claimant must neither hold a Job while waiting for accounting nor wait
+   for a Job while holding accounting. A purge group claims all its members or
+   none (including under partial row contention). Aged nominations also skip a
+   contended turn row. Ordinary base-tier claims can briefly queue on accounting
+   so simultaneous different-Job claims still succeed. Claims do not upgrade the
+   shared Vault fence of ADR-0031/0033.
 6. **Deferral with backoff and deeper scans.** An automatic upload that is not
    runnable now (paused, excluded path, unstable, not a regular file, unreadable,
    changed) is excluded from the candidate query, in memory, keyed by database

@@ -1,38 +1,22 @@
-"""Fair Job scheduling across Vaults (issue #12, #500).
-
-This module is the scheduler seam used by the worker. Callers supply the
-candidate Jobs already loaded from the database; selection is pure and
-deterministic so tests can pin fairness without racing a thread pool.
-"""
-
+"""Deterministic, fair selection of runnable Vault turns (ADR-0026)."""
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Mapping, Sequence
-
 
 USER_OPERATION_PRIORITY = 0
 MANUAL_UPLOAD_PRIORITY = 1
 AUTOMATIC_PRIORITY = 2
-# Kept for readers of the earlier name.
 AUTOMATIC_UPLOAD_PRIORITY = AUTOMATIC_PRIORITY
-
-# Work that has waited this long moves up one tier, so a huge Owner operation
-# (e.g. "Move the whole Vault") cannot stop every upload of every other Vault
-# for as long as it runs. Inside a Vault the original tier still orders Jobs,
-# so an Owner operation is never queued behind aged uploads of its own Vault.
 AGING_SECONDS = 900.0
 
 
 def job_priority(job: Mapping[str, Any]) -> int:
-    """Scheduling tier: lower runs first (ADR-0026, issue #500).
+    """Base tier: Owner operations, Owner uploads, then automatic work.
 
-    * 0 - Owner operations: any non-upload Job the Owner (or Stop Protection)
-      asked for: restore, free-space, rename, storage-class, cloud purge.
-    * 1 - uploads the Owner asked for.
-    * 2 - anything the system admitted on its own (automatic uploads and
-      automatic free-space cleanups), so it never outranks an Owner upload.
+    Bulk manual uploads remain manual. Aging never changes this order inside
+    a Vault, nor the durable origin of a Job.
     """
     if job.get("origin") == "automatic":
         return AUTOMATIC_PRIORITY
@@ -41,23 +25,14 @@ def job_priority(job: Mapping[str, Any]) -> int:
     return MANUAL_UPLOAD_PRIORITY
 
 
-def _waited_seconds(job: Mapping[str, Any], now: datetime | None) -> float:
-    if now is None:
-        return 0.0
-    try:
-        requested = datetime.fromisoformat(str(job.get("requested_at")))
-        if requested.tzinfo is None:
-            requested = requested.replace(tzinfo=timezone.utc)
-        current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-        return max(0.0, (current - requested).total_seconds())
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def effective_priority(job: Mapping[str, Any], now: datetime | None = None) -> int:
-    """``job_priority`` lowered by one tier per ``AGING_SECONDS`` of waiting."""
-    base = job_priority(job)
-    return max(USER_OPERATION_PRIORITY, base - int(_waited_seconds(job, now) // AGING_SECONDS))
+    """Promote one turn using *accounted runnable/unserved* time, not Job age.
+
+    ``now`` remains a compatible seam; the catalog owns the durable clock.
+    Missing accounting means no credit, never a fallback to requested_at.
+    """
+    waited = max(0.0, float(job.get("scheduler_wait_seconds") or 0))
+    return max(USER_OPERATION_PRIORITY, job_priority(job) - int(waited // AGING_SECONDS))
 
 
 def select_fair_jobs(
@@ -67,43 +42,31 @@ def select_fair_jobs(
     active_by_vault: Mapping[Any, int] | None = None,
     now: datetime | None = None,
 ) -> list[Mapping[str, Any]]:
-    """Order Jobs by tier, then share the workers fairly between Vaults.
+    """Select turns, preserving base-tier/oldest-first order inside each Vault.
 
-    Inside one Vault Jobs always run in their original tier order (Owner
-    operations, then Owner uploads, then automatic work), oldest first: aging
-    never lets an automatic upload overtake an Owner request of its own Vault.
-    Across Vaults, each Vault competes with its best *effective* tier, i.e. the
-    lowest ``effective_priority`` among its waiting Jobs, so aging promotes a
-    Vault's turn and a huge Owner operation elsewhere cannot starve it. Among
-    Vaults on the same tier the next Job goes to the Vault with the fewest Jobs
-    already running (``active_by_vault``) plus Jobs picked in this call, ties
-    broken by the oldest waiting Job. A busy Vault therefore cannot starve the
-    others even when workers free up one at a time. The result is deterministic.
+    Equal-tier turns prefer fewer live leases, then the longest-unserved turn
+    (including concurrency 1, where every active count can be zero). A turn's
+    credit is spent by its first nomination in this pass; later backlog entries
+    compete at their base tier. Only the catalog's successful conditional claim
+    actually consumes durable credit. A generation fences concurrent nominees.
     """
     if limit <= 0 or not jobs:
         return []
     active = dict(active_by_vault or {})
     by_vault: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
     for job in sorted(jobs, key=_job_order):
-        by_vault[item_vault_id(job)].append(job)
-    # best[v][i]: the best effective tier among the Jobs of Vault v from index i on.
-    best: dict[Any, list[int]] = {}
-    for vault_id, queue in by_vault.items():
-        suffix = [0] * len(queue)
-        running = None
-        for index in range(len(queue) - 1, -1, -1):
-            tier = effective_priority(queue[index], now)
-            running = tier if running is None else min(running, tier)
-            suffix[index] = running
-        best[vault_id] = suffix
+        by_vault[job.get("vault_id")].append(job)
     position = {vault_id: 0 for vault_id in by_vault}
 
-    def vault_key(vault_id: Any) -> tuple[int, int, str, int, str]:
-        index = position[vault_id]
-        head = by_vault[vault_id][index]
+    def vault_key(vault_id: Any) -> tuple:
+        head = by_vault[vault_id][position[vault_id]]
+        waited = float(head.get("scheduler_wait_seconds") or 0) if position[vault_id] == 0 else 0.0
+        tier = effective_priority(head) if position[vault_id] == 0 else job_priority(head)
         return (
-            best[vault_id][index],
+            tier,
             int(active.get(vault_id, 0)),
+            -waited,
+            str(head.get("scheduler_last_served_at") or ""),
             str(head.get("requested_at") or ""),
             int(head.get("id") or 0),
             str(vault_id),
@@ -114,7 +77,6 @@ def select_fair_jobs(
         vault_id = min(position, key=vault_key)
         selected.append(by_vault[vault_id][position[vault_id]])
         position[vault_id] += 1
-        # This Vault now has one more Job running.
         active[vault_id] = int(active.get(vault_id, 0)) + 1
         if position[vault_id] >= len(by_vault[vault_id]):
             del position[vault_id]

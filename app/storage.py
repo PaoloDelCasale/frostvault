@@ -121,7 +121,7 @@ from .services.shutdown import (
 )
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
-from .services.job_scheduler import select_fair_jobs
+from .services.job_scheduler import effective_priority, job_priority, select_fair_jobs
 from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
@@ -6151,14 +6151,13 @@ def process_jobs_once(*, wait: bool = True) -> int:
         pass
     runtime = _runtime_settings()
     concurrency = int(runtime.operation_concurrency)
-    # Capacity first: with every worker busy nothing can start, so reading and
-    # rechecking candidates would only burn database and CPU every tick (#500).
+    # Busy workers still observe one head per Vault: otherwise an idle Vault's
+    # starvation clock would not start until a long transfer finally freed a slot.
+    # No backlog readiness checks or claims are done without capacity.
     if wait:
         available_slots = concurrency
     else:
         available_slots = max(0, concurrency - _active_operation_count())
-        if available_slots <= 0:
-            return 0
     now = now_iso()
     current = datetime.now(timezone.utc)
     try:
@@ -6168,11 +6167,13 @@ def process_jobs_once(*, wait: bool = True) -> int:
     # The window is cut per Vault and tier, after excluding candidates this
     # worker recently found not runnable, so neither a burst in one Vault nor a
     # stuck head of the queue can hide other Vaults' work (#493, #500).
-    window = max(10, concurrency * 2)
+    window = max(10, concurrency * 2) if available_slots else 1
     ready_candidates: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     seen_purge_groups: set[tuple[int, str]] = set()
     scope = ""
+    checked_ready: set[int] = set()
+    nominated_vaults: set[int] = set()
     for _scan_round in range(MAX_SCAN_ROUNDS):
         with db() as connection:
             scope = _database_scope(connection)
@@ -6184,10 +6185,14 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     limit=max(10, concurrency * 10) * 8,
                     per_vault_limit=window,
                     exclude_job_ids=_deferred_job_ids(scope),
+                    unserved_only=not available_slots,
                 )
                 if int(row["id"]) not in seen_ids
             ]
             if not candidates:
+                # This includes a wholly deferred local queue: leaving its old
+                # clock open would incorrectly bank the backoff after restart.
+                catalog.observe_scheduler_turns(now=now, runnable_vault_ids=[])
                 break
             seen_ids.update(int(row["id"]) for row in candidates)
             if _scan_round == 0:
@@ -6220,20 +6225,45 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     seen_purge_groups.add(purge_group)
                 eligible_candidates.append(job)
 
-        # Fair order first (Owner operations, then manual and automatic work,
-        # Vaults served by how little they already run), then recheck lazily and
-        # only as many candidates as there are free slots. An automatic upload
-        # that cannot run now is deferred with a growing delay, and the next
-        # round looks further down the queue instead of stopping at the head.
+        # Observe one runnable head per Vault, not every backlog element. Local
+        # fences must pass BEFORE banking starvation credit. Additional Jobs of
+        # that Vault are still checked lazily only if capacity needs them.
+        runnable_vaults: set[int] = set()
+        unready_ids: set[int] = set()
+        deferred_now = 0
+        for job in sorted(eligible_candidates, key=lambda row: (
+            job_priority(row), str(row.get('requested_at') or ''), int(row['id']),
+        )):
+            vault_id = int(job['vault_id'])
+            if vault_id in runnable_vaults:
+                continue
+            if job['action'] == 'upload' and job.get('origin') == 'automatic':
+                if _automatic_upload_state(job) == UPLOAD_NOT_READY:
+                    _defer_job(scope, int(job['id']))
+                    unready_ids.add(int(job['id']))
+                    deferred_now += 1
+                    continue
+                checked_ready.add(int(job['id']))
+                _clear_deferral(scope, int(job['id']))
+            runnable_vaults.add(vault_id)
+        with db() as connection:
+            turns = ArchiveCatalog(connection).observe_scheduler_turns(
+                now=now, runnable_vault_ids=sorted(runnable_vaults),
+            )
+        eligible_candidates = [job for job in eligible_candidates if int(job['id']) not in unready_ids]
+        for job in eligible_candidates:
+            job.update(turns.get(int(job['vault_id']), {}))
+            if int(job['vault_id']) in nominated_vaults:
+                job['scheduler_wait_seconds'] = 0
         ordered = select_fair_jobs(
             eligible_candidates, limit=len(eligible_candidates),
             active_by_vault=active_by_vault, now=scheduler_clock,
         )
-        deferred_now = 0
         for job in ordered:
             if len(ready_candidates) >= available_slots or shutdown_state.requested:
                 break
-            if job['action'] == 'upload' and job.get('origin') == 'automatic':
+            if (job['action'] == 'upload' and job.get('origin') == 'automatic'
+                    and int(job['id']) not in checked_ready):
                 # The stability/suspension fence precedes preflight, even when an
                 # SMB edit has not reached the watcher/catalog yet. A removed file
                 # is still dispatched: its worker closes the Job (#493, #499).
@@ -6242,6 +6272,11 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     deferred_now += 1
                     continue
                 _clear_deferral(scope, int(job["id"]))
+            # Credit belongs to ONE nomination. Later backlog Jobs may fill
+            # otherwise available slots, but cannot reuse an aged turn's tier.
+            if int(job['vault_id']) in nominated_vaults:
+                job['scheduler_wait_seconds'] = 0
+            nominated_vaults.add(int(job['vault_id']))
             ready_candidates.append(job)
         if len(ready_candidates) >= available_slots or shutdown_state.requested or not deferred_now:
             break
@@ -6263,6 +6298,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
         claimed_at = now_iso()
         claim_token = uuid.uuid4().hex
         claim_expires_at = _claim_expiry_at(claimed_at)
+        generation = (job.get('scheduler_generation')
+                      if effective_priority(job) < job_priority(job) else None)
         with db() as connection:
             catalog = ArchiveCatalog(connection)
             if job["action"] == "cloud-purge":
@@ -6276,6 +6313,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
                         "job.cloud_purge_deleting", locale=DEFAULT_LOCALE
                     ),
                     message_key="job.cloud_purge_deleting",
+                    scheduler_generation=generation,
                 )
                 lead = next(
                     (row for row in group if int(row["id"]) == int(job["id"])),
@@ -6292,6 +6330,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     claim_expires_at=claim_expires_at,
                     now=claimed_at,
                     restore_due_before=_restore_due_before(runtime),
+                    scheduler_generation=generation,
                 )
                 if claimed is None:
                     continue
