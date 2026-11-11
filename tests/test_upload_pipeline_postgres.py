@@ -232,6 +232,31 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.deletes, 0)
         self.assert_empty()
 
+    def test_reachable_journal_with_suspended_uncertain_intent_does_not_fail_other_vault(self):
+        first, other = self.queue("report.txt"), self.queue_other_vault()
+        with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):
+            self.worker.run_job(first)
+        with PostgresConnection(self.worker.db_path) as connection:
+            intent = provenance.load_for_job(connection, first)
+            self.assertTrue(intent["send_started"])
+            self.assertIsNone(provenance.receipt(connection, intent["id"]))
+            connection.execute("UPDATE vaults SET enabled=0 WHERE id=2")
+        self.worker.run_job(other)
+        self.worker.assert_keeper(other)
+        self.assertEqual(self.worker.row(other)["retry_count"], 0)
+        self.assertEqual(self.worker.provider.puts, 2)
+        # Reachability is not evidence that the first provider send never landed.
+        with PostgresConnection(self.worker.db_path) as connection:
+            after = provenance.load_for_job(connection, first)
+            self.assertEqual(after["token"], intent["token"])
+            self.assertTrue(after["send_started"])
+            connection.execute("UPDATE vaults SET enabled=1 WHERE id=2")
+            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (first,))
+        self.worker.run_job(first)
+        self.worker.assert_keeper(first)
+        self.assertEqual(self.worker.provider.puts, 2, "Same durable intent must reconcile, never send twice")
+        self.assert_empty()
+
     def test_failed_journal_holds_new_sends_until_reconciliation_without_a_receipt_queue(self):
         first, second = self.queue("report.txt"), self.queue("second.txt")
         with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):

@@ -74,6 +74,25 @@ class UploadRemediationFrontierTests(unittest.TestCase):
             self.assertIsNotNone(connection.execute("SELECT completed_at FROM snapshot_cleanup_inventories").fetchone()["completed_at"])
         return original
 
+    def test_empty_sweep_table_recovers_all_cursors_and_drains_expired_fact(self):
+        av, _ = self.seed_owned()
+        with self.db() as connection:
+            connection.execute("DELETE FROM upload_remediation_sweep")
+            connection.execute("UPDATE upload_remediation_facts SET due_at=%s",
+                ((datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),))
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_facts").fetchone()["n"], 1)
+        with patch("app.storage.s3_client", side_effect=AssertionError("Sweep must remain DB-only")):
+            self.assertEqual(remediation.sweep(self.db), 1)
+        with self.db() as connection:
+            cursors = connection.execute("SELECT name,last_tick_at FROM upload_remediation_sweep ORDER BY name").fetchall()
+            self.assertEqual([r["name"] for r in cursors], ["admission", "discovery", "facts"])
+            self.assertTrue(all(r["last_tick_at"] for r in cursors))
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_facts").fetchone()["n"], 0)
+            resumed = connection.execute("SELECT current_job_id FROM upload_remediations").fetchone()["current_job_id"]
+        self.run_job(resumed)
+        self.assertEqual(self.assert_keeper(resumed)["id"], av)
+        self.assertEqual(self.provider.puts, 0)
+
     def test_owned_unverified_without_any_failed_original_is_admitted_without_put(self):
         av, _ = self.seed_owned()
         with patch("app.storage.s3_client", side_effect=AssertionError("Discovery must be DB-only")):
