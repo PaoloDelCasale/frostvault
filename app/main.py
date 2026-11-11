@@ -1275,12 +1275,34 @@ def update_locale(
     }
 
 
+@app.post("/api/vaults/{vault_id}/pause", response_model=response_model("VaultPauseResponse"))
+def pause_vault(vault_id: int, request: Request, user: dict[str, Any] = Depends(current_user)):
+    return _set_vault_pause(vault_id, True, request, user)
+
+
+@app.post("/api/vaults/{vault_id}/resume", response_model=response_model("VaultPauseResponse"))
+def resume_vault(vault_id: int, request: Request, user: dict[str, Any] = Depends(current_user)):
+    return _set_vault_pause(vault_id, False, request, user)
+
+
+def _set_vault_pause(vault_id: int, paused: bool, request: Request, user: dict[str, Any]):
+    from .services import vault_pause
+    try:
+        with db() as connection:
+            return vault_pause.set_paused(connection, vault_id=vault_id, paused=paused,
+                                           user_id=int(user["id"]), locale=_request_locale(request))
+    except vault_pause.VaultNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.get("/api/vaults", response_model=response_model("VaultsResponse"))
 def list_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
             f"""
-            SELECT v.id, v.slug, v.name
+            SELECT v.id, v.slug, v.name, v.paused
             FROM vaults v
             WHERE {_OPERATIONAL_VAULT}
             ORDER BY v.name

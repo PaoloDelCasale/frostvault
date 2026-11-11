@@ -1009,6 +1009,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Vault */
+        post: operations["pause_vault_api_vaults__vault_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/reconnect": {
         parameters: {
             query?: never;
@@ -1023,6 +1040,23 @@ export interface paths {
          * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
          */
         post: operations["reconnect_vault_root_api_vaults__vault_id__reconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Vault */
+        post: operations["resume_vault_api_vaults__vault_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1502,6 +1536,7 @@ export interface components {
             enabled: boolean;
             id: number;
             name: string;
+            paused?: boolean;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
@@ -2212,6 +2247,7 @@ export interface components {
         VaultListItem: {
             id: number;
             name: string;
+            paused?: boolean;
             slug: string;
         } & {
             [key: string]: unknown;
@@ -2250,6 +2286,12 @@ export interface components {
             group_id: string;
             item_count: number;
             job_ids: number[];
+        };
+        VaultPauseResponse: {
+            id: number;
+            message: string;
+            message_key: string;
+            paused: boolean;
         };
         /**
          * VaultReconnect
@@ -4090,6 +4132,37 @@ export interface operations {
             };
         };
     };
+    pause_vault_api_vaults__vault_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultPauseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reconnect_vault_root_api_vaults__vault_id__reconnect_post: {
         parameters: {
             query?: never;
@@ -4112,6 +4185,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GeneralVaultReconnectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_vault_api_vaults__vault_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultPauseResponse"];
                 };
             };
             /** @description Validation Error */

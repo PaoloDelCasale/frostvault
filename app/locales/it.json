@@ -1,4 +1,11 @@
 {
+  "vault_pause.paused": "Vault in pausa",
+  "vault_pause.resumed": "Vault ripreso",
+  "vault_pause.pause": "Metti in pausa il lavoro cloud",
+  "vault_pause.resume": "Riprendi il lavoro cloud",
+  "vault_pause.help": "Ferma i nuovi Job cloud fino alla ripresa, inclusi i caricamenti richiesti dal proprietario in coda. I Job in corso finiscono; recuperi, scansioni e watcher continuano. Non elimina nulla e non interrompe la protezione.",
+  "vault_pause.paused_notice": "{name} è in pausa fino alla ripresa. I Job cloud in coda aspettano; quelli in corso finiscono e i recuperi continuano. Le nuove Copie locali vengono catalogate ma i caricamenti automatici non partono. Non viene eliminato nulla.",
+  "vault_pause.resumed_notice": "{name} è ripreso. I Job cloud già in coda possono ripartire; i file non vengono rimessi in coda né duplicati.",
   "activity.heading": "Attività upload",
   "activity.by_vault": "Attività per Vault",
   "activity.idle": "Nessun upload in attesa o in corso.",

@@ -75,6 +75,7 @@ _VAULT_INVENTORY_FIELDS = (
     "s3_bucket",
     "s3_prefix",
     "enabled",
+    "paused",
     "decommission_state",
     "decommissioned_at",
     "root_released_at",

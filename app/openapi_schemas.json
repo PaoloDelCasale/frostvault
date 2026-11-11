@@ -235,6 +235,9 @@
     "GeneralVault": {
       "additionalProperties": false,
       "properties": {
+        "paused": {
+          "type": "boolean"
+        },
         "decommission_state": {
           "enum": [
             "active",
@@ -2157,9 +2160,21 @@
       ],
       "type": "object"
     },
+    "VaultPauseResponse": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "paused": { "type": "boolean" },
+        "message": { "type": "string" },
+        "message_key": { "type": "string" }
+      },
+      "required": ["id", "paused", "message", "message_key"]
+    },
     "VaultListItem": {
       "additionalProperties": true,
       "properties": {
+        "paused": { "type": "boolean" },
         "id": {
           "type": "number"
         },

@@ -19,7 +19,7 @@ from .security import hash_password, verify_password
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0069_upload_intent_per_attempt"
+HEAD_SCHEMA_REVISION = "0070_vault_pause"
 
 CONNECT_TIMEOUT_SECONDS = 10
 # Each operation slot may hold two handles at once (a unit opened while an

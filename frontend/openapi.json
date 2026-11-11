@@ -876,6 +876,9 @@
           "name": {
             "type": "string"
           },
+          "paused": {
+            "type": "boolean"
+          },
           "root_released_at": {
             "type": [
               "string",
@@ -3394,6 +3397,9 @@
           "name": {
             "type": "string"
           },
+          "paused": {
+            "type": "boolean"
+          },
           "slug": {
             "type": "string"
           }
@@ -3528,6 +3534,30 @@
             "type": "object"
           }
         ]
+      },
+      "VaultPauseResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "message_key": {
+            "type": "string"
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "paused",
+          "message",
+          "message_key"
+        ],
+        "type": "object"
       },
       "VaultReconnect": {
         "additionalProperties": false,
@@ -6340,6 +6370,45 @@
         "summary": "Select Vault"
       }
     },
+    "/api/vaults/{vault_id}/pause": {
+      "post": {
+        "operationId": "pause_vault_api_vaults__vault_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultPauseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Vault"
+      }
+    },
     "/api/vaults/{vault_id}/reconnect": {
       "post": {
         "description": "Accept this folder/mount for this Vault only; mandatory cloud/local scan.",
@@ -6388,6 +6457,45 @@
           }
         },
         "summary": "Reconnect Vault Root"
+      }
+    },
+    "/api/vaults/{vault_id}/resume": {
+      "post": {
+        "operationId": "resume_vault_api_vaults__vault_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultPauseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Vault"
       }
     },
     "/api/vaults/{vault_id}/stop-protection": {

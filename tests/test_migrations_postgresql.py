@@ -86,6 +86,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             )
         return missing_id
 
+    def test_vault_pause_preserves_existing_rows_and_refuses_active_hold_downgrade(self):
+        from tests.vault_pause_migration_contract import assert_vault_pause_migration
+        assert_vault_pause_migration(self, self.run_alembic, self._connection)
+
     def test_upload_intent_per_attempt_allows_one_open_intent_and_refuses_reused_downgrade(self):
         from tests.upload_intent_per_attempt_migration_contract import assert_upload_intent_per_attempt_migration
         assert_upload_intent_per_attempt_migration(self, self.run_alembic, self._connection)
