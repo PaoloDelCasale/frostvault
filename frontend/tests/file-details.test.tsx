@@ -7,7 +7,7 @@ import { jsonResponse } from "./vault-settings-harness";
 
 const t = (key: string) => key;
 const stale = { type: "file" as const, name: "same.jpg", path: "same.jpg", state: "cloud_only" };
-function setup(state: string, local: boolean, conflict = false, reconciliation = false, remediation = false, extra: Record<string, unknown> = {}) {
+function setup(state: string, local: boolean, conflict = false, reconciliation = false, remediation = false, extra: Record<string, unknown> = {}, pending = false) {
   const calls: string[] = [];
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
@@ -15,7 +15,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
     if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified" }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
     if (url.startsWith("/api/files/jobs")) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
     if (url.startsWith("/api/jobs/")) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
-    if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+    if (url.startsWith("/api/jobs")) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
     if (url.startsWith("/api/cloud-deletion/preview")) return jsonResponse({ object_count: 1, version_count: 1, delete_marker_count: 0, byte_count: 12 });
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
     return jsonResponse({});
@@ -88,7 +88,15 @@ describe("deliberate file Details", () => {
     await screen.findByText("exact");
     expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
     expect(calls.every((url) => url.endsWith("vault_id=2"))).toBe(true);
-    expect(calls.some((url) => url.includes("purge"))).toBe(false);
+    expect(calls.some((url) => url.startsWith("/api/cloud-purge"))).toBe(false);
+  });
+  it("finds an old pending deletion by exact file membership, even in a folder group outside recent50", async () => {
+    const calls = setup("cloud_only", false, false, false, false, {}, true);
+    await screen.findByText("essential.deletion_pending");
+    expect(calls).toContain("/api/jobs?action=cloud-purge&active_only=true&path=same.jpg&vault_id=2");
+    expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "essential.cancel_deletion" }));
+    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
   });
   it("holds a conflict and explains external rename or explicit replacement without list deletion", async () => {
     setup("problem", true, true);

@@ -388,6 +388,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/job-groups/{group_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Job Group Detail
+         * @description Newest-first keyset page of one group's Jobs, scoped to this Vault.
+         */
+        get: operations["job_group_detail_api_job_groups__group_id__jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs": {
         parameters: {
             query?: never;
@@ -395,7 +415,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Jobs */
+        /**
+         * Jobs
+         * @description At most 50 recent Jobs and 50 complete group summaries, never all members.
+         *
+         *     Action, active and exact-file filters select groups before the bounded cut;
+         *     their summaries still account for every member in this Vault. The cursor
+         *     pages summaries only; individual members use the group-detail endpoint.
+         */
         get: operations["jobs_api_jobs_get"];
         put?: never;
         post?: never;
@@ -1718,6 +1745,7 @@ export interface components {
             groups: components["schemas"]["JobGroup"][];
             items: components["schemas"]["JobRecord"][];
             locale?: string;
+            next_groups_before_id?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -3044,9 +3072,48 @@ export interface operations {
             };
         };
     };
+    job_group_detail_api_job_groups__group_id__jobs_get: {
+        parameters: {
+            query?: {
+                before_id?: number | null;
+                limit?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileJobHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     jobs_api_jobs_get: {
         parameters: {
             query?: {
+                action?: string[] | null;
+                active_only?: boolean;
+                path?: string | null;
+                groups_before_id?: number | null;
                 vault_id?: number | null;
             };
             header?: never;
@@ -3064,13 +3131,13 @@ export interface operations {
                     "application/json": components["schemas"]["JobsResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };

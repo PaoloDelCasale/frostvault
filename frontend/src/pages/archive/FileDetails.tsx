@@ -35,7 +35,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   const linkedJob = useQuery({ queryKey: ["linked-job", target.vaultId, jobId, revision], enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
   const [deletion, setDeletion] = useState<{ settings: CloudDeletionSettings; preview: CloudDeletionPreview } | null>(null);
   const data = useQuery({ queryKey: ["details", target.vaultId, target.item.path, revision], queryFn: async () => {
-    const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs()]);
+    const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs({ actions: ["cloud-purge"], activeOnly: true, path: target.item.path })]);
     return { item, versions, jobs };
   } });
   const item = data.data?.item.type === "file" ? data.data.item : undefined;
@@ -49,7 +49,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
     catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
-  const pending = data.data?.jobs.groups?.filter((job) => job.path === target.item.path && job.action === "cloud-purge" && job.status === "pending_delay") ?? [];
+  const pending = data.data?.jobs.groups?.filter((job) => job.action === "cloud-purge" && job.status === "pending_delay") ?? [];
   return <>
     <Sheet open={!deletion && !replace} onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={target.item.name || target.item.path} description={`${target.vaultName} / ${target.item.path}`} closeLabel={t("ui.close")}>
       <div className="grid min-w-0 gap-4 break-words" aria-label={`${t("essential.details")} · ${target.vaultName} / ${target.item.path}`}>

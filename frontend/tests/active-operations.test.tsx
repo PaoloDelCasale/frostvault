@@ -23,5 +23,35 @@ describe("active Owner work without a routine notification feed", () => {
     await user.click(screen.getByRole("button", { name: "ui.cancel" }));
     await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
     expect(screen.queryByText(/routine.jpg/)).not.toBeInTheDocument();
+    expect(calls).toContain("/api/jobs?action=recover&action=free-space&active_only=true&vault_id=2");
+  });
+  it("pages bounded active summaries instead of hiding older approvals behind unrelated jobs", async () => {
+    const calls: string[] = [];
+    configureApiClient({ fetch: vi.fn(async (input) => {
+      const url = String(input); calls.push(url);
+      const older = url.includes("groups_before_id=100");
+      return jsonResponse({ groups: [{ id: older ? "older" : "newer", action: "recover", path: older ? "old-folder" : "new-folder", status: "pending_approval", item_count: 30001, completed_count: 0, percent: 0 }], next_groups_before_id: older ? null : 100 });
+    }) });
+    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /></ApiQueryProvider>);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "ui.next" }));
+    await screen.findByText("action.recover · old-folder");
+    expect(calls).toContain("/api/jobs?action=recover&action=free-space&active_only=true&groups_before_id=100&vault_id=2");
+    expect(screen.getByText(/0\/30001/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "ui.next" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "ui.previous" }));
+    await screen.findByText("action.recover · new-folder");
+  });
+  it("keeps Move and recovery read scopes separate in the same Vault cache", async () => {
+    const calls: string[] = [];
+    configureApiClient({ fetch: vi.fn(async (input) => {
+      const url = String(input); calls.push(url);
+      const move = url.includes("action=storage-class");
+      return jsonResponse({ groups: [{ id: move ? "move" : "restore", action: move ? "storage-class" : "recover", path: move ? "move-folder" : "restore-folder", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
+    }) });
+    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /><ActiveOperations vaultId={2} moves t={(key) => key} /></ApiQueryProvider>);
+    await screen.findByText("move.title · move-folder");
+    await screen.findByText("action.recover · restore-folder");
+    expect(calls).toContain("/api/jobs?action=storage-class&active_only=true&vault_id=2");
   });
 });

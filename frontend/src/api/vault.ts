@@ -15,7 +15,15 @@ export function vaultApi(vaultId: number) {
     details: (path: string) => request<ArchiveListItem>(`/api/files/detail?path=${encodeURIComponent(path)}`),
     versions: (path: string) => request<FileVersionsResponse>(`/api/files/versions?path=${encodeURIComponent(path)}`),
     policy: () => request<OperationPolicy>("/api/vault/operation-policy"),
-    jobs: () => request<JobsResponse>("/api/jobs"),
+    jobs: (options: { actions?: string[]; activeOnly?: boolean; path?: string; groupsBeforeId?: number } = {}) => {
+      const params = new URLSearchParams();
+      options.actions?.forEach((action) => params.append("action", action));
+      if (options.activeOnly) params.set("active_only", "true");
+      if (options.path !== undefined) params.set("path", options.path);
+      if (options.groupsBeforeId) params.set("groups_before_id", String(options.groupsBeforeId));
+      return request<JobsResponse>(`/api/jobs?${params}`);
+    },
+    groupJobs: (groupId: string, beforeId?: number) => request<FileJobHistoryResponse>(`/api/job-groups/${encodeURIComponent(groupId)}/jobs${beforeId ? `?before_id=${beforeId}` : ""}`),
     fileJobs: (path: string, beforeId?: number) => request<FileJobHistoryResponse>(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`),
     job: (id: number) => request<JobRecord>(`/api/jobs/${id}`),
     estimate: (payload: unknown) => post<RecoverEstimateResponse>("/api/recover/estimate", payload),

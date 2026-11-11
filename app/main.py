@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import (
@@ -1928,59 +1928,42 @@ def build_job_groups(
     return list(groups.values())
 
 
-@app.get("/api/jobs", response_model=response_model("JobsResponse"))
-def jobs(request: Request, vault: dict[str, Any] = Depends(current_vault)):
-    locale = _request_locale(request)
+@app.get("/api/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def jobs(
+    request: Request,
+    vault: dict[str, Any] = Depends(current_vault),
+    *,
+    action: Annotated[list[str] | None, Query()] = None,
+    active_only: bool = False,
+    path: str | None = None,
+    groups_before_id: Annotated[int | None, Query(ge=1)] = None,
+):
+    """At most 50 recent Jobs and 50 complete group summaries, never all members.
+
+    Action, active and exact-file filters select groups before the bounded cut;
+    their summaries still account for every member in this Vault. The cursor
+    pages summaries only; individual members use the group-detail endpoint.
+    """
+    from .services.job_queries import list_jobs
+    logical_path = safe_relative_path(path).as_posix() if path is not None else None
     with db() as connection:
-        recent_rows = connection.execute(
-            """
-            SELECT id, path, action, status, message, message_key, message_params,
-                   requested_at, updated_at, group_id, group_path, total_bytes,
-                   transferred_bytes, pending_until, estimated_cost_eur,
-                   estimated_hours, restore_tier, restore_days, approved_at
-            FROM jobs WHERE vault_id=%s ORDER BY requested_at DESC LIMIT 50
-            """,
-            (vault["id"],),
-        ).fetchall()
-        active_groups = connection.execute(
-            """
-            SELECT DISTINCT group_id FROM jobs
-            WHERE vault_id=%s AND group_id IS NOT NULL
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            """,
-            (vault["id"],),
-        ).fetchall()
-        group_ids = [row["group_id"] for row in active_groups]
-        group_rows: list[dict[str, Any]] = []
-        if group_ids:
-            placeholders = ", ".join(["%s"] * len(group_ids))
-            group_rows = connection.execute(
-                f"""
-                SELECT id, path, action, status, message, message_key, message_params,
-                       requested_at, updated_at, group_id, group_path, total_bytes,
-                       transferred_bytes, pending_until, estimated_cost_eur,
-                       estimated_hours, restore_tier, restore_days, approved_at
-                FROM jobs WHERE vault_id=%s AND group_id IN ({placeholders})
-                """,
-                [vault["id"], *group_ids],
-            ).fetchall()
-        from .services.upload_remediation import project_jobs
-        recent_rows = project_jobs(connection,recent_rows)
-        group_rows = project_jobs(connection,group_rows)
-    rows_by_id = {row["id"]: row for row in [*recent_rows, *group_rows]}
-    rows = sorted(rows_by_id.values(), key=lambda row: str(row["requested_at"]), reverse=True)
-    localized_rows = [
-        {
-            **row,
-            "message": present_job_message(row, locale),
-        }
-        for row in rows
-    ]
-    return {
-        "items": localized_rows,
-        "groups": build_job_groups(rows, locale=locale),
-        "locale": locale,
-    }
+        return list_jobs(connection, vault_id=vault["id"], locale=_request_locale(request),
+                         actions=action, active_only=active_only, path=logical_path,
+                         groups_before_id=groups_before_id)
+
+
+@app.get("/api/job-groups/{group_id}/jobs", response_model=response_model("FileJobHistoryResponse"))
+def job_group_detail(
+    request: Request, group_id: str,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=50),
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """Newest-first keyset page of one group's Jobs, scoped to this Vault."""
+    from .services.job_queries import group_jobs
+    with db() as connection:
+        return group_jobs(connection, vault_id=vault["id"], group_id=group_id,
+                          locale=_request_locale(request), before_id=before_id, limit=limit)
 
 
 _JOB_HISTORY_COLUMNS = "id,path,action,status,message,message_key,message_params,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,archive_version_id,upload_reconcile_only"
