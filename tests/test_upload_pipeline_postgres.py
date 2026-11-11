@@ -47,6 +47,20 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with PostgresConnection(self.worker.db_path) as connection:
             return connection.execute("SELECT id FROM jobs WHERE path=%s ORDER BY id DESC", (path,)).fetchone()["id"]
 
+    def queue_other_vault(self):
+        source = self.worker.root / "other-vault"
+        source.mkdir()
+        file = source / "other.txt"
+        file.write_bytes(worker_tests.A)
+        with PostgresConnection(self.worker.db_path) as connection:
+            connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (3,'other','Other',%s,'bucket','other')", (str(source),))
+            enroll_vault_root_identity(connection, 3, str(source))
+            ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
+                size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())
+        queue_jobs("other.txt", "upload", 3, 1)
+        with PostgresConnection(self.worker.db_path) as connection:
+            return connection.execute("SELECT id FROM jobs WHERE vault_id=3").fetchone()["id"]
+
     def claim(self, job_id):
         with PostgresConnection(self.worker.db_path) as connection:
             claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
@@ -240,6 +254,38 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.puts, 2)
         self.assert_empty()
 
+    def test_cancelled_failed_journal_recovers_facts_without_resurrecting_job_or_blocking_another_vault(self):
+        first, other = self.queue("report.txt"), self.queue_other_vault()
+        with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):
+            self.worker.run_job(first)
+            self.assertTrue(storage.set_job(first, "cancelled"))
+            self.worker.run_job(other)
+            self.assert_no_send_fact(other)
+            self.assertEqual(self.worker.provider.puts, 1)
+            self.assertTrue(self.pipeline.uncertain_journals())
+        with PostgresConnection(self.worker.db_path) as connection:
+            before = provenance.load_for_job(connection, first)
+            self.assertIsNone(provenance.receipt(connection, before["id"]))
+            connection.execute("UPDATE jobs SET retry_after=NULL WHERE id=%s", (other,))
+        # Only the journal fault is gone. The first Job remains cancelled and
+        # cannot resume; another Vault must repair facts without its authority.
+        self.worker.run_job(other)
+        self.worker.assert_keeper(other)
+        self.assertEqual(self.worker.row(first)["status"], "cancelled")
+        self.assertIsNone(self.worker.row(first)["archive_version_id"])
+        with PostgresConnection(self.worker.db_path) as connection:
+            after = provenance.load_for_job(connection, first)
+            receipt = provenance.receipt(connection, before["id"])
+            self.assertIsNotNone(receipt)
+            self.assertIn(("docs/report.txt", receipt["VersionId"]), self.worker.provider.objects)
+            for field in ("token", "target_json", "snapshot_json", "send_started", "settled", "archive_version_id"):
+                self.assertEqual(after[field], before[field], field)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM archive_versions WHERE vault_id=2").fetchone()["n"], 0)
+            self.assertIsNone(connection.execute("SELECT matched_archive_version_id FROM local_copies WHERE vault_file_id=%s", (self.worker.file_id,)).fetchone()["matched_archive_version_id"])
+        self.assertEqual((self.worker.provider.puts, self.worker.provider.deletes, self.worker.provider.aborted), (2, 0, []))
+        self.assertEqual(self.pipeline.uncertain_journals(), ())
+        self.assert_empty()
+
     def test_a_preexisting_receipt_cannot_clear_failure_of_a_different_fact(self):
         first, second = self.queue("report.txt"), self.queue("second.txt")
         transport = storage.upload_s3_file
@@ -347,18 +393,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 self.assert_empty()
 
     def test_slow_vault_catalog_does_not_hold_network_or_another_vault(self):
-        source = self.worker.root / "other-vault"
-        source.mkdir()
-        file = source / "other.txt"
-        file.write_bytes(worker_tests.A)
-        with PostgresConnection(self.worker.db_path) as connection:
-            connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (3,'other','Other',%s,'bucket','other')", (str(source),))
-            enroll_vault_root_identity(connection, 3, str(source))
-            ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
-                size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())
-        queue_jobs("other.txt", "upload", 3, 1)
-        with PostgresConnection(self.worker.db_path) as connection:
-            other = connection.execute("SELECT id FROM jobs WHERE vault_id=3").fetchone()["id"]
+        other = self.queue_other_vault()
         first = self.queue("report.txt")
         accepted, allow_ack, acknowledged = threading.Event(), threading.Event(), threading.Event()
         self.addCleanup(allow_ack.set)

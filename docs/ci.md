@@ -110,8 +110,8 @@ CI workload: **128 new temporary files × 10 KiB**, one Vault, separate **1, 4
 and 16** concurrent-Job cases, unlimited bandwidth, explicit frozen **s3_checksum**
 on each Job. Each matrix case compares both SHAs on the same runner/service;
 never compare absolute throughput across different matrix runners. Every sample gets a fresh filesystem/database and 32 distinct warmup
-files. Eight measured waves and five repetitions reduce the influence of short-burst
-jitter; remaining variance is still reported, not hidden. Seeding/migration/warmup
+files. At 16 workers, eight measured waves and five repetitions reduce the influence
+of short-burst jitter; remaining variance is still reported, not hidden. Seeding/migration/warmup
 are excluded and separately timed. The timer
 covers the synchronized burst's real claim/load, hashing, SDK upload,
 verification, durable receipt, publication, cleanup and all `process_job`

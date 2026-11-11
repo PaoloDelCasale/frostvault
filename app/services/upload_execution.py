@@ -254,25 +254,55 @@ class UploadExecution:
             return
         self._send(a, provider)
 
-    def _refresh_journal_gate(self, pipeline: upload_pipeline._Pipeline) -> None:
+    def _refresh_journal_gate(self, pipeline: upload_pipeline._Pipeline,
+                              check: Callable[[], None] | None = None) -> None:
         # Recovery facts bypass nonurgent catalog capacity, just like their
-        # original appends. This query cannot publish or grant deletion rights.
+        # original appends. No publication/cleanup/Job authority is granted.
         pending = pipeline.uncertain_journals()
+        repairs = []
         if pending:
             with self.worker.db() as connection:
                 for intent_id, receipt_hash in pending:
-                    # Confirm THIS failed fact, not merely another response
-                    # already stored for the same VersionId/intent. Hashes are
-                    # append-only identities, not retained response payloads.
+                    # Confirm THIS failed fact, not any other stored response.
                     stored = connection.execute("SELECT 1 FROM upload_receipts WHERE intent_id=%s AND receipt_hash=%s", (intent_id, receipt_hash)).fetchone()
-                    intent = connection.execute("SELECT send_started FROM upload_intents WHERE id=%s", (intent_id,)).fetchone()
+                    intent = connection.execute("""SELECT i.*,
+                        (EXISTS (SELECT 1 FROM jobs j WHERE j.id=i.original_job_id AND j.status='cancelled')
+                         OR EXISTS (SELECT 1 FROM upload_intent_jobs b JOIN jobs j ON j.id=b.job_id
+                                    WHERE b.intent_id=i.id AND j.status='cancelled')) AS cancelled
+                        FROM upload_intents i WHERE i.id=%s""", (intent_id,)).fetchone()
                     if stored is not None or (intent is not None and not intent["send_started"]):
                         pipeline.journal_safe(intent_id, receipt_hash)
+                    elif intent is not None and intent["cancelled"]:
+                        # Cancellation correctly forbids ordinary resume. Repair
+                        # ONLY the receipt, otherwise this latch would block all
+                        # unrelated Vaults forever after the DB recovers.
+                        try:
+                            saved = provenance.receipt(connection, intent_id)
+                        except provenance.UploadBlocked:
+                            continue
+                        repairs.append((intent, saved, receipt_hash))
+        # No connection/lock is held over provider observations. Reconcile is
+        # outside DB retries, with NO owned multipart/abort authority. Absence,
+        # ambiguity or a failed append cannot reopen admission. A recovered HEAD
+        # fact is not publication authority for the cancelled target.
+        w = self.worker
+        check = check or w.shutdown_state.checkpoint
+        for intent, saved, failed_hash in repairs:
+            try:
+                response = provenance.reconcile(w.s3_client(), intent, saved, check)
+                provenance.append_receipt(w.db, intent["id"], response, w.now_iso())
+            except (w.OperationCancelled, w.JobLeaseLost):
+                raise
+            except Exception:
+                continue  # Still fail closed at the ordinary admission gate.
+            # Clear only failures observed BEFORE reconciliation, not a different
+            # late fact that failed concurrently while these reads were running.
+            pipeline.journal_safe(intent["id"], failed_hash)
 
     def _send(self, a: _Attempt, provider: str) -> None:
         w, job = self.worker, a.job
         w.set_job(job["id"], "uploading", message_key="job.plain_upload")
-        self._refresh_journal_gate(a.pipeline)
+        self._refresh_journal_gate(a.pipeline, a.check_active)
         # Capacity exists BEFORE arming send-started and BEFORE the transport
         # materializes its validated buffers. Waiting cannot manufacture an
         # ambiguous intent. Returning/throwing joins SDK I/O before release.
