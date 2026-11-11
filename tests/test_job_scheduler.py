@@ -345,6 +345,18 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.assertEqual(list(first["exclude_job_ids"]), [])
         self.assertEqual(list(second_exclusions["exclude_job_ids"]), [1])
 
+    def test_unready_local_head_is_not_observed_as_a_runnable_turn(self) -> None:
+        with patch('app.storage._automatic_upload_state', return_value=storage_module.UPLOAD_NOT_READY):
+            process_jobs_once()
+        first = self.catalog.observe_scheduler_turns.call_args_list[0].kwargs
+        self.assertEqual(first['runnable_vault_ids'], [20])
+
+    def test_all_deferred_candidates_close_the_turn_observation_interval(self) -> None:
+        self.catalog.list_claimable_jobs.return_value = []
+        self.assertEqual(process_jobs_once(), 0)
+        self.catalog.observe_scheduler_turns.assert_called_once()
+        self.assertEqual(self.catalog.observe_scheduler_turns.call_args.kwargs['runnable_vault_ids'], [])
+
     def test_candidate_window_is_per_vault(self) -> None:
         process_jobs_once()
         kwargs = self.catalog.list_claimable_jobs.call_args.kwargs
