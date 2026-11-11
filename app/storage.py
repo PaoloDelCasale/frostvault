@@ -4182,7 +4182,7 @@ def process_rename(job: dict[str, Any]) -> None:
     with db() as connection:
         previous = connection.execute(
             """
-            SELECT object_key, provider_version_id, plaintext_sha256, integrity
+            SELECT object_key, provider_version_id, plaintext_sha256, integrity, upload_snapshot_json
             FROM archive_versions
             WHERE id=%s
             """,
@@ -4257,7 +4257,18 @@ def process_rename(job: dict[str, Any]) -> None:
                 )
         else:
             set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-            plaintext_sha256, source_stat = hash_stable_regular_file(source)
+            rename_snapshot, source_stat = prepare_upload_snapshot(
+                source, lambda: ensure_job_active(job["id"], "Rename stopped"),
+            )
+            plaintext_sha256 = rename_snapshot.plaintext_sha256
+            # Rename is a separate re-upload path, not UploadExecution. Carry
+            # the archived time when known; otherwise this stable re-upload
+            # records its own observed source time, never an old missing copy.
+            if previous.get("upload_snapshot_json"):
+                from dataclasses import replace
+                previous_snapshot = UploadSnapshot.from_json(previous["upload_snapshot_json"])
+                if previous_snapshot.mtime_ns is not None:
+                    rename_snapshot = replace(rename_snapshot, mtime_ns=previous_snapshot.mtime_ns)
             if (
                 previous["plaintext_sha256"]
                 and previous["plaintext_sha256"] != plaintext_sha256
@@ -4267,7 +4278,11 @@ def process_rename(job: dict[str, Any]) -> None:
                 )
             set_job(job["id"], "uploading", message_key="job.rename_copying")
             ensure_job_active(job["id"], "Rename claim was lost")
-            response = upload_s3_file(job, source=source, key=new_key)
+            response = upload_s3_file(
+                {**job, "_upload_snapshot": rename_snapshot,
+                 "_upload_metadata": rename_snapshot.file_metadata()},
+                source=source, key=new_key,
+            )
             ensure_job_active(job["id"], "Rename stopped")
             provider_version_id = response.get("VersionId")
             head = client.head_object(Bucket=job["s3_bucket"], Key=new_key,
@@ -4298,6 +4313,9 @@ def process_rename(job: dict[str, Any]) -> None:
                     observed_at=timestamp,
                     scan_id=timestamp,
                     origin="upload",
+                )
+                catalog.set_version_upload_snapshot(
+                    version_id, snapshot_json=rename_snapshot.as_json(), requested="read_back",
                 )
             destination_version_id = str(provider_version_id)
             ensure_job_active(job["id"], "Rename stopped")

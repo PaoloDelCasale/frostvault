@@ -45,7 +45,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         report = cleanup_prefix_versions(s3_client(), bucket=self.bucket, prefix=self.prefix)
         self.assertTrue(report.ok, "Test namespace cleanup failed")
 
-    def _roundtrip(self, relative_path, payload, *, move=False, multipart_move=False):
+    def _roundtrip(self, relative_path, payload, *, move=False, multipart_move=False, rename=False):
         digest = hashlib.sha256(payload).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -81,6 +81,33 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     from app.services.upload_snapshot import UploadSnapshot
                     snapshot_json = connection.execute("SELECT upload_snapshot_json FROM archive_versions WHERE id=%s", (version["id"],)).fetchone()["upload_snapshot_json"]
                     self.assertEqual(UploadSnapshot.from_json(snapshot_json).mtime_ns, original_mtime_ns)
+                if rename:
+                    old_path = relative_path
+                    relative_path = f"renamed/{old_path}"
+                    renamed = source / relative_path
+                    renamed.parent.mkdir(parents=True, exist_ok=True)
+                    local.rename(renamed)
+                    local = renamed
+                    with PostgresConnection(str(database_path)) as connection:
+                        catalog = ArchiveCatalog(connection)
+                        timestamp = "2026-11-11T12:00:00+00:00"
+                        catalog.mark_local_copy_missing(observed["id"], observed_at=timestamp)
+                        catalog.observe_local_copy(vault_id=2, path=relative_path, file_type="regular",
+                            size=len(payload), mtime_ns=original_mtime_ns, observed_at=timestamp)
+                        catalog.set_local_fingerprint(vault_id=2, path=relative_path,
+                            plaintext_sha256=digest, matched_archive_version_id=None)
+                        catalog.confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
+                            changed_at=timestamp, vault_id=2)
+                    queue_jobs(relative_path, "rename", 2, 1)
+                    process_jobs_once()
+                    with PostgresConnection(str(database_path)) as connection:
+                        job = connection.execute("SELECT status,message FROM jobs WHERE action='rename'").fetchone()
+                        self.assertEqual(job["status"], "completed", job["message"])
+                        renamed_version = ArchiveCatalog(connection).get_file_by_path(2, relative_path)["latest_version"]
+                        head = s3_client().head_object(Bucket=self.bucket, Key=renamed_version["object_key"], VersionId=renamed_version["provider_version_id"])
+                        self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
+                        snapshot_json = connection.execute("SELECT upload_snapshot_json FROM archive_versions WHERE id=%s", (renamed_version["id"],)).fetchone()["upload_snapshot_json"]
+                        self.assertEqual(UploadSnapshot.from_json(snapshot_json).mtime_ns, original_mtime_ns)
                 if move:
                     from contextlib import ExitStack
                     with PostgresConnection(str(database_path)) as connection:
@@ -195,6 +222,9 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 listed = client.list_object_versions(Bucket=self.bucket, Prefix=key)
                 self.assertEqual(len(listed.get("Versions", [])), 1)
                 self.assertEqual([u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key], [])
+
+    def test_rename_preserves_timestamp_in_s3_catalog_and_recovery(self):
+        self._roundtrip("photos/original.jpg", b"original photo", rename=True)
 
     def test_plain_upload_and_recovery_match_sha256(self):
         self._roundtrip("docs/report.txt", b"live-integrity-payload")
