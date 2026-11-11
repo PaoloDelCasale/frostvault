@@ -400,6 +400,117 @@ class NewDirectoryStartupTests(Harness):
 
 
 @NOT_ROOT
+class NativeRegistrationPermissionGapTests(Harness):
+    async def permission_gap(self, *, during_startup):
+        """#565: EACCES at registration, readable by the subsequent walk.
+
+        Keep the real unprivileged native backend and real batch/pinned walk.
+        Release the permission only when registration returns (or raises), so
+        a later readable subtree scan cannot stand in for native coverage.
+        """
+        root = self.make_root()
+        denied = root / "briefly-denied"
+        repaired = asyncio.Event()
+        constructions = 0
+        catch_up = threading.Event()
+        caught_up_paths = set()
+        unregistered_scans = []
+        live_observers = set()
+        peak_observers = 0
+
+        def scan_outcome(found):
+            if repaired.is_set() and not self.ready_registrations:
+                unregistered_scans.append(found)
+            if repaired.is_set() and not found and not watch_plan.scan_coverage_fence(VAULT_ID).excluded:
+                caught_up_paths.update(p.relative_to(root).as_posix() for p in root.rglob("*.txt"))
+                catch_up.set()
+            return {"local": 1, "local_incomplete": 1} if found else {"local": 1, "cloud": 1}
+
+        scan = self.scanning(root, outcome=scan_outcome)
+        observed = self.catalog_observations()
+        note_gap = self.stack.enter_context(patch(
+            "app.storage.watch_plan.note_unreadable_directories",
+            wraps=watch_plan.note_unreadable_directories,
+        ))
+        problem = self.stack.enter_context(patch("app.storage.report_problem"))
+        counting_awatch = storage.awatch
+
+        def repair_after_registration(*paths, **options):
+            nonlocal constructions
+            index = constructions
+            constructions += 1
+
+            def repair():
+                if denied.exists() and not repaired.is_set():
+                    denied.chmod(0o755)
+                    (denied / "before-registration.txt").write_text("catch-up")
+                    repaired.set()
+
+            async def wrapped():
+                nonlocal peak_observers
+                live_observers.add(index)
+                peak_observers = max(peak_observers, len(live_observers))
+                observer = counting_awatch(*paths, **options)
+                try:
+                    async for changes in observer:
+                        if index > 0:
+                            # Old implementation ignores EACCES and yields a
+                            # successful barrier with this directory omitted.
+                            repair()
+                        yield changes
+                except PermissionError:
+                    # Repair before FrostVault handles the registration error:
+                    # any later walk now sees an entirely readable directory.
+                    repair()
+                    raise
+                finally:
+                    await observer.aclose()
+                    live_observers.remove(index)
+            return wrapped()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=repair_after_registration))
+        if during_startup:
+            os.mkdir(denied, 0o000)
+        task = self.start(root)
+        try:
+            if not during_startup:
+                await self.settle(lambda: scan.call_count == 1)
+                os.mkdir(denied, 0o000)
+            await self.settle(repaired.is_set)
+            await self.settle(lambda: note_gap.called, timeout=4)
+            self.assertIn("briefly-denied", note_gap.call_args.args[1])
+            await self.settle(lambda: any(
+                call.kwargs.get("event") == "file_unreadable"
+                and call.kwargs.get("path") == "briefly-denied"
+                for call in problem.call_args_list
+            ), timeout=4)
+            await self.settle(catch_up.is_set)
+            self.assertIn("briefly-denied/before-registration.txt", caught_up_paths)
+            self.assertFalse(watch_plan.coverage_debt(VAULT_ID))
+            self.assertFalse(watch_plan.unobserved(VAULT_ID))
+            # After recovery, only a native event can deliver this file: no
+            # subsequent topology change, restart or scan is allowed to help.
+            scans_after_recovery = scan.call_count
+            (denied / "late.txt").write_text("must arrive by native event")
+            await self.settle(lambda: "briefly-denied/late.txt" in observed, timeout=4)
+            self.assertEqual(scan.call_count, scans_after_recovery)
+            self.assertFalse(unregistered_scans,
+                             "a repaired startup gap must not consume the paired scan before registration")
+            self.assertLessEqual(peak_observers, 2)
+            self.report.assert_not_called()
+        finally:
+            denied.chmod(0o755)
+            await self.stop(task)
+        self.assertFalse(live_observers)
+
+    async def test_permission_repaired_before_batch_still_restores_native_coverage(self):
+        await self.permission_gap(during_startup=False)
+
+    async def test_startup_permission_repair_waits_for_registration_and_catch_up(self):
+        await self.permission_gap(during_startup=True)
+
+
+@NOT_ROOT
 class UnreadableFolderLifecycleTests(Harness):
     async def test_watcher_registers_around_the_gap_then_the_whole_tree_after_the_repair(self):
         root = self.make_root()
@@ -411,7 +522,9 @@ class UnreadableFolderLifecycleTests(Harness):
         try:
             # Wait for the real registration barriers, not observer creation:
             # a slow runner can write before the readable siblings are watched.
-            await self.settle(lambda: scan.call_count >= 1 and len(self.ready_registrations) >= 3)
+            await self.settle(lambda: scan.call_count >= 1
+                              and any({str(root / "a1"), str(root / "a2")} <= set(paths)
+                                      for paths in self.ready_recursive_registrations))
             self.assertEqual(self.registrations[0], (str(root),))
             (root / "a1" / "one.txt").write_text("x")
             (root / "a2" / "two.txt").write_text("x")
@@ -460,10 +573,10 @@ class PermissionRecoveryBoundaryTests(Harness):
         repaired = root / "denied"
         (repaired / "deep").mkdir(parents=True)
         (root / "sibling").mkdir()
-        if polling and concurrent_manual:
-            # PollWatcher rejects an initially denied tree outright. Introduce
-            # the denial after its real barrier, just before the paired scan;
-            # the same empty registered/desired-plan race then applies.
+        if concurrent_manual:
+            # Native and polling registration now reject an initially denied
+            # tree. Introduce denial after the real barrier, just before the
+            # paired scan, to exercise the empty registered/desired-plan race.
             def deny_once(*_args):
                 if self.resolve.call_count == 1:
                     repaired.chmod(0o000)
