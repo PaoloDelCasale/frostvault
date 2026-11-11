@@ -87,10 +87,12 @@ class SinglePathLookupPlanTests(unittest.TestCase):
                 plan = self._plan(connection, sql, params)
                 self.assertRegex(
                     plan,
-                    r"(?:Index Scan|Index Only Scan|Bitmap Index Scan) using file_paths_(?:one_current_path_uq|vault_current_path_idx)",
+                    r"(?:Index Scan|Index Only Scan|Bitmap Index Scan) using file_paths_(?:one_current_path_uq|current_path_prefix_idx)",
                     f"plan scans the Vault instead of the path index:\n{plan}\n{sql}",
                 )
-                self.assertRegex(plan, r"Index Cond: .*vault_id = .*1.*path =")
+                # Either index serves the lookup with both columns as conditions
+                # (0072: the prefix index leads with path).
+                self.assertRegex(plan, r"Index Cond: .*(?:vault_id = .*1.*path =|path = .*vault_id = .*1)")
                 self.assertNotIn("Seq Scan on vault_files", plan)
 
 
