@@ -139,6 +139,21 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.assertTrue(all(j["origin"] == "manual" for j in jobs))
         self.assertFalse(self.step(group))
 
+    def test_inactive_path_candidates_consume_the_batch_window_without_admitting_jobs(self):
+        self.seed(["inactive-a.jpg", "inactive-b.jpg", "active.jpg"])
+        with self.db() as c:
+            c.execute("""UPDATE vault_files SET status='retired' WHERE id IN (
+                SELECT vault_file_id FROM file_paths WHERE vault_id=2
+                AND path IN ('inactive-a.jpg','inactive-b.jpg'))""")
+        group = self.create()["group_id"]
+        self.assertEqual(self.status(group)["selected_count"], 3)
+        for count in (1, 2):
+            self.step(group, size=1)
+            self.assertEqual(self.status(group)["processed_count"], count)
+            self.assertEqual(self.jobs(), [])
+        self.finish(group)
+        self.assertEqual([job["path"] for job in self.jobs()], ["active.jpg"])
+
     def test_watermark_does_not_follow_rename_or_new_identity_and_scope_is_literal(self):
         self.seed(["foo%_/a.jpg", "foo%_/b.jpg", "fooXX/a.jpg", "foobar/a.jpg"])
         group = self.create("foo%_")["group_id"]
@@ -317,31 +332,12 @@ class BulkAdmissionPostgresTests(QueueFixture):
                 SELECT id,2,id,%s FROM vault_files WHERE vault_id=2 ORDER BY id""", (self.clock.isoformat(),))
             c.execute("""INSERT INTO local_copies(vault_file_id,presence,file_type,size,mtime_ns,observed_at)
                 SELECT id,'present','regular',12,1,%s FROM vault_files WHERE vault_id=2""", (self.clock.isoformat(),))
-        timings = []
-        statements = []
         started = time.monotonic()
         with self.db() as c:
-            timings.append(("connect", time.monotonic() - started))
-            class Probe:
-                def execute(self, statement, params=()):
-                    before = time.monotonic()
-                    result = c.execute(statement, params)
-                    timings.append((statement.strip().splitlines()[0], time.monotonic() - before))
-                    statements.append((statement, params))
-                    return result
-            request = bulk.create(Probe(), vault_id=2, path="", user_id=1)
-            before_commit = time.monotonic()
-        timings.append(("commit/close", time.monotonic() - before_commit))
+            request = bulk.create(c, vault_id=2, path="", user_id=1)
         elapsed = time.monotonic() - started
-        print(f"[DEBUG-550-admission] elapsed={elapsed:.6f}; statements={timings}", flush=True)
-        plan = []
-        if any(duration >= 1 for _, duration in timings):
-            with self.db() as c:
-                for statement, params in statements:
-                    if "SELECT COALESCE(max(fp.id)" in statement:
-                        plan = c.execute("EXPLAIN (ANALYZE, BUFFERS) " + statement, params).fetchall()
-            print(f"[DEBUG-550-admission-plan] {plan}", flush=True)
-        self.assertLess(elapsed, 5, f"[DEBUG-550-admission] {timings}; plan={plan}")
+        print(f"#550 acceptance: 10000 path candidates / {elapsed:.3f} s", flush=True)
+        self.assertLess(elapsed, 5)
         self.assertEqual(request["selected_count"], 10000)
         self.assertEqual(self.jobs(), [])
         with self.db() as c:

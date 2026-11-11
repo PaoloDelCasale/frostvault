@@ -17,6 +17,12 @@ not followed or added. Content eligibility is checked when each batch runs; this
 is not an Upload Snapshot or a filesystem snapshot. Upload workers still pin
 content and exact-send evidence at their existing boundary. The selected count
 is an initial catalog-path count, not a promise that every path is uploadable.
+Acceptance therefore reads only current path identities, without joining all
+Vault Files: stale statistics after a large scan can otherwise choose a
+quadratic nested loop before returning 202. Inactive file identities consume the
+bounded path window too; only the existing admission arbiter decides whether
+to produce a Job. Eligibility changes cannot turn one batch into an unbounded
+search for 100 still-active files.
 
 This trades a fully materialized per-file selection at HTTP acceptance (and its
 unbounded transaction) for conservative exclusion of renamed paths. No arbitrary

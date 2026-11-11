@@ -68,11 +68,14 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
     if not _ready(vault):
         raise ValueError("Vault is not ready for upload admission")
     scope, params = _scope(path)
+    # Acceptance snapshots path identities, not upload eligibility. Joining all
+    # Vault Files here can select a quadratic nested loop with stale statistics
+    # after a large scan. The existing bounded queue_jobs arbiter below checks
+    # file status and every other eligibility condition before admitting work.
     selection = connection.execute(f"""
         SELECT COALESCE(max(fp.id),0) AS watermark, count(*) AS selected
-        FROM file_paths fp JOIN vault_files vf ON vf.id=fp.vault_file_id
-        WHERE fp.vault_id=%s AND vf.vault_id=fp.vault_id
-          AND fp.valid_to IS NULL AND vf.status='active' AND {scope}
+        FROM file_paths fp
+        WHERE fp.vault_id=%s AND fp.valid_to IS NULL AND {scope}
     """, [vault_id, *params]).fetchone()
     stamp = _now()
     row = connection.execute("""
@@ -148,9 +151,9 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
             SELECT 1 FROM bulk_upload_exclusions e WHERE e.group_id=%s
               AND (fp.path=e.path OR starts_with(fp.path,e.path || '/'))
         ) AS included
-        FROM file_paths fp JOIN vault_files vf ON vf.id=fp.vault_file_id
-        WHERE fp.vault_id=%s AND vf.vault_id=fp.vault_id AND fp.valid_to IS NULL
-          AND vf.status='active' AND fp.id>%s AND fp.id<=%s AND {scope}
+        FROM file_paths fp
+        WHERE fp.vault_id=%s AND fp.valid_to IS NULL
+          AND fp.id>%s AND fp.id<=%s AND {scope}
         ORDER BY fp.id LIMIT %s
     """, [group_id, vault_id, request["cursor"], request["watermark"], *params, batch_size]).fetchall()
     path_ids = [row["id"] for row in rows if row["included"]]
