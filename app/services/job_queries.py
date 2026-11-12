@@ -1,4 +1,9 @@
-"""Bounded Job read models. Group membership never crosses into the poll's Python loop."""
+"""Bounded Job read models. Group membership never crosses into the poll's Python loop.
+
+A Job row holds only its core; the read model joins its File (path), group
+(path), request (estimate, approval deadline/instant) and per-action details
+(#589) through ``JOB_ROWS``, inlined by the planner.
+"""
 from typing import Any
 
 from app.i18n import present_job_message, translate
@@ -6,11 +11,29 @@ from .upload_remediation import project_jobs
 
 PAGE_SIZE = 50
 TERMINAL = "('completed', 'failed', 'cancelled')"
-GROUP_KEY = "COALESCE(NULLIF(group_id, ''), 'job-' || id::text)"
+GROUP_KEY = "COALESCE(group_id::text, 'job-' || id::text)"
 JOB_COLUMNS = """id,path,action,status,message,message_key,message_params,requested_at,
     updated_at,group_id,group_path,total_bytes,transferred_bytes,pending_until,
     estimated_cost_eur,estimated_hours,restore_tier,restore_days,approved_at,
     archive_version_id,upload_reconcile_only"""
+# One flat row per Job for display. ``pending_until`` is what the Job waits
+# for: its request's approval deadline, or a delayed deletion's due time.
+JOB_ROWS = """job_rows AS NOT MATERIALIZED (
+    SELECT j.id, j.vault_id, f.path, j.action, j.status, j.message, j.message_key,
+        j.message_params::text AS message_params, j.requested_at, j.updated_at,
+        j.group_id, g.path AS group_path, j.total_bytes, j.transferred_bytes,
+        CASE j.status WHEN 'pending_approval' THEN rr.approval_deadline
+                      WHEN 'pending_delay' THEN j.run_after END AS pending_until,
+        rr.estimated_cost_eur, rr.estimated_hours, jr.tier AS restore_tier,
+        jr.days AS restore_days, rr.approved_at, j.archive_version_id,
+        COALESCE(ju.reconcile_only, false) AS upload_reconcile_only
+    FROM jobs j
+    JOIN files f ON f.id = j.file_id
+    LEFT JOIN job_groups g ON g.id = j.group_id
+    LEFT JOIN restore_requests rr ON rr.group_id = j.group_id
+    LEFT JOIN job_restores jr ON jr.job_id = j.id
+    LEFT JOIN job_uploads ju ON ju.job_id = j.id
+)"""
 
 
 def localized_jobs(connection: Any, rows: list[dict], locale: str) -> list[dict]:
@@ -35,14 +58,15 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         filters += " AND path=%s"
         params.append(path)
     recent = connection.execute(
-        f"SELECT {JOB_COLUMNS} FROM jobs WHERE {filters} ORDER BY requested_at DESC,id DESC LIMIT %s",
+        f"WITH {JOB_ROWS} SELECT {JOB_COLUMNS} FROM job_rows WHERE {filters} "
+        "ORDER BY requested_at DESC,id DESC LIMIT %s",
         [*params, PAGE_SIZE],
     ).fetchall()
     aggregates = connection.execute(f"""
-        WITH matching AS (
-            SELECT DISTINCT {GROUP_KEY} AS group_key FROM jobs WHERE {filters}
+        WITH {JOB_ROWS}, matching AS (
+            SELECT DISTINCT {GROUP_KEY} AS group_key FROM job_rows WHERE {filters}
         ), members AS NOT MATERIALIZED (
-            SELECT j.*, {GROUP_KEY} AS group_key FROM jobs j WHERE vault_id=%s
+            SELECT j.*, {GROUP_KEY} AS group_key FROM job_rows j WHERE vault_id=%s
         ), candidates AS (
             -- Match on display filters, but keep the ordering key independent
             -- of changing member status so completion cannot move a group
@@ -114,7 +138,7 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
 
 def group_jobs(connection: Any, *, vault_id: int, group_id: str, locale: str,
                before_id: int | None, limit: int) -> dict:
-    rows = connection.execute(f"""SELECT {JOB_COLUMNS} FROM jobs
+    rows = connection.execute(f"""WITH {JOB_ROWS} SELECT {JOB_COLUMNS} FROM job_rows
         WHERE vault_id=%s AND {GROUP_KEY}=%s AND id<%s ORDER BY id DESC LIMIT %s""",
         (vault_id, group_id, before_id or 2**63-1, limit+1)).fetchall()
     return {"items": localized_jobs(connection, rows[:limit], locale),

@@ -46,7 +46,27 @@ from app.storage import (
     reconcile_interrupted_jobs,
 )
 from app.services import metrics as metrics_service
-from tests.test_database import run_alembic
+from tests.catalog_support import seed_vault
+
+DEAD_WORKER = "00000000-0000-4000-8000-00000000dead"
+LIVE_WORKER = "00000000-0000-4000-8000-0000000011fe"
+JOB_WITH_LEASE_SQL = """
+    SELECT j.id, j.status, l.token::text AS claim_token, l.expires_at AS claim_expires_at
+    FROM jobs j LEFT JOIN job_leases l ON l.job_id = j.id
+"""
+
+
+def _put_lease(connection, job_id: int, token: str, claimed_at: str, expires_at: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (job_id) DO UPDATE SET token=EXCLUDED.token,
+            claimed_at=EXCLUDED.claimed_at, expires_at=EXCLUDED.expires_at
+        """,
+        (job_id, token, claimed_at, expires_at),
+    )
+from tests.postgres import run_alembic
 
 
 class SelectFairJobsTests(unittest.TestCase):
@@ -404,21 +424,21 @@ class _SchedulerDbMixin:
         self.path = Path(self.tmp.name) / "scheduler.db"
         # These tests isolate fair selection/leases, not provider readiness.
         self.enterContext(patch('app.storage.validate_cloud_vault'))
+        # Durable failure backlog, readiness and Source Volume problems are
+        # ported with their own tables (#590, #592); not under test here.
+        self.enterContext(patch('app.storage.observe_failed_job_backlog', return_value=(0, 0.0)))
+        self.enterContext(patch('app.storage.cloud_preflight_gate.snapshot',
+                                return_value={'status': 'ready'}))
+        self.enterContext(patch('app.storage.sweep_source_volume_problems', return_value=0))
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.file_ids: dict[tuple[int, str], str] = {}
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
-            )
             for vault_id, slug in ((10, "alpha"), (20, "beta")):
-                connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, %s, 'bucket', %s)",
-                    (vault_id, slug, slug, f"/source/{slug}", slug),
-                )
+                seed_vault(connection, vault_id=vault_id, source_root=f"/source/{slug}", name=slug)
                 catalog = ArchiveCatalog(connection)
                 for name in ("a.txt", "b.txt"):
-                    catalog.observe_local_copy(
+                    self.file_ids[(vault_id, name)] = catalog.observe_local_copy(
                         vault_id=vault_id,
                         path=name,
                         file_type="regular",
@@ -433,58 +453,33 @@ class _SchedulerDbMixin:
         vault_id: int,
         path: str,
         requested_at: str = "2026-07-01T00:00:00+00:00",
+        origin: str = "manual",
     ) -> int:
         with PostgresConnection(str(self.path)) as connection:
             return int(
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
+                        vault_id, file_id, action, status, origin, requested_at, updated_at
                     )
-                    SELECT %s, id, %s, 'upload', 'queued', 1, %s, %s
-                    FROM vault_files
-                    WHERE vault_id=%s
-                      AND id=(
-                          SELECT id FROM vault_files
-                          WHERE vault_id=%s
-                          ORDER BY id
-                          LIMIT 1 OFFSET %s
-                      )
+                    VALUES (%s, %s, 'upload', 'queued', %s, %s, %s)
                     RETURNING id
                     """,
-                    (
-                        vault_id,
-                        path,
-                        requested_at,
-                        requested_at,
-                        vault_id,
-                        vault_id,
-                        0 if path == "a.txt" else 1,
-                    ),
+                    (vault_id, self.file_ids[(vault_id, path)], origin, requested_at,
+                     requested_at),
                 ).fetchone()["id"]
             )
 
 
 class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_process_jobs_once_does_not_starve_second_vault(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            # Three older Jobs in vault 10, one newer Job in vault 20.
-            connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
-                "FROM vault_files WHERE vault_id=10 ORDER BY id LIMIT 1"
-            )
-            connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'b.txt', 'upload', 'queued', 1, '2026-07-01T00:01:00+00:00', '2026-07-01T00:01:00+00:00' "
-                "FROM vault_files WHERE vault_id=10 ORDER BY id DESC LIMIT 1"
-            )
-            connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 20, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:02:00+00:00', '2026-07-01T00:02:00+00:00' "
-                "FROM vault_files WHERE vault_id=20 ORDER BY id LIMIT 1"
-            )
+        # Three older Jobs in vault 10, one newer Job in vault 20.
+        self._insert_upload_job(vault_id=10, path="a.txt",
+                                requested_at="2026-07-01T00:00:00+00:00")
+        self._insert_upload_job(vault_id=10, path="b.txt",
+                                requested_at="2026-07-01T00:01:00+00:00")
+        self._insert_upload_job(vault_id=20, path="a.txt",
+                                requested_at="2026-07-01T00:02:00+00:00")
 
         processed_ids: list[int] = []
 
@@ -511,13 +506,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(vaults_seen, {10, 20})
 
     def test_cancelled_queued_job_is_not_started(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
-                "FROM vault_files WHERE vault_id=10 ORDER BY id LIMIT 1"
-            )
-            job_id = connection.execute("SELECT id FROM jobs").fetchone()["id"]
+        job_id = self._insert_upload_job(vault_id=10, path="a.txt")
 
         cancel_jobs([job_id])
         with PostgresConnection(str(self.path)) as connection:
@@ -582,7 +571,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(seen, [job_id])
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT claim_token, claim_expires_at FROM jobs WHERE id=%s",
+                JOB_WITH_LEASE_SQL + " WHERE j.id=%s",
                 (job_id,),
             ).fetchone()
         self.assertTrue(job["claim_token"])
@@ -591,16 +580,8 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_expired_queued_lease_is_reclaimed(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                UPDATE jobs
-                SET claim_token='dead-worker',
-                    claimed_at='2000-01-01T00:00:00+00:00',
-                    claim_expires_at='2000-01-01T00:05:00+00:00'
-                WHERE id=%s
-                """,
-                (job_id,),
-            )
+            _put_lease(connection, job_id, DEAD_WORKER,
+                       "2000-01-01T00:00:00+00:00", "2000-01-01T00:05:00+00:00")
         runtime = SimpleNamespace(
             operation_concurrency=1,
             bandwidth_limit_kibps=None,
@@ -622,9 +603,9 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(seen, [job_id])
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT claim_token FROM jobs WHERE id=%s", (job_id,)
+                JOB_WITH_LEASE_SQL + " WHERE j.id=%s", (job_id,)
             ).fetchone()
-        self.assertNotEqual(job["claim_token"], "dead-worker")
+        self.assertNotEqual(job["claim_token"], DEAD_WORKER)
 
     def test_claimed_job_cancellation_cannot_be_overwritten_by_worker(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
@@ -632,7 +613,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id,
-                claim_token="worker-claim",
+                claim_token=LIVE_WORKER,
                 claimed_at=timestamp,
                 claim_expires_at=(
                     datetime.now(timezone.utc) + timedelta(days=1)
@@ -643,12 +624,14 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertIsNotNone(claimed)
             job = connection.execute(
                 """
-                SELECT j.*, v.source_root
+                SELECT j.*, f.path, v.source_root
                 FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                JOIN files f ON f.id=j.file_id
                 WHERE j.id=%s
                 """,
                 (job_id,),
             ).fetchone()
+            job = {**job, **claimed}
 
         runtime = SimpleNamespace(restore_poll_interval=0)
 
@@ -685,7 +668,7 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id,
-                claim_token="heartbeat-worker",
+                claim_token=LIVE_WORKER,
                 claimed_at=timestamp,
                 claim_expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
                 now=timestamp,
@@ -694,12 +677,14 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertIsNotNone(claimed)
             job = connection.execute(
                 """
-                SELECT j.*, v.source_root
+                SELECT j.*, f.path, v.source_root
                 FROM jobs j JOIN vaults v ON v.id=j.vault_id
+                JOIN files f ON f.id=j.file_id
                 WHERE j.id=%s
                 """,
                 (job_id,),
             ).fetchone()
+            job = {**job, **claimed}
 
         runtime = SimpleNamespace(restore_poll_interval=0)
 
@@ -734,34 +719,19 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         self._insert_upload_job(vault_id=10, path="b.txt")
         self._insert_upload_job(vault_id=20, path="a.txt")
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
+            _put_lease(connection, first, LIVE_WORKER,
+                       "2099-01-01T00:00:00+00:00", "2099-01-01T00:05:00+00:00")
+            restoring = connection.execute(
                 """
-                UPDATE jobs
-                SET claim_token='live-worker',
-                    claimed_at='2099-01-01T00:00:00+00:00',
-                    claim_expires_at='2099-01-01T00:05:00+00:00'
-                WHERE id=%s
+                INSERT INTO jobs(vault_id, file_id, action, status, requested_at, updated_at)
+                VALUES (20, %s, 'recover', 'restoring',
+                        '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00')
+                RETURNING id
                 """,
-                (first,),
-            )
-            connection.execute(
-                """
-                INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status,
-                    requested_by, requested_at, updated_at,
-                    claim_token, claimed_at, claim_expires_at
-                )
-                SELECT 20, id, 'b.txt', 'recover', 'restoring',
-                       1, '2000-01-01T00:00:00+00:00',
-                       '2000-01-01T00:00:00+00:00',
-                       'dead-restorer', '2000-01-01T00:00:00+00:00',
-                       '2000-01-01T00:05:00+00:00'
-                FROM vault_files
-                WHERE vault_id=20
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            )
+                (self.file_ids[(20, "b.txt")],),
+            ).fetchone()["id"]
+            _put_lease(connection, restoring, DEAD_WORKER,
+                       "2000-01-01T00:00:00+00:00", "2000-01-01T00:05:00+00:00")
         runtime = SimpleNamespace(restore_poll_interval=0)
         with (
             patch("app.storage._runtime_settings", return_value=runtime),
@@ -779,23 +749,16 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
         job_id: int,
         *,
         status: str = "uploading",
-        token: str = "dead-worker",
+        token: str = DEAD_WORKER,
         expires_at: str,
-        claimed_at: str = "2026-07-01T00:00:00+00:00",
+        claimed_at: str = "2000-01-01T00:00:00+00:00",
     ) -> None:
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                """
-                UPDATE jobs
-                SET status=%s,
-                    claim_token=%s,
-                    claimed_at=%s,
-                    claim_expires_at=%s,
-                    updated_at=%s
-                WHERE id=%s
-                """,
-                (status, token, claimed_at, expires_at, claimed_at, job_id),
+                "UPDATE jobs SET status=%s, updated_at=%s WHERE id=%s",
+                (status, claimed_at, job_id),
             )
+            _put_lease(connection, job_id, token, claimed_at, expires_at)
 
     def _with_worker_db(self):
         runtime = SimpleNamespace(
@@ -829,11 +792,11 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertEqual(observe_stuck_lease_jobs()[0], 0)
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT status, claim_token FROM jobs WHERE id=%s",
+                JOB_WITH_LEASE_SQL + " WHERE j.id=%s",
                 (job_id,),
             ).fetchone()
         self.assertEqual(job["status"], "uploading")
-        self.assertEqual(job["claim_token"], "dead-worker")
+        self.assertEqual(job["claim_token"], DEAD_WORKER)
         self.assertEqual(seen, [])
 
     def test_expired_intermediate_lease_is_swept_without_restart(self) -> None:
@@ -858,11 +821,11 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertEqual(observe_stuck_lease_jobs()[0], 0)
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT status, claim_token FROM jobs WHERE id=%s",
+                JOB_WITH_LEASE_SQL + " WHERE j.id=%s",
                 (job_id,),
             ).fetchone()
         self.assertEqual(job["status"], "queued")
-        self.assertNotEqual(job["claim_token"], "dead-worker")
+        self.assertNotEqual(job["claim_token"], DEAD_WORKER)
 
     def test_live_worker_lease_is_not_recovered_when_sibling_expires(self) -> None:
         live_id = self._insert_upload_job(vault_id=10, path="a.txt")
@@ -870,12 +833,12 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         self._hold_upload_job(
             live_id,
-            token="live-worker",
+            token=LIVE_WORKER,
             expires_at=future,
         )
         self._hold_upload_job(
             dead_id,
-            token="dead-worker",
+            token=DEAD_WORKER,
             expires_at="2000-01-01T00:05:00+00:00",
         )
         seen: list[int] = []
@@ -889,14 +852,14 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(seen, [dead_id])
         with PostgresConnection(str(self.path)) as connection:
             rows = connection.execute(
-                "SELECT id, status, claim_token FROM jobs WHERE id IN (%s, %s)",
+                JOB_WITH_LEASE_SQL + " WHERE j.id IN (%s, %s)",
                 (live_id, dead_id),
             ).fetchall()
         by_id = {int(row["id"]): row for row in rows}
         self.assertEqual(by_id[live_id]["status"], "uploading")
-        self.assertEqual(by_id[live_id]["claim_token"], "live-worker")
+        self.assertEqual(by_id[live_id]["claim_token"], LIVE_WORKER)
         self.assertEqual(by_id[dead_id]["status"], "queued")
-        self.assertNotEqual(by_id[dead_id]["claim_token"], "dead-worker")
+        self.assertNotEqual(by_id[dead_id]["claim_token"], DEAD_WORKER)
 
     def test_stuck_metrics_are_distinct_from_claimable_backlog(self) -> None:
         queued_id = self._insert_upload_job(vault_id=10, path="a.txt")
@@ -939,11 +902,11 @@ class ExpiredLeaseSweepTests(_SchedulerDbMixin, unittest.TestCase):
                     process_jobs_once()
             with PostgresConnection(str(self.path)) as connection:
                 held = connection.execute(
-                    "SELECT status, claim_token FROM jobs WHERE id=%s",
+                    JOB_WITH_LEASE_SQL + " WHERE j.id=%s",
                     (job_id,),
                 ).fetchone()
             self.assertEqual(held["status"], "uploading")
-            self.assertEqual(held["claim_token"], "dead-worker")
+            self.assertEqual(held["claim_token"], DEAD_WORKER)
             with patch(
                 "app.storage.process_job",
                 side_effect=lambda job: seen.append(int(job["id"])),

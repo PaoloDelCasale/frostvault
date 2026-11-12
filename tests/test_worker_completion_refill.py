@@ -96,7 +96,9 @@ class WorkerCompletionRefillTests(unittest.TestCase):
                     await real_sleep(0.3)
                     self.assertFalse(second_started.is_set())
                     with PostgresConnection(self.worker.path) as connection:
-                        row = connection.execute("SELECT status,claim_token FROM jobs WHERE id=%s", (second,)).fetchone()
+                        row = connection.execute(
+                            "SELECT j.status, l.token AS claim_token FROM jobs j "
+                            "LEFT JOIN job_leases l ON l.job_id=j.id WHERE j.id=%s", (second,)).fetchone()
                     self.assertEqual(row, {"status": "queued", "claim_token": None})
                 else:
                     self.assertTrue(await asyncio.to_thread(second_started.wait, 2),

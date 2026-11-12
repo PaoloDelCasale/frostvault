@@ -27,7 +27,10 @@ from app.storage import (
     schedule_upload_retry,
     set_job,
 )
-from tests.test_database import run_alembic
+from tests.catalog_support import seed_vault
+from tests.postgres import run_alembic
+
+DEAD_WORKER = "00000000-0000-4000-8000-00000000dead"
 
 
 class JobPrometheusCounterTests(unittest.TestCase):
@@ -39,20 +42,9 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         metrics_service.reset_for_tests()
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                """
-            )
+            seed_vault(connection, vault_id=2)
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            self.file_id = catalog.observe_local_copy(
                 vault_id=2,
                 path="a.txt",
                 file_type="regular",
@@ -60,26 +52,38 @@ class JobPrometheusCounterTests(unittest.TestCase):
                 mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            self.job_id = int(
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
-                    )
-                    SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
-                           '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
-                    FROM vault_files WHERE vault_id=2 LIMIT 1
-                    RETURNING id
-                    """
-                ).fetchone()["id"]
-            )
+            self.job_id = self._insert_job(connection, "upload")
         self._db = patch(
             "app.storage.db",
             side_effect=lambda: PostgresConnection(str(self.path)),
         )
         self._db.start()
         self.addCleanup(self._db.stop)
+        # Upload Remediation episodes and their closed-failure filter are
+        # ported separately (#592).
+        self.enterContext(patch("app.services.upload_remediation.transition"))
+
+    def _insert_job(self, connection, action: str, status: str = "uploading") -> int:
+        return int(
+            connection.execute(
+                """
+                INSERT INTO jobs(vault_id, file_id, action, status, requested_at, updated_at)
+                VALUES (2, %s, %s, %s, '2026-07-21T10:00:00+00:00',
+                        '2026-07-21T10:00:00+00:00')
+                RETURNING id
+                """,
+                (self.file_id, action, status),
+            ).fetchone()["id"]
+        )
+
+    def _dead_lease(self, connection, job_id: int) -> None:
+        connection.execute(
+            """
+            INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+            VALUES (%s, %s, '2000-01-01T00:00:00+00:00', '2000-01-01T00:05:00+00:00')
+            """,
+            (job_id, DEAD_WORKER),
+        )
 
     def test_failed_and_retried_jobs_increment_prometheus_counters(self) -> None:
         self.assertTrue(schedule_upload_retry(self.job_id, retry_count=1))
@@ -91,13 +95,15 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertIn('jobs_failed_total{action="upload"} 1', text)
         self.assertNotIn("jobs_completed_total", text)
         self.assertNotIn("path=", text)
-        count, age = observe_failed_job_backlog()
+        with patch("app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"):
+            count, age = observe_failed_job_backlog()
         self.assertEqual(count, 1)
         self.assertGreaterEqual(age, 0.0)
 
     def test_completed_job_increments_once(self) -> None:
         self.assertTrue(set_job(self.job_id, "completed", "ok"))
-        self.assertTrue(set_job(self.job_id, "completed", "ok again"))
+        # A terminal Job is final (#589): a repeated outcome writes nothing.
+        self.assertFalse(set_job(self.job_id, "completed", "ok again"))
         text = metrics_service.render_prometheus()
         self.assertIn('jobs_completed_total{action="upload"} 1', text)
         self.assertNotIn("jobs_failed_total", text)
@@ -111,24 +117,14 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertNotIn("jobs_retries_total", text)
 
     def test_cas_miss_does_not_increment(self) -> None:
-        with patch("app.storage._claim_token_for", return_value="other-worker"):
+        with patch("app.storage._claim_token_for", return_value=DEAD_WORKER):
             self.assertFalse(set_job(self.job_id, "failed", "stale"))
         text = metrics_service.render_prometheus()
         self.assertNotIn("jobs_failed_total", text)
 
     def test_reconcile_failed_job_increments_after_commit(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                UPDATE jobs
-                SET status='uploading',
-                    claim_token='dead-worker',
-                    claimed_at='2000-01-01T00:00:00+00:00',
-                    claim_expires_at='2000-01-01T00:05:00+00:00'
-                WHERE id=%s
-                """,
-                (self.job_id,),
-            )
+            self._dead_lease(connection, self.job_id)
         with patch(
             "app.storage.source_layout.vault_local_access",
             return_value=type(
@@ -145,18 +141,10 @@ class JobPrometheusCounterTests(unittest.TestCase):
 
     def test_reconcile_failure_increments_failed_counter(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                UPDATE jobs
-                SET action='recover',
-                    status='downloading',
-                    claim_token='dead-worker',
-                    claimed_at='2000-01-01T00:00:00+00:00',
-                    claim_expires_at='2000-01-01T00:05:00+00:00'
-                WHERE id=%s
-                """,
-                (self.job_id,),
-            )
+            # A Job never changes action: end the upload, then interrupt a recovery.
+            connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (self.job_id,))
+            self.job_id = self._insert_job(connection, "recover", "downloading")
+            self._dead_lease(connection, self.job_id)
         with patch(
             "app.storage.source_layout.vault_local_access",
             return_value=type(

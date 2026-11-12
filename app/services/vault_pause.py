@@ -20,12 +20,14 @@ def set_paused(connection: Any, *, vault_id: int, paused: bool,
     # FOR UPDATE conflicts with shared worker claims, without making every claim
     # or held progress step exclusive (ADR-0031/0033). Always Vault before Jobs.
     vault = connection.execute(
-        "SELECT id, name, paused, enabled, decommission_state FROM vaults WHERE id=%s FOR UPDATE",
+        "SELECT id, name, paused, lifecycle FROM vaults WHERE id=%s FOR UPDATE",
         (vault_id,),
     ).fetchone()
     if vault is None:
         raise VaultNotFound("Vault not found")
-    if not vault["enabled"] or vault["decommission_state"] != "active":
+    # Stopping or tombstoned Vaults are not operational; a Vault waiting for
+    # its reconnect scan still is (the schema allows a pause only there).
+    if vault["lifecycle"] not in {"active", "reconnect_required"}:
         raise ValueError("Only an operational Vault can be paused or resumed")
     key = "vault_pause.paused_notice" if paused else "vault_pause.resumed_notice"
     if bool(vault["paused"]) != paused:

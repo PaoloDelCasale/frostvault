@@ -200,7 +200,7 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
     return {"job_id":job["id"],"group_id":group}
 
 
-def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: int,
+def intercept_upload(connection: Any, *, vault_id: int, file_id: str, user_id: int | None = None,
                      stamp: str, automatic: bool, group_id: str | None = None) -> tuple[bool, dict[str, Any] | None]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     discover_file(connection,vault,file_id,stamp)
