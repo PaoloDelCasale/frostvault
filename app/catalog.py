@@ -939,8 +939,6 @@ class ArchiveCatalog:
             return
         self.connection.execute("UPDATE archive_versions SET upload_snapshot_json=%s, upload_verification_requested=%s WHERE id=%s",
                                 (snapshot_json, requested, version_id))
-        from .services.upload_remediation_discovery import capture
-        capture(self.connection, datetime.now(timezone.utc).isoformat(), version_id=version_id)
 
     def set_version_verification_method(self, version_id: str, *, method: str, fallback_reason: str | None,
                                         egress_bytes: int | None, provider_proof: dict[str, Any] | None = None) -> None:

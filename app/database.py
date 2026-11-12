@@ -20,7 +20,7 @@ from .schema_state import DatabaseSchemaError, read_schema_revision
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0072_upload_lineage_indexes"
+HEAD_SCHEMA_REVISION = "0073_obligation_discovery"
 
 CONNECT_TIMEOUT_SECONDS = 10
 # Each operation slot may hold two handles at once (a unit opened while an

@@ -14,10 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import upload_provenance as provenance
-from .upload_remediation_discovery import enroll as _enroll, capture as capture_fact, drain as discover_facts
+from .upload_remediation_discovery import enroll as _enroll, discover as discover_obligations, obligation_query
 
 POLL_SECONDS = 10
-SWEEP_NAMES = ("discovery", "facts", "admission")
+SWEEP_NAMES = ("discovery", "obligations", "admission")
 SWEEP_STALE_SECONDS = 5 * POLL_SECONDS
 VAULT_BATCH = 10
 TARGET_BATCH = 10
@@ -101,9 +101,7 @@ def discover_file(connection: Any, vault: dict[str, Any], file_id: str, stamp: s
         ORDER BY j.id LIMIT %s""", (file_id,TARGET_BATCH)).fetchall()
     for original in rows:
         _enroll(connection, original, vault, stamp)
-    if connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone():
-        capture_fact(connection, stamp, file_id=file_id)
-    discover_facts(connection, vault, stamp, TARGET_BATCH, file_id=file_id)
+    discover_obligations(connection, vault, stamp, TARGET_BATCH, file_id=file_id)
 
 
 def _suspension(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, automatic: bool) -> str | None:
@@ -446,10 +444,15 @@ def _fair_vaults(connection: Any, name: str, stamp: str) -> list[dict[str, Any]]
     cursor = connection.execute("SELECT * FROM upload_remediation_sweep WHERE name=%s FOR UPDATE SKIP LOCKED", (name,)).fetchone()
     if not cursor:
         return []
-    predicate = ("EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.vault_id=v.id AND q.rejected_reason IS NULL)" if name == "discovery"
-        else "EXISTS (SELECT 1 FROM upload_remediation_facts q WHERE q.vault_id=v.id AND q.due_at<=%s)" if name == "facts"
-        else f"EXISTS (SELECT 1 FROM upload_remediations r WHERE r.vault_id=v.id AND ((r.state IN ('pending','suspended') AND NOT {VOID_SQL} AND r.due_at<=%s AND (r.current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs current WHERE current.id=r.current_job_id AND current.status IN ('completed','failed','cancelled')))) OR (r.state IN ('queued','retrying','suspended') AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=r.current_job_id AND j.status='cancelled'))))")
-    params = [] if name == "discovery" else [stamp]
+    if name == "obligations":
+        sql, params = obligation_query(vault_sql="v.id", stamp=stamp, limit=1)
+        predicate = f"EXISTS (SELECT 1 FROM ({sql}) obligations)"
+    elif name == "discovery":
+        predicate = "EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.vault_id=v.id AND q.rejected_reason IS NULL)"
+        params = ()
+    else:
+        predicate = f"EXISTS (SELECT 1 FROM upload_remediations r WHERE r.vault_id=v.id AND ((r.state IN ('pending','suspended') AND NOT {VOID_SQL} AND r.due_at<=%s AND (r.current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs current WHERE current.id=r.current_job_id AND current.status IN ('completed','failed','cancelled')))) OR (r.state IN ('queued','retrying','suspended') AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=r.current_job_id AND j.status='cancelled'))))"
+        params = (stamp,)
     rows = connection.execute(f"SELECT v.* FROM vaults v WHERE {predicate} ORDER BY (v.id>%s) DESC,v.id LIMIT %s", (*params,cursor["last_vault_id"],VAULT_BATCH)).fetchall()
     connection.execute("UPDATE upload_remediation_sweep SET last_tick_at=%s WHERE name=%s", (stamp,name))
     return rows
@@ -483,8 +486,8 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                             break
                         _enroll(connection,original,vault,stamp)
                         connection.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s AND rejected_reason IS NULL", (original["id"],))
-                elif name == "facts":
-                    discover_facts(connection, vault, stamp, TARGET_BATCH, deadline=deadline)
+                elif name == "obligations":
+                    discover_obligations(connection, vault, stamp, TARGET_BATCH, deadline=deadline)
                 else:
                     from ..owner import owner_user_id
                     owner_id = owner_user_id(connection)
@@ -571,9 +574,11 @@ def observe(db: Any) -> None:
         return max(0.0,(current-datetime.fromisoformat(value)).total_seconds()) if value else 0.0
     with db() as connection:
         inbox = connection.execute("SELECT count(*) n,min(discovered_at) oldest FROM upload_remediation_discovery WHERE rejected_reason IS NULL").fetchone()
-        facts = connection.execute("SELECT count(*) n,min(discovered_at) oldest FROM upload_remediation_facts").fetchone()
-        inbox["n"] += facts["n"]
-        inbox["oldest"] = min(value for value in (inbox["oldest"], facts["oldest"]) if value is not None) if inbox["oldest"] or facts["oldest"] else None
+        sql, params = obligation_query(vault_sql="vf_scope.id", stamp=current.isoformat())
+        obligations = connection.execute(f"""SELECT count(*) n,min(obligation_at) oldest FROM vaults vf_scope
+            CROSS JOIN LATERAL ({sql}) obligations""", params).fetchone()
+        inbox["n"] += obligations["n"]
+        inbox["oldest"] = min(value for value in (inbox["oldest"], obligations["oldest"]) if value is not None) if inbox["oldest"] or obligations["oldest"] else None
         due = connection.execute("SELECT count(*) n,min(due_at) oldest FROM upload_remediations WHERE state IN ('pending','queued','retrying') AND due_at<=%s", (current.isoformat(),)).fetchone()
         states = connection.execute("SELECT state,count(*) n FROM upload_remediations WHERE state<>'resolved' GROUP BY state").fetchall()
         status = sweep_status(connection, current)

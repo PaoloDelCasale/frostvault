@@ -419,8 +419,6 @@ def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, An
     if not changed:
         raise UploadBlocked("ambiguous_send")
     from datetime import datetime, timezone
-    from .upload_remediation_discovery import capture
-    capture(connection, datetime.now(timezone.utc).isoformat(), intent_id=intent["id"])
 
 
 def _receipt_fact(response: dict[str, Any]) -> dict[str, Any]:

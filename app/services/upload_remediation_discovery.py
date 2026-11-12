@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from time import monotonic
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import upload_provenance as provenance
@@ -16,32 +17,88 @@ from .upload_snapshot import UploadSnapshot
 from .vault_paths import expected_cloud_key
 
 
-def capture(connection: Any, stamp: str, *, version_id: str | None = None,
-            intent_id: str | None = None, file_id: str | None = None) -> None:
-    # Current catalog adapters also construct populated pre-0065 test fixtures.
-    supported = connection.execute("SELECT to_regclass('upload_remediation_facts') IS NOT NULL AS supported").fetchone()
-    if not supported or not supported.get("supported"):
-        return
-    if intent_id is not None:
-        connection.execute("""INSERT INTO upload_remediation_facts(target_key,vault_id,vault_file_id,
-            intent_id,archive_version_id,discovered_at,due_at)
-            SELECT 'intent:'||i.id,i.vault_id,i.vault_file_id,i.id,i.archive_version_id,%s,%s
-            FROM upload_intents i JOIN vault_files vf ON vf.id=i.vault_file_id AND vf.vault_id=i.vault_id
-            WHERE i.id=%s AND i.send_started ON CONFLICT (target_key) DO NOTHING""", (stamp, stamp, intent_id))
-        return
-    # A scan uses the domain's already-verified Current Snapshot, NOT provider
-    # latest or an unverified discovery elected by token/size/timestamp.
-    connection.execute("""INSERT INTO upload_remediation_facts(target_key,vault_id,vault_file_id,
-        intent_id,archive_version_id,discovered_at,due_at)
-        SELECT CASE WHEN i.id IS NULL THEN 'version:'||av.id ELSE 'intent:'||i.id END,
-            av.vault_id,av.vault_file_id,i.id,av.id,%s,%s
-        FROM archive_versions av JOIN vault_files vf ON vf.id=av.vault_file_id AND vf.vault_id=av.vault_id
-        LEFT JOIN upload_intents i ON i.archive_version_id=av.id AND i.vault_id=av.vault_id
-AND i.vault_file_id=av.vault_file_id AND i.send_started AND NOT i.settled
-        WHERE av.id=%s OR (av.vault_file_id=%s AND av.id=(SELECT keeper.id FROM archive_versions keeper
-            WHERE keeper.vault_file_id=%s AND keeper.integrity='verified' AND keeper.availability='available'
-            ORDER BY keeper.version_number DESC LIMIT 1)) ON CONFLICT (target_key) DO NOTHING""",
-        (stamp, stamp, version_id, file_id, file_id))
+# A just-started send may still be between its durable commit and publication.
+# Active Jobs are excluded regardless of lease expiry. Targeted admission cannot
+# wait for grace: it must see the outstanding intent before allowing a fresh PUT.
+SEND_GRACE_SECONDS = 10
+
+
+def obligation_query(*, vault_sql: str, stamp: str, file_id: str | None = None,
+                     limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
+    """Indexed source-of-truth frontier, shared by sweep, lookup and telemetry.
+
+    Filter active and already-enrolled targets BEFORE every LIMIT. Otherwise a
+    bounded sweep can spend forever rediscovering its first cancelled/blocked
+    targets. Closed episodes suppress only the old obligation: a durable block
+    on their verified keeper is new cleanup work, regardless of clock ordering.
+    No source row is consumed here.
+    """
+    cutoff = (datetime.fromisoformat(stamp) - timedelta(seconds=SEND_GRACE_SECONDS)).isoformat()
+    params: list[Any] = []
+
+    def scope(alias: str) -> str:
+        predicate = f"{alias}.vault_id={vault_sql}"
+        if file_id is not None:
+            predicate += f" AND {alias}.vault_file_id=%s"
+            params.append(file_id)
+        return predicate
+
+    def idle(alias: str) -> str:
+        return f"""NOT EXISTS (SELECT 1 FROM jobs active
+            WHERE active.vault_file_id={alias}.vault_file_id
+              AND active.status NOT IN ('failed','cancelled','completed'))"""
+
+    intent_scope = scope("i")
+    grace = ""
+    if file_id is None:
+        grace = " AND i.created_at<=%s"
+        params.append(cutoff)
+    intents = f"""SELECT i.id intent_id,i.archive_version_id,i.vault_file_id,i.created_at obligation_at,i.id obligation_key
+        FROM upload_intents i WHERE {intent_scope} AND i.send_started AND NOT i.settled{grace}
+          AND {idle('i')}
+          AND NOT EXISTS (SELECT 1 FROM upload_remediations r WHERE r.intent_id=i.id)"""
+    version_scope = scope("av")
+    versions = f"""SELECT NULL::text intent_id,av.id archive_version_id,av.vault_file_id,av.discovered_at obligation_at,av.id obligation_key
+        FROM archive_versions av WHERE {version_scope} AND av.integrity='unverified'
+          AND av.availability='available'
+          AND (av.upload_snapshot_json IS NOT NULL OR (av.origin='upload' AND EXISTS (
+              SELECT 1 FROM jobs evidence WHERE evidence.archive_version_id=av.id
+                AND evidence.vault_file_id=av.vault_file_id AND evidence.action='upload'
+                AND evidence.upload_plaintext_sha256 ~ '^[0-9a-f]{{64}}$')))
+          AND {idle('av')}
+          AND NOT EXISTS (SELECT 1 FROM upload_intents i WHERE i.vault_file_id=av.vault_file_id
+              AND i.send_started AND NOT i.settled)
+          AND NOT EXISTS (SELECT 1 FROM upload_remediations r WHERE r.archive_version_id=av.id)"""
+    # Start at the small durable block table, not the historical verified catalog.
+    block_scope = scope("vf").replace("vf.vault_file_id", "vf.id")
+    blocks = f"""SELECT NULL::text intent_id,av.id archive_version_id,vf.id vault_file_id,b.updated_at obligation_at,av.id obligation_key
+        FROM snapshot_reconciliation_blocks b JOIN vault_files vf ON vf.id=b.vault_file_id
+        JOIN LATERAL (SELECT keeper.* FROM archive_versions keeper
+            WHERE keeper.vault_file_id=vf.id AND keeper.integrity='verified' AND keeper.availability='available'
+            ORDER BY keeper.version_number DESC LIMIT 1) av ON TRUE
+        WHERE {block_scope} AND {idle('av')}
+          AND NOT EXISTS (SELECT 1 FROM upload_intents i WHERE i.vault_file_id=vf.id
+              AND i.send_started AND NOT i.settled)
+          AND NOT EXISTS (SELECT 1 FROM upload_remediations r WHERE r.archive_version_id=av.id
+              AND r.state<>'resolved')"""
+    branches = [intents, versions, blocks]
+    if limit is not None:
+        # Cap each indexed source before the UNION sort; never sort an entire
+        # vault's outstanding backlog just to return TARGET_BATCH candidates.
+        branches = [f"({sql} ORDER BY obligation_at,obligation_key LIMIT {int(limit)})" for sql in branches]
+    return " UNION ALL ".join(branches), tuple(params)
+
+
+def discover(connection: Any, vault: dict[str, Any], stamp: str, limit: int, *,
+             file_id: str | None = None, deadline: float | None = None) -> None:
+    sql, params = obligation_query(vault_sql=str(int(vault['id'])), stamp=stamp, file_id=file_id, limit=limit)
+    rows = connection.execute(f"""SELECT * FROM ({sql}) obligations
+        ORDER BY obligation_at,obligation_key LIMIT %s""", (*params, limit)).fetchall()
+    for obligation in rows:
+        if deadline is not None and monotonic() >= deadline:
+            break
+        enroll(connection, None, vault, stamp, intent_id=obligation['intent_id'],
+               version_id=obligation['archive_version_id'])
 
 
 def _reject(connection: Any, original: dict[str, Any] | None, stamp: str, reason: str) -> None:
@@ -186,7 +243,7 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
         if candidates:
             # New scan/failure obligation, not a budget reset for an open or
             # cancelled target. Old successful episode and links stay intact.
-            key += ":cleanup:" + block["updated_at"] if block else ":failure:" + str(original["id"]) if original else ":obligation:" + stamp
+            key += ":cleanup:" + block["updated_at"] + ":" + str(uuid.uuid4()) if block else ":failure:" + str(original["id"]) if original else ":obligation:" + stamp
         row = connection.execute("""INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,
             intent_id,archive_version_id,target_json,expected_sha256,snapshot_json,requested_mode,size,
             state,phase,reason,retry_count,due_at,created_at,updated_at)
@@ -202,19 +259,3 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
             VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (original["id"], row["id"], file_id, vault["id"]))
     _invalidate(connection, vault["id"], stamp)
     return row
-
-
-def drain(connection: Any, vault: dict[str, Any], stamp: str, limit: int, *,
-          file_id: str | None = None, deadline: float | None = None) -> None:
-    from .upload_remediation import _later
-    rows = connection.execute("""SELECT * FROM upload_remediation_facts WHERE vault_id=%s AND due_at<=%s
-        AND (%s::text IS NULL OR vault_file_id=%s) ORDER BY due_at,target_key LIMIT %s""",
-        (vault["id"], stamp, file_id, file_id, limit)).fetchall()
-    for fact in rows:
-        if deadline is not None and monotonic() >= deadline:
-            break
-        if connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (fact["vault_file_id"],)).fetchone():
-            connection.execute("UPDATE upload_remediation_facts SET due_at=%s WHERE target_key=%s", (_later(stamp), fact["target_key"]))
-            continue  # Expired leases still belong to their original active Job.
-        enroll(connection, None, vault, stamp, intent_id=fact["intent_id"], version_id=fact["archive_version_id"])
-        connection.execute("DELETE FROM upload_remediation_facts WHERE target_key=%s", (fact["target_key"],))
