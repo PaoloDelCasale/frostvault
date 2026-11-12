@@ -497,9 +497,8 @@ def queue_auto_local_cleanups(
           AND av.availability='available'
           AND av.verified_at IS NOT NULL
           AND lc.cloud_only_version_id IS NULL
-          AND av.id=(SELECT latest.id FROM archive_versions latest
-                     WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
-                     ORDER BY latest.version_number DESC LIMIT 1)
+          AND av.id=vf.current_version_id
+          AND vf.replacing_version_id IS NULL
         ORDER BY lower(fp.path)
         """,
         (vault_id,),

@@ -73,9 +73,8 @@ def obligation_query(*, vault_sql: str, stamp: str, file_id: str | None = None,
     block_scope = scope("vf").replace("vf.vault_file_id", "vf.id")
     blocks = f"""SELECT NULL::text intent_id,av.id archive_version_id,vf.id vault_file_id,b.updated_at obligation_at,av.id obligation_key
         FROM snapshot_reconciliation_blocks b JOIN vault_files vf ON vf.id=b.vault_file_id
-        JOIN LATERAL (SELECT keeper.* FROM archive_versions keeper
-            WHERE keeper.vault_file_id=vf.id AND keeper.integrity='verified' AND keeper.availability='available'
-            ORDER BY keeper.version_number DESC LIMIT 1) av ON TRUE
+        JOIN archive_versions av ON av.id=vf.current_version_id
+            AND av.integrity='verified' AND av.availability='available'
         WHERE {block_scope} AND {idle('av')}
           AND NOT EXISTS (SELECT 1 FROM upload_intents i WHERE i.vault_file_id=vf.id
               AND i.send_started AND NOT i.settled)
@@ -202,9 +201,10 @@ def enroll(connection: Any, original: dict[str, Any] | None, vault: dict[str, An
     if not path or path["path"] != pinned.get("path"):
         reason = reason or "identity_changed"
     if version:
-        newer = connection.execute("""SELECT 1 FROM archive_versions WHERE vault_file_id=%s
-            AND integrity='verified' AND availability='available' AND version_number>%s LIMIT 1""", (file_id, version["version_number"])).fetchone()
-        if version["availability"] == "purged" or newer:
+        superseded = connection.execute("""SELECT 1 FROM vault_files WHERE id=%s
+            AND current_version_id IS NOT NULL AND current_version_id<>%s
+            AND replacing_version_id IS DISTINCT FROM %s""", (file_id, version["id"], version["id"])).fetchone()
+        if version["availability"] == "purged" or superseded:
             reason = reason or "target_superseded"
         elif version["integrity"] == "mismatch":
             reason = "proof_mismatch"

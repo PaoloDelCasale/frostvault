@@ -79,12 +79,11 @@ def _keeper(connection: Any, job: dict[str, Any], keeper_id: str, provider: str 
     scopes = connection.execute("SELECT target_json FROM upload_intents WHERE archive_version_id=%s UNION ALL SELECT target_json FROM snapshot_cleanup_inventories WHERE keeper_id=%s", (keeper_id,keeper_id)).fetchall()
     if any(json.loads(s["target_json"])["bucket"] != job["s3_bucket"] or (provider is not None and json.loads(s["target_json"])["provider"] != provider) for s in scopes):
         raise UploadBlocked("identity_changed")
-    newer = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND version_number>%s AND availability='available'", (job["vault_file_id"], row["version_number"])).fetchall()
-    if any(_has_lineage(connection, item, job["vault_file_id"], bucket=job["s3_bucket"], provider=provider) for item in newer):
-        # A stale recovery of A is never authority to purge a later app attempt B.
-        raise UploadBlocked("target_superseded")
-    latest = connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' ORDER BY version_number DESC LIMIT 1", (job["vault_file_id"],)).fetchone()
-    if not latest or str(latest["id"]) != str(keeper_id):
+    state = connection.execute("SELECT current_version_id,replacing_version_id FROM vault_files WHERE id=%s AND vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
+    # A stale recovery of A is never authority to purge another admitted B,
+    # even before B has verified. Discovery cannot alter either pointer.
+    if (not state or state["replacing_version_id"] is not None
+            or str(state["current_version_id"]) != str(keeper_id)):
         raise UploadBlocked("target_superseded")
     return row
 

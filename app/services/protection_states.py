@@ -1,8 +1,8 @@
 """Read-only protection vocabulary shared by browse, directory rollups and stats.
 
 These states are observations, never authorization for deleting either copy.
-The canonical aliases in SQL are vf (Vault File), lc (Local Copy), av (latest
-non-purged Archive Version, INCLUDING missing copies).
+The canonical aliases in SQL are vf (Vault File), lc (Local Copy), av (the
+explicit replacement, or Current Snapshot, INCLUDING missing copies).
 """
 from __future__ import annotations
 
@@ -65,11 +65,8 @@ END"""
 # A missing snapshot must remain visible even with no Local Copy.
 VISIBLE_SQL = f"(({LOCAL_EXISTS_SQL}) OR av.id IS NOT NULL)"
 LATEST_JOIN_SQL = """
-    LEFT JOIN archive_versions av ON av.id=(
-        SELECT latest.id FROM archive_versions latest
-        WHERE latest.vault_file_id=vf.id AND latest.availability <> 'purged'
-        ORDER BY latest.version_number DESC LIMIT 1
-    )
+    LEFT JOIN archive_versions av
+      ON av.id=COALESCE(vf.replacing_version_id, vf.current_version_id)
 """
 
 

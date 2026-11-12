@@ -159,10 +159,7 @@ def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
         FROM vault_files vf
         LEFT JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
         LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-        LEFT JOIN archive_versions av ON av.id=(
-            SELECT latest.id FROM archive_versions latest
-            WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
-            ORDER BY latest.version_number DESC LIMIT 1)
+        LEFT JOIN archive_versions av ON av.id=vf.current_version_id
         WHERE vf.vault_id=%s AND {selection}
         ORDER BY fp.path, vf.id
     """, params).fetchall()
@@ -171,7 +168,7 @@ def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
 def _versions(connection: Any, file_id: str) -> list[dict[str, Any]]:
     return connection.execute("""
         SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability<>'purged'
-        ORDER BY version_number
+        ORDER BY id
     """, (file_id,)).fetchall()
 
 
@@ -376,6 +373,14 @@ def mark_items_deleted(connection: Any, *, item_ids: list[int], updated_at: str)
         connection.execute(f"""UPDATE archive_versions SET availability='purged',availability_checked_at=%s
             WHERE id IN (SELECT archive_version_id FROM cloud_deletion_items
                          WHERE id IN ({placeholders}) AND kind='version')""", (updated_at, *batch))
+        # Only the exact consented versions actually deleted can withdraw a
+        # snapshot reference. A partial batch never elects an older fallback.
+        deleted_ids = [str(i["archive_version_id"]) for i in items if i["archive_version_id"]]
+        if deleted_ids:
+            connection.execute("""UPDATE vault_files
+                SET current_version_id=CASE WHEN current_version_id=ANY(%s) THEN NULL ELSE current_version_id END,
+                    replacing_version_id=CASE WHEN replacing_version_id=ANY(%s) THEN NULL ELSE replacing_version_id END
+                WHERE id=ANY(%s)""", (deleted_ids, deleted_ids, list({str(i["vault_file_id"]) for i in items})))
         connection.execute(f"""UPDATE cloud_deletion_items SET status='deleted',error_message=NULL,updated_at=%s
             WHERE id IN ({placeholders})""", (updated_at, *batch))
         invalidate_for_archive_version_ids(connection, [str(i["archive_version_id"])

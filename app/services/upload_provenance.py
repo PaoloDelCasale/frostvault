@@ -831,7 +831,7 @@ def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str
     intent = outstanding(connection, row["id"])
     linked = _legacy_materialized(connection,row["id"]) if not intent else None
     if not intent and not linked:
-        linked = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability='available' AND integrity='verified' ORDER BY version_number DESC LIMIT 1", (row["id"],)).fetchone()
+        linked = connection.execute("SELECT av.* FROM vault_files vf JOIN archive_versions av ON av.id=vf.current_version_id WHERE vf.id=%s AND av.availability='available' AND av.integrity='verified'", (row["id"],)).fetchone()
     if not intent and not linked:
         raise UploadBlocked("proof_unavailable")
     job = connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested) VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,0,'manual',TRUE,%s,%s,%s) RETURNING id,group_id", (vault["id"], row["id"], intent["archive_version_id"] if intent else linked["id"], path, timestamp, timestamp, str(uuid.uuid4()), path, UploadSnapshot.from_json(intent["snapshot_json"]).size if intent else linked["size"], UploadSnapshot.from_json(intent["snapshot_json"]).plaintext_sha256 if intent else linked.get("expected_sha") or linked["plaintext_sha256"], intent["snapshot_json"] if intent else linked["upload_snapshot_json"], intent["requested"] if intent else linked["upload_verification_requested"] or "read_back",)).fetchone()

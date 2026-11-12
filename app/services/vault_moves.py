@@ -60,11 +60,10 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
             EXISTS(SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
                 AND j.status NOT IN ('completed','failed','cancelled'))
             OR EXISTS(SELECT 1 FROM upload_intents i WHERE i.vault_file_id=vf.id
-                AND i.send_started AND NOT i.settled) AS busy
+                AND i.send_started AND NOT i.settled)
+            OR vf.replacing_version_id IS NOT NULL AS busy
         FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        LEFT JOIN archive_versions av ON av.id=(SELECT a.id FROM archive_versions a
-            WHERE a.vault_file_id=vf.id AND a.availability<>'purged'
-            ORDER BY a.version_number DESC LIMIT 1)
+        LEFT JOIN archive_versions av ON av.id=vf.current_version_id
         WHERE vf.vault_id=%s AND vf.status='active' ORDER BY fp.path
     """, (vault_id,)).fetchall()
 
@@ -221,9 +220,10 @@ def process(job: dict[str, Any], move: dict[str, Any]) -> None:
             WHERE vault_id=%s AND path=%s AND valid_to IS NULL""", (job["vault_id"],job["path"])).fetchone()
         if not path_owner or path_owner["vault_file_id"] != job["vault_file_id"]:
             raise MoveBlocked("Vault File path changed; every copy retained")
-        current = connection.execute("""SELECT id,provider_version_id,object_key,integrity,availability,plaintext_sha256 FROM archive_versions WHERE vault_file_id=%s
-            AND availability<>'purged' ORDER BY version_number DESC LIMIT 1""",
-            (job["vault_file_id"],)).fetchone()
+        current = connection.execute("""SELECT av.id,av.provider_version_id,av.object_key,av.integrity,av.availability,av.plaintext_sha256
+            FROM vault_files vf JOIN archive_versions av ON av.id=vf.current_version_id
+            WHERE vf.id=%s AND (vf.replacing_version_id IS NULL OR vf.replacing_version_id=%s)""",
+            (job["vault_file_id"], move.get("destination_archive_id"))).fetchone()
         if not current:
             raise MoveBlocked("Current Snapshot changed; every copy retained")
         if current["id"] == move["source_archive_id"] and (

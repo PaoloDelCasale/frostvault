@@ -44,8 +44,7 @@ def _only_cloud_copy_sql(file_id_sql: str) -> str:
         WHERE only_copy.vault_file_id={file_id_sql}
           AND only_copy.integrity='verified'
           AND only_copy.availability='available'
-        ORDER BY only_copy.version_number DESC
-        LIMIT 1
+          AND only_copy.id=(SELECT current_version_id FROM vault_files WHERE id={file_id_sql})
     )"""
 
 
@@ -761,6 +760,8 @@ class ArchiveCatalog:
                 [str(existing["id"])],
                 observed_at=scan_id,
             )
+            if origin == "upload":
+                self.stage_snapshot_replacement(existing["id"])
             self._mark_path_aggregates_dirty(vault_id, path)
             return existing["id"]
         file_id = vault_file_id or self._resolve_cloud_path_file(vault_id, path, observed_at)
@@ -768,29 +769,13 @@ class ArchiveCatalog:
             "UPDATE vault_files SET status=status WHERE id=%s",
             (file_id,),
         )
-        latest = self.connection.execute(
-            """
-            SELECT COALESCE(MAX(version_number), 0) AS version_number
-            FROM archive_versions WHERE vault_file_id=%s
-            """,
-            (file_id,),
-        ).fetchone()
         version_id = str(uuid.uuid4())
-        version_number = int(latest["version_number"]) + 1
-        if origin == "discovered":
-            # Observations never elect themselves over a verified keeper. No
-            # timestamp/latest heuristic grants Current Snapshot or delete trust.
-            keeper = self.connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' LIMIT 1", (file_id,)).fetchone()
-            if keeper:
-                oldest = self.connection.execute("SELECT MIN(version_number) AS n FROM archive_versions WHERE vault_file_id=%s", (file_id,)).fetchone()
-                version_number = min(0, int(oldest["n"] or 0)) - 1
         source_insert_column = ", storage_class_source" if source_supported else ""
         source_insert_value = ", %s" if source_supported else ""
         insert_params = [
             version_id,
             file_id,
             vault_id,
-            version_number,
             object_key,
             provider_version_id,
             size,
@@ -812,22 +797,46 @@ class ArchiveCatalog:
         self.connection.execute(
             f"""
             INSERT INTO archive_versions(
-                id, vault_file_id, vault_id, version_number, object_key,
+                id, vault_file_id, vault_id, object_key,
                 provider_version_id, size, storage_class, etag,
                 provider_checksums, plaintext_sha256, uploaded_at,
                 discovered_at, origin, integrity, verified_at,
                 availability, availability_checked_at, restore_state,
                 restore_expiry, restore_checked_at{source_insert_column}
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, NULL, %s, %s, %s, 'unverified', NULL,
                 'available', %s, NULL, NULL, NULL{source_insert_value}
             )
             """,
             insert_params,
         )
+        if origin == "upload":
+            self.stage_snapshot_replacement(version_id)
         self._mark_path_aggregates_dirty(vault_id, path)
         return version_id
+
+    def stage_snapshot_replacement(self, version_id: str, *, expected_current_id: str | None = None) -> None:
+        """Pin one admitted representation, never elect a discovery by chronology.
+
+        The caller owns the ordinary Vault/path/claim fence. A prior unresolved
+        replacement cannot be silently forgotten by an unrelated new attempt.
+        """
+        changed = self.connection.execute("""UPDATE vault_files vf
+            SET replacing_version_id=av.id
+            FROM archive_versions av
+            WHERE av.id=%s AND av.vault_file_id=vf.id AND av.vault_id=vf.vault_id
+              AND av.availability='available'
+              AND (av.integrity<>'verified' OR vf.current_version_id=%s)
+              AND (%s::text IS NULL OR vf.current_version_id=%s)
+              AND vf.current_version_id IS DISTINCT FROM av.id
+              AND (vf.replacing_version_id IS NULL OR vf.replacing_version_id=av.id)
+            RETURNING vf.id""", (version_id, expected_current_id, expected_current_id, expected_current_id)).fetchone()
+        if changed is None:
+            current = self.connection.execute("SELECT 1 FROM vault_files WHERE current_version_id=%s", (version_id,)).fetchone()
+            if not current:
+                from .services.upload_provenance import UploadBlocked
+                raise UploadBlocked("target_superseded")
 
     def find_reusable_upload_version(
         self,
@@ -856,9 +865,8 @@ class ArchiveCatalog:
               AND integrity='verified'
               AND availability='available'
               AND plaintext_sha256=%s
-              AND id=(SELECT current.id FROM archive_versions current WHERE current.vault_file_id=archive_versions.vault_file_id AND current.integrity='verified' AND current.availability='available' ORDER BY current.version_number DESC LIMIT 1)
+              AND id=(SELECT current_version_id FROM vault_files WHERE id=archive_versions.vault_file_id)
               AND (restore_state IS NULL OR restore_state <> 'restoring')
-            ORDER BY version_number DESC
             LIMIT 1
             """,
             (vault_file_id, digest),
@@ -886,7 +894,7 @@ class ArchiveCatalog:
                     AND prior.vault_id=av.vault_id AND prior.action='upload'
                     AND prior.upload_plaintext_sha256=%s
               )
-            ORDER BY av.version_number DESC
+              AND av.id=(SELECT replacing_version_id FROM vault_files WHERE id=av.vault_file_id)
             LIMIT 1
             """,
             (vault_file_id, digest),
@@ -971,9 +979,7 @@ class ArchiveCatalog:
                 lc.mtime_ns AS local_mtime_ns,
                 lc.recovered_at AS local_recovered_at,
                 av.verified_at,
-                (SELECT latest.id FROM archive_versions latest
-                 WHERE latest.vault_file_id=j.vault_file_id AND latest.availability<>'purged'
-                 ORDER BY latest.version_number DESC LIMIT 1) AS latest_archive_version_id,
+                (SELECT COALESCE(replacing_version_id,current_version_id) FROM vault_files WHERE id=j.vault_file_id) AS latest_archive_version_id,
                 COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
                 lc.plaintext_sha256 AS local_sha256,
                 lc.matched_archive_version_id,
@@ -1207,6 +1213,9 @@ class ArchiveCatalog:
             """,
             (archive_version_id,),
         ).fetchone()
+        if owned is None:
+            raise LookupError("Archive Version not found")
+        self.connection.execute("SELECT id FROM vault_files WHERE id=%s FOR UPDATE", (owned["vault_file_id"],))
         self.connection.execute(
             """
             UPDATE archive_versions
@@ -1215,6 +1224,13 @@ class ArchiveCatalog:
             """,
             (plaintext_sha256.lower(), verified_at, archive_version_id),
         )
+        # Historical verification is evidence, not permission to displace an
+        # existing keeper. Only the exact staged replacement may replace it.
+        self.connection.execute("""UPDATE vault_files
+            SET current_version_id=%s, replacing_version_id=NULL
+            WHERE id=%s AND (replacing_version_id=%s
+                OR (current_version_id IS NULL AND replacing_version_id IS NULL))""",
+            (archive_version_id, owned["vault_file_id"], archive_version_id))
         if owned is not None:
             self._mark_file_aggregates_dirty(
                 int(owned["vault_id"]), owned["vault_file_id"]
@@ -1278,6 +1294,8 @@ class ArchiveCatalog:
             SET availability='purged', availability_checked_at=%s
             WHERE vault_file_id=%s
               AND id<>%s
+              AND NOT EXISTS (SELECT 1 FROM vault_files vf WHERE vf.id=archive_versions.vault_file_id
+                  AND archive_versions.id IN (vf.current_version_id,vf.replacing_version_id))
               AND availability NOT IN ('missing', 'purged')
               AND (
                   availability_checked_at IS NULL
@@ -2239,7 +2257,6 @@ class ArchiveCatalog:
                 lc.mtime_ns AS local_mtime_ns,
                 lc.plaintext_sha256 AS local_sha256,
                 av.id AS version_id,
-                av.version_number,
                 av.object_key,
                 av.provider_version_id,
                 av.size AS version_size,
@@ -2257,12 +2274,7 @@ class ArchiveCatalog:
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
             LEFT JOIN archive_versions av
-              ON av.vault_file_id=vf.id
-             AND av.version_number=(
-                 SELECT MAX(latest.version_number)
-                 FROM archive_versions latest
-                 WHERE latest.vault_file_id=vf.id
-             )
+              ON av.id=COALESCE(vf.replacing_version_id, vf.current_version_id)
             WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
             """,
             (vault_id, path),
@@ -2282,7 +2294,7 @@ class ArchiveCatalog:
         if row["version_id"] is not None:
             latest_version = {
                 "id": row["version_id"],
-                "version_number": row["version_number"],
+                "version_number": 1,  # Deprecated response ordinal, never authority.
                 "object_key": row["object_key"],
                 "provider_version_id": row["provider_version_id"],
                 "size": row["version_size"],
@@ -2312,13 +2324,13 @@ class ArchiveCatalog:
             """
             SELECT
                 av.id,
-                av.version_number,
                 av.object_key,
                 av.provider_version_id,
                 av.size,
                 av.storage_class,
                 av.storage_class_source,
                 av.origin,
+                av.id=vf.current_version_id AS is_current,
                 av.etag,
                 av.plaintext_sha256,
                 av.uploaded_at,
@@ -2334,25 +2346,26 @@ class ArchiveCatalog:
             JOIN file_paths fp
               ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
             WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            ORDER BY av.version_number DESC
+            ORDER BY av.discovered_at DESC, av.id
             """,
             (vault_id, path),
         ).fetchall()
         return [
             {
                 **row,
+                "version_number": 1,  # Deprecated response ordinal, never authority.
                 "recoverable": (
-                    row["integrity"] == "verified"
+                    row["is_current"] and row["integrity"] == "verified"
                     and row["availability"] == "available"
                 ),
                 "not_selectable_reason": (
                     None
-                    if row["integrity"] == "verified"
+                    if row["is_current"] and row["integrity"] == "verified"
                     and row["availability"] == "available"
                     else (
                         row["availability"]
                         if row["availability"] in {"missing", "purged", "unknown"}
-                        else row["integrity"]
+                        else row["integrity"] if row["integrity"] != "verified" else "superseded"
                     )
                 ),
             }
@@ -2607,7 +2620,7 @@ class ArchiveCatalog:
                 (
                     SELECT COUNT(*)
                     FROM archive_versions recoverable
-                    WHERE recoverable.vault_file_id=vf.id
+                    WHERE recoverable.id=vf.current_version_id
                       AND recoverable.integrity='verified'
                       AND recoverable.availability='available'
                 ) AS recoverable_version_count
@@ -3592,15 +3605,13 @@ class ArchiveCatalog:
         else:
             clauses.append("fp.path=%s")
             params.append(path)
-        if action == "recover" and archive_version_id:
+        if action in {"free-space", "storage-class", "rename"}:
+            clauses.append("vf.replacing_version_id IS NULL")
+        if action in {"recover", "storage-class"} and archive_version_id:
             # Exact IDs pin the current snapshot; they cannot select history,
             # including legacy available copies retained fail-closed at upgrade.
             clauses.append("""
-                av.id=(SELECT current_snapshot.id FROM archive_versions current_snapshot
-                       WHERE current_snapshot.vault_file_id=vf.id
-                         AND current_snapshot.integrity='verified'
-                         AND current_snapshot.availability='available'
-                       ORDER BY current_snapshot.version_number DESC LIMIT 1)
+                av.id=vf.current_version_id
             """)
         if action in {"recover", "storage-class"} and archive_version_id and not is_directory and not whole_vault:
             candidates = self.connection.execute(
@@ -3655,28 +3666,13 @@ class ArchiveCatalog:
                   ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
                 LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
                 LEFT JOIN archive_versions av
-                  ON av.id=(
-                      SELECT latest.id
-                      FROM archive_versions latest
-                      WHERE latest.vault_file_id=vf.id
-                        AND latest.availability NOT IN ('missing', 'purged')
-                        AND (
-                            %s NOT IN ('recover', 'storage-class')
-                            OR (
-                                latest.availability='available'
-                                AND (
-                                    %s <> 'recover'
-                                    OR latest.integrity='verified'
-                                )
-                            )
-                        )
-                      ORDER BY latest.version_number DESC
-                      LIMIT 1
-                  )
+                  ON av.id=CASE WHEN %s IN ('recover', 'storage-class', 'free-space', 'rename')
+                      THEN vf.current_version_id
+                      ELSE COALESCE(vf.replacing_version_id, vf.current_version_id) END
                 WHERE {" AND ".join(clauses)}
                 ORDER BY lower(fp.path)
                 """,
-                [action, action, *params],
+                [action, *params],
             ).fetchall()
         eligible = []
         remediation_job_ids: list[int] = []

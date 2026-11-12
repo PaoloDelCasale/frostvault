@@ -2518,11 +2518,7 @@ def recover_estimate(
     selection = [(safe_relative_path(item.path).as_posix(), item.is_directory) for item in action.selection] if action.selection else None
     logical_path = "" if selection else safe_relative_path(action.path).as_posix()
     if action.is_directory or selection:
-        recoverable_join = """LEFT JOIN archive_versions av ON av.id=(
-            SELECT recoverable.id FROM archive_versions recoverable
-            WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
-              AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
-        )"""
+        recoverable_join = "LEFT JOIN archive_versions av ON av.id=vf.current_version_id"
         scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(selection or [(logical_path, True)])
         with db() as connection:
             classes = connection.execute(

@@ -1249,15 +1249,16 @@ def _verify_reconnected_cloud(
         with db() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.mark_version_verified(row["id"], plaintext_sha256=digest, verified_at=now_iso())
-            # Listing chronology, not catalog allocation order, chooses current.
-            connection.execute(
-                """UPDATE archive_versions SET version_number=(
-                    SELECT MAX(av.version_number)+1 FROM archive_versions av
-                    WHERE av.vault_file_id=%s)
-                WHERE id=%s AND version_number < (
-                    SELECT MAX(av.version_number) FROM archive_versions av WHERE av.vault_file_id=%s)
-                """, (row["vault_file_id"], row["id"], row["vault_file_id"]),
-            )
+            # Reconnect is the explicit no-delete exception: the complete cloud
+            # listing selected this exact representation and full read-back above
+            # verified it. Never manufacture a version ordinal to elect it.
+            selected = connection.execute("""UPDATE vault_files vf
+                SET current_version_id=%s, replacing_version_id=NULL
+                FROM vaults v WHERE vf.id=%s AND vf.vault_id=v.id
+                  AND v.relocation_state='scan_required'
+                RETURNING vf.id""", (row["id"], row["vault_file_id"])).fetchone()
+            if selected is None:
+                raise RuntimeError("Reconnect no longer suspended; snapshot not published")
 
 
 def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
@@ -3860,12 +3861,9 @@ def _publish_upload_receipt(job: dict[str, Any], intent: dict[str, Any], respons
         # The version exists (e.g. Complete reached S3 but its response was lost): the
         # multipart upload is no longer an obligation of this intent (#491).
         provenance.close_multiparts(catalog.connection, intent["id"], stamp)
-        # A scan may have observed this exact write before its receipt was
-        # published. Only this owner/intent-fenced publication promotes its
-        # observation ordering; generic discovery never grants current trust.
+        # A response-window discovery becomes an admitted replacement only
+        # under this exact owner/intent fence, never through observation order.
         catalog.connection.execute("""UPDATE archive_versions av SET
-            version_number=(SELECT COALESCE(MAX(v.version_number),0)+1
-                FROM archive_versions v WHERE v.vault_file_id=av.vault_file_id),
             origin='upload', uploaded_at=%s
             WHERE av.id=%s AND av.vault_file_id=%s AND av.origin='discovered'
               AND EXISTS (SELECT 1 FROM upload_intents i WHERE i.id=%s
@@ -4157,6 +4155,7 @@ def _verify_rename_destination_bytes(
             "Rename claim was lost",
         )
         catalog = ArchiveCatalog(connection)
+        catalog.stage_snapshot_replacement(version_id, expected_current_id=job["archive_version_id"])
         catalog.mark_version_verified(
             version_id,
             plaintext_sha256=expected_digest,
@@ -4209,7 +4208,7 @@ def process_rename(job: dict[str, Any]) -> None:
                 FROM archive_versions
                 WHERE vault_file_id=%s
                   AND object_key=%s
-                ORDER BY version_number DESC
+                ORDER BY discovered_at DESC, id
                 """,
                 (job["vault_file_id"], new_key),
             ).fetchall()
@@ -4235,6 +4234,12 @@ def process_rename(job: dict[str, Any]) -> None:
             destination_version_id = str(live_destination["provider_version_id"])
             if live_destination["integrity"] == "verified":
                 plaintext_sha256 = live_destination["plaintext_sha256"]
+                with db() as connection:
+                    ensure_job_claim_owned_in_transaction(connection, job, "Rename claim was lost")
+                    catalog = ArchiveCatalog(connection)
+                    catalog.stage_snapshot_replacement(version_id, expected_current_id=job["archive_version_id"])
+                    catalog.mark_version_verified(version_id, plaintext_sha256=plaintext_sha256,
+                                                  verified_at=now_iso())
             else:
                 set_job(job["id"], "uploading", message_key="job.hashing_local_file")
                 plaintext_sha256, source_stat = hash_stable_regular_file(source)

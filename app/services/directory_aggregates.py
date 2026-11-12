@@ -1018,7 +1018,7 @@ def _visible_file_select_sql(
             (
                 SELECT COUNT(*)
                 FROM archive_versions recoverable
-                WHERE recoverable.vault_file_id=vf.id
+                WHERE recoverable.id=vf.current_version_id
                   AND recoverable.integrity='verified'
                   AND recoverable.availability='available'
             ) AS recoverable_version_count
@@ -1196,14 +1196,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
           ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
         LEFT JOIN local_copies lc ON lc.vault_file_id = vf.id
         JOIN archive_versions av
-          ON av.id = (
-              SELECT latest.id
-              FROM archive_versions latest
-              WHERE latest.vault_file_id = vf.id
-                AND latest.availability NOT IN ('missing', 'purged')
-              ORDER BY latest.version_number DESC
-              LIMIT 1
-          )
+          ON av.id=vf.current_version_id
         WHERE vf.vault_id = %s
           AND vf.status = 'active'
           AND fp.path LIKE %s ESCAPE '\\'
