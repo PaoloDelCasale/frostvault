@@ -641,7 +641,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             json={"notification_id": notification_id},
         )
 
-        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.status_code, 401, response.text)
         with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
@@ -788,7 +788,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             "/api/notifications/read-all",
             headers={"X-CSRF-Token": self.outsider_csrf},
         )
-        self.assertEqual(outsider_response.status_code, 403, outsider_response.text)
+        self.assertEqual(outsider_response.status_code, 401, outsider_response.text)
 
 
 if __name__ == "__main__":

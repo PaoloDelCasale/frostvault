@@ -53,9 +53,9 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
+                        requested_at, updated_at
                     )
-                    SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
+                    SELECT 2, id, 'a.txt', 'upload', 'uploading',
                            '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
                     FROM vault_files WHERE vault_id=2 LIMIT 1
                     RETURNING id

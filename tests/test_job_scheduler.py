@@ -439,9 +439,9 @@ class _SchedulerDbMixin:
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
+                        requested_at, updated_at
                     )
-                    SELECT %s, id, %s, 'upload', 'queued', 1, %s, %s
+                    SELECT %s, id, %s, 'upload', 'queued', %s, %s
                     FROM vault_files
                     WHERE vault_id=%s
                       AND id=(
@@ -747,11 +747,11 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
                 """
                 INSERT INTO jobs(
                     vault_id, vault_file_id, path, action, status,
-                    requested_by, requested_at, updated_at,
+                    requested_at, updated_at,
                     claim_token, claimed_at, claim_expires_at
                 )
                 SELECT 20, id, 'b.txt', 'recover', 'restoring',
-                       1, '2000-01-01T00:00:00+00:00',
+                       '2000-01-01T00:00:00+00:00',
                        '2000-01-01T00:00:00+00:00',
                        'dead-restorer', '2000-01-01T00:00:00+00:00',
                        '2000-01-01T00:05:00+00:00'

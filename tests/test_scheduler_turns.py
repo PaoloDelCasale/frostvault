@@ -300,20 +300,23 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertIsNone(connection.execute('SELECT claim_token FROM jobs WHERE id=%s', (auto,))
                               .fetchone()['claim_token'])
 
-    def test_migration_downgrade_and_reupgrade_remove_only_scheduler_state(self):
+    def test_incompatible_downgrade_refusal_and_reentry_preserve_scheduler_credit(self):
         auto = self.auto_job()
         self.observe()
         self.observe(900)
+        before = self.state()
         result = run_alembic(self.path, revision='0070_vault_pause', command='downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('incompatible Current Snapshot baseline cannot be downgraded', result.stderr)
         with PostgresConnection(self.path) as connection:
-            self.assertIsNone(connection.execute("SELECT to_regclass('scheduler_vault_turns') AS name")
-                              .fetchone()['name'])
+            self.assertIsNotNone(connection.execute("SELECT to_regclass('scheduler_vault_turns') AS name")
+                                 .fetchone()['name'])
             self.assertEqual(connection.execute('SELECT origin FROM jobs WHERE id=%s', (auto,))
                              .fetchone()['origin'], 'automatic')
+        self.assertEqual(self.state(), before, 'Refusal must not erase starvation credit')
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.observe(900)[0]['scheduler_wait_seconds'], 0)
+        self.assertEqual(self.state(), before)
 
     def test_busy_observation_does_not_scan_already_served_bulk_windows(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')

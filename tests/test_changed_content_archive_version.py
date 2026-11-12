@@ -579,15 +579,16 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     uploaded_at="2026-07-21T10:00:00+00:00",
                     observed_at="2026-07-21T10:00:00+00:00",
                     scan_id="scan-u",
+                    origin="upload",  # An admitted replacement whose verification was interrupted.
                 )
                 connection.execute(
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
+                        action, status, requested_at, updated_at,
                         total_bytes, upload_plaintext_sha256
                     )
-                    SELECT 2, vf.id, %s, 'report.txt', 'upload', 'failed', 1,
+                    SELECT 2, vf.id, %s, 'report.txt', 'upload', 'failed',
                            '2026-07-21T10:01:00+00:00', '2026-07-21T10:01:00+00:00',
                            %s, %s
                     FROM vault_files vf

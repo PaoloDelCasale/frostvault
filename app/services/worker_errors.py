@@ -47,6 +47,10 @@ def record_worker_error(
     # exception must be there even when no Owner exists yet or the DB write fails.
     if log:
         log_worker_error(component, exc, vault_id)
+    # Startup can fail before the singleton is bootstrapped. Do not invent a
+    # recipient then. This exceptional path is not a per-file Owner lookup.
+    if not connection.execute("SELECT 1 FROM owner WHERE id=1").fetchone():
+        return None
     # Keep exception data out of the inbox; the component is enough to identify
     # the failing worker without a dedicated error page or exception taxonomy.
     return report_problem(

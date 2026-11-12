@@ -887,7 +887,7 @@ class ArchiveCatalog:
                 av.integrity, av.availability, av.storage_class, av.restore_state,
                 av.upload_snapshot_json, av.upload_verification_requested
             FROM vault_files vf
-            JOIN archive_versions av ON av.id=vf.replacing_version_id
+            JOIN archive_versions av ON av.id=COALESCE(vf.replacing_version_id,vf.current_version_id)
             WHERE vf.id=%s AND av.vault_file_id=vf.id
               AND av.integrity='unverified'
               AND av.availability='available'

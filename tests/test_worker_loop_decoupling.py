@@ -75,9 +75,9 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
+                        requested_at, updated_at
                     )
-                    SELECT 10, id, %s, 'upload', 'queued', 1, %s, %s
+                    SELECT 10, id, %s, 'upload', 'queued', %s, %s
                     FROM vault_files
                     WHERE vault_id=10 AND id=(
                         SELECT vf.id FROM vault_files vf
