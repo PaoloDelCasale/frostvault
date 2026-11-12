@@ -258,6 +258,32 @@ class RestoreGuardTests(_GuardFixture):
         self.assertEqual(result["owner_count"], 1)
 
 
+class BaselineRevisionTests(unittest.TestCase):
+    def test_baseline_is_the_only_revision(self) -> None:
+        versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+        self.assertEqual(sorted(p.name for p in versions.glob("*.py")),
+                         ["0001_baseline.py", "__init__.py"])
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        config = Config(str(versions.parents[1] / "alembic.ini"))
+        config.set_main_option("script_location", str(versions.parent))
+        scripts = ScriptDirectory.from_config(config)
+        self.assertEqual(scripts.get_heads(), [HEAD_SCHEMA_REVISION])
+        self.assertIsNone(scripts.get_revision(HEAD_SCHEMA_REVISION).down_revision)
+
+    def test_baseline_sql_has_no_accidental_sqlalchemy_bind_parameters(self) -> None:
+        import importlib
+
+        import sqlalchemy as sa
+
+        migration = importlib.import_module("migrations.versions.0001_baseline")
+        with patch.object(migration, "op") as operations:
+            migration.upgrade()
+        for call in operations.execute.call_args_list:
+            self.assertEqual(sa.text(call.args[0]).compile().params, {})
+
+
 class BaselineSchemaTests(unittest.TestCase):
     """The core tables and the invariants their constraints enforce."""
 
