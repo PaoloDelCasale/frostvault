@@ -14,6 +14,7 @@ from typing import Any
 from cryptography.fernet import Fernet
 
 from ..config import settings, is_placeholder
+from ..schema_guard import require_current_schema
 
 
 def now_iso() -> str:
@@ -75,12 +76,14 @@ PY
    production. Never put database credentials in arguments or output.
    createdb frostvault_restored
    pg_restore --exit-on-error --no-owner --no-acl -d frostvault_restored restore.dump
-   Validate counts and schema revision with the matching release. Point PGDATABASE
-   at frostvault_restored and UNSET DATABASE_URL (or securely replace it with the
-   restored DSN): FrostVault's DATABASE_URL takes precedence over PG*. Verify the
-   target, then run python -m app.backup_upgrade if an upgrade is
-   required. Never force-stamp an unknown/ahead revision. Preserve deployment
-   settings independently; changes after the backup must be reapplied manually.
+   Validate counts and the schema revision with the matching release:
+   psql -d frostvault_restored -At -c 'SELECT version_num FROM alembic_version'
+   FrostVault refuses a catalog at any other revision and never upgrades, stamps
+   or adopts it; recover such a backup with the release that made it. Point
+   PGDATABASE at frostvault_restored and UNSET DATABASE_URL (or securely replace
+   it with the restored DSN): FrostVault's DATABASE_URL takes precedence over
+   PG*. Verify the target. Preserve deployment settings independently; changes
+   after the backup must be reapplied manually.
 5. BEFORE starting FrostVault, register the backup date in that restored database:
    python - <<'PY'
 import json
@@ -176,10 +179,15 @@ def acknowledge_custody(connection: Any, fingerprint: str, config: Any = None) -
 
 
 def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
-    """Manual restore seam; invoke only against the restored isolated database."""
+    """Manual restore seam; invoke only against the restored isolated database.
+
+    The schema guard runs first: a restored catalog that is not at this
+    release's revision is refused before any write (ADR-0035).
+    """
     stamp = datetime.fromisoformat(backup_created_at)
     if stamp.tzinfo is None:
         raise ValueError("Backup date must include its timezone")
+    require_current_schema(connection)
     # The app must be stopped. Old Jobs and local inode/mtime evidence cannot
     # acquire authority on a replacement server, even if pathnames still match.
     connection.execute("""

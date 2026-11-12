@@ -78,7 +78,7 @@ jobs:
           shard_count = int(os.environ["SHARD_COUNT"])
           paths = sorted(
               (path for path in Path("tests").glob("test_*.py")
-               if path.stem not in {"test_migrations_postgresql", "test_aggregate_deadlocks"}),
+               if path.stem not in {"test_database", "test_aggregate_deadlocks"}),
               key=lambda path: (-path.stat().st_size, path.name),
           )
           loads = [0] * shard_count
@@ -143,11 +143,23 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: PostgreSQL-only migration tests
+      - name: Use PostgreSQL 16 client tools for backup guard tests
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-16
+          echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
+      - name: PostgreSQL schema guard and baseline tests
+        run: python -m unittest tests.test_database -v
+      - name: PostgreSQL concurrency tests
         id: stress
         run: |
           python -m unittest \
-            tests.test_migrations_postgresql.PostgreSQLMigrationTests \
             tests.test_aggregate_deadlocks \
             -v
           echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"
@@ -426,7 +438,16 @@ jobs:
               "$@"
           }
           run_app python -m alembic upgrade head
-          run_app python -m app.backup_upgrade --skip-upgrade
+          run_app python - <<'PY'
+          from pathlib import Path
+
+          from app.services import metadata_backups
+
+          result = metadata_backups.run_metadata_backup(
+              reason="manual", backup_dir=Path("/data/backups"),
+          )
+          print("run_metadata_backup ok:", result["path"])
+          PY
           test -n "$(find "${DATA_DIR}/backups" -name '*.bak.enc' -size +0c | head -n 1)"
           run_app python - <<'PY'
           from pathlib import Path

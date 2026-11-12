@@ -10,7 +10,6 @@ from app.catalog import ArchiveCatalog
 from app.services import bulk_upload_admission as bulk, protection_stop, vault_relocation
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services.upload_activity import upload_activity
-from tests.postgres import run_alembic
 from tests.test_job_queue_fairness import QueueFixture
 from tests import test_upload_provenance_worker as provenance_fixtures
 from tests.postgres import PostgresConnection
@@ -357,21 +356,14 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.finish(first)
         self.assertEqual(len(self.jobs()), 2)
 
-    def test_progress_is_distinct_from_transfers_and_migration_refuses_pending_downgrade(self):
+    def test_progress_is_distinct_from_transfers(self):
         self.seed(["a.jpg", "b.jpg", "c.jpg"])
         group = self.create()["group_id"]
         with self.db() as c:
             activity = upload_activity(c)["global"]
             self.assertEqual(activity["bulk_admission"], {"requests": 1, "selected_files": 3, "processed_files": 0, "admitted_files": 0})
             self.assertEqual(activity["uploading"]["transferred_bytes"], 0)
-        result = run_alembic(self.database, "0070_vault_pause", "downgrade")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("pending bulk upload", result.stderr)
         self.finish(group)
-        self.assertEqual(run_alembic(self.database, "0070_vault_pause", "downgrade").returncode, 0)
-        result = run_alembic(self.database)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.jobs()), 3)
 
     def test_ten_thousand_paths_return_without_per_file_work_and_each_transaction_is_bounded(self):
         with self.db() as c:

@@ -1,1092 +1,455 @@
+"""Baseline schema and the simple schema guard (ADR-0035, #601).
+
+A database is initialized only when empty, used only at ``0001_baseline``, and
+otherwise refused before any write: at app start and in metadata restore.
+Refusal tests make the database read-only first, so any write the guard
+attempted would fail differently from the expected refusal.
+"""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import tempfile
+import threading
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.database import DatabaseSchemaError, initialize_database
+import psycopg
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
+
+from app import database, schema_guard
+from app.database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, initialize_database
+from app.schema_guard import SchemaState, inspect_schema, prepare_schema, require_current_schema
+from tests.postgres import PostgresConnection, _server_dsn, database_dsn, database_state, run_alembic
+
+# Kept for the many modules that import the fixture from here.
+__all__ = ["run_alembic"]
+
+BASELINE_TABLES = {
+    "alembic_version", "owner", "vault_targets", "vaults", "files",
+    "archive_versions", "jobs",
+}
 
 
-from tests.postgres import run_alembic
+def _tables(path: Path) -> set[str]:
+    with PostgresConnection(str(path)) as connection:
+        rows = connection.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+        ).fetchall()
+    return {row["tablename"] for row in rows}
 
 
-class DatabaseMigrationTests(unittest.TestCase):
-    def test_startup_rejects_an_unmigrated_database(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = str(Path(directory) / "unmigrated.db")
-            test_settings = SimpleNamespace(database_dsn=database_dsn(path))
-
-            with patch("app.database.settings", test_settings):
-                with self.assertRaisesRegex(
-                    DatabaseSchemaError,
-                    "AUTO_MIGRATE|alembic upgrade head|backup_upgrade",
-                ):
-                    initialize_database()
-
-            with PostgresConnection(path) as connection:
-                tables = connection.execute(
-                    "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                ).fetchall()
-            self.assertEqual(tables, [])
-
-    def test_fresh_postgresql_database_migrates_to_a_startable_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "fresh.db"
-            result = run_alembic(path)
-            self.assertEqual(result.returncode, 0, result.stderr)
-
-            test_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(path)),
-                bootstrap_admin_username="admin",
-                bootstrap_admin_password="a-secure-test-password",
-                bootstrap_admin_display_name="Administrator",
+def _make_read_only(path: Path) -> None:
+    name = conninfo_to_dict(database_dsn(path))["dbname"]
+    with psycopg.connect(_server_dsn(), autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("ALTER DATABASE {} SET default_transaction_read_only = on").format(
+                sql.Identifier(name)
             )
-            with patch("app.database.settings", test_settings):
-                initialize_database()
-            with PostgresConnection(str(path)) as connection:
-                policy_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vault_operation_policies'"
-                    ).fetchall()
-                }
-                system_setting_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='system_settings'"
-                    ).fetchall()
-                }
-                table_names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-                job_columns = {
-                    row["name"]
-                    for row in connection.execute("SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='jobs'").fetchall()
-                }
-            # No quotas, operating windows or per-Vault bandwidth (#413).
-            self.assertEqual(
-                policy_columns
-                & {"bandwidth_limit_kibps", "operating_windows_json"},
-                set(),
-            )
-            self.assertEqual(system_setting_columns, set())
-            self.assertNotIn("worker_errors", table_names)
-            # Single owner (#412): no multi-user or UI-managed OIDC tables.
-            self.assertEqual(
-                table_names
-                & {
-                    "invites",
-                    "oidc_configuration",
-                    "source_areas",
-                    "vault_members",
-                    "lookup_rate_limit_keys",
-                    "lookup_rate_limit_attempts",
-                    "vault_quotas",
-                    "cost_price_books",
-                    "notification_endpoints",
-                    "vault_notification_preferences",
-                    "user_vault_notification_preferences",
-                    "push_subscriptions",
-                },
-                set(),
-            )
-            self.assertLessEqual(
-                {"claim_token", "claimed_at", "claim_expires_at"}, job_columns
-            )
-
-    def test_head_creates_catalog_event_primitives(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "catalog-state-schema.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                tables = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-                revision_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vault_catalog_revisions'"
-                    ).fetchall()
-                }
-                event_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='catalog_events'"
-                    ).fetchall()
-                }
-            self.assertIn("vault_catalog_revisions", tables)
-            self.assertIn("catalog_events", tables)
-            self.assertNotIn("filesystem_health_snapshots", tables)
-            self.assertNotIn("filesystem_health_findings", tables)
-            self.assertEqual(
-                revision_columns,
-                {"vault_id", "revision", "retained_from_revision", "updated_at"},
-            )
-            self.assertEqual(
-                event_columns,
-                {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
-            )
-
-    def test_catalog_state_schema_round_trips_through_0035_when_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "catalog-state-round-trip.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            downgraded = run_alembic(
-                path,
-                revision="0035_upload_verification_digest",
-                command="downgrade",
-            )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-            self.assertNotIn("catalog_events", names)
-            upgraded_again = run_alembic(path)
-            self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
-
-    def test_current_catalog_migrates_without_losing_file_state(self) -> None:
-        from app.catalog import ArchiveCatalog
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "current.db"
-            baseline = run_alembic(path, "0001_current_schema")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (1, 'owner', 'Owner', 'hash', TRUE)
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (
-                        2, 'photos', 'Photos', '/source', 'bucket', 'vaults/photos',
-                        'photos-crypt'
-                    )
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (2, 1, 'owner')"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO files(
-                        vault_id, path, local_exists, local_size, local_mtime,
-                        cloud_exists, cloud_size, cloud_key, storage_class, etag,
-                        restore_state, restore_expiry, last_local_scan,
-                        last_restore_scan, last_cloud_scan, updated_at
-                    ) VALUES (
-                        2, 'docs/report.txt', 1, 12, 1750000000.25,
-                        1, 44, 'vaults/photos/docs/report.txt.bin',
-                        'DEEP_ARCHIVE', 'legacy-etag', NULL, NULL,
-                        '2026-07-20T10:00:00+00:00', NULL,
-                        '2026-07-20T11:00:00+00:00',
-                        '2026-07-20T11:00:00+00:00'
-                    )
-                    """
-                )
-                connection.execute("DROP TABLE alembic_version")
-
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-            with PostgresConnection(str(path)) as connection:
-                file = ArchiveCatalog(connection).get_file_by_path(
-                    2, "docs/report.txt"
-                )
-
-            self.assertEqual(file["local_copy"]["presence"], "present")
-            self.assertEqual(file["local_copy"]["size"], 12)
-            self.assertEqual(file["latest_version"]["size"], 44)
-            self.assertEqual(file["latest_version"]["integrity"], "unverified")
-            self.assertEqual(file["latest_version"]["availability"], "unknown")
-            self.assertIsNone(file["latest_version"]["provider_version_id"])
-
-    def test_adoption_rejects_schema_missing_a_required_index(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "invalid-current.db"
-            baseline = run_alembic(path, "0001_current_schema")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute("DROP INDEX jobs_one_active_action_uq")
-                connection.execute("DROP TABLE alembic_version")
-
-            migrated = run_alembic(path)
-
-            self.assertNotEqual(migrated.returncode, 0)
-            self.assertIn("missing required index", migrated.stderr)
-
-    def test_catalog_observes_a_new_local_file_through_one_interface(self) -> None:
-        from app.catalog import ArchiveCatalog
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "catalog.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-                catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
-                    vault_id=2,
-                    path="reports/annual.txt",
-                    file_type="regular",
-                    size=21,
-                    mtime_ns=1_750_000_000_250_000_000,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                observed = catalog.get_file_by_path(2, "reports/annual.txt")
-
-            self.assertEqual(observed["id"], file_id)
-            self.assertEqual(observed["local_copy"]["presence"], "present")
-            self.assertEqual(observed["local_copy"]["mtime_ns"], 1_750_000_000_250_000_000)
-            self.assertIsNone(observed["latest_version"])
-
-    def test_confirmed_rename_preserves_identity_and_path_history(self) -> None:
-        from app.catalog import ArchiveCatalog
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "rename.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix
-                    ) VALUES (2, 'photos', 'Photos', '/source', 'bucket', 'photos')
-                    """
-                )
-                catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
-                    vault_id=2,
-                    path="test/fototest.jpg",
-                    file_type="regular",
-                    size=21,
-                    mtime_ns=10,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                catalog.rename_file(
-                    file_id,
-                    new_path="test/fotodefinitiva.jpg",
-                    changed_at="2026-07-21T11:00:00+00:00",
-                    vault_id=2,
-                )
-                renamed = catalog.get_file_by_path(
-                    2, "test/fotodefinitiva.jpg"
-                )
-                old_path = catalog.get_file_by_path(2, "test/fototest.jpg")
-                history = catalog.list_path_history(file_id, vault_id=2)
-
-            self.assertEqual(renamed["id"], file_id)
-            self.assertIsNone(old_path)
-            self.assertEqual(
-                [entry["path"] for entry in history],
-                ["test/fototest.jpg", "test/fotodefinitiva.jpg"],
-            )
-
-    def test_stale_cloud_scan_does_not_hide_a_concurrent_upload(self) -> None:
-        from app.catalog import ArchiveCatalog
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "concurrent-upload.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-                catalog = ArchiveCatalog(connection)
-                catalog.record_archive_version(
-                    vault_id=2,
-                    path="old.txt",
-                    object_key="docs/old.txt",
-                    provider_version_id="old-version",
-                    size=1,
-                    storage_class="STANDARD",
-                    etag="old",
-                    uploaded_at="2026-07-21T09:00:00+00:00",
-                    observed_at="2026-07-21T09:00:00+00:00",
-                    scan_id="2026-07-21T09:00:00+00:00",
-                )
-                catalog.record_archive_version(
-                    vault_id=2,
-                    path="new.txt",
-                    object_key="docs/new.txt",
-                    provider_version_id="new-version",
-                    size=1,
-                    storage_class="STANDARD",
-                    etag="new",
-                    uploaded_at="2026-07-21T11:00:00+00:00",
-                    observed_at="2026-07-21T11:00:00+00:00",
-                    scan_id="2026-07-21T11:00:00+00:00",
-                    origin="upload",
-                )
-                catalog.mark_unseen_archive_versions_missing(
-                    vault_id=2,
-                    scan_id="2026-07-21T10:00:00+00:00",
-                    scan_started_at="2026-07-21T10:00:00+00:00",
-                )
-                old = catalog.list_versions(2, "old.txt")
-                new = catalog.list_versions(2, "new.txt")
-
-            self.assertEqual(old[0]["availability"], "missing")
-            self.assertEqual(new[0]["availability"], "available")
-
-    def test_legacy_sessions_upgrade_to_internal_transition_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "session-transition.db"
-            baseline = run_alembic(path, "0032_notification_inbox")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                user_id = connection.execute(
-                    """
-                    INSERT INTO users(username, display_name, password_hash, is_admin)
-                    VALUES ('cache-owner', 'Cache Owner', 'hash', FALSE)
-                    RETURNING id
-                    """
-                ).fetchone()["id"]
-                connection.execute(
-                    """
-                    INSERT INTO sessions(
-                        id, user_id, token_hash, auth_method, csrf_token,
-                        session_version, created_at, last_seen_at,
-                        idle_expires_at, absolute_expires_at
-                    ) VALUES (
-                        'legacy-cache-session', %s, 'legacy-token-hash', 'local',
-                        'legacy-csrf', 1, '2026-01-01T00:00:00+00:00',
-                        '2026-01-01T00:00:00+00:00',
-                        '2099-01-01T00:00:00+00:00',
-                        '2099-01-01T00:00:00+00:00'
-                    )
-                    """,
-                    (user_id,),
-                )
-
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                row = connection.execute(
-                    """
-                    SELECT transition_version, token_hash, csrf_token
-                    FROM sessions WHERE id='legacy-cache-session'
-                    """
-                ).fetchone()
-
-            self.assertEqual(row["transition_version"], 1)
-            self.assertEqual(row["token_hash"], "legacy-token-hash")
-            self.assertEqual(row["csrf_token"], "legacy-csrf")
-
-    def test_lossless_schema_can_downgrade_and_upgrade_again(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "rollback.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-
-            downgraded = run_alembic(
-                path,
-                "0001_current_schema",
-                command="downgrade",
-            )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-
-            upgraded_again = run_alembic(path)
-            self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
-
-    def test_head_creates_oidc_login_and_user_identities(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "oidc.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-            self.assertIn("oidc_login", names)
-            self.assertIn("user_identities", names)
-
-            downgraded = run_alembic(
-                path,
-                "0003_server_side_sessions",
-                command="downgrade",
-            )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-            self.assertNotIn("oidc_login", names)
-            self.assertNotIn("user_identities", names)
-        from app.catalog import ArchiveCatalog
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "protected.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-                catalog = ArchiveCatalog(connection)
-                for number in (1, 2):
-                    catalog.record_archive_version(
-                        vault_id=2,
-                        path="report.txt",
-                        object_key="docs/report.txt",
-                        provider_version_id=f"version-{number}",
-                        size=number,
-                        storage_class="STANDARD",
-                        etag=f"etag-{number}",
-                        uploaded_at=f"2026-07-2{number}T10:00:00+00:00",
-                        observed_at=f"2026-07-2{number}T10:00:00+00:00",
-                        scan_id=f"2026-07-2{number}T10:00:00+00:00",
-                    )
-
-            downgraded = run_alembic(
-                path,
-                "0001_current_schema",
-                command="downgrade",
-            )
-
-            self.assertNotEqual(downgraded.returncode, 0)
-            self.assertIn("would lose versioned archive data", downgraded.stderr)
-
-    def test_head_is_single_owner_and_keeps_password_nullable(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "single-owner.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-                self.assertNotIn("invites", names)
-                self.assertNotIn("vault_members", names)
-                users = {
-                    row["name"]: row
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users'"
-                    ).fetchall()
-                }
-                self.assertNotIn("is_admin", users)
-                self.assertNotIn("active", users)
-                self.assertEqual(users["password_hash"]["notnull"], 0)
-                login_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='oidc_login'"
-                    ).fetchall()
-                }
-                self.assertNotIn("invite_id", login_columns)
-                # The case-insensitive username guard survives the users recreate.
-                connection.execute(
-                    """
-                    INSERT INTO users(username, display_name, password_hash)
-                    VALUES ('dana', 'Dana', NULL)
-                    """
-                )
-                with self.assertRaises(Exception), connection.transaction():
-                    connection.execute(
-                        """
-                        INSERT INTO users(username, display_name, password_hash)
-                        VALUES ('DANA', 'Dupe', 'hash')
-                        """
-                    )
-                # The owner keeps at most one Identity per issuer.
-                connection.execute(
-                    """
-                    INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                    VALUES (1, 'https://id.example', 'one', '2026-08-01')
-                    """
-                )
-                with self.assertRaises(Exception), connection.transaction():
-                    connection.execute(
-                        """
-                        INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                        VALUES (1, 'https://id.example', 'two', '2026-08-01')
-                        """
-                    )
-            with PostgresConnection(str(path)) as connection:
-                connection.execute("DELETE FROM user_identities")
-                # Passwordless Users block the downgrade that restores NOT NULL.
-                connection.execute("DELETE FROM users")
-
-            downgraded = run_alembic(
-                path,
-                "0043_cloud_only_conflict",
-                command="downgrade",
-            )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-                users = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users'"
-                    ).fetchall()
-                }
-            self.assertLessEqual(
-                {"invites", "vault_members", "source_areas", "oidc_configuration"},
-                names,
-            )
-            self.assertLessEqual({"is_admin", "active"}, users)
-
-            downgraded = run_alembic(path, "0004_oidc_login", command="downgrade")
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            reupgraded = run_alembic(path)
-            self.assertEqual(reupgraded.returncode, 0, reupgraded.stderr)
-
-    def test_single_owner_migration_keeps_the_first_administrator(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "owner.db"
-            baseline = run_alembic(path, "0043_cloud_only_conflict")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(id, username, display_name, password_hash, is_admin)
-                    VALUES (1, 'member', 'Member', 'hash', FALSE),
-                           (2, 'owner', 'Owner', 'hash', TRUE),
-                           (3, 'other-admin', 'Other', 'hash', TRUE)
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                    VALUES (1, 'https://id.example', 'member', '2026-08-01'),
-                           (2, 'https://id.example', 'owner', '2026-08-01'),
-                           (2, 'https://other.example', 'owner', '2026-08-01')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                    ) VALUES (5, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (5, 1, 'owner'), (5, 2, 'viewer')"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO system_settings(key, value, updated_by, updated_at)
-                    VALUES ('scan_interval', '1800', 3, '2026-08-01'),
-                           ('invite_ttl_seconds', '3600', 2, '2026-08-01')
-                    """
-                )
-
-            migrated = run_alembic(path, "0044_single_owner")
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                users = connection.execute(
-                    "SELECT id, username FROM users ORDER BY id"
-                ).fetchall()
-                identities = connection.execute(
-                    "SELECT user_id, issuer FROM user_identities ORDER BY issuer"
-                ).fetchall()
-                vaults = connection.execute("SELECT id FROM vaults").fetchall()
-                settings_rows = connection.execute(
-                    "SELECT key, updated_by FROM system_settings"
-                ).fetchall()
-            # Every Vault now belongs to the single owner; nothing is lost.
-            self.assertEqual(users, [{"id": 2, "username": "owner"}])
-            self.assertEqual(
-                identities,
-                [
-                    {"user_id": 2, "issuer": "https://id.example"},
-                    {"user_id": 2, "issuer": "https://other.example"},
-                ],
-            )
-            self.assertEqual(vaults, [{"id": 5}])
-            self.assertEqual(settings_rows, [{"key": "scan_interval", "updated_by": 2}])
-
-    def test_quota_window_migration_keeps_the_rest_of_the_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "quotas.db"
-            baseline = run_alembic(path, "0044_single_owner")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix, rclone_remote
-                    ) VALUES (5, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vault_operation_policies(
-                        vault_id, auto_upload, stability_seconds, include_globs_json,
-                        exclude_globs_json, auto_local_cleanup, local_retention_days,
-                        bandwidth_limit_kibps, operating_windows_json
-                    ) VALUES (
-                        5, TRUE, 600, '["**/*.jpg"]', '["tmp/**"]', TRUE, 30, 256,
-                        '[{"weekday": 0, "start": "09:00", "end": "17:00"}]'
-                    )
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_quotas(vault_id, storage_hard_limit_bytes) "
-                    "VALUES (5, 1)"
-                )
-                connection.execute(
-                    "INSERT INTO cost_price_books(name, effective_at, updated_at, is_active) "
-                    "VALUES ('custom', '2026-07-01', '2026-07-01', TRUE)"
-                )
-
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                policy = connection.execute(
-                    "SELECT * FROM vault_operation_policies WHERE vault_id=5"
-                ).fetchone()
-                tables = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-            self.assertEqual(
-                dict(policy),
-                {
-                    "vault_id": 5,
-                    "auto_upload": 1,
-                    "stability_seconds": 600,
-                    "include_globs_json": '["**/*.jpg"]',
-                    "exclude_globs_json": '["tmp/**"]',
-                    "local_release_after_days": None,
-                    "suspended_at": None,
-                    "upload_verification": None,
-                },
-            )
-            self.assertEqual(tables & {"vault_quotas", "cost_price_books"}, set())
-
-    def test_notification_cut_preserves_inbox_email_and_only_cloud_copy(self) -> None:
-        from tests.notification_migration_contract import (
-            REMOVED_TABLES, preserved_state, seed_legacy_notifications,
         )
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "notifications.db"
-            baseline = run_alembic(path, "0045_drop_quotas_windows")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                seed_legacy_notifications(connection)
-                before = preserved_state(connection)
-            for revision, command in (
-                ("0046_simplify_notifications", "upgrade"),
-                ("0045_drop_quotas_windows", "downgrade"),
-                ("0046_simplify_notifications", "upgrade"),
-            ):
-                result = run_alembic(path, revision, command)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                with PostgresConnection(str(path)) as connection:
-                    self.assertEqual(preserved_state(connection), before)
-                    tables = {row["name"] for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()}
-                    if command == "upgrade":
-                        self.assertFalse(tables & REMOVED_TABLES)
-                        self.assertEqual(connection.execute(
-                            "SELECT COUNT(*) AS total FROM notification_deliveries"
-                        ).fetchone()["total"], 1)
-                    else:
-                        self.assertTrue(REMOVED_TABLES <= tables)
-                        for table in REMOVED_TABLES:
-                            self.assertEqual(connection.execute(
-                                f"SELECT COUNT(*) AS total FROM {table}"
-                            ).fetchone()["total"], 0)
 
-    def test_offline_removal_preserves_sessions_and_the_only_cloud_copy(self) -> None:
-        from tests.notification_migration_contract import seed_legacy_notifications
-        from tests.offline_removal_migration_contract import normalized_state, assert_session_schema
+class _GuardFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            database_dsn="",
+            operation_concurrency=1,
+            bootstrap_admin_username="Owner",
+            bootstrap_admin_password="correct horse battery staple",
+            bootstrap_admin_display_name="The Owner",
+        )
+        patcher = patch.object(database, "settings", self.settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(database.close_pools)
+        self.fresh_database()
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "remove-offline.db"
-            baseline = run_alembic(path, "0045_drop_quotas_windows")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                seed_legacy_notifications(connection)
-                connection.execute("UPDATE sessions SET offline_cache_generation=7")
-            baseline = run_alembic(path, "0046_simplify_notifications")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                before = normalized_state(connection)
-            for revision, command in (
-                ("0047_remove_offline_cache", "upgrade"),
-                ("0046_simplify_notifications", "downgrade"),
-                ("0047_remove_offline_cache", "upgrade"),
-            ):
-                result = run_alembic(path, revision, command)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                with PostgresConnection(str(path)) as connection:
-                    self.assertEqual(normalized_state(connection), before)
-                    assert_session_schema(self, connection, upgraded=command == "upgrade")
+    def fresh_database(self) -> None:
+        """Point the app at a new, empty fixture database."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "guard.db"
+        self.dsn = self.settings.database_dsn = database_dsn(self.path)
 
-    def test_invites_migration_preserves_existing_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "preserve.db"
-            baseline = run_alembic(path, "0004_oidc_login")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                user_id = connection.execute(
-                    """
-                    INSERT INTO users(username, display_name, password_hash, is_admin)
-                    VALUES ('carol', 'Carol', 'hash', TRUE)
-                    RETURNING id
-                    """
-                ).fetchone()["id"]
-                connection.execute(
-                    """
-                    INSERT INTO sessions(
-                        id, user_id, token_hash, auth_method, csrf_token,
-                        session_version, created_at, last_seen_at,
-                        idle_expires_at, absolute_expires_at
-                    ) VALUES (
-                        'sess-1', %s, 'th', 'local', 'csrf', 1,
-                        '2026-07-21T00:00:00+00:00', '2026-07-21T00:00:00+00:00',
-                        '2099-01-01T00:00:00+00:00', '2099-01-01T00:00:00+00:00'
-                    )
-                    """,
-                    (user_id,),
+    def execute(self, *statements: str) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            for statement in statements:
+                connection.execute(statement)
+
+    def seed_old_catalog(self, revision: str = "0072_upload_lineage_indexes") -> None:
+        self.execute(
+            "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)",
+            f"INSERT INTO alembic_version VALUES ('{revision}')",
+            "CREATE TABLE users (id bigint PRIMARY KEY, username text NOT NULL)",
+            "INSERT INTO users VALUES (1, 'owner')",
+        )
+
+    def assert_refused_without_writes(self, action, *fragments: str) -> None:
+        _make_read_only(self.path)
+        before = database_state(self.path)
+        with self.assertRaises(DatabaseSchemaError) as raised:
+            action()
+        for fragment in fragments:
+            self.assertIn(fragment, str(raised.exception))
+        self.assertEqual(database_state(self.path), before)
+
+
+class StartupGuardTests(_GuardFixture):
+    def test_empty_database_is_initialized_at_the_baseline_with_one_owner(self) -> None:
+        initialize_database()
+
+        self.assertEqual(_tables(self.path), BASELINE_TABLES)
+        with PostgresConnection(str(self.path)) as connection:
+            revisions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
+            owner = connection.execute("SELECT * FROM owner").fetchall()
+        self.assertEqual(revisions, [{"version_num": HEAD_SCHEMA_REVISION}])
+        self.assertEqual(len(owner), 1)
+        self.assertEqual(owner[0]["display_name"], "The Owner")
+        self.assertEqual(owner[0]["session_version"], 1)
+        self.assertIsNone(owner[0]["oidc_subject"])
+
+    def test_database_at_head_starts_without_any_write(self) -> None:
+        initialize_database()
+        database.close_pools()
+        _make_read_only(self.path)
+        before = database_state(self.path)
+
+        initialize_database()
+
+        self.assertEqual(database_state(self.path), before)
+        with PostgresConnection(str(self.path)) as connection:
+            self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
+
+    def test_old_revision_is_refused_before_any_write(self) -> None:
+        self.seed_old_catalog()
+        self.assert_refused_without_writes(
+            initialize_database, "0072_upload_lineage_indexes", HEAD_SCHEMA_REVISION,
+        )
+        self.assertNotIn("owner", _tables(self.path))
+
+    def test_nonempty_database_without_alembic_version_is_refused(self) -> None:
+        objects = {
+            "table": "CREATE TABLE users (id bigint)",
+            "view": "CREATE VIEW leftover AS SELECT 1 AS one",
+            "sequence": "CREATE SEQUENCE leftover_seq",
+            "enum": "CREATE TYPE leftover_state AS ENUM ('a')",
+            "function": "CREATE FUNCTION leftover() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+            "other schema": "CREATE SCHEMA legacy; CREATE TABLE legacy.vaults (id bigint)",
+        }
+        for kind, statement in objects.items():
+            with self.subTest(kind=kind):
+                self.fresh_database()
+                self.execute(statement)
+                self.assert_refused_without_writes(
+                    initialize_database, "not empty", "no alembic_version",
                 )
-                connection.execute(
-                    """
-                    INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                    VALUES (%s, 'https://issuer.example', 'subject-1',
-                            '2026-07-21T00:00:00+00:00')
-                    """,
-                    (user_id,),
-                )
+                with PostgresConnection(str(self.path)) as connection:
+                    self.assertIsNone(connection.execute(
+                        "SELECT to_regclass('alembic_version') AS present"
+                    ).fetchone()["present"])
 
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+    def test_divergent_or_empty_revision_records_are_refused(self) -> None:
+        cases = {
+            "two revisions": [HEAD_SCHEMA_REVISION, "0072_upload_lineage_indexes"],
+            "no revision row": [],
+        }
+        for case, revisions in cases.items():
+            with self.subTest(case=case):
+                self.fresh_database()
+                self.execute(
+                    "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)",
+                    *(f"INSERT INTO alembic_version VALUES ('{r}')" for r in revisions),
+                )
+                self.assert_refused_without_writes(initialize_database, HEAD_SCHEMA_REVISION)
 
-            with PostgresConnection(str(path)) as connection:
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT COUNT(*) AS total FROM users"
-                    ).fetchone()["total"],
-                    1,
-                )
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT COUNT(*) AS total FROM sessions"
-                    ).fetchone()["total"],
-                    1,
-                )
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT COUNT(*) AS total FROM user_identities"
-                    ).fetchone()["total"],
-                    1,
-                )
+    def test_concurrent_starts_initialize_an_empty_database_once(self) -> None:
+        barrier = threading.Barrier(3)
+        results: list[object] = []
 
-    def test_head_creates_auth_backoff(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "backoff.db"
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+        def start() -> None:
+            barrier.wait()
+            try:
+                results.append(prepare_schema(self.dsn))
+            except Exception as exc:  # noqa: BLE001 - surfaced by the assertion
+                results.append(exc)
 
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-                self.assertIn("auth_backoff", names)
-                columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT column_name AS name, (is_nullable='NO')::int AS notnull FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='auth_backoff'"
-                    ).fetchall()
-                }
-                self.assertEqual(
-                    columns,
-                    {
-                        "id",
-                        "scope",
-                        "key",
-                        "failure_count",
-                        "next_allowed_at",
-                        "updated_at",
-                    },
-                )
-                # (scope, key) is unique so throttle counters are one per pair.
-                connection.execute(
-                    """
-                    INSERT INTO auth_backoff(scope, key, failure_count, updated_at)
-                    VALUES ('ip', '203.0.113.5', 1, '2026-07-21T00:00:00+00:00')
-                    """
-                )
-                with self.assertRaises(Exception):
-                    connection.execute(
-                        """
-                        INSERT INTO auth_backoff(scope, key, failure_count, updated_at)
-                        VALUES ('ip', '203.0.113.5', 2, '2026-07-21T00:00:00+00:00')
-                        """
-                    )
-            with PostgresConnection(str(path)) as connection:
-                # The scope is constrained to the two known throttle dimensions.
-                with self.assertRaises(Exception):
-                    connection.execute(
-                        """
-                        INSERT INTO auth_backoff(scope, key, failure_count, updated_at)
-                        VALUES ('bogus', 'x', 1, '2026-07-21T00:00:00+00:00')
-                        """
-                    )
+        threads = [threading.Thread(target=start) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
 
-            downgraded = run_alembic(
-                path,
-                "0005_invites",
-                command="downgrade",
+        outcomes = sorted(r.value if isinstance(r, SchemaState) else repr(r) for r in results)
+        self.assertEqual(outcomes, ["current", "current", "empty"])
+        self.assertEqual(_tables(self.path), BASELINE_TABLES)
+
+    def test_failed_initialization_leaves_the_database_empty(self) -> None:
+        upgrade = schema_guard._alembic_upgrade
+
+        def upgrade_then_fail(connection) -> None:
+            upgrade(connection)
+            raise RuntimeError("simulated crash after DDL")
+
+        with patch.object(schema_guard, "_alembic_upgrade", upgrade_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                prepare_schema(self.dsn)
+        with PostgresConnection(str(self.path)) as connection:
+            self.assertIs(inspect_schema(connection), SchemaState.EMPTY)
+
+    def test_changed_emergency_password_revokes_sessions(self) -> None:
+        initialize_database()
+        self.settings.bootstrap_admin_password = "another long emergency password"
+        initialize_database()
+        with PostgresConnection(str(self.path)) as connection:
+            owner = connection.execute("SELECT session_version FROM owner").fetchone()
+        self.assertEqual(owner["session_version"], 2)
+
+
+class RestoreGuardTests(_GuardFixture):
+    def test_metadata_restore_refuses_an_old_catalog_before_any_write(self) -> None:
+        from app.services.recovery_kit import record_metadata_restore
+
+        self.seed_old_catalog()
+
+        def restore() -> None:
+            with PostgresConnection(str(self.path)) as connection:
+                record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+
+        self.assert_refused_without_writes(
+            restore, "0072_upload_lineage_indexes", HEAD_SCHEMA_REVISION,
+        )
+
+    def test_metadata_restore_never_initializes_an_empty_database(self) -> None:
+        from app.services.recovery_kit import record_metadata_restore
+
+        def restore() -> None:
+            with PostgresConnection(str(self.path)) as connection:
+                record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+
+        self.assert_refused_without_writes(restore, "empty")
+        self.assertEqual(_tables(self.path), set())
+
+    def test_metadata_restore_accepts_a_catalog_at_head(self) -> None:
+        self.assertEqual(run_alembic(self.path).returncode, 0)
+        with PostgresConnection(str(self.path)) as connection:
+            require_current_schema(connection)
+
+    def test_backup_verification_refuses_a_dump_of_another_schema(self) -> None:
+        from app.services import metadata_backups
+
+        self.seed_old_catalog()
+        dump = metadata_backups._dump_postgres_bytes(self.dsn)
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(metadata_backups.BackupError, "0072_upload_lineage_indexes"):
+                metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
+
+    def test_backup_verification_accepts_a_dump_at_head(self) -> None:
+        from app.services import metadata_backups
+
+        initialize_database()
+        dump = metadata_backups._dump_postgres_bytes(self.dsn)
+        with tempfile.TemporaryDirectory() as work, patch.object(
+            metadata_backups, "settings", SimpleNamespace(database_dsn=self.dsn),
+        ):
+            result = metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
+        self.assertEqual(result["schema_revision"], HEAD_SCHEMA_REVISION)
+        self.assertEqual(result["owner_count"], 1)
+
+
+class BaselineRevisionTests(unittest.TestCase):
+    def test_baseline_is_the_only_revision(self) -> None:
+        versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+        self.assertEqual(sorted(p.name for p in versions.glob("*.py")),
+                         ["0001_baseline.py", "__init__.py"])
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        config = Config(str(versions.parents[1] / "alembic.ini"))
+        config.set_main_option("script_location", str(versions.parent))
+        scripts = ScriptDirectory.from_config(config)
+        self.assertEqual(scripts.get_heads(), [HEAD_SCHEMA_REVISION])
+        self.assertIsNone(scripts.get_revision(HEAD_SCHEMA_REVISION).down_revision)
+
+    def test_baseline_sql_has_no_accidental_sqlalchemy_bind_parameters(self) -> None:
+        import importlib
+
+        import sqlalchemy as sa
+
+        migration = importlib.import_module("migrations.versions.0001_baseline")
+        with patch.object(migration, "op") as operations:
+            migration.upgrade()
+        for call in operations.execute.call_args_list:
+            self.assertEqual(sa.text(call.args[0]).compile().params, {})
+
+
+class BaselineSchemaTests(unittest.TestCase):
+    """The core tables and the invariants their constraints enforce."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "baseline.db"
+        migrated = run_alembic(self.path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.connection = PostgresConnection(str(self.path))
+        self.addCleanup(self.connection.close)
+        self.connection.autocommit = True
+
+    def execute(self, statement: str, params: tuple = ()) -> list[dict]:
+        cursor = self.connection.execute(statement, params)
+        return cursor.fetchall() if cursor.description else []
+
+    def rejects(self, statement: str, params: tuple = (), error=psycopg.errors.IntegrityError) -> None:
+        with self.assertRaises(error):
+            self.execute(statement, params)
+
+    def target_id(self) -> int:
+        existing = self.execute("SELECT id FROM vault_targets WHERE bucket = 'bucket'")
+        return (existing or self.execute(
+            "INSERT INTO vault_targets(provider, bucket, region) "
+            "VALUES ('s3', 'bucket', 'eu-south-1') RETURNING id"
+        ))[0]["id"]
+
+    def vault(self, root: str = "/sources/managed/a", **values) -> dict:
+        columns = {"name": "Docs", "source_root": root, "target_id": self.target_id(), **values}
+        names = ", ".join(columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        return self.execute(
+            f"INSERT INTO vaults({names}) VALUES ({placeholders}) RETURNING *",
+            tuple(columns.values()),
+        )[0]
+
+    def test_no_user_tables_and_no_foreign_key_to_users(self) -> None:
+        tables = {row["tablename"] for row in self.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+        )}
+        self.assertEqual(tables, BASELINE_TABLES)
+        referenced = {row["referenced"] for row in self.execute(
+            "SELECT confrelid::regclass::text AS referenced FROM pg_constraint WHERE contype = 'f'"
+        )}
+        self.assertEqual(referenced, {"vault_targets", "vaults", "files", "archive_versions"})
+
+    def test_native_column_types(self) -> None:
+        types = {
+            (row["table_name"], row["column_name"]): row["data_type"]
+            for row in self.execute(
+                "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = current_schema()"
             )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                names = {
-                    row["name"]
-                    for row in connection.execute(
-                        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
-                    ).fetchall()
-                }
-            self.assertNotIn("auth_backoff", names)
-
-    def test_downgrade_refuses_to_resurrect_a_missing_archive_version(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "missing-version.db"
-            baseline = run_alembic(path, "0001_current_schema")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (2, 7, 'owner')"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO files(
-                        vault_id, path, local_exists, cloud_exists, cloud_key,
-                        updated_at
-                    ) VALUES (
-                        2, 'missing.txt', 0, 1, 'docs/missing.txt', '2026-07-20'
-                    )
-                    """
-                )
-
-            upgraded = run_alembic(path)
-            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    UPDATE archive_versions
-                    SET availability='missing',
-                        availability_checked_at='2026-07-21T10:00:00+00:00'
-                    """
-                )
-
-            downgraded = run_alembic(
-                path,
-                "0001_current_schema",
-                command="downgrade",
+        }
+        expected = {
+            ("vaults", "uuid"): "uuid",
+            ("vaults", "created_at"): "timestamp with time zone",
+            ("files", "id"): "uuid",
+            ("files", "local_mtime_ns"): "bigint",
+            ("files", "local_sha256"): "bytea",
+            ("archive_versions", "plaintext_sha256"): "bytea",
+            ("jobs", "group_id"): "uuid",
+            ("jobs", "requested_at"): "timestamp with time zone",
+        }
+        for column, data_type in expected.items():
+            self.assertEqual(types[column], data_type, column)
+        collations = {
+            (row["table_name"], row["column_name"]) for row in self.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND collation_name = 'C'"
             )
+        }
+        for key in (("files", "path"), ("vaults", "source_root"),
+                    ("archive_versions", "object_key"), ("archive_versions", "provider_version_id"),
+                    ("owner", "oidc_subject"), ("vault_targets", "bucket")):
+            self.assertIn(key, collations)
 
-            self.assertNotEqual(downgraded.returncode, 0)
-            self.assertIn("archive_availability", downgraded.stderr)
+    def test_owner_is_a_single_row(self) -> None:
+        self.execute("INSERT INTO owner(display_name, password_hash) VALUES ('Owner', 'hash')")
+        self.rejects("INSERT INTO owner(display_name) VALUES ('Second')")
+        self.rejects("INSERT INTO owner(id, display_name) VALUES (2, 'Second')")
+        # The OIDC Identity is bound all at once, never half.
+        self.rejects("UPDATE owner SET oidc_subject = 'subject'")
+        self.execute(
+            "UPDATE owner SET oidc_issuer = 'https://id.example', oidc_subject = 'subject', "
+            "oidc_bound_at = now()"
+        )
 
-    def test_upgrade_blocks_conflicting_active_legacy_jobs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "conflicting-jobs.db"
-            baseline = run_alembic(path, "0001_current_schema")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (2, 7, 'owner')"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO files(
-                        vault_id, path, local_exists, cloud_exists, updated_at
-                    ) VALUES (2, 'report.txt', 1, 1, '2026-07-20')
-                    """
-                )
-                for job_id, action in ((1, "upload"), (2, "recover")):
-                    connection.execute(
-                        """
-                        INSERT INTO jobs(
-                            id, vault_id, path, action, status, requested_by,
-                            requested_at, updated_at
-                        ) VALUES (%s, 2, 'report.txt', %s, 'queued', 7,
-                                  '2026-07-20', '2026-07-20')
-                        """,
-                        (job_id, action),
-                    )
-                connection.execute("DROP TABLE alembic_version")
+    def test_vault_targets_are_immutable(self) -> None:
+        vault = self.vault()
+        self.rejects("UPDATE vault_targets SET bucket = 'other'")
+        self.rejects("DELETE FROM vault_targets")
+        other = self.execute(
+            "INSERT INTO vault_targets(provider, bucket, region) "
+            "VALUES ('s3', 'other', 'eu-south-1') RETURNING id"
+        )[0]["id"]
+        self.rejects("UPDATE vaults SET target_id = %s WHERE id = %s", (other, vault["id"]))
+        self.rejects("UPDATE vaults SET uuid = %s WHERE id = %s", (uuid.uuid4(), vault["id"]))
+        self.rejects("INSERT INTO vault_targets(provider, bucket, region) VALUES ('gcs', 'b', 'r')")
 
-            migrated = run_alembic(path)
+    def test_vault_lifecycle_combinations(self) -> None:
+        vault = self.vault()
+        self.assertEqual((vault["lifecycle"], vault["paused"]), ("active", False))
+        self.execute("UPDATE vaults SET paused = true, lifecycle = 'reconnect_required' WHERE id = %s",
+                     (vault["id"],))
+        self.rejects("UPDATE vaults SET lifecycle = 'stopping' WHERE id = %s", (vault["id"],))
+        self.rejects("UPDATE vaults SET lifecycle = 'unknown', paused = false WHERE id = %s", (vault["id"],))
+        self.execute("UPDATE vaults SET lifecycle = 'stopping', paused = false WHERE id = %s", (vault["id"],))
+        self.rejects("UPDATE vaults SET lifecycle = 'tombstone' WHERE id = %s", (vault["id"],))
+        self.execute(
+            "UPDATE vaults SET lifecycle = 'tombstone', root_released_at = now() WHERE id = %s",
+            (vault["id"],),
+        )
+        self.rejects(
+            "UPDATE vaults SET lifecycle = 'active', root_released_at = NULL WHERE id = %s",
+            (vault["id"],),
+        )
+        # A released root can be allocated again; an allocated one cannot.
+        self.vault()
+        self.rejects(
+            "INSERT INTO vaults(name, source_root, target_id) VALUES ('Again', %s, %s)",
+            ("/sources/managed/a", vault["target_id"]),
+        )
 
-            self.assertNotEqual(migrated.returncode, 0)
-            self.assertIn(
-                "multiple non-terminal jobs target one file",
-                migrated.stderr,
-            )
-            with PostgresConnection(str(path)) as connection:
-                legacy_file = connection.execute(
-                    "SELECT path FROM files WHERE vault_id=2"
-                ).fetchone()
-            self.assertEqual(legacy_file, {"path": "report.txt"})
-
-    def test_cleanup_action_migration_preserves_existing_jobs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "migration.db"
-            baseline = run_alembic(path, "0001_current_schema")
-            self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            with PostgresConnection(str(path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash, is_admin
-                    ) VALUES (7, 'owner', 'Owner', 'hash', TRUE)
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix,
-                        rclone_remote
-                    ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs', 'remote')
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO vault_members(vault_id, user_id, role) "
-                    "VALUES (2, 7, 'owner')"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO files(
-                        vault_id, path, local_exists, local_size, cloud_exists,
-                        updated_at
-                    ) VALUES (2, 'docs/file.txt', 1, 9, 0, '2026-07-20')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        id, vault_id, path, action, status, requested_by,
-                        requested_at, updated_at, total_bytes, transferred_bytes
-                    ) VALUES (
-                        1, 2, 'docs/file.txt', 'upload', 'completed', 7,
-                        '2026-07-20', '2026-07-20', 9, 9
-                    )
-                    """
-                )
-                connection.execute("DROP TABLE alembic_version")
-
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                preserved = connection.execute(
-                    """
-                    SELECT j.action, j.total_bytes, fp.path
-                    FROM jobs j
-                    JOIN vault_files vf ON vf.id=j.vault_file_id
-                    JOIN file_paths fp
-                      ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                    WHERE j.id=1
-                    """
-                ).fetchone()
-
-            self.assertEqual(
-                preserved,
-                {
-                    "action": "upload",
-                    "total_bytes": 9,
-                    "path": "docs/file.txt",
-                },
-            )
+    def test_file_pointers_name_versions_of_the_same_file(self) -> None:
+        vault = self.vault()
+        first, second = (
+            self.execute(
+                "INSERT INTO files(vault_id, path, path_since) VALUES (%s, %s, now()) RETURNING id",
+                (vault["id"], path),
+            )[0]["id"]
+            for path in ("a.txt", "b.txt")
+        )
+        self.rejects(
+            "INSERT INTO files(vault_id, path, path_since) VALUES (%s, 'a.txt', now())",
+            (vault["id"],),
+        )
+        digest = bytes(32)
+        version = self.execute(
+            "INSERT INTO archive_versions(file_id, object_key, provider_version_id, size, "
+            "plaintext_sha256) VALUES (%s, 'vaults/x/a.txt', 'v1', 1, %s) RETURNING id",
+            (first, digest),
+        )[0]["id"]
+        self.execute("UPDATE files SET current_version_id = %s WHERE id = %s", (version, first))
+        self.rejects("UPDATE files SET current_version_id = %s WHERE id = %s", (version, second))
+        self.rejects("UPDATE files SET replacing_version_id = %s WHERE id = %s", (version, first))
+        self.rejects("DELETE FROM archive_versions WHERE id = %s", (version,))
+        self.rejects(
+            "INSERT INTO archive_versions(file_id, object_key, size, plaintext_sha256) "
+            "VALUES (%s, 'k', 1, %s)", (first, b"short"),
+        )
+        self.rejects(
+            "INSERT INTO archive_versions(file_id, object_key, size, availability) "
+            "VALUES (%s, 'k', 1, 'purged')", (first,),
+        )
+        self.rejects(
+            "INSERT INTO jobs(vault_id, file_id, archive_version_id, action, status, origin) "
+            "VALUES (%s, %s, %s, 'upload', 'queued', 'manual')",
+            (vault["id"], second, version),
+        )
+        self.execute(
+            "INSERT INTO jobs(vault_id, file_id, archive_version_id, action, status, origin) "
+            "VALUES (%s, %s, %s, 'upload', 'queued', 'automatic')",
+            (vault["id"], first, version),
+        )
 
 
 if __name__ == "__main__":

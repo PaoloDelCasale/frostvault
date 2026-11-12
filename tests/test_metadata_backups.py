@@ -10,8 +10,6 @@ Seams under test (confirmed for this issue):
   — injectable ObjectStore boundary for encrypted ``system/backups/``
 - ``app.services.metadata_backups.verify_restore_isolated``
   — restore into a temporary database without touching live DB or vault S3
-- ``app.services.metadata_backups.run_pre_upgrade_backup``
-  — failure blocks application-managed schema upgrades
 - ``app.services.metadata_backups.default_object_store``
   — public ObjectStore factory for configured off-host backup (BUG-010)
 - ``app.storage._verify_latest_metadata_backup_once``
@@ -256,7 +254,7 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
             object_store=self.store,
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["user_count"], 1)
+        self.assertEqual(result["owner_count"], 1)
         self.assertEqual(database_state(self.db_path), live_before)
         self.assertEqual(self.store.objects["vaults/abc/file.bin"], b"do-not-touch")
         self.assertEqual(
@@ -361,7 +359,7 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
         """[BUG-010][Req: REQ-022] configured bucket client errors fail closed.
 
         Seam: ``default_object_store()`` — public factory used by admin/manual
-        backup, the scheduled worker, and ``backup_upgrade`` (pre-upgrade gate).
+        backup and the scheduled worker.
         With ``vault_s3_bucket`` set and ``s3_client`` failing at the AWS
         boundary, must raise ``BackupError`` rather than return ``None`` (which
         aliases failure as “S3 unset” and yields silent local-only success).
@@ -392,204 +390,6 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
                 configured = replace(base, vault_s3_bucket=bucket)
                 with patch.object(metadata_backups, "settings", configured):
                     self.assertIsNone(metadata_backups.default_object_store())
-
-
-class PreUpgradeBackupGateTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.db_path = self.root / "live.db"
-        self.backup_dir = self.root / "backups"
-        self.backup_dir.mkdir()
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.master_key = Fernet.generate_key().decode("ascii")
-        self.store = RecordingObjectStore()
-
-    def test_pre_upgrade_backup_success_allows_upgrade(self) -> None:
-        result = metadata_backups.run_pre_upgrade_backup(
-            backup_dir=self.backup_dir,
-            master_key=self.master_key,
-            database_dsn=database_dsn(str(self.db_path)),
-            config_snapshot={"scan_interval": 3600},
-            object_store=self.store,
-            retention=5,
-        )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["reason"], "pre_upgrade")
-        self.assertTrue(Path(result["path"]).exists())
-        self.assertTrue(
-            any(key.startswith("system/backups/") for key in self.store.objects)
-        )
-
-    def test_failed_pre_upgrade_backup_blocks_schema_upgrade(self) -> None:
-        with self.assertRaises(metadata_backups.BackupError) as ctx:
-            metadata_backups.run_pre_upgrade_backup(
-                backup_dir=self.backup_dir,
-                master_key="",  # missing master key must fail closed
-                database_dsn=database_dsn(str(self.db_path)),
-                config_snapshot={"scan_interval": 3600},
-                object_store=self.store,
-            )
-        self.assertIn("ARCHIVE_MASTER_KEY", str(ctx.exception))
-        self.assertEqual(list(self.backup_dir.glob("*.bak.enc")), [])
-
-    def test_configured_unreachable_store_returns_typed_blocked_outcome(self) -> None:
-        configured = SimpleNamespace(
-            vault_s3_bucket="production-backups",
-            archive_master_key=self.master_key,
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-        with patch.object(
-            metadata_backups,
-            "default_object_store",
-            side_effect=metadata_backups.ObjectStoreUnavailableError(
-                "Configured metadata backup object store is unavailable"
-            ),
-        ):
-            with self.assertRaises(
-                metadata_backups.PreUpgradeBackupBlockedError
-            ) as ctx:
-                metadata_backups.run_pre_upgrade_backup_gate(
-                    backup_dir=self.backup_dir,
-                    settings_obj=configured,
-                    config_snapshot={},
-                    retention=5,
-                )
-        self.assertEqual(
-            ctx.exception.reason,
-            metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE,
-        )
-        self.assertNotIn(self.master_key, str(ctx.exception))
-
-    def test_configured_store_upload_and_readback_failures_are_blocked(self) -> None:
-        configured = SimpleNamespace(
-            vault_s3_bucket="production-backups",
-            archive_master_key=self.master_key,
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-
-        class FailingUploadStore(RecordingObjectStore):
-            def put_bytes(self, key: str, body: bytes) -> None:
-                raise RuntimeError("credential-adjacent upload detail")
-
-        class CorruptReadbackStore(RecordingObjectStore):
-            def get_bytes(self, key: str) -> bytes:
-                if key.endswith(".sha256"):
-                    return super().get_bytes(key)
-                return b"corrupt"
-
-        for store, reason in (
-            (
-                FailingUploadStore(),
-                metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED,
-            ),
-            (
-                CorruptReadbackStore(),
-                metadata_backups.PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED,
-            ),
-        ):
-            with self.subTest(reason=reason):
-                with self.assertRaises(
-                    metadata_backups.PreUpgradeBackupBlockedError
-                ) as ctx:
-                    metadata_backups.run_pre_upgrade_backup_gate(
-                        backup_dir=self.backup_dir,
-                        settings_obj=configured,
-                        config_snapshot={},
-                        object_store=store,
-                        retention=5,
-                    )
-                self.assertEqual(ctx.exception.reason, reason)
-                self.assertNotIn("credential-adjacent", str(ctx.exception))
-
-    def test_configured_store_missing_key_returns_typed_block(self) -> None:
-        configured = SimpleNamespace(
-            vault_s3_bucket="production-backups",
-            archive_master_key="",
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-        with self.assertRaises(
-            metadata_backups.PreUpgradeBackupBlockedError
-        ) as ctx:
-            metadata_backups.run_pre_upgrade_backup_gate(
-                backup_dir=self.backup_dir,
-                settings_obj=configured,
-                config_snapshot={},
-                object_store=self.store,
-                retention=5,
-            )
-
-        self.assertEqual(
-            ctx.exception.reason,
-            metadata_backups.PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED,
-        )
-
-    def test_local_only_without_key_is_an_explicit_allowed_outcome(self) -> None:
-        local_only = SimpleNamespace(
-            vault_s3_bucket="",
-            archive_master_key="",
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-        with patch.object(metadata_backups, "run_pre_upgrade_backup") as backup:
-            outcome = metadata_backups.run_pre_upgrade_backup_gate(
-                backup_dir=self.backup_dir,
-                settings_obj=local_only,
-                retention=5,
-            )
-
-        self.assertEqual(
-            outcome.state,
-            metadata_backups.PreUpgradeBackupState.LOCAL_ONLY_ALLOWED,
-        )
-        self.assertIsNone(outcome.backup)
-        backup.assert_not_called()
-
-    def test_backup_records_distinguish_off_host_and_local_only_success(self) -> None:
-        local_only = SimpleNamespace(
-            vault_s3_bucket="",
-            archive_master_key=self.master_key,
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-        off_host = SimpleNamespace(
-            vault_s3_bucket="production-backups",
-            archive_master_key=self.master_key,
-            database_dsn=database_dsn(str(self.db_path)),
-        )
-        with PostgresConnection(str(self.db_path)) as connection:
-            local_outcome = metadata_backups.run_pre_upgrade_backup_gate(
-                backup_dir=self.backup_dir,
-                settings_obj=local_only,
-                config_snapshot={},
-                retention=5,
-                connection=connection,
-            )
-            off_host_outcome = metadata_backups.run_pre_upgrade_backup_gate(
-                backup_dir=self.backup_dir,
-                settings_obj=off_host,
-                config_snapshot={},
-                object_store=self.store,
-                retention=5,
-                connection=connection,
-            )
-            records = connection.execute(
-                "SELECT status, local_path, s3_key FROM metadata_backup_runs "
-                "ORDER BY id"
-            ).fetchall()
-
-        self.assertEqual(
-            local_outcome.state,
-            metadata_backups.PreUpgradeBackupState.LOCAL_ONLY_ALLOWED,
-        )
-        self.assertEqual(
-            off_host_outcome.state,
-            metadata_backups.PreUpgradeBackupState.OFF_HOST_SUCCEEDED,
-        )
-        self.assertEqual([record["status"] for record in records], ["succeeded", "succeeded"])
-        self.assertTrue(records[0]["local_path"])
-        self.assertIsNone(records[0]["s3_key"])
-        self.assertTrue(records[1]["s3_key"].startswith("system/backups/"))
 
 
 class BackupOrchestrationNotificationTests(unittest.TestCase):
@@ -647,16 +447,20 @@ class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
         Seam: ``_verify_postgres_dump_isolated`` — producer of
         ``verification_mode=temp_database`` results used by
         ``verify_restore_isolated`` / scheduled verify. After ``createdb``
-        succeeds, if ``psql`` COUNT cannot prove users/vaults/alembic_version,
+        succeeds, if ``psql`` COUNT cannot prove owner/vaults/alembic_version,
         raise ``BackupError`` — do not return ``ok: True`` with null counts.
         Distinct from intentional ``pg_restore_list`` fallback (former BUG-003).
         """
         list_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
+        revision_ok = MagicMock(
+            returncode=0, stderr="",
+            stdout="COPY public.alembic_version (version_num) FROM stdin;\n0001_baseline\n\\.\n",
+        )
         created_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
         restore_soft = MagicMock(returncode=1, stderr=b"WARNING: role missing", stdout=b"")
         psql_fail = MagicMock(
             returncode=1,
-            stderr="ERROR: relation \"users\" does not exist\n",
+            stderr="ERROR: relation \"owner\" does not exist\n",
             stdout="",
         )
         drop_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")
@@ -664,7 +468,7 @@ class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
         with patch.object(
             metadata_backups.subprocess,
             "run",
-            side_effect=[list_ok, created_ok, restore_soft, psql_fail, drop_ok],
+            side_effect=[list_ok, revision_ok, created_ok, restore_soft, psql_fail, drop_ok],
         ):
             with tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaises(metadata_backups.BackupError):
@@ -692,9 +496,9 @@ class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
         self.assertGreaterEqual(temp_idx, 0)
         prelude = fn_body[:temp_idx]
         self.assertIn(
-            "user_count is None",
+            "owner_count is None",
             prelude,
-            "temp_database success path must explicitly guard null user_count",
+            "temp_database success path must explicitly guard null owner_count",
         )
 
 

@@ -222,15 +222,15 @@ class DeploymentShutdownBudgetTests(unittest.TestCase):
                 self.assertTrue(period.endswith("s"))
                 self.assertGreater(int(period[:-1]), PROCESS_SHUTDOWN_SECONDS)
 
-    def test_entrypoint_recognizes_new_server_without_migrating_one_shot_commands(self):
+    def test_entrypoint_recognizes_new_server_apart_from_one_shot_commands(self):
         # Execute ONLY the pure command classifier, never the entrypoint's
-        # runtime identity/directory/migration operations on this host.
+        # runtime identity/directory operations on this host.
         text = (ROOT / "docker/entrypoint.sh").read_text()
         classifier = text.split("is_web_command() {", 1)[1].split("\n}\n", 1)[0]
         shell = "is_web_command() {" + classifier + '\n}\nis_web_command "$@"'
         for command, expected in ((["python", "-m", "app.server"], 0),
                                   (["uvicorn", "app.main:app"], 0),
-                                  (["python", "-m", "app.backup_upgrade"], 1),
+                                  (["python", "-m", "alembic", "current"], 1),
                                   (["python"], 1), (["sh"], 1), ([], 1)):
             with self.subTest(command=command):
                 result = subprocess.run(["sh", "-c", shell, "classifier", *command], capture_output=True)

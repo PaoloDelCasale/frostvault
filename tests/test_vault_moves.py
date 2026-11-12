@@ -375,23 +375,6 @@ class VaultMoveTests(unittest.TestCase):
                 cloud_deletion.schedule_cloud_purge(c,vault_id=1,paths=['report.txt'],is_directory=False,
                     actor_user_id=1,requested_at=storage.now_iso(),confirmation='Docs',reason='delete')
 
-    def test_ledger_migration_is_metadata_only_and_refuses_unsafe_downgrade(self):
-        from tests.test_database import run_alembic
-        self.schedule()
-        with PostgresConnection(str(self.path)) as c:
-            from tests.upload_verification_migration_contract import without_upload_verification_fields
-            before=without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions')
-        refused=run_alembic(self.path,'0059_delayed_cloud_deletion','downgrade')
-        self.assertNotEqual(refused.returncode,0)
-        with PostgresConnection(str(self.path)) as c:
-            c.execute("UPDATE jobs SET status='cancelled' WHERE id=%s",(self.job_id,))
-        for revision,command in (('0059_delayed_cloud_deletion','downgrade'),('head','upgrade')):
-            result=run_alembic(self.path,revision,command)
-            self.assertEqual(result.returncode,0,result.stderr)
-            with PostgresConnection(str(self.path)) as c:
-                self.assertEqual(without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions'),before)
-        self.assertEqual(self.provider.deleted,[])
-
     def test_worker_cannot_publish_after_claim_takeover(self):
         self.schedule()
         # Bind a real durable lease; cancellation/takeover wins while CopyObject runs.

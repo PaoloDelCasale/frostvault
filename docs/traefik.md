@@ -105,9 +105,8 @@ requires non-empty values for both, with no network-wide defaults; it does not
 validate equivalence or automatically derive either value. Review them before
 starting. Avoid printing a rendered Compose configuration: it may contain secrets.
 
-Schema migrations run on start when `AUTO_MIGRATE=1` (default). Set
-`AUTO_MIGRATE=0` and run `python -m app.backup_upgrade` before `up` for a fully
-manual upgrade gate.
+On start an empty database is initialized; a database at another schema
+revision is refused before any write (ADR-0035).
 
 Confirm there is no `ports:` mapping on `frostvault`. Reach the panel only
 through Traefik. Local development can keep using `compose.yaml`, which binds

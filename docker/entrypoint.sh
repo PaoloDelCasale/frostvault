@@ -10,7 +10,6 @@ DEFAULT_PUID=99
 DEFAULT_PGID=100
 PUID="${PUID:-${DEFAULT_PUID}}"
 PGID="${PGID:-${DEFAULT_PGID}}"
-AUTO_MIGRATE="${AUTO_MIGRATE:-1}"
 
 fail() {
   printf '%s\n' "ERROR: $*" >&2
@@ -47,31 +46,10 @@ validate_numeric_id "PUID" "${PUID}"
 validate_numeric_id "PGID" "${PGID}"
 RUNTIME_IDENTITY="${PUID}:${PGID}"
 
-auto_migrate_enabled() {
-  case "$(printf '%s' "${AUTO_MIGRATE}" | tr '[:upper:]' '[:lower:]')" in
-    0|false|no|off) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
 is_web_command() {
   [ "${1:-}" = "uvicorn" ] || {
     [ "${1:-}" = "python" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "app.server" ]
   }
-}
-
-maybe_migrate() {
-  # Only when launching the web app. One-shot admin commands (alembic,
-  # backup_upgrade, shell) keep full control of schema timing.
-  if ! is_web_command "$@"; then
-    return 0
-  fi
-  if ! auto_migrate_enabled; then
-    echo "AUTO_MIGRATE disabled; skipping schema upgrade on start"
-    return 0
-  fi
-  echo "AUTO_MIGRATE: ensuring database schema is current before uvicorn"
-  python -m app.migrate_on_start
 }
 
 assert_runtime_identity() {
@@ -112,5 +90,4 @@ assert_runtime_identity
 if is_web_command "$@"; then
   assert_writable_runtime_directories
 fi
-maybe_migrate "$@"
 exec "$@"

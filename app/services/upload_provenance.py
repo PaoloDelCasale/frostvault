@@ -719,38 +719,6 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
     return proof is not None
 
 
-def _legacy_materialized(connection: Any, file_id: str) -> dict[str, Any] | None:
-    """Manual exact resume of failed linked pre-0064 uploads, without backfill."""
-    rows = connection.execute("""SELECT av.*,j.upload_plaintext_sha256 AS expected_sha,
-        j.upload_snapshot_json AS job_snapshot
-        FROM archive_versions av JOIN jobs j ON j.archive_version_id=av.id
-        JOIN file_paths fp ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
-        WHERE av.vault_file_id=%s AND av.availability='available' AND av.integrity='unverified'
-          AND j.action='upload' AND j.status='failed' AND j.vault_file_id=av.vault_file_id
-          AND j.vault_id=av.vault_id AND j.path=fp.path
-          AND NOT EXISTS (SELECT 1 FROM jobs cancelled WHERE cancelled.archive_version_id=av.id AND cancelled.status='cancelled' AND cancelled.action='upload')
-        ORDER BY j.id""", (file_id,)).fetchall()
-    if not rows:
-        return None
-    if len({r["id"] for r in rows}) != 1:
-        raise UploadBlocked("ambiguous_receipt")
-    for row in rows:
-        if row.get("upload_snapshot_json"):
-            try:
-                snapshot = UploadSnapshot.from_json(row["upload_snapshot_json"])
-                if row["job_snapshot"] and UploadSnapshot.from_json(row["job_snapshot"]).plaintext_sha256 != snapshot.plaintext_sha256:
-                    raise UploadBlocked("proof_mismatch")
-            except (ValueError, TypeError, KeyError, AttributeError) as exc:
-                raise UploadBlocked("proof_mismatch") from exc
-            if row["expected_sha"] != snapshot.plaintext_sha256:
-                raise UploadBlocked("proof_mismatch")
-        elif not (isinstance(row["expected_sha"],str) and len(row["expected_sha"]) == 64 and all(c in "0123456789abcdef" for c in row["expected_sha"])):
-            raise UploadBlocked("proof_unavailable")
-    if len({r["expected_sha"] for r in rows}) != 1:
-        raise UploadBlocked("proof_mismatch")
-    return rows[0]
-
-
 def _only_void_episodes(connection: Any, file_id: str) -> bool:
     rows = connection.execute("SELECT intent_id FROM upload_remediations WHERE vault_file_id=%s AND state NOT IN ('resolved','cancelled') LIMIT 8", (file_id,)).fetchall()
     return bool(rows) and all(proven_absent(connection, r["intent_id"]) and unsent(connection, r["intent_id"]) for r in rows)
@@ -764,21 +732,15 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     file_id = row["id"]
     block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
     intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
-    legacy, legacy_reason = None, None
-    if not intents:
-        try:
-            legacy = _legacy_materialized(connection,file_id)
-        except UploadBlocked as exc:
-            legacy_reason = exc.reason
-    if not block and not intents and not legacy and not legacy_reason:
+    if not block and not intents:
         return empty
-    reason = (block["reason"] if block else intents[0]["blocked_reason"] if intents else legacy_reason or "proof_unavailable") or "ambiguous_send"
+    reason = (block["reason"] if block else intents[0]["blocked_reason"]) or "ambiguous_send"
     busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
     cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
     # An episode whose re-armed send never started has nothing left to reconcile:
     # offering Resume would only end in a 409 (the ordinary upload retries it).
     void_only = not intents and _only_void_episodes(connection, file_id)
-    return {"pending": True, "can_resume": not busy and not cancelled and not legacy_reason and len(intents) < 2 and not void_only,
+    return {"pending": True, "can_resume": not busy and not cancelled and len(intents) < 2 and not void_only,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
@@ -803,7 +765,7 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
     return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp, remediation_id=remediation_id)
 
 
-def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
+def _schedule_resume_unenrolled(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
     from .cloud_deletion import lock_vault
     from .vault_moves import require_ready
     current = lock_vault(connection, vault["id"])
@@ -820,8 +782,8 @@ def _schedule_resume_legacy(connection: Any, *, vault: dict[str, Any], path: str
     if row["cloud_only_version_id"]:
         raise UploadBlocked("cloud_only_conflict")
     intent = outstanding(connection, row["id"])
-    linked = _legacy_materialized(connection,row["id"]) if not intent else None
-    if not intent and not linked:
+    linked = None
+    if not intent:
         linked = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability='available' AND integrity='verified' ORDER BY version_number DESC LIMIT 1", (row["id"],)).fetchone()
     if not intent and not linked:
         raise UploadBlocked("proof_unavailable")

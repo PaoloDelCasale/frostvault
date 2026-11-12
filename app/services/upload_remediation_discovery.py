@@ -18,10 +18,6 @@ from .vault_paths import expected_cloud_key
 
 def capture(connection: Any, stamp: str, *, version_id: str | None = None,
             intent_id: str | None = None, file_id: str | None = None) -> None:
-    # Current catalog adapters also construct populated pre-0065 test fixtures.
-    supported = connection.execute("SELECT to_regclass('upload_remediation_facts') IS NOT NULL AS supported").fetchone()
-    if not supported or not supported.get("supported"):
-        return
     if intent_id is not None:
         connection.execute("""INSERT INTO upload_remediation_facts(target_key,vault_id,vault_file_id,
             intent_id,archive_version_id,discovered_at,due_at)

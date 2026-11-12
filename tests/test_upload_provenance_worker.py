@@ -378,56 +378,6 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.puts,1)
         self.assertEqual(self.row(original)["status"],"failed","No generic history resolution")
 
-    def legacy_materialized_failure(self, *, keep_token=False):
-        from app.services.operation_policies import OperationPolicy, set_policy
-        with PostgresConnection(self.db_path) as connection:
-            set_policy(connection,2,OperationPolicy(upload_verification="read_back"))
-        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("get temporarily unavailable")) if stage == "get" else None
-        original = self.queue()
-        self.run_job(original)
-        self.assertIsNotNone(self.row(original)["archive_version_id"])
-        with PostgresConnection(self.db_path) as connection:
-            # Construct a genuine populated 0063 fixture: linked version + its
-            # independent baseline, no invented/backfilled 0064 provenance.
-            connection.execute("UPDATE jobs SET status='failed',retry_after=NULL WHERE id=%s",(original,))
-            connection.execute("DELETE FROM upload_receipts")
-            connection.execute("DELETE FROM upload_intent_jobs")
-            connection.execute("DELETE FROM upload_remediation_facts")
-            connection.execute("DELETE FROM upload_intents")
-            set_policy(connection,2,OperationPolicy(upload_verification="s3_checksum"))
-            state = provenance.describe(connection,vault_id=2,path="report.txt")
-            self.assertTrue(state["pending"])
-            self.assertTrue(state["can_resume"])
-            version = connection.execute("SELECT object_key,provider_version_id FROM archive_versions WHERE id=%s", (self.row(original)["archive_version_id"],)).fetchone()
-        if not keep_token:
-            # Construct the pre-0064 provider fixture too. Clearing only the DB
-            # would leave a new-format app token without its required journal.
-            payload, metadata = self.provider.objects[version["object_key"], version["provider_version_id"]]
-            self.provider.objects[version["object_key"], version["provider_version_id"]] = (payload, {key: value for key, value in metadata.items() if key != provenance.TOKEN_KEY})
-        return original
-
-    def test_failed_linked_pre0064_baseline_resumes_without_file_or_new_put(self):
-        original = self.legacy_materialized_failure()
-        self.file.unlink()
-        resumed = self.resume()
-        version = self.assert_keeper(resumed)
-        self.assertEqual(version["upload_verification_requested"],"read_back")
-        self.assertEqual(version["verification_method"],"read_back")
-        self.assertEqual((self.provider.puts,self.provider.gets),(1,2))
-        self.assertEqual(self.row(original)["status"],"failed")
-        with PostgresConnection(self.db_path) as connection:
-            self.assertIsNone(connection.execute("SELECT id FROM upload_intents").fetchone(),"Legacy resume is not provenance backfill")
-
-    def test_new_format_token_without_its_journal_is_not_legacy_authority(self):
-        original = self.legacy_materialized_failure(keep_token=True)
-        before = dict(self.provider.objects)
-        resumed = self.resume()
-        self.assertEqual(self.row(resumed)["status"], "failed")
-        self.assertEqual(self.provider.objects, before)
-        self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 1, 0))
-        with PostgresConnection(self.db_path) as connection:
-            self.assertNotEqual(connection.execute("SELECT integrity FROM archive_versions WHERE id=%s", (self.row(original)["archive_version_id"],)).fetchone()["integrity"], "verified")
-
     def observe_content(self, payload):
         self.file.write_bytes(payload)
         with PostgresConnection(self.db_path) as connection:

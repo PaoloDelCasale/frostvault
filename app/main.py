@@ -51,7 +51,6 @@ from .backoff import (
 from .breakglass import is_break_glass_allowed
 from .catalog import ArchiveCatalog
 from .database import close_pools, db, initialize_database
-from .migrate_on_start import ensure_schema_current
 from .services.source_layout import (
     get_sources_root,
     prepare_sources_layout,
@@ -197,7 +196,8 @@ async def lifespan(_: FastAPI):
     shutdown_state.reset()
     validate_settings()
     prepare_sources_layout()
-    ensure_schema_current()
+    # Schema guard (ADR-0035): initialize an empty database, refuse any
+    # database that is not at the baseline head, before any write.
     initialize_database()
     # Identity must be reconciled before scans, workers, or watchers start.
     reconcile_source_volume_identities()

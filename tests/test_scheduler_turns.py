@@ -9,7 +9,6 @@ from app.catalog import ArchiveCatalog
 from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
 from tests.postgres import PostgresConnection
 from tests.test_job_scheduler import _SchedulerDbMixin
-from tests.test_database import run_alembic
 
 
 class VaultTurnSelectionTests(unittest.TestCase):
@@ -299,21 +298,6 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         with PostgresConnection(self.path) as connection:
             self.assertIsNone(connection.execute('SELECT claim_token FROM jobs WHERE id=%s', (auto,))
                               .fetchone()['claim_token'])
-
-    def test_migration_downgrade_and_reupgrade_remove_only_scheduler_state(self):
-        auto = self.auto_job()
-        self.observe()
-        self.observe(900)
-        result = run_alembic(self.path, revision='0070_vault_pause', command='downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(self.path) as connection:
-            self.assertIsNone(connection.execute("SELECT to_regclass('scheduler_vault_turns') AS name")
-                              .fetchone()['name'])
-            self.assertEqual(connection.execute('SELECT origin FROM jobs WHERE id=%s', (auto,))
-                             .fetchone()['origin'], 'automatic')
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.observe(900)[0]['scheduler_wait_seconds'], 0)
 
     def test_busy_observation_does_not_scan_already_served_bulk_windows(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')

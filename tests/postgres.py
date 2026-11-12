@@ -2,9 +2,8 @@
 
 TEST_POSTGRES_URL must name a *test server* with a CREATEDB role. Every fixture
 uses its own uniquely named database; the configured database is never mutated.
-Paths are opaque fixture identities, not database files. HEAD fixtures clone a
-real Alembic-migrated template once per process. Pinned/populated upgrades and
-all downgrades always run the actual migration graph.
+Paths are opaque fixture identities, not database files. Schema fixtures clone a
+template created once per process by the real ``0001_baseline`` Alembic run.
 """
 from __future__ import annotations
 
@@ -128,26 +127,27 @@ def restore_database(identity: Path, content: bytes) -> None:
             raise AssertionError("Isolated PostgreSQL restore failed: " + result.stderr.decode())
 
 
-def _alembic(dsn: str, revision: str, command: str) -> subprocess.CompletedProcess[str]:
+def _alembic_upgrade_head(dsn: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = dsn
     return subprocess.run(
-        [sys.executable, "-m", "alembic", command, revision],
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=_ROOT, env=env, capture_output=True, text=True, check=False,
     )
 
 
-def run_alembic(identity: Path, revision: str = "head", command: str = "upgrade") -> subprocess.CompletedProcess[str]:
+def run_alembic(identity: Path) -> subprocess.CompletedProcess[str]:
+    """Give ``identity`` a fresh database at the baseline head (cloned template)."""
     global _TEMPLATE
     key = str(Path(identity).absolute())
     with _LOCK:
-        if key not in _DATABASES and command == "upgrade" and revision == "head":
-            if _TEMPLATE is None:
-                name = _create("head-template", None)
-                result = _alembic(_dsn(name), "head", "upgrade")
-                if result.returncode:
-                    return result
-                _TEMPLATE = name
-            _create(key, Path(key).parent, _TEMPLATE)
-            return subprocess.CompletedProcess(["alembic", "upgrade", "head"], 0, "", "")
-        return _alembic(database_dsn(identity), revision, command)
+        if key in _DATABASES:
+            return _alembic_upgrade_head(database_dsn(identity))
+        if _TEMPLATE is None:
+            name = _create("head-template", None)
+            result = _alembic_upgrade_head(_dsn(name))
+            if result.returncode:
+                return result
+            _TEMPLATE = name
+        _create(key, Path(key).parent, _TEMPLATE)
+        return subprocess.CompletedProcess(["alembic", "upgrade", "head"], 0, "", "")

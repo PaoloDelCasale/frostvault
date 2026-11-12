@@ -12,9 +12,7 @@ import json
 import os
 import subprocess
 import tarfile
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -52,59 +50,6 @@ class ObjectStoreUploadError(BackupError):
 
 class ObjectStoreVerificationError(BackupError):
     """An uploaded encrypted artifact could not be read back and verified."""
-
-
-class PreUpgradeBackupState(str, Enum):
-    """Successful, explicit states of the automatic pre-upgrade backup gate."""
-
-    OFF_HOST_SUCCEEDED = "off_host_succeeded"
-    LOCAL_ONLY_ALLOWED = "local_only_allowed"
-
-
-class PreUpgradeBackupBlockReason(str, Enum):
-    """Machine-readable reasons that prohibit an automatic schema upgrade."""
-
-    OFF_HOST_UNAVAILABLE = "off_host_unavailable"
-    MASTER_KEY_REQUIRED = "master_key_required"
-    MASTER_KEY_INVALID = "master_key_invalid"
-    OFF_HOST_UPLOAD_FAILED = "off_host_upload_failed"
-    OFF_HOST_VERIFICATION_FAILED = "off_host_verification_failed"
-    BACKUP_FAILED = "backup_failed"
-
-
-class PreUpgradeBackupBlockedError(BackupError):
-    """A typed pre-upgrade gate failure that must prevent Alembic execution."""
-
-    _MESSAGES = {
-        PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE: (
-            "Configured off-host metadata backup storage is unavailable"
-        ),
-        PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED: (
-            "ARCHIVE_MASTER_KEY is required for configured off-host metadata backups"
-        ),
-        PreUpgradeBackupBlockReason.MASTER_KEY_INVALID: (
-            "ARCHIVE_MASTER_KEY is invalid for metadata backups"
-        ),
-        PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED: (
-            "Configured off-host metadata backup upload failed"
-        ),
-        PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED: (
-            "Configured off-host metadata backup verification failed"
-        ),
-        PreUpgradeBackupBlockReason.BACKUP_FAILED: "Pre-upgrade metadata backup failed",
-    }
-
-    def __init__(self, reason: PreUpgradeBackupBlockReason):
-        self.reason = reason
-        super().__init__(self._MESSAGES[reason])
-
-
-@dataclass(frozen=True)
-class PreUpgradeBackupOutcome:
-    """The explicit successful state returned by the pre-upgrade backup gate."""
-
-    state: PreUpgradeBackupState
-    backup: dict[str, Any] | None = None
 
 
 class ObjectStore(Protocol):
@@ -231,7 +176,7 @@ _SNAPSHOT_KEYS = frozenset("""
     restore_days restore_tier restore_high_impact_gib restore_high_impact_eur
     restore_approval_hold_seconds oidc_enabled oidc_issuer oidc_client_id oidc_scopes
     oidc_login_ttl_seconds bootstrap_admin_username bootstrap_admin_display_name
-    vault_s3_bucket auto_migrate
+    vault_s3_bucket
     metadata_backup_dir metadata_backup_retention metadata_backup_interval_seconds
     metadata_backup_s3_prefix metadata_backup_verify_interval_seconds frontend_dist_dir
     smtp_host smtp_port smtp_username smtp_from_address smtp_to_address smtp_use_tls
@@ -503,6 +448,38 @@ def verify_restore_isolated(
     return result
 
 
+def _require_current_dump_revision(dump_path: Path, env: dict[str, str]) -> str:
+    """Read the dump's Alembic revision without a database; refuse any other."""
+    from ..schema_guard import SCHEMA_HEAD
+
+    listed = subprocess.run(
+        ["pg_restore", "--data-only", "--table=alembic_version", "--file=-", str(dump_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if listed.returncode != 0:
+        raise BackupError("PostgreSQL dump failed verification")
+    revisions: list[str] = []
+    copying = False
+    for line in listed.stdout.splitlines():
+        if line.startswith("COPY ") and line.split()[1].rsplit(".", 1)[-1] == "alembic_version":
+            copying = True
+        elif copying and line == "\\.":
+            copying = False
+        elif copying:
+            revisions.append(line)
+    if revisions != [SCHEMA_HEAD]:
+        found = ", ".join(revision[:64] for revision in revisions[:3]) or "no revision"
+        raise BackupError(
+            f"Metadata backup refused: its schema revision is {found}, this "
+            f"release requires {SCHEMA_HEAD}. Backups of other schemas are "
+            "never upgraded or adopted."
+        )
+    return SCHEMA_HEAD
+
+
 def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[str, Any]:
     """Validate a PostgreSQL custom dump without touching the live database.
 
@@ -520,6 +497,9 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
     )
     if list_result.returncode != 0:
         raise BackupError("PostgreSQL dump failed verification")
+    # Schema guard (ADR-0035): a backup of another schema is refused before
+    # anything is restored, even into a scratch database. There is no upgrade.
+    schema_revision = _require_current_dump_revision(dump_path, env)
 
     temp_db_name = f"metadata_backup_verify_{os.getpid()}"
     created = subprocess.run(
@@ -532,9 +512,9 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         # Listing succeeded; treat as verified when a scratch DB cannot be created.
         return {
             "ok": True,
-            "user_count": None,
+            "owner_count": None,
             "vault_count": None,
-            "schema_revision": None,
+            "schema_revision": schema_revision,
             "temp_db": None,
             "verification_mode": "pg_restore_list",
         }
@@ -557,7 +537,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
                 "-At",
                 "-c",
                 "SELECT "
-                "(SELECT COUNT(*) FROM users), "
+                "(SELECT COUNT(*) FROM owner), "
                 "(SELECT COUNT(*) FROM vaults), "
                 "(SELECT version_num FROM alembic_version LIMIT 1)",
             ],
@@ -566,20 +546,20 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
             text=True,
             env=env,
         )
-        user_count = vault_count = schema_revision = None
+        owner_count = vault_count = restored_revision = None
         if counted.returncode == 0 and counted.stdout.strip():
             parts = counted.stdout.strip().split("|")
             if len(parts) >= 3:
-                user_count = int(parts[0])
+                owner_count = int(parts[0])
                 vault_count = int(parts[1])
-                schema_revision = parts[2] or None
-        if user_count is None or vault_count is None or not schema_revision:
+                restored_revision = parts[2] or None
+        if owner_count is None or vault_count is None or restored_revision != schema_revision:
             raise BackupError(
                 "PostgreSQL isolated restore did not prove schema tables"
             )
         return {
             "ok": True,
-            "user_count": user_count,
+            "owner_count": owner_count,
             "vault_count": vault_count,
             "schema_revision": schema_revision,
             "temp_db": temp_db_name,
@@ -648,34 +628,6 @@ def record_backup_run(
         ),
     ).fetchone()
     return _row_run(row)
-
-
-def pre_upgrade_backup_failure_message(
-    block_reason: PreUpgradeBackupBlockReason,
-) -> str:
-    """Return the durable, non-secret identifier for a blocked upgrade backup."""
-    return f"pre_upgrade_blocked:{block_reason.value}"
-
-
-def record_pre_upgrade_backup_failure(
-    connection: Any,
-    *,
-    backend: str,
-    block_reason: PreUpgradeBackupBlockReason,
-) -> dict[str, Any]:
-    """Record one typed, terminal pre-upgrade backup failure.
-
-    The caller owns a dedicated transaction so this failure evidence can commit
-    after the attempted upgrade transaction has rolled back, without committing
-    unrelated migration work.
-    """
-    return record_backup_run(
-        connection,
-        reason="pre_upgrade",
-        backend=backend,
-        status="failed",
-        error_message=pre_upgrade_backup_failure_message(block_reason),
-    )
 
 
 def list_backup_artifacts(
@@ -837,120 +789,6 @@ def run_metadata_backup(
         if isinstance(exc, BackupError):
             raise
         raise BackupError(message) from None
-
-
-def run_pre_upgrade_backup(
-    *,
-    backup_dir: str | Path,
-    master_key: str | None = None,
-    database_dsn: str | None = None,
-    config_snapshot: dict[str, Any] | None = None,
-    object_store: ObjectStore | None = None,
-    retention: int | None = None,
-    s3_prefix: str = S3_BACKUP_PREFIX,
-    connection: Any | None = None,
-) -> dict[str, Any]:
-    """Create one concrete pre-upgrade artifact and raise on any failure.
-
-    This lower-level operation does not decide whether a deployment may use
-    local-only development behavior. Call ``run_pre_upgrade_backup_gate`` for
-    the automatic-migration policy.
-    """
-    return run_metadata_backup(
-        connection,
-        reason="pre_upgrade",
-        backup_dir=backup_dir,
-        master_key=master_key,
-        database_dsn=database_dsn,
-        config_snapshot=config_snapshot,
-        object_store=object_store,
-        retention=retention,
-        s3_prefix=s3_prefix,
-    )
-
-
-def _pre_upgrade_block_reason(exc: BackupError) -> PreUpgradeBackupBlockReason:
-    if isinstance(exc, ObjectStoreUnavailableError):
-        return PreUpgradeBackupBlockReason.OFF_HOST_UNAVAILABLE
-    if isinstance(exc, MissingMasterKeyError):
-        return PreUpgradeBackupBlockReason.MASTER_KEY_REQUIRED
-    if isinstance(exc, InvalidMasterKeyError):
-        return PreUpgradeBackupBlockReason.MASTER_KEY_INVALID
-    if isinstance(exc, ObjectStoreUploadError):
-        return PreUpgradeBackupBlockReason.OFF_HOST_UPLOAD_FAILED
-    if isinstance(exc, ObjectStoreVerificationError):
-        return PreUpgradeBackupBlockReason.OFF_HOST_VERIFICATION_FAILED
-    return PreUpgradeBackupBlockReason.BACKUP_FAILED
-
-
-def run_pre_upgrade_backup_gate(
-    *,
-    backup_dir: str | Path,
-    settings_obj: Settings | Any | None = None,
-    master_key: str | None = None,
-    database_dsn: str | None = None,
-    config_snapshot: dict[str, Any] | None = None,
-    object_store: ObjectStore | None = None,
-    retention: int | None = None,
-    s3_prefix: str = S3_BACKUP_PREFIX,
-    connection: Any | None = None,
-) -> PreUpgradeBackupOutcome:
-    """Resolve and enforce the typed automatic pre-upgrade backup policy.
-
-    A configured non-placeholder object-store bucket requires an encrypted
-    local artifact, off-host upload, and read-back verification. Any failure
-    yields ``PreUpgradeBackupBlockedError``. With no configured off-host store,
-    an absent/placeholder master key explicitly returns ``LOCAL_ONLY_ALLOWED``
-    so first-boot and local development remain intentional rather than being
-    inferred from exception text.
-    """
-    cfg = settings_obj if settings_obj is not None else settings
-    off_host_required = off_host_backup_configured(cfg)
-    effective_master_key = (
-        master_key
-        if master_key is not None
-        else str(getattr(cfg, "archive_master_key", "") or "")
-    )
-
-    if not off_host_required and not backup_master_key_configured(effective_master_key):
-        return PreUpgradeBackupOutcome(PreUpgradeBackupState.LOCAL_ONLY_ALLOWED)
-
-    try:
-        if off_host_required and object_store is None:
-            object_store = default_object_store(settings_obj=cfg)
-        if off_host_required and object_store is None:
-            raise ObjectStoreUnavailableError(
-                "Configured metadata backup object store is unavailable"
-            )
-        if config_snapshot is None:
-            config_snapshot = build_config_snapshot(cfg)
-        result = run_pre_upgrade_backup(
-            backup_dir=backup_dir,
-            master_key=effective_master_key,
-            database_dsn=(database_dsn if database_dsn is not None else getattr(cfg, "database_dsn", settings.database_dsn)),
-            config_snapshot=config_snapshot,
-            object_store=object_store,
-            retention=retention,
-            s3_prefix=s3_prefix,
-            connection=connection,
-        )
-        if off_host_required and not result.get("s3_key"):
-            raise ObjectStoreVerificationError(
-                "Configured metadata backup verification failed"
-            )
-    except BackupError as exc:
-        raise PreUpgradeBackupBlockedError(_pre_upgrade_block_reason(exc)) from None
-    except Exception:  # noqa: BLE001 - prevent external details reaching startup logs
-        raise PreUpgradeBackupBlockedError(
-            PreUpgradeBackupBlockReason.BACKUP_FAILED
-        ) from None
-
-    state = (
-        PreUpgradeBackupState.OFF_HOST_SUCCEEDED
-        if result.get("s3_key")
-        else PreUpgradeBackupState.LOCAL_ONLY_ALLOWED
-    )
-    return PreUpgradeBackupOutcome(state, backup=result)
 
 
 def open_backup_artifact(
