@@ -122,6 +122,18 @@ The fixed content and independent expected integrity evidence of one admitted
 upload, distinct from a Local Copy that may change later.
 _Avoid_: Current file, provider observation
 
+**Upload Attempt**:
+One send of an Upload Snapshot, with its own opaque token. Once its send has
+started it is never sent again: it is reconciled, or settled as landed or as a
+definitive no-write, and a new send is a new attempt of the same snapshot.
+_Avoid_: Intent, retry, upload Job
+
+**Upload Receipt**:
+The provider's raw answer to an Upload Attempt, kept as a fact independent of
+any Job. It never publishes or deletes anything; a receipt that contradicts
+the attempt's settlement blocks reconciliation.
+_Avoid_: Confirmation, proof, upload status
+
 **Upload Verification Mode**:
 The requested integrity proof for an Upload Snapshot: provider cryptographic
 ingestion proof or independent full Read-back, not an Archive Version's outcome.

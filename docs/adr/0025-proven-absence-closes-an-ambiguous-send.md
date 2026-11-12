@@ -1,5 +1,10 @@
 # Proven absence closes an ambiguous send
 
+> **Amended in part by [ADR-0036](0036-one-upload-snapshot-many-send-attempts.md)**
+> (#588): after a proven absence the next send is a new attempt with a new token
+> on the same Upload Snapshot; the no-write outcome settles the attempt and is not
+> written to the receipt journal. The proof of absence itself is unchanged.
+
 Issues #484 and #486 show a send that never reached S3 (database and network
 lost together, a dependency lost between the committed send-started record and
 the request) stuck in `ambiguous_send` forever, with no action available.

@@ -31,7 +31,8 @@ BASELINE_TABLES = {
     "alembic_version", "owner", "vault_targets", "vaults", "files",
     "file_path_history", "archive_versions", "directory_aggregate_status",
     "directory_aggregate_dirty", "jobs", "sessions", "oidc_login", "auth_backoff",
-    "audit_events", "notifications", "notification_deliveries",
+    "audit_events", "notifications", "notification_deliveries", "upload_snapshots",
+    "upload_snapshot_jobs", "upload_attempts", "upload_receipts", "upload_multiparts",
 }
 
 
@@ -331,10 +332,10 @@ class BaselineSchemaTests(unittest.TestCase):
         referenced = {row["referenced"] for row in self.execute(
             "SELECT confrelid::regclass::text AS referenced FROM pg_constraint WHERE contype = 'f'"
         )}
-        self.assertEqual(
-            referenced,
-            {"vault_targets", "vaults", "files", "archive_versions", "jobs", "notifications"},
-        )
+        self.assertEqual(referenced, {
+            "vault_targets", "vaults", "files", "archive_versions", "jobs", "notifications",
+            "upload_snapshots", "upload_attempts",
+        })
         # No per-user attribution survives anywhere (#586).
         attribution = {
             (row["table_name"], row["column_name"]) for row in self.execute(

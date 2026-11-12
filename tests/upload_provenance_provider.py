@@ -106,3 +106,15 @@ class VersionedProvider:
         self.objects.pop((Key, VersionId), None)
         self.hook("after_delete", key=Key, version=VersionId)
         return {"VersionId": VersionId}
+
+
+def provider_attempt(snapshot, *, token, bucket="bucket", key="key", provider,
+                     inventory=None, send_started=True):
+    """An UploadAttempt for provider-only reconciliation tests (no database)."""
+    from app.services.upload_provenance import AdmittedSnapshot, UploadAttempt
+    admitted = AdmittedSnapshot(
+        "snapshot", 2, "file", {"bucket": bucket, "key": key, "provider": provider},
+        snapshot, "s3_checksum", 1, False)
+    return UploadAttempt("attempt", token, 1, admitted,
+                         inventory or {"versions": [], "markers": []},
+                         send_started, None, None, None)

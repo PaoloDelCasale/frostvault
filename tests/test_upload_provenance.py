@@ -12,42 +12,47 @@ from botocore.config import Config
 from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from types import SimpleNamespace
-from app.services.upload_provenance import ProvenAbsent, UploadBlocked, TOKEN_KEY, canonical, inventory, provider_identity, reconcile, receipt
+from app.services.upload_provenance import ProvenAbsent, UploadBlocked, TOKEN_KEY, inventory, provider_identity, reconcile, receipt
 from app.services.snapshot_cleanup import exact_duplicate
 from app.services.upload_snapshot import prepare_upload_snapshot
 from app.services.s3_upload import _UploadClient
 from app.services.s3_copy import _object_version_entries
-from tests.upload_provenance_provider import VersionedProvider
+from tests.upload_provenance_provider import VersionedProvider, provider_attempt
 
 
 class ProvenanceLockModeTests(unittest.TestCase):
     def test_target_is_exclusive_by_default_and_share_is_explicit(self):
         from app.services import upload_provenance as provenance
         for kwargs, expected in (({}, "FOR NO KEY UPDATE"), ({"shared": True}, "FOR SHARE")):
-            with self.subTest(kwargs=kwargs), patch("app.services.upload_remediation.require_job"):
+            with self.subTest(kwargs=kwargs):
                 connection = MagicMock()
                 connection.execute.return_value.fetchone.return_value = None
                 with self.assertRaises(UploadBlocked):
-                    provenance.target(connection, {"id": 1, "vault_id": 2, "vault_file_id": "file"},
+                    provenance.target(connection, {"id": 1, "vault_id": 2, "file_id": "file"},
                         key="key", provider="fake", **kwargs)
                 self.assertEqual(connection.execute.call_args_list[0].args[0],
                     "SELECT * FROM vaults WHERE id=%s " + expected)
 
     def test_nested_target_checks_keep_the_requested_mode(self):
         from app.services import upload_provenance as provenance
-        pinned = {"key": "key", "provider": "fake"}
-        intent = {"id": "intent", "target_json": canonical(pinned), "send_started": True}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "file"
+            source.write_bytes(b"content")
+            snapshot, _ = prepare_upload_snapshot(source, lambda: None)
+        attempt = provider_attempt(snapshot, token="token", provider="fake", send_started=False)
+        pinned = attempt.target
+        bound = (attempt.admitted, False)
         job = {"id": 1}
         for shared in (False, True):
             with self.subTest(shared=shared), patch.object(provenance, "target", return_value=pinned) as target, \
-                    patch.object(provenance, "load_for_job", return_value=intent), \
-                    patch.object(provenance, "receipt", return_value=None), \
-                    patch("app.services.upload_remediation_discovery.capture"):
+                    patch.object(provenance, "_bound", return_value=bound), \
+                    patch.object(provenance, "_open_attempt", return_value=attempt):
                 connection = MagicMock()
                 provenance.require_target(connection, job, pinned, shared=shared)
-                provenance.prepare(connection, job, pinned=pinned, snapshot=MagicMock(),
-                    requested="read_back", before={}, timestamp="now", shared=shared)
-                provenance.mark_send_started(connection, job, intent, shared=shared)
+                provenance.prepare(connection, job, pinned=pinned, snapshot=snapshot,
+                    requested="s3_checksum", local_generation=1, before={}, timestamp="now",
+                    shared=shared)
+                provenance.mark_send_started(connection, job, attempt, shared=shared)
                 self.assertEqual(target.call_count, 3)
                 self.assertTrue(all(call.kwargs["shared"] is shared for call in target.call_args_list))
 
@@ -60,21 +65,36 @@ class ProvenanceProviderTests(unittest.TestCase):
         source = Path(self.directory.name) / "file"
         source.write_bytes(b"independent A")
         self.snapshot, _ = prepare_upload_snapshot(source, lambda: None)
-        self.intent = {"token": "opaque-attempt", "target_json": canonical({"key": "key", "bucket": "bucket", "provider": provider_identity(self.provider)}), "inventory_json": canonical({"versions": [], "markers": []}), "snapshot_json": self.snapshot.as_json()}
+        self.intent = provider_attempt(self.snapshot, token="opaque-attempt",
+                                       provider=provider_identity(self.provider))
 
-    def test_no_write_facts_are_not_receipts_or_an_escape_for_malformed_proof(self):
+    def test_receipts_combine_and_contradictions_never_resolve_by_choice(self):
         connection = MagicMock()
-        for responses, expected in (([{'NoWriteOperation':'PutObject'}],None),
-            ([{'NoWriteOperation':'CompleteMultipartUpload'},{'VersionId':'exact'}],{'VersionId':'exact'})):
-            connection.execute.return_value.fetchall.return_value = [{'response_json':canonical(r)} for r in responses]
-            self.assertEqual(receipt(connection,'intent'),expected)
-        for malformed in ({'NoWriteOperation':'HeadObject'},{'NoWriteOperation':'PutObject','VersionId':'null'},{}):
-            connection.execute.return_value.fetchall.return_value = [{'response_json':canonical(malformed)}]
-            with self.subTest(malformed=malformed), self.assertRaises(UploadBlocked):
-                receipt(connection,'intent')
+        def rows(responses, outcome=None, landed=None):
+            connection.execute.return_value.fetchall.return_value = [
+                {"response": r, "outcome": outcome, "landed_version_id": landed} for r in responses]
+        rows([])
+        self.assertIsNone(receipt(connection, "attempt"))
+        rows([{"VersionId": "exact"}, {"VersionId": "exact", "ETag": "e"}])
+        self.assertEqual(receipt(connection, "attempt"), {"VersionId": "exact", "ETag": "e"})
+        rows([{"VersionId": "exact"}], outcome="landed", landed="exact")
+        self.assertEqual(receipt(connection, "attempt"), {"VersionId": "exact"})
+        for responses, outcome, landed in (
+            ([{"VersionId": "null"}], None, None),
+            ([{}], None, None),
+            ([{"VersionId": "a"}, {"VersionId": "b"}], None, None),
+            # A late receipt contradicts a settlement, however old.
+            ([{"VersionId": "late"}], "no_write", None),
+            ([{"VersionId": "late"}], "unsent", None),
+            ([{"VersionId": "other"}], "landed", "exact"),
+        ):
+            rows(responses, outcome, landed)
+            with self.subTest(responses=responses, outcome=outcome), self.assertRaises(UploadBlocked) as blocked:
+                receipt(connection, "attempt")
+            self.assertEqual(blocked.exception.reason, "ambiguous_receipt")
 
     def test_unique_token_reconciles_exact_identity_against_independent_snapshot(self):
-        self.provider.add("key", b"independent A", {TOKEN_KEY: self.intent["token"]}, version="exact")
+        self.provider.add("key", b"independent A", {TOKEN_KEY: self.intent.token}, version="exact")
         result = reconcile(self.provider, self.intent, None, lambda: None)
         self.assertEqual(result["VersionId"], "exact")
         self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (0, 0, 0))
@@ -84,9 +104,9 @@ class ProvenanceProviderTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 provider = VersionedProvider()
                 if scenario != "zero":
-                    provider.add("key", b"wrong content" if scenario == "false" else b"independent A", {TOKEN_KEY: self.intent["token"]}, version="one")
+                    provider.add("key", b"wrong content" if scenario == "false" else b"independent A", {TOKEN_KEY: self.intent.token}, version="one")
                 if scenario == "multiple":
-                    provider.add("key", b"independent A", {TOKEN_KEY: self.intent["token"]}, version="two")
+                    provider.add("key", b"independent A", {TOKEN_KEY: self.intent.token}, version="two")
                 original = dict(provider.objects)
                 with self.assertRaises(UploadBlocked):
                     reconcile(provider, self.intent, None, lambda: None)
@@ -147,7 +167,7 @@ class ProvenanceProviderTests(unittest.TestCase):
         def finish_write(**kwargs):
             calls.append(1)
             if len(calls) == 2:
-                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own-late')
+                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent.token}, version='own-late')
             return listing(**kwargs)
         with patch.object(self.provider, 'list_object_versions', side_effect=finish_write):
             result = reconcile(self.provider, self.intent, None, lambda: None)
@@ -162,7 +182,7 @@ class ProvenanceProviderTests(unittest.TestCase):
         def finish_write(**kwargs):
             calls.append(1)
             if len(calls) == 2:
-                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own-late')
+                self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent.token}, version='own-late')
             return listing(**kwargs)
         def no_proof(**kwargs):
             result = head(**kwargs)
@@ -183,7 +203,7 @@ class ProvenanceProviderTests(unittest.TestCase):
         def finish_write(**kwargs):
             calls.append(1)
             if len(calls) == 2:
-                self.provider.add('key',b'independent A',{TOKEN_KEY:self.intent['token']},version='own-late')
+                self.provider.add('key',b'independent A',{TOKEN_KEY:self.intent.token},version='own-late')
             return listing(**kwargs)
         unsupported = ClientError({'Error': {'Code':'NotImplemented'}},'HeadObject')
         with patch.object(self.provider,'list_object_versions',side_effect=finish_write), patch.object(
@@ -203,7 +223,7 @@ class ProvenanceProviderTests(unittest.TestCase):
             def finish_then_external(**kwargs):
                 calls.append(1)
                 if len(calls) == 2:
-                    provider.add('key',b'independent A',{TOKEN_KEY:self.intent['token']},version='own-late')
+                    provider.add('key',b'independent A',{TOKEN_KEY:self.intent.token},version='own-late')
                 if len(calls) == 3:
                     if marker:
                         provider.markers['key','external'] = True
@@ -219,7 +239,7 @@ class ProvenanceProviderTests(unittest.TestCase):
     def test_inflight_external_write_between_listings_remains_actionable_block(self):
         listing = self.provider.list_object_versions
         calls = []
-        self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent['token']}, version='own')
+        self.provider.add('key', b'independent A', {TOKEN_KEY: self.intent.token}, version='own')
         def external_write(**kwargs):
             calls.append(1)
             if len(calls) == 2:
@@ -234,7 +254,7 @@ class ProvenanceProviderTests(unittest.TestCase):
         self.assertEqual(self.provider.deletes, 0)
 
     def test_raw_proof_cannot_hide_contradictory_head(self):
-        self.provider.add("key", b"independent B", {TOKEN_KEY: self.intent["token"]}, version="exact")
+        self.provider.add("key", b"independent B", {TOKEN_KEY: self.intent.token}, version="exact")
         with self.assertRaises(UploadBlocked):
             reconcile(self.provider, self.intent, {"VersionId": "exact", "ChecksumSHA256": self.snapshot.checksum_sha256}, lambda: None)
 
@@ -243,7 +263,7 @@ class ProvenanceProviderTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.provider.objects.clear()
                 self.provider.markers.clear()
-                self.provider.add("key", b"independent A", {TOKEN_KEY: self.intent["token"]}, version="exact")
+                self.provider.add("key", b"independent A", {TOKEN_KEY: self.intent.token}, version="exact")
                 if marker:
                     self.provider.markers["key", "marker"] = True
                 else:
