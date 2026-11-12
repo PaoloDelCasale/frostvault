@@ -235,30 +235,64 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
 
 
-    def test_downgrade_refuses_to_drop_durable_catalog_history(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+    def test_baseline_downgrade_refusal_preserves_durable_history_and_schema(self) -> None:
+        tables = ('vaults', 'vault_catalog_revisions', 'catalog_events')
+
+        def snapshot(connection):
+            state = {table: connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                     for table in tables}
+            state['columns'] = connection.execute("""
+                SELECT table_name,column_name,data_type,column_default,is_nullable
+                FROM information_schema.columns WHERE table_schema=current_schema()
+                ORDER BY table_name,ordinal_position
+            """).fetchall()
+            state['indexes'] = connection.execute("""
+                SELECT indexname,indexdef FROM pg_indexes
+                WHERE schemaname=current_schema() ORDER BY indexname
+            """).fetchall()
+            state['revision'] = connection.execute('SELECT version_num FROM alembic_version').fetchone()
+            return state
+
+        with PostgresConnection(self.path) as connection:
             CatalogEventStore(connection).append_event(
-                vault_id=2,
-                domain="files",
-                scope="root",
-                payload={},
+                vault_id=2, domain='files', scope='root', payload={'operation': 'keep-history'},
             )
-
-        downgraded = run_alembic(
-            self.path,
-            revision="0035_upload_verification_digest",
-            command="downgrade",
-        )
+            before = snapshot(connection)
+        downgraded = run_alembic(self.path, '0035_upload_verification_digest', command='downgrade')
         self.assertNotEqual(downgraded.returncode, 0)
-        self.assertIn("catalog event", downgraded.stderr)
+        self.assertIn('incompatible Current Snapshot baseline cannot be downgraded', downgraded.stderr)
+        # Check before reentry too: an upgrade must not mask failed-DDL damage.
+        for stage in ('after_refusal', 'after_head_reentry'):
+            with self.subTest(stage=stage):
+                if stage == 'after_head_reentry':
+                    result = run_alembic(self.path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                with PostgresConnection(self.path) as connection:
+                    self.assertEqual(snapshot(connection), before)
+                    self.assertEqual(before['revision']['version_num'], HEAD_SCHEMA_REVISION)
 
-        with PostgresConnection(str(self.path)) as connection:
-            revision = connection.execute(
-                "SELECT version_num FROM alembic_version"
-            ).fetchone()["version_num"]
-        # PostgreSQL rolls back the entire failed DDL transaction, not only
-        # the last migration. Durable history and the HEAD stamp both survive.
-        self.assertEqual(revision, HEAD_SCHEMA_REVISION)
+    def test_historical_event_guard_refuses_to_drop_history_before_baseline(self) -> None:
+        path = self.path.with_name('historical-catalog-state.db')
+        result = run_alembic(path, '0036_catalog_events')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tables = ('vault_catalog_revisions', 'catalog_events')
+        with PostgresConnection(path) as connection:
+            connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix,rclone_remote)
+                VALUES (2,'docs','Docs','/source','fixture-bucket','docs','fixture-remote')""")
+            connection.execute("""INSERT INTO vault_catalog_revisions(vault_id,revision,updated_at)
+                VALUES (2,1,'2026-11-06')""")
+            connection.execute("""INSERT INTO catalog_events(vault_id,revision,domain,scope,payload_json,created_at)
+                VALUES (2,1,'files','root','{}','2026-11-06')""")
+            before = {table: connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                      for table in tables}
+        result = run_alembic(path, '0035_upload_verification_digest', command='downgrade')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('catalog event data has been persisted', result.stderr)
+        with PostgresConnection(path) as connection:
+            self.assertEqual({table: connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
+                              for table in tables}, before)
+            self.assertEqual(connection.execute('SELECT version_num FROM alembic_version').fetchone()['version_num'],
+                             '0036_catalog_events')
 
 
 if __name__ == "__main__":
