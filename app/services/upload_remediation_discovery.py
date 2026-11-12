@@ -64,7 +64,8 @@ def obligation_query(*, vault_sql: str, stamp: str, file_id: str | None = None,
           AND (av.upload_snapshot_json IS NOT NULL OR (av.origin='upload' AND EXISTS (
               SELECT 1 FROM jobs evidence WHERE evidence.archive_version_id=av.id
                 AND evidence.vault_file_id=av.vault_file_id AND evidence.action='upload'
-                AND evidence.upload_plaintext_sha256 ~ '^[0-9a-f]{{64}}$')))
+                AND evidence.upload_plaintext_sha256 ~ '^[0-9a-f]{{64}}$'
+              OFFSET 0)))
           AND {idle('av')}
           AND NOT EXISTS (SELECT 1 FROM upload_intents i WHERE i.vault_file_id=av.vault_file_id
               AND i.send_started AND NOT i.settled)

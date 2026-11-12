@@ -886,8 +886,9 @@ class ArchiveCatalog:
                 av.size AS cloud_size, av.plaintext_sha256 AS version_sha256,
                 av.integrity, av.availability, av.storage_class, av.restore_state,
                 av.upload_snapshot_json, av.upload_verification_requested
-            FROM archive_versions av
-            WHERE av.vault_file_id=%s
+            FROM vault_files vf
+            JOIN archive_versions av ON av.id=vf.replacing_version_id
+            WHERE vf.id=%s AND av.vault_file_id=vf.id
               AND av.integrity='unverified'
               AND av.availability='available'
               AND (av.restore_state IS NULL OR av.restore_state <> 'restoring')
@@ -896,8 +897,8 @@ class ArchiveCatalog:
                   WHERE prior.archive_version_id=av.id AND prior.vault_file_id=av.vault_file_id
                     AND prior.vault_id=av.vault_id AND prior.action='upload'
                     AND prior.upload_plaintext_sha256=%s
+                  OFFSET 0
               )
-              AND av.id=(SELECT replacing_version_id FROM vault_files WHERE id=av.vault_file_id)
             LIMIT 1
             """,
             (vault_file_id, digest),

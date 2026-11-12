@@ -79,6 +79,18 @@ class KeeperReferenceTests(unittest.TestCase):
             _keeper(connection, job, "keeper")
         self.assertEqual(raised.exception.reason, "proof_mismatch")
 
+    def test_exclusive_target_lock_reuse_is_connection_job_and_context_local(self):
+        from app.services import upload_provenance as provenance
+        connection, other = Mock(), Mock()
+        job = {"id": 17}
+        for shared in (False, True):
+            with patch.object(provenance, "target", return_value={"vault_id": 2}):
+                with provenance._validated_target(connection, job, key="key", provider="provider", shared=shared):
+                    self.assertEqual(provenance._holds_exclusive_job_target(connection, 17), not shared)
+                    self.assertFalse(provenance._holds_exclusive_job_target(other, 17))
+                    self.assertFalse(provenance._holds_exclusive_job_target(connection, 18))
+            self.assertFalse(provenance._holds_exclusive_job_target(connection, 17))
+
     def test_local_observation_binds_cloud_only_reference_once(self):
         # Exercise the actual dynamically assembled call, not a copied query.
         for recovered in (None, STAMP):

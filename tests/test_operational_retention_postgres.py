@@ -190,11 +190,12 @@ class OperationalRetentionPostgresTests(unittest.TestCase):
         snapshot = UploadSnapshot(1,digest,"FULL_OBJECT",encoded,DEFAULT_PART_SIZE,(encoded,)).as_json()
         keeper, purged = str(uuid.uuid4()), str(uuid.uuid4())
         with self.db() as c:
-            for number, identity, availability in ((1,purged,"purged"),(2,keeper,"available")):
-                c.execute("""INSERT INTO archive_versions(id,vault_file_id,vault_id,version_number,object_key,
-                    provider_version_id,size,discovered_at,origin,integrity,availability,plaintext_sha256,upload_snapshot_json)
-                    VALUES (%s,%s,%s,%s,'docs/a.txt',%s,1,%s,'upload','verified',%s,%s,%s)""",
-                    (identity,self.file_id,self.vault_id,number,identity,OLD,availability,digest,snapshot))
+            for identity, availability in ((purged,"purged"),(keeper,"available")):
+                c.execute("""INSERT INTO archive_versions(id,vault_file_id,vault_id,object_key,
+                    provider_version_id,size,discovered_at,origin,integrity,availability,plaintext_sha256,upload_snapshot_json,verified_at)
+                    VALUES (%s,%s,%s,'docs/a.txt',%s,1,%s,'upload','verified',%s,%s,%s,%s)""",
+                    (identity,self.file_id,self.vault_id,identity,OLD,availability,digest,snapshot,OLD))
+            c.execute("UPDATE vault_files SET current_version_id=%s WHERE id=%s", (keeper,self.file_id))
         job = self.job(status="completed", version=keeper, snapshot=snapshot, digest=digest)
         intent = self.intent(job,settled=True,version=keeper,snapshot=snapshot)
         provenance.append_receipt(self.db,intent,{"VersionId":keeper,"ChecksumSHA256":encoded,"ChecksumType":"FULL_OBJECT"},OLD)

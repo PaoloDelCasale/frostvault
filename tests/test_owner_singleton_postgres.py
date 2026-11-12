@@ -121,7 +121,7 @@ class OwnerSingletonPostgresTests(TestCase):
             self.assertIsNone(sessions.csrf_token_for(connection, token))
         with patch("app.database.settings", replace(settings, database_dsn=database_dsn(self.path))):
             row = session_stream_state(resolved["id"])
-        self.assertNotEqual(row["session_session_version"], row["user_session_version"])
+        self.assertIsNone(row, "Stream authority must reject the revoked session, not expose mismatched versions")
 
     def test_bootstrap_reapplies_current_emergency_password_without_rebinding_oidc(self):
         from app import database
@@ -158,6 +158,6 @@ class OwnerSingletonPostgresTests(TestCase):
     def test_populated_owner_catalog_cannot_be_downgraded(self):
         result = run_alembic(self.path, "0072_upload_lineage_indexes", "downgrade")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Cannot downgrade a populated Owner singleton catalog", result.stderr)
+        self.assertIn("incompatible Current Snapshot baseline cannot be downgraded", result.stderr)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute("SELECT display_name FROM owner WHERE id=1").fetchone()["display_name"], "Owner")

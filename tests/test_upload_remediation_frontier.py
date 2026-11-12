@@ -413,8 +413,8 @@ class UploadRemediationFrontierTests(unittest.TestCase):
                     active_version = av
                     # Even an expired lease belongs to its original active Job.
                     connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                        requested_by,requested_at,updated_at,claim_expires_at)
-                        VALUES (2,%s,%s,'upload','uploading',1,%s,%s,'2020-01-01T00:00:00+00:00')""", (file_id,path,stamp,stamp))
+                        requested_at,updated_at,claim_expires_at)
+                        VALUES (2,%s,%s,'upload','uploading',%s,%s,'2020-01-01T00:00:00+00:00')""", (file_id,path,stamp,stamp))
                 elif state != 'pending':
                     vault = connection.execute('SELECT * FROM vaults WHERE id=2').fetchone()
                     row = discovery.enroll(connection, None, vault, stamp, version_id=av)

@@ -2331,10 +2331,12 @@ def _set_job_in_transaction(
         # ADR-0031: a held step changes no admission predicate. Keep Vault-first
         # order before locking Jobs or append-only aggregate dirty FK marks.
         vault_lock = "KEY SHARE"
-    connection.execute(
-        f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
-        (job_id,),
-    )
+    from .services.upload_provenance import _holds_exclusive_job_target
+    if not _holds_exclusive_job_target(connection, job_id):
+        connection.execute(
+            f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
+            (job_id,),
+        )
     current = connection.execute(
         "SELECT status, action, vault_id, path FROM jobs WHERE id=%s", (job_id,),
     ).fetchone()

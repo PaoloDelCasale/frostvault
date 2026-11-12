@@ -299,6 +299,17 @@ def _validated_target(connection: Any, job: dict[str, Any], *, key: str, provide
         _validated.reset(token)
 
 
+def _holds_exclusive_job_target(connection: Any, job_id: int) -> bool:
+    """Reuse only this context's actual exclusive lock for this exact Job.
+
+    This is not a caller-supplied skip flag or a pooled-connection cache. The
+    context ends before the owning transaction commits or rolls back.
+    """
+    validated = _validated.get()
+    return (validated is not None and validated.connection is connection
+            and not validated.shared and validated.job.get("id") == job_id)
+
+
 def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
                    shared: bool = False) -> None:
     validated = _validated.get()
