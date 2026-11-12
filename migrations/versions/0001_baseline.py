@@ -29,6 +29,9 @@ Archive Version and Job tables and add their own:
 - ``notifications``, ``notification_deliveries``: the Owner's inbox and
   problems, deduplicated by a unique ``dedupe_key``, plus optional email
   deliveries (#586).
+- ``upload_snapshots``, ``upload_snapshot_jobs``, ``upload_attempts``,
+  ``upload_receipts``, ``upload_multiparts``: upload proofs, the snapshot and
+  its target stored once, attempts and receipts independent of the Job (#588).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -289,7 +292,10 @@ CREATE TRIGGER file_path_history_immutable
 -- An Archive Version exists only while it is Current, a replacement in
 -- progress, or superseded with open cleanup: no version numbering, no purged
 -- history. The row is deleted with its completed cleanup proof. Its cloud
--- identity (file, key, provider VersionId) never changes once known.
+-- identity (file, key, provider VersionId, producing upload attempt) never
+-- changes once known. An uploaded version reaches its expected proof through
+-- upload_attempt_id (#588); plaintext_sha256 is the digest proven by
+-- verification (or the mismatching one), never a copy of the expectation.
 CREATE TABLE archive_versions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     file_id uuid NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
@@ -302,8 +308,10 @@ CREATE TABLE archive_versions (
     availability text COLLATE "C" NOT NULL DEFAULT 'unknown',
     availability_checked_at timestamptz,
     verified_at timestamptz,
+    upload_attempt_id uuid,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT archive_versions_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT archive_versions_upload_attempt_uq UNIQUE (upload_attempt_id),
     CONSTRAINT archive_versions_object_version_uq UNIQUE (object_key, provider_version_id),
     CONSTRAINT archive_versions_object_key_ck CHECK (object_key <> ''),
     CONSTRAINT archive_versions_provider_version_ck CHECK (provider_version_id <> ''),
@@ -331,7 +339,9 @@ BEGIN
     IF NEW.file_id IS DISTINCT FROM OLD.file_id
        OR NEW.object_key IS DISTINCT FROM OLD.object_key
        OR (OLD.provider_version_id IS NOT NULL
-           AND NEW.provider_version_id IS DISTINCT FROM OLD.provider_version_id) THEN
+           AND NEW.provider_version_id IS DISTINCT FROM OLD.provider_version_id)
+       OR (OLD.upload_attempt_id IS NOT NULL
+           AND NEW.upload_attempt_id IS DISTINCT FROM OLD.upload_attempt_id) THEN
         RAISE EXCEPTION 'an Archive Version keeps its file and exact cloud identity'
             USING ERRCODE = 'restrict_violation';
     END IF;
@@ -340,7 +350,8 @@ END
 $$;
 
 CREATE TRIGGER archive_versions_identity_immutable
-    BEFORE UPDATE OF file_id, object_key, provider_version_id ON archive_versions
+    BEFORE UPDATE OF file_id, object_key, provider_version_id, upload_attempt_id
+    ON archive_versions
     FOR EACH ROW EXECUTE FUNCTION archive_versions_identity_immutable();
 
 -- The pointers name versions of this very file only.
@@ -594,6 +605,372 @@ CREATE TABLE notification_deliveries (
 
 CREATE INDEX notification_deliveries_pending_idx ON notification_deliveries (next_attempt_at)
     WHERE status = 'pending';
+
+-- Upload proofs (#588). The Upload Snapshot and its frozen target are stored
+-- once; send attempts, receipts and multipart uploads hang off them. Jobs,
+-- Archive Versions and remediation reference these rows instead of copying
+-- the snapshot, the target or the expected digest.
+--
+-- upload_snapshots: the fixed content and independent expected integrity
+-- evidence of one admitted upload (ADR-0023), with the target it was admitted
+-- for: the Vault (whose cloud target and namespace are immutable), the path
+-- epoch (path + path_since), the Source Volume root and the provider endpoint.
+-- The object key is derived, never stored: vaults/<vault uuid>/<path>.
+-- local_generation is the Local Copy observation the snapshot was hashed from
+-- (with size and mtime_ns: the observation proof for promote_replacement).
+-- The checksum type and the expected S3 checksum follow from size and parts.
+-- A snapshot is immutable; closed_at ends it (stale before any send,
+-- ADR-0030, or landed): no new attempt is opened on a closed snapshot, and a
+-- snapshot with an unsettled attempt cannot be closed or collected.
+CREATE TABLE upload_snapshots (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    vault_id bigint NOT NULL,
+    file_id uuid NOT NULL,
+    path text COLLATE "C" NOT NULL,
+    path_since timestamptz NOT NULL,
+    source_root text COLLATE "C" NOT NULL,
+    root_identity text COLLATE "C",
+    provider text COLLATE "C" NOT NULL,
+    local_generation bigint NOT NULL,
+    size bigint NOT NULL,
+    mtime_ns bigint NOT NULL,
+    plaintext_sha256 bytea NOT NULL,
+    part_size bigint NOT NULL,
+    part_sha256 bytea[] NOT NULL,
+    verification text COLLATE "C" NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    CONSTRAINT upload_snapshots_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT upload_snapshots_file_fk FOREIGN KEY (file_id, vault_id)
+        REFERENCES files (id, vault_id) ON DELETE RESTRICT,
+    CONSTRAINT upload_snapshots_path_ck CHECK (path <> ''),
+    CONSTRAINT upload_snapshots_provider_ck CHECK (provider <> ''),
+    CONSTRAINT upload_snapshots_generation_ck CHECK (local_generation >= 0),
+    -- 5 TiB S3 object limit; parts of 8 MiB to 1 GiB, at most 10,000.
+    CONSTRAINT upload_snapshots_size_ck CHECK (size BETWEEN 0 AND 5497558138880),
+    CONSTRAINT upload_snapshots_part_size_ck CHECK (part_size BETWEEN 8388608 AND 1073741824),
+    CONSTRAINT upload_snapshots_parts_ck CHECK (
+        cardinality(part_sha256) BETWEEN 1 AND 10000
+        AND array_ndims(part_sha256) = 1
+    ),
+    CONSTRAINT upload_snapshots_sha256_ck CHECK (octet_length(plaintext_sha256) = 32),
+    CONSTRAINT upload_snapshots_verification_ck CHECK (
+        verification IN ('s3_checksum', 'read_back')
+    )
+);
+
+-- One open Upload Snapshot per Vault File: a different content is admitted
+-- only after the previous one is closed or reconciled.
+CREATE UNIQUE INDEX upload_snapshots_open_file_uq ON upload_snapshots (file_id)
+    WHERE closed_at IS NULL;
+
+-- The upload detail of a Job: the snapshot it uploads or reconciles. Deleting
+-- the Job (retention) removes only this link; the proofs stay.
+CREATE TABLE upload_snapshot_jobs (
+    job_id bigint PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    snapshot_id uuid NOT NULL REFERENCES upload_snapshots(id) ON DELETE RESTRICT,
+    reconcile_only boolean NOT NULL DEFAULT false
+);
+
+CREATE INDEX upload_snapshot_jobs_snapshot_idx ON upload_snapshot_jobs (snapshot_id);
+
+-- One send attempt of a snapshot: its own opaque token (S3 metadata) and the
+-- namespace inventory pinned just before the send. send_started_at is
+-- committed before any provider request and is never cleared; once set it
+-- forbids another send of this attempt (a retry reconciles). Settlement is
+-- written once:
+--   unsent    closed before any send (stale snapshot, superseded attempt)
+--   no_write  definitive no-write outcome of a started send (an auth refusal
+--             journaled by the SDK seam, or S3's proof of absence, ADR-0025);
+--             a new send needs a new attempt and token
+--   landed    the exact provider VersionId the send produced
+-- job_id is the Job that opened the attempt; collecting that Job keeps the
+-- attempt and its receipts.
+CREATE TABLE upload_attempts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    snapshot_id uuid NOT NULL,
+    file_id uuid NOT NULL,
+    job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
+    token uuid NOT NULL DEFAULT gen_random_uuid(),
+    inventory_versions text[] COLLATE "C" NOT NULL,
+    inventory_markers text[] COLLATE "C" NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    send_started_at timestamptz,
+    settled_at timestamptz,
+    outcome text COLLATE "C",
+    no_write_operation text COLLATE "C",
+    landed_version_id text COLLATE "C",
+    CONSTRAINT upload_attempts_token_uq UNIQUE (token),
+    CONSTRAINT upload_attempts_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT upload_attempts_snapshot_fk FOREIGN KEY (snapshot_id, file_id)
+        REFERENCES upload_snapshots (id, file_id) ON DELETE RESTRICT,
+    CONSTRAINT upload_attempts_outcome_ck CHECK (
+        outcome IN ('unsent', 'no_write', 'landed')
+    ),
+    CONSTRAINT upload_attempts_settlement_ck CHECK (
+        (outcome IS NULL) = (settled_at IS NULL)
+        AND COALESCE(outcome = 'no_write', false) = (no_write_operation IS NOT NULL)
+        AND COALESCE(outcome = 'landed', false) = (landed_version_id IS NOT NULL)
+        AND COALESCE(outcome = 'unsent', false) = (
+            outcome IS NOT NULL AND send_started_at IS NULL
+        )
+    ),
+    CONSTRAINT upload_attempts_no_write_ck CHECK (
+        no_write_operation IN (
+            'PutObject', 'CreateMultipartUpload', 'UploadPart',
+            'CompleteMultipartUpload', 'ProvenAbsent'
+        )
+    ),
+    CONSTRAINT upload_attempts_landed_version_ck CHECK (
+        landed_version_id <> '' AND landed_version_id <> 'null'
+    )
+);
+
+-- At most one unsettled attempt per Vault File, one landed per snapshot.
+CREATE UNIQUE INDEX upload_attempts_open_file_uq ON upload_attempts (file_id)
+    WHERE settled_at IS NULL;
+CREATE UNIQUE INDEX upload_attempts_landed_uq ON upload_attempts (snapshot_id)
+    WHERE outcome = 'landed';
+CREATE INDEX upload_attempts_snapshot_idx ON upload_attempts (snapshot_id);
+CREATE INDEX upload_attempts_file_idx ON upload_attempts (file_id);
+CREATE INDEX upload_attempts_job_idx ON upload_attempts (job_id) WHERE job_id IS NOT NULL;
+
+-- Raw provider receipts, journaled immediately on their own connection: an
+-- append-only fact independent of the Job, its cancellation, the worker's
+-- transaction and the attempt's settlement. A receipt is never publication or
+-- deletion authority (ADR-0024); a receipt that contradicts the settlement
+-- (any receipt of an unsent or no-write attempt, another VersionId than the
+-- landed one) blocks reconciliation and collection.
+CREATE TABLE upload_receipts (
+    attempt_id uuid NOT NULL REFERENCES upload_attempts(id) ON DELETE CASCADE,
+    receipt_sha256 bytea NOT NULL,
+    response jsonb NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT upload_receipts_pkey PRIMARY KEY (attempt_id, receipt_sha256),
+    CONSTRAINT upload_receipts_sha256_ck CHECK (octet_length(receipt_sha256) = 32),
+    CONSTRAINT upload_receipts_response_ck CHECK (jsonb_typeof(response) = 'object')
+);
+
+-- Multipart UploadIds an attempt created, journaled before the first part
+-- (ADR-0029): the only authority to abort one exactly.
+CREATE TABLE upload_multiparts (
+    attempt_id uuid NOT NULL REFERENCES upload_attempts(id) ON DELETE CASCADE,
+    upload_id text COLLATE "C" NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    CONSTRAINT upload_multiparts_pkey PRIMARY KEY (attempt_id, upload_id),
+    CONSTRAINT upload_multiparts_upload_id_ck CHECK (upload_id <> '')
+);
+
+-- The Archive Version an attempt produced, at the attempt's exact identity:
+-- the landed VersionId under the snapshot's key. Its expected proof is the
+-- attempt's snapshot; the version itself copies nothing.
+ALTER TABLE archive_versions
+    ADD CONSTRAINT archive_versions_upload_attempt_fk
+        FOREIGN KEY (upload_attempt_id, file_id)
+        REFERENCES upload_attempts (id, file_id) ON DELETE RESTRICT;
+
+CREATE FUNCTION archive_versions_upload_identity() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.upload_attempt_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM upload_attempts a
+        JOIN upload_snapshots s ON s.id = a.snapshot_id
+        JOIN vaults v ON v.id = s.vault_id
+        WHERE a.id = NEW.upload_attempt_id
+          AND a.outcome = 'landed'
+          AND a.landed_version_id = NEW.provider_version_id
+          AND NEW.object_key = 'vaults/' || v.uuid::text || '/' || s.path
+          AND NEW.size = s.size
+    ) THEN
+        RAISE EXCEPTION 'an uploaded Archive Version is the exact landed identity of its attempt'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER archive_versions_upload_identity
+    BEFORE INSERT OR UPDATE OF upload_attempt_id ON archive_versions
+    FOR EACH ROW EXECUTE FUNCTION archive_versions_upload_identity();
+
+-- Snapshot immutability: only closed_at may be set, once, and never while an
+-- attempt is unsettled. An open snapshot is never collected.
+CREATE FUNCTION upload_snapshots_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.closed_at IS NULL THEN
+            RAISE EXCEPTION 'an open Upload Snapshot is never collected'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.path, NEW.path_since, NEW.source_root,
+        NEW.root_identity, NEW.provider, NEW.local_generation, NEW.size, NEW.mtime_ns,
+        NEW.plaintext_sha256, NEW.part_size, NEW.part_sha256, NEW.verification,
+        NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.vault_id, OLD.file_id, OLD.path, OLD.path_since, OLD.source_root,
+        OLD.root_identity, OLD.provider, OLD.local_generation, OLD.size, OLD.mtime_ns,
+        OLD.plaintext_sha256, OLD.part_size, OLD.part_sha256, OLD.verification,
+        OLD.created_at)
+       OR (OLD.closed_at IS NOT NULL
+           AND NEW.closed_at IS DISTINCT FROM OLD.closed_at) THEN
+        RAISE EXCEPTION 'an Upload Snapshot is immutable'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NEW.closed_at IS NOT NULL AND OLD.closed_at IS NULL AND EXISTS (
+        SELECT 1 FROM upload_attempts
+        WHERE snapshot_id = NEW.id AND settled_at IS NULL
+    ) THEN
+        RAISE EXCEPTION 'an Upload Snapshot with an unsettled attempt stays open'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER upload_snapshots_guard
+    BEFORE UPDATE OR DELETE ON upload_snapshots
+    FOR EACH ROW EXECUTE FUNCTION upload_snapshots_guard();
+
+-- A Job uploads or reconciles only a snapshot of its own Vault File.
+CREATE FUNCTION upload_snapshot_jobs_scope() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM jobs j JOIN upload_snapshots s ON s.id = NEW.snapshot_id
+        WHERE j.id = NEW.job_id AND j.action = 'upload'
+          AND j.file_id = s.file_id AND j.vault_id = s.vault_id
+    ) THEN
+        RAISE EXCEPTION 'an upload Job references a snapshot of its own Vault File'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER upload_snapshot_jobs_scope
+    BEFORE INSERT OR UPDATE ON upload_snapshot_jobs
+    FOR EACH ROW EXECUTE FUNCTION upload_snapshot_jobs_scope();
+
+-- Attempts: opened only on an open snapshot, by a Job of the same file;
+-- identity immutable, send-start and settlement written once, the Job link
+-- only cleared (by collecting the Job). Collection never takes open
+-- uncertainty: an unsettled attempt, an open multipart upload, or a receipt
+-- contradicting the settlement keep the attempt (settled_at alone is no
+-- authority); an Archive Version keeps it through its foreign key.
+CREATE FUNCTION upload_attempts_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM upload_snapshots
+            WHERE id = NEW.snapshot_id AND closed_at IS NULL
+        ) THEN
+            RAISE EXCEPTION 'attempts are opened only on an open Upload Snapshot'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.job_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM jobs WHERE id = NEW.job_id AND file_id = NEW.file_id
+              AND action = 'upload'
+        ) THEN
+            RAISE EXCEPTION 'an attempt is opened by an upload Job of its own Vault File'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.send_started_at IS NOT NULL OR NEW.settled_at IS NOT NULL THEN
+            RAISE EXCEPTION 'an attempt starts unsent and unsettled'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.settled_at IS NULL
+           OR EXISTS (
+               SELECT 1 FROM upload_multiparts
+               WHERE attempt_id = OLD.id AND closed_at IS NULL
+           )
+           OR EXISTS (
+               SELECT 1 FROM upload_receipts
+               WHERE attempt_id = OLD.id
+                 AND (OLD.outcome <> 'landed'
+                      OR (response ->> 'VersionId') IS DISTINCT FROM OLD.landed_version_id)
+           ) THEN
+            RAISE EXCEPTION 'an upload attempt with open uncertainty is never collected'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id, NEW.snapshot_id, NEW.file_id, NEW.token, NEW.inventory_versions,
+        NEW.inventory_markers, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.snapshot_id, OLD.file_id, OLD.token, OLD.inventory_versions,
+        OLD.inventory_markers, OLD.created_at)
+       OR (NEW.job_id IS NOT NULL AND NEW.job_id IS DISTINCT FROM OLD.job_id)
+       OR (OLD.send_started_at IS NOT NULL
+           AND NEW.send_started_at IS DISTINCT FROM OLD.send_started_at)
+       OR (OLD.settled_at IS NOT NULL AND (
+           (NEW.settled_at, NEW.outcome, NEW.no_write_operation, NEW.landed_version_id,
+            NEW.send_started_at)
+           IS DISTINCT FROM
+           (OLD.settled_at, OLD.outcome, OLD.no_write_operation, OLD.landed_version_id,
+            OLD.send_started_at)
+       )) THEN
+        RAISE EXCEPTION 'upload attempt history is immutable'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER upload_attempts_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON upload_attempts
+    FOR EACH ROW EXECUTE FUNCTION upload_attempts_guard();
+
+-- Receipts are append-only; they go only with their collected attempt.
+CREATE FUNCTION upload_receipts_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' OR EXISTS (
+        SELECT 1 FROM upload_attempts WHERE id = OLD.attempt_id
+    ) THEN
+        RAISE EXCEPTION 'upload receipts are append-only'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER upload_receipts_immutable
+    BEFORE UPDATE OR DELETE ON upload_receipts
+    FOR EACH ROW EXECUTE FUNCTION upload_receipts_immutable();
+
+-- A journaled UploadId is only closed (completed or aborted), never rewritten.
+CREATE FUNCTION upload_multiparts_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT 1 FROM upload_attempts WHERE id = OLD.attempt_id) THEN
+            RAISE EXCEPTION 'a journaled multipart upload goes only with its attempt'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.attempt_id, NEW.upload_id, NEW.created_at)
+       IS DISTINCT FROM (OLD.attempt_id, OLD.upload_id, OLD.created_at)
+       OR (OLD.closed_at IS NOT NULL AND NEW.closed_at IS DISTINCT FROM OLD.closed_at) THEN
+        RAISE EXCEPTION 'a journaled multipart upload is only closed'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER upload_multiparts_guard
+    BEFORE UPDATE OR DELETE ON upload_multiparts
+    FOR EACH ROW EXECUTE FUNCTION upload_multiparts_guard();
 """
 
 
