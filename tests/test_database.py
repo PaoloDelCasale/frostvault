@@ -35,7 +35,8 @@ BASELINE_TABLES = {
     "cloud_purge_requests", "scheduler_vault_turns", "job_terminal_notifications",
     "sessions", "oidc_login", "auth_backoff",
     "audit_events", "notifications", "notification_deliveries", "upload_snapshots",
-    "upload_snapshot_jobs", "upload_attempts", "upload_receipts", "upload_multiparts",
+    "upload_attempts", "upload_receipts", "upload_multiparts",
+    "vault_operation_policies", "bulk_upload_admissions", "bulk_upload_exclusions",
 }
 
 
@@ -337,7 +338,7 @@ class BaselineSchemaTests(unittest.TestCase):
         )}
         self.assertEqual(referenced, {
             "vault_targets", "vaults", "files", "archive_versions", "job_groups", "jobs",
-            "notifications", "upload_snapshots", "upload_attempts",
+            "notifications", "upload_snapshots", "upload_attempts", "bulk_upload_admissions",
         })
         # No per-user attribution survives anywhere (#586).
         attribution = {

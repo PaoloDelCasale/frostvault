@@ -308,7 +308,7 @@ class SendStartTests(_Fixture):
         provenance.bind_for_resume(self.connection, resume["id"], attempt)
         self.assertEqual(provenance.load_for_job(self.connection, resume["id"]).id, attempt.id)
         self.assertTrue(self.connection.execute(
-            "SELECT reconcile_only FROM upload_snapshot_jobs WHERE job_id=%s", (resume["id"],)
+            "SELECT reconcile_only FROM job_uploads WHERE job_id=%s", (resume["id"],)
         ).fetchone()["reconcile_only"])
         self.assertFalse(provenance.close_unsent_for_job(self.connection, resume, T2))
         self.connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (resume["id"],))
@@ -357,7 +357,7 @@ class ReceiptTests(_Fixture):
         self.connection.commit()
         kept = provenance.load_attempt(self.connection, attempt.id)
         self.assertIsNone(kept.job_id)
-        self.assertEqual(self.count("upload_snapshot_jobs"), 0)
+        self.assertEqual(self.count("job_uploads"), 0)
         self.assertEqual(provenance.receipt(self.connection, attempt.id),
                          {"VersionId": "v1", "ETag": '"e"', "ChecksumSHA256": "c"})
         self.assertEqual(provenance.outstanding(self.connection, self.file_id).id, attempt.id)
@@ -443,8 +443,8 @@ class IntegrityTests(_Fixture):
         self.rejects(
             "INSERT INTO upload_attempts(snapshot_id, file_id, inventory_versions, inventory_markers) "
             "VALUES (%s, %s, '{}', '{}')", (snapshot, other_file))
-        self.rejects("INSERT INTO upload_snapshot_jobs(job_id, snapshot_id) VALUES (%s, %s)",
-                     (other_job["id"], snapshot))
+        self.rejects("INSERT INTO job_uploads(job_id, verification_mode, snapshot_id) "
+                     "VALUES (%s, 's3_checksum', %s)", (other_job["id"], snapshot))
         self.rejects(
             "INSERT INTO upload_snapshots(vault_id, file_id, path, path_since, source_root, provider, "
             "local_generation, size, mtime_ns, plaintext_sha256, part_size, part_sha256, verification) "
@@ -535,7 +535,7 @@ class IntegrityTests(_Fixture):
         self.catalog.abandon_replacement(self.file_id, archive_version_id=version)
         self.connection.execute("DELETE FROM archive_versions WHERE id=%s", (version,))
         self.connection.execute("DELETE FROM upload_attempts WHERE id=%s", (landed.id,))
-        self.connection.execute("DELETE FROM upload_snapshot_jobs WHERE snapshot_id=%s",
+        self.connection.execute("UPDATE job_uploads SET snapshot_id=NULL WHERE snapshot_id=%s",
                                 (landed.admitted.id,))
         self.connection.execute("DELETE FROM upload_snapshots WHERE id=%s", (landed.admitted.id,))
         self.connection.commit()

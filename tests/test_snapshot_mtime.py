@@ -54,29 +54,6 @@ class SnapshotMtimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
                 prepare_upload_snapshot(source, active)
 
-    def test_unsent_legacy_admission_keeps_its_original_immutable_json(self):
-        from app.services.upload_execution import UploadExecution
-        with tempfile.TemporaryDirectory() as root:
-            source = Path(root) / "file"
-            source.write_bytes(b"old")
-            snapshot, _ = prepare_upload_snapshot(source, lambda: None)
-            data = json.loads(snapshot.as_json())
-            data.pop("mtime_ns", None)
-            legacy = json.dumps(data, separators=(",", ":"))
-            worker = MagicMock()
-            worker.prepare_upload_snapshot.side_effect = prepare_upload_snapshot
-            execution = UploadExecution(worker)
-            attempt = SimpleNamespace(job={"id": 1}, pipeline=MagicMock(), source=source,
-                check_active=lambda: None, target={"job_upload_snapshot_json": legacy})
-            with patch.object(execution, "_automatic_gate", return_value=None):
-                execution._snapshot(attempt)
-            self.assertEqual(attempt.snapshot.as_json(), legacy)
-            # New admissions freeze the original timestamp as well as bytes.
-            attempt.target = {"job_upload_snapshot_json": snapshot.as_json()}
-            os.utime(source, ns=(123, 123))
-            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
-                execution._snapshot(attempt)
-
     def test_hashing_persists_nanoseconds_in_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "photo"

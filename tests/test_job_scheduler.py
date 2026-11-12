@@ -279,13 +279,15 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         connection = MagicMock()
         connection.__enter__.return_value = connection
         connection.execute.return_value.fetchone.return_value = {
-            "id": 10, "enabled": True, "source_root": str(self.root),
+            "id": 10, "lifecycle": "active", "paused": False, "source_root": str(self.root),
         }
         self.catalog = Mock()
         self.catalog.list_claimable_jobs.return_value = [self.missing, self.healthy]
         self.catalog.active_job_counts.return_value = {}
         self.catalog.observe_scheduler_turns.return_value = {}
-        self.catalog.get_job_target.return_value = {"archive_version_id": None}
+        self.catalog.get_job_target.return_value = {
+            "file_id": "file", "archive_version_id": None, "replacing_version_id": None,
+        }
         self.catalog.claim_job.return_value = self.healthy
         self.enterContext(patch("app.storage.db", return_value=connection))
         self.enterContext(patch("app.storage.ArchiveCatalog", return_value=self.catalog))
@@ -302,6 +304,7 @@ class SchedulerFileIsolationTests(unittest.TestCase):
             local_operations_allowed=True,
         )))
         self.enterContext(patch("app.services.upload_provenance.load_for_job", return_value=None))
+        self.enterContext(patch("app.services.upload_provenance.outstanding", return_value=None))
         self.enterContext(patch("app.storage.auto_upload_path_is_included", return_value=True))
         self.dispatch = self.enterContext(patch("app.storage.process_job"))
         storage_module._deferred_jobs.clear()
@@ -345,11 +348,11 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.catalog.claim_job.assert_not_called()
 
     def test_linked_version_reconciliation_does_not_require_local_copy(self) -> None:
-        self.catalog.get_job_target.return_value = {"archive_version_id": 9}
+        self.catalog.get_job_target.return_value = {"file_id": "file", "archive_version_id": 9}
         self.assertTrue(storage_module._automatic_upload_ready(self.missing))
 
     def test_sent_intent_reconciliation_does_not_require_local_copy(self) -> None:
-        with patch("app.services.upload_provenance.load_for_job", return_value={"send_started": True}):
+        with patch("app.services.upload_provenance.load_for_job", return_value=SimpleNamespace(send_started=True)):
             self.assertTrue(storage_module._automatic_upload_ready(self.missing))
 
     def test_unready_candidate_is_deferred_and_left_out_of_the_next_query(self) -> None:

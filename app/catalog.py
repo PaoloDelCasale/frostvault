@@ -522,6 +522,7 @@ class ArchiveCatalog:
         plaintext_sha256: str | bytes,
         size: int | None,
         mtime_ns: int | None,
+        match_current: bool = False,
     ) -> bool:
         """Publish a digest for the observation it was computed from.
 
@@ -530,9 +531,19 @@ class ArchiveCatalog:
         wins and the digest is discarded (False). Content that reappeared at a
         cloud-only path and proves identical to Current becomes matched and
         is released from its hold; different content stays held.
+        ``match_current`` (the upload worker, which proved the digest itself)
+        also matches a Local Copy whose digest equals the verified, available
+        Current; only Current, never an older version.
         """
         digest = _digest(plaintext_sha256)
-        settled = """CASE
+        current = """WHEN %(match_current)s THEN (
+                SELECT cur.id FROM archive_versions cur
+                WHERE cur.id = f.current_version_id
+                  AND cur.integrity = 'verified'
+                  AND cur.availability = 'available'
+                  AND cur.plaintext_sha256 = %(digest)s
+            )"""
+        settled = f"""CASE
             WHEN f.held_version_id IS NOT NULL THEN (
                 SELECT held.id FROM archive_versions held
                 WHERE held.id = f.held_version_id
@@ -540,7 +551,9 @@ class ArchiveCatalog:
                   AND held.availability = 'available'
                   AND held.plaintext_sha256 = %(digest)s
             )
-            WHEN f.local_sha256 = %(digest)s THEN f.matched_version_id
+            WHEN f.local_sha256 = %(digest)s AND f.matched_version_id IS NOT NULL
+            THEN f.matched_version_id
+            {current}
         END"""
         row = self.connection.execute(
             f"""
@@ -567,6 +580,7 @@ class ArchiveCatalog:
                 "generation": int(generation),
                 "size": size,
                 "mtime_ns": mtime_ns,
+                "match_current": bool(match_current),
             },
         ).fetchone()
         if row is None:
@@ -819,14 +833,17 @@ class ArchiveCatalog:
         archive_version_id: str,
         mismatch_sha256: str | bytes | None = None,
         checked_at: Any | None = None,
+        mismatch: bool = False,
     ) -> None:
         """End the replacement in progress without touching Current.
 
-        With ``mismatch_sha256`` the version is recorded as a proven mismatch.
-        The version stays as superseded until its exact cleanup (#591): a
-        failed upload or verification always preserves the previous copy.
+        With ``mismatch_sha256`` (the digest a read-back proved) or
+        ``mismatch`` (contradictory provider checksum evidence, no digest) the
+        version is recorded as a proven mismatch. The version stays as
+        superseded until its exact cleanup (#591): a failed upload or
+        verification always preserves the previous copy.
         """
-        if mismatch_sha256 is not None:
+        if mismatch_sha256 is not None or mismatch:
             self.connection.execute(
                 """
                 UPDATE archive_versions
@@ -834,8 +851,8 @@ class ArchiveCatalog:
                 WHERE id=%s AND file_id=%s AND integrity='unverified'
                 """,
                 (
-                    _digest(mismatch_sha256), _required_timestamp(checked_at),
-                    archive_version_id, vault_file_id,
+                    None if mismatch_sha256 is None else _digest(mismatch_sha256),
+                    _required_timestamp(checked_at), archive_version_id, vault_file_id,
                 ),
             )
         row = self.connection.execute(
@@ -1206,173 +1223,95 @@ class ArchiveCatalog:
         self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
         return str(vault_file_id)
 
-    def find_reusable_upload_version(
-        self,
-        *,
-        vault_file_id: str,
-        plaintext_sha256: str,
-        bucket: str | None = None,
-        provider: str | None = None,
-    ) -> dict[str, Any] | None:
-        """Return an existing Archive Version that already holds this digest.
-
-        A verified available version is reused so unchanged Local Copy bytes do
-        not create a duplicate S3 object. An unverified available version whose
-        originating Job stored the same upload digest can resume verification
-        without uploading again or deleting the prior version.
-        """
-        digest = plaintext_sha256.lower()
-        verified = self.connection.execute(
-            """
-            SELECT
-                id, object_key, provider_version_id, size AS cloud_size,
-                plaintext_sha256 AS version_sha256, integrity, availability,
-                storage_class, restore_state
-            FROM archive_versions
-            WHERE vault_file_id=%s
-              AND integrity='verified'
-              AND availability='available'
-              AND plaintext_sha256=%s
-              AND id=(SELECT current.id FROM archive_versions current WHERE current.vault_file_id=archive_versions.vault_file_id AND current.integrity='verified' AND current.availability='available' ORDER BY current.version_number DESC LIMIT 1)
-              AND (restore_state IS NULL OR restore_state <> 'restoring')
-            ORDER BY version_number DESC
-            LIMIT 1
-            """,
-            (vault_file_id, digest),
-        ).fetchone()
-        if verified is not None:
-            from .services.snapshot_cleanup import _has_lineage
-            exact = self.connection.execute("SELECT * FROM archive_versions WHERE id=%s", (verified["id"],)).fetchone()
-            if _has_lineage(self.connection,exact,vault_file_id,bucket=bucket,provider=provider):
-                return verified
-        return self.connection.execute(
-            """
-            SELECT
-                av.id, av.object_key, av.provider_version_id,
-                av.size AS cloud_size, av.plaintext_sha256 AS version_sha256,
-                av.integrity, av.availability, av.storage_class, av.restore_state,
-                av.upload_snapshot_json, av.upload_verification_requested
-            FROM archive_versions av
-            WHERE av.vault_file_id=%s
-              AND av.integrity='unverified'
-              AND av.availability='available'
-              AND (av.restore_state IS NULL OR av.restore_state <> 'restoring')
-              AND EXISTS (
-                  SELECT 1 FROM jobs prior
-                  WHERE prior.archive_version_id=av.id AND prior.vault_file_id=av.vault_file_id
-                    AND prior.vault_id=av.vault_id AND prior.action='upload'
-                    AND prior.upload_plaintext_sha256=%s
-              )
-            ORDER BY av.version_number DESC
-            LIMIT 1
-            """,
-            (vault_file_id, digest),
-        ).fetchone()
-
     def link_job_version(self, job_id: int, archive_version_id: str) -> None:
         self.connection.execute(
             "UPDATE jobs SET archive_version_id=%s WHERE id=%s",
             (archive_version_id, job_id),
         )
 
-    def set_upload_plaintext_digest(
-        self,
-        job_id: int,
-        *,
-        plaintext_sha256: str,
+    def record_verification_evidence(
+        self, version_id: str, *, method: str, fallback: str | None,
+        egress_bytes: int | None,
     ) -> None:
-        if len(plaintext_sha256) != 64:
-            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
-        int(plaintext_sha256, 16)
+        """How the version's digest is being proven: written while unverified.
+
+        Recorded before a read-back GET so its cost is visible even when the
+        read fails; once verified, the evidence is history, never rewritten.
+        """
         self.connection.execute(
             """
-            UPDATE jobs
-            SET upload_plaintext_sha256=%s
-            WHERE id=%s
+            UPDATE archive_versions
+            SET verification_method=%s, verification_fallback=%s,
+                verification_egress_bytes=%s
+            WHERE id=%s AND integrity='unverified'
             """,
-            (plaintext_sha256.lower(), job_id),
+            (method, fallback, egress_bytes, version_id),
         )
 
-    def set_upload_snapshot(self, job_id: int, *, snapshot_json: str) -> None:
-        from .services.upload_snapshot import UploadSnapshot
-        snapshot = UploadSnapshot.from_json(snapshot_json)
-        existing = self.connection.execute("SELECT upload_snapshot_json FROM jobs WHERE id=%s FOR UPDATE", (job_id,)).fetchone()
-        if existing and existing["upload_snapshot_json"] not in {None, snapshot_json}:
-            raise RuntimeError("Upload Snapshot is immutable for an admitted intent")
-        self.connection.execute("UPDATE jobs SET upload_snapshot_json=%s, upload_plaintext_sha256=%s WHERE id=%s",
-                                (snapshot_json, snapshot.plaintext_sha256, job_id))
-
-    def set_version_upload_snapshot(self, version_id: str, *, snapshot_json: str, requested: str) -> None:
-        from .services.upload_snapshot import UploadSnapshot
-        UploadSnapshot.from_json(snapshot_json)
-        row = self.connection.execute("SELECT upload_snapshot_json, upload_verification_requested, integrity FROM archive_versions WHERE id=%s FOR UPDATE", (version_id,)).fetchone()
-        if row is None:
-            raise LookupError("Archive Version not found")
-        if row["upload_snapshot_json"] is None and row["integrity"] == "verified":
-            raise RuntimeError("Cannot reconstruct Upload Snapshot evidence for a verified Archive Version")
-        if row and row["upload_snapshot_json"] is not None:
-            if (row["upload_snapshot_json"], row["upload_verification_requested"]) != (snapshot_json, requested):
-                raise RuntimeError("Archive Version Upload Snapshot is immutable")
-            return
-        self.connection.execute("UPDATE archive_versions SET upload_snapshot_json=%s, upload_verification_requested=%s WHERE id=%s",
-                                (snapshot_json, requested, version_id))
-        from .services.upload_remediation_discovery import capture
-        capture(self.connection, datetime.now(timezone.utc).isoformat(), version_id=version_id)
-
-    def set_version_verification_method(self, version_id: str, *, method: str, fallback_reason: str | None,
-                                        egress_bytes: int | None, provider_proof: dict[str, Any] | None = None) -> None:
-        # Attempts may update visible fallback while unverified. Once verified,
-        # the effective method is historical evidence, not current Vault policy.
-        self.connection.execute("UPDATE archive_versions SET verification_method=%s, verification_fallback_reason=%s, verification_egress_bytes=%s, provider_checksums=COALESCE(%s,provider_checksums) WHERE id=%s AND integrity<>'verified'",
-                                (method, fallback_reason, egress_bytes, json.dumps(provider_proof) if provider_proof else None, version_id))
-
     def get_job_target(self, job_id: int) -> dict[str, Any] | None:
-        return self.connection.execute(
+        """The Job's File, Local Copy and linked Archive Version in one row.
+
+        Digests are hexadecimal text. ``upload_snapshot_json`` is the linked
+        version's expected proof, reached through its upload attempt (#588);
+        it is never copied onto the version.
+        """
+        row = self.connection.execute(
             """
             SELECT
                 j.id AS job_id,
                 j.origin AS job_origin,
                 j.vault_id,
-                j.vault_file_id,
+                j.file_id,
+                j.file_id AS vault_file_id,
                 j.archive_version_id,
-                j.upload_plaintext_sha256,
-                j.upload_snapshot_json AS job_upload_snapshot_json,
-                j.upload_verification_requested AS job_upload_verification_requested,
-                av.upload_snapshot_json,
-                av.upload_verification_requested,
-                av.verification_method,
-                av.verification_fallback_reason,
-                av.verification_egress_bytes,
-                j.path,
-                lc.presence AS local_presence,
-                lc.file_type AS local_file_type,
-                lc.size AS local_size,
-                lc.mtime_ns AS local_mtime_ns,
-                lc.recovered_at AS local_recovered_at,
-                av.verified_at,
-                (SELECT latest.id FROM archive_versions latest
-                 WHERE latest.vault_file_id=j.vault_file_id AND latest.availability<>'purged'
-                 ORDER BY latest.version_number DESC LIMIT 1) AS latest_archive_version_id,
-                COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
-                lc.plaintext_sha256 AS local_sha256,
-                lc.matched_archive_version_id,
-                lc.cloud_only_version_id,
+                ju.verification_mode AS job_upload_verification_requested,
+                COALESCE(ju.reconcile_only, false) AS upload_reconcile_only,
+                ju.snapshot_id AS upload_snapshot_id,
+                f.path,
+                f.generation AS local_generation,
+                f.local_presence,
+                f.local_file_type,
+                f.local_size,
+                f.local_mtime_ns,
+                f.local_recovered_at,
+                COALESCE(f.local_content_observed_at, f.local_observed_at) AS content_observed_at,
+                encode(f.local_sha256, 'hex') AS local_sha256,
+                f.matched_version_id AS matched_archive_version_id,
+                f.held_version_id AS cloud_only_version_id,
+                f.current_version_id,
+                f.replacing_version_id,
                 av.object_key,
                 av.provider_version_id,
                 av.size AS cloud_size,
                 av.storage_class,
-                av.plaintext_sha256 AS version_sha256,
+                encode(av.plaintext_sha256, 'hex') AS version_sha256,
                 av.integrity,
                 av.availability,
-                av.restore_state,
-                av.restore_expiry
+                av.verified_at,
+                av.verification_method,
+                av.verification_fallback AS verification_fallback_reason,
+                av.verification_egress_bytes,
+                av.upload_attempt_id
             FROM jobs j
-            LEFT JOIN local_copies lc ON lc.vault_file_id=j.vault_file_id
-            LEFT JOIN archive_versions av ON av.id=j.archive_version_id
+            JOIN files f ON f.id = j.file_id
+            LEFT JOIN job_uploads ju ON ju.job_id = j.id
+            LEFT JOIN archive_versions av ON av.id = j.archive_version_id
             WHERE j.id=%s
             """,
             (job_id,),
         ).fetchone()
+        if row is None:
+            return None
+        target = dict(row)
+        target["upload_snapshot_json"] = None
+        target["upload_verification_requested"] = None
+        if target["archive_version_id"] is not None:
+            from .services.upload_provenance import expected_for_version
+            expected = expected_for_version(self.connection, str(target["archive_version_id"]))
+            if expected is not None:
+                target["upload_snapshot_json"] = expected.snapshot.as_json()
+                target["upload_verification_requested"] = expected.verification
+        return target
 
     def update_restore_state(
         self,
