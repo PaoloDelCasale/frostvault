@@ -3,8 +3,9 @@
 Real admission, claim and ``storage.process_job`` on a disposable PostgreSQL 16
 database; the S3 transport is the synthetic ``VersionedProvider``, which keeps
 version bytes and metadata across worker runs and counts every PUT/GET/HEAD.
-Out of scope and patched: Upload Remediation (#592) and the cleanup of
-superseded versions (#591, a no-op seam here).
+Out of scope and patched: Upload Remediation (#592). The exact cleanup of
+superseded versions (#591) runs for real; its own cases live in
+``tests.test_upload_cleanup``.
 """
 from __future__ import annotations
 

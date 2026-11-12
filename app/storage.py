@@ -2632,12 +2632,16 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
 def purge_current_snapshot_superseded(
     job: dict[str, Any], *, keep_version_id: str, client: Any,
 ) -> int:
-    """Upload and rename share exact durable per-VersionId authority."""
-    import sys
-    from .services import snapshot_cleanup, upload_provenance
-    from .services.upload_pipeline import catalog_capacity, catalog_worker
+    """Rename's cleanup through the upload gate (rename is ported by #595).
+
+    The gate is upload-scoped (#591): a rename Job is refused by its target
+    fence until #595 gives rename its own keeper and frozen batch.
+    """
+    from .services import upload_provenance
+    from .services.upload_pipeline import catalog_capacity
     try:
-        inventory_job_id = snapshot_cleanup.cleanup(catalog_worker(sys.modules[__name__], job), job, keep_version_id, client)
+        cleanup_superseded_upload(job, keeper_id=keep_version_id, client=client)
+        inventory_job_id = int(job["id"])
     except upload_provenance.UploadBlocked as exc:
         _record_upload_reconciliation_block(job, exc.reason)
         raise
@@ -3617,14 +3621,20 @@ def _upload_catalog_unit(
                 return mutation(ArchiveCatalog(connection))
 
 
-def cleanup_superseded_upload(job: dict[str, Any], *, keeper_id: str) -> None:
+def cleanup_superseded_upload(
+    job: dict[str, Any], *, keeper_id: str | None, client: Any = None,
+) -> None:
     """Exact cleanup, by VersionId, of what the verified keeper superseded (#591).
 
-    Runs after verification and publication, before completion. Until #591
-    the superseded versions stay as unreferenced rows and in S3: nothing is
-    deleted, which is always safe.
+    Runs after verification and publication, before completion, with the
+    published ``keeper_id``. With ``keeper_id=None`` (a Job about to send or to
+    match the Current it did not produce) it first finishes an open cleanup of
+    the file's Current, so a file never holds more than Current, one
+    replacement in progress and versions with open cleanup.
     """
-    return None
+    import sys
+    from .services import snapshot_cleanup
+    snapshot_cleanup.cleanup(sys.modules[__name__], job, keeper_id, client)
 
 
 def _upload_protection_paused(job: dict[str, Any]) -> bool:
@@ -3872,9 +3882,6 @@ def process_rename(job: dict[str, Any]) -> None:
             return
 
         client = s3_client()
-        import sys
-        from .services import snapshot_cleanup
-        snapshot_cleanup.pin_inventory(sys.modules[__name__], job, client)
         with db() as connection:
             destination_rows = connection.execute(
                 """

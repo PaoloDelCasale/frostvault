@@ -41,6 +41,9 @@ Archive Version and Job tables and add their own:
 - ``vault_operation_policies``: per-Vault automation policy;
   ``bulk_upload_admissions`` / ``bulk_upload_exclusions``: durable folder
   upload admission with a path cursor (#590).
+- ``cleanup_batches``, ``cleanup_candidates``: the frozen cleanup of what a
+  verified keeper superseded, deleted by exact VersionId; a superseded Archive
+  Version row is removed only together with its completed proof (#591).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -576,8 +579,10 @@ CREATE TABLE jobs (
     CONSTRAINT jobs_action_scope_uq UNIQUE (id, action),
     CONSTRAINT jobs_file_fk FOREIGN KEY (file_id, vault_id)
         REFERENCES files (id, vault_id) ON DELETE RESTRICT,
+    -- A superseded version removed by its exact cleanup leaves the Jobs that
+    -- produced it pointing at nothing, never at another version (#591).
     CONSTRAINT jobs_archive_version_fk FOREIGN KEY (archive_version_id, file_id)
-        REFERENCES archive_versions (id, file_id) ON DELETE RESTRICT,
+        REFERENCES archive_versions (id, file_id) ON DELETE SET NULL (archive_version_id),
     CONSTRAINT jobs_group_fk FOREIGN KEY (group_id, vault_id)
         REFERENCES job_groups (id, vault_id) ON DELETE RESTRICT,
     CONSTRAINT jobs_action_ck CHECK (
@@ -1348,6 +1353,165 @@ $$;
 CREATE TRIGGER upload_multiparts_guard
     BEFORE UPDATE OR DELETE ON upload_multiparts
     FOR EACH ROW EXECUTE FUNCTION upload_multiparts_guard();
+
+-- Cleanup of a replacement (#591, ADR-0035): once a verified keeper is the
+-- file's Current, the versions it superseded are deleted from S3 by exact
+-- VersionId. The batch is frozen in one transaction before any DELETE: its
+-- keeper, the pinned target (provider endpoint, path epoch, Source Volume root)
+-- and its candidates. Nothing is ever added later, nothing is selected by time,
+-- by bytes or from Job history. job_id is the Job that froze it; collecting
+-- that Job keeps the batch, and any later upload Job of the file resumes it
+-- without another PUT. One open batch per Vault File; a batch exists only while
+-- open: its completion removes the candidate versions and the batch together.
+CREATE TABLE cleanup_batches (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    vault_id bigint NOT NULL,
+    file_id uuid NOT NULL,
+    keeper_id uuid NOT NULL,
+    job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
+    provider text COLLATE "C" NOT NULL,
+    path_since timestamptz NOT NULL,
+    source_root text COLLATE "C" NOT NULL,
+    root_identity text COLLATE "C",
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT cleanup_batches_file_uq UNIQUE (file_id),
+    CONSTRAINT cleanup_batches_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT cleanup_batches_file_fk FOREIGN KEY (file_id, vault_id)
+        REFERENCES files (id, vault_id) ON DELETE RESTRICT,
+    CONSTRAINT cleanup_batches_keeper_fk FOREIGN KEY (keeper_id, file_id)
+        REFERENCES archive_versions (id, file_id) ON DELETE RESTRICT,
+    CONSTRAINT cleanup_batches_provider_ck CHECK (provider <> '')
+);
+
+CREATE INDEX cleanup_batches_job_idx ON cleanup_batches (job_id) WHERE job_id IS NOT NULL;
+
+-- One exact deletion grant: a superseded application write of the file (its
+-- landed upload attempt names the exact VersionId and token), never the
+-- keeper, Current or the replacement in progress, never a proven mismatch.
+-- deleted_at records that the exact DELETE returned (or that the frozen
+-- version was found absent); it is written once.
+CREATE TABLE cleanup_candidates (
+    batch_id uuid NOT NULL,
+    file_id uuid NOT NULL,
+    archive_version_id uuid NOT NULL,
+    deleted_at timestamptz,
+    CONSTRAINT cleanup_candidates_pkey PRIMARY KEY (batch_id, archive_version_id),
+    CONSTRAINT cleanup_candidates_version_uq UNIQUE (archive_version_id),
+    CONSTRAINT cleanup_candidates_batch_fk FOREIGN KEY (batch_id, file_id)
+        REFERENCES cleanup_batches (id, file_id) ON DELETE CASCADE,
+    CONSTRAINT cleanup_candidates_version_fk FOREIGN KEY (archive_version_id, file_id)
+        REFERENCES archive_versions (id, file_id) ON DELETE CASCADE
+);
+
+-- The batch is frozen with the keeper that is the file's verified Current.
+CREATE FUNCTION cleanup_batches_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.created_at := now();
+        IF NOT EXISTS (
+            SELECT 1 FROM files f JOIN archive_versions k ON k.id = f.current_version_id
+            WHERE f.id = NEW.file_id AND f.vault_id = NEW.vault_id
+              AND k.id = NEW.keeper_id AND k.integrity = 'verified'
+        ) THEN
+            RAISE EXCEPTION 'a cleanup keeper is the verified Current of its file'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT 1 FROM cleanup_candidates WHERE batch_id = OLD.id) THEN
+            RAISE EXCEPTION 'a cleanup batch ends only after its candidate versions are removed'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.keeper_id, NEW.provider, NEW.path_since,
+        NEW.source_root, NEW.root_identity, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.vault_id, OLD.file_id, OLD.keeper_id, OLD.provider, OLD.path_since,
+        OLD.source_root, OLD.root_identity, OLD.created_at)
+       OR (NEW.job_id IS NOT NULL AND NEW.job_id IS DISTINCT FROM OLD.job_id) THEN
+        RAISE EXCEPTION 'a cleanup batch is frozen'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER cleanup_batches_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON cleanup_batches
+    FOR EACH ROW EXECUTE FUNCTION cleanup_batches_guard();
+
+-- Candidates join their batch only in the transaction that froze it.
+CREATE FUNCTION cleanup_candidates_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM cleanup_batches WHERE id = NEW.batch_id AND created_at = now()
+        ) THEN
+            RAISE EXCEPTION 'a cleanup batch is frozen'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.deleted_at IS NOT NULL OR NOT EXISTS (
+            SELECT 1
+            FROM archive_versions av
+            JOIN files f ON f.id = av.file_id
+            JOIN cleanup_batches b ON b.id = NEW.batch_id
+            JOIN upload_attempts a ON a.id = av.upload_attempt_id
+            WHERE av.id = NEW.archive_version_id AND av.file_id = NEW.file_id
+              AND av.id <> b.keeper_id
+              AND av.id IS DISTINCT FROM f.current_version_id
+              AND av.id IS DISTINCT FROM f.replacing_version_id
+              AND av.integrity <> 'mismatch'
+              AND a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id
+        ) THEN
+            RAISE EXCEPTION 'a cleanup candidate is a superseded application write of its file'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.deleted_at IS NULL THEN
+            RAISE EXCEPTION 'an open cleanup grant is never collected'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.batch_id, NEW.file_id, NEW.archive_version_id)
+       IS DISTINCT FROM (OLD.batch_id, OLD.file_id, OLD.archive_version_id)
+       OR (OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS DISTINCT FROM OLD.deleted_at) THEN
+        RAISE EXCEPTION 'a cleanup grant only records its deletion, once'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER cleanup_candidates_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON cleanup_candidates
+    FOR EACH ROW EXECUTE FUNCTION cleanup_candidates_guard();
+
+-- An Archive Version row is removed only together with its completed cleanup
+-- proof: a candidate whose exact deletion is recorded (ADR-0035).
+CREATE FUNCTION archive_versions_removed_with_proof() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM cleanup_candidates
+        WHERE archive_version_id = OLD.id AND deleted_at IS NOT NULL
+    ) THEN
+        RAISE EXCEPTION 'an Archive Version is removed only with its completed cleanup proof'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER archive_versions_removed_with_proof
+    BEFORE DELETE ON archive_versions
+    FOR EACH ROW EXECUTE FUNCTION archive_versions_removed_with_proof();
 """
 
 

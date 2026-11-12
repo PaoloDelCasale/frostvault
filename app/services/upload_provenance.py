@@ -302,6 +302,14 @@ def _validated_target(connection: Any, job: dict[str, Any], *, key: str, provide
         _validated.reset(token)
 
 
+def validated_pin(connection: Any, job: dict[str, Any]) -> dict[str, Any]:
+    """The target pin of the claim-fenced unit running on ``connection`` (no re-read)."""
+    validated = _validated.get()
+    if validated is None or not validated.matches(connection, job):
+        raise RuntimeError("validated_pin needs a claim-fenced upload unit")
+    return dict(validated.pinned)
+
+
 def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
                    shared: bool = False) -> None:
     validated = _validated.get()

@@ -13,8 +13,10 @@ owns their ordering on the rebuilt model (#590, ADR-0035/0036):
    replacement in progress) in one DB unit;
 5. verification of that exact VersionId against the attempt's snapshot, the
    only expected proof (never a historical object, never today's file);
-6. publication: Current, the Local Copy match and the completion, each in a
-   claim-fenced DB unit after verification.
+6. publication: Current and the Local Copy match in one claim-fenced DB unit
+   after verification;
+7. the exact cleanup of what the new Current superseded (``snapshot_cleanup``),
+   and only then the completion.
 
 A receipt or a materialized version alone never makes a version Current nor
 completes the Job. Every DB unit is replayed alone on a serialization failure
@@ -163,6 +165,8 @@ class UploadExecution:
                 if waiting is not None:
                     return waiting
             if run.version is None:
+                # An open cleanup of Current ends before a match or a new send.
+                w.cleanup_superseded_upload(job, keeper_id=None, client=run.client)
                 if self._unchanged(run):
                     return UploadOutcome(int(job["id"]), "completed", None)
                 self._send(run)
@@ -171,7 +175,7 @@ class UploadExecution:
                 self._prove(run)
                 self._verify(run)
             self._publish(run)
-            w.cleanup_superseded_upload(job, keeper_id=run.version.id)
+            w.cleanup_superseded_upload(job, keeper_id=run.version.id, client=run.client)
             self._complete(run)
             return UploadOutcome(int(job["id"]), "completed", run.version.id)
         except w.OperationCancelled:
