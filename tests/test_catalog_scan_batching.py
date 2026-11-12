@@ -4,8 +4,8 @@ Seams under test:
 - ArchiveCatalog.observe_local_copies_batch — the bulk Local Copy observation
   used by ``_scan_tree`` flush batches.  It must be semantically identical to
   the serialized per-file ``observe_local_copy`` path (identity creation,
-  upsert columns, digest preservation, dirty ancestors) while issuing far
-  fewer database round-trips.
+  upsert columns, digest preservation, dirty ancestors) while issuing a
+  constant number of statements (#587: one upsert on ``files``).
 - ``_vault_lock_touch`` is taken once per batch, not once per file.
 """
 
@@ -20,17 +20,12 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 
+from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
 
 
 def _seed_vault(connection: PostgresConnection, vault_id: int = 2) -> None:
-    connection.execute(
-        """
-        INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, 'docs', 'Docs', '/source', 'bucket', 'docs')
-        """,
-        (vault_id,),
-    )
+    seed_vault(connection, vault_id=vault_id)
 
 
 class CatalogScanBatchIdentityTests(unittest.TestCase):
@@ -51,15 +46,14 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
     def _rows(self) -> list[dict]:
         return self.connection.execute(
             """
-            SELECT fp.path, vf.id AS vault_file_id,
-                   lc.presence, lc.file_type, lc.size, lc.mtime_ns,
-                   lc.plaintext_sha256, lc.last_seen_at, lc.observed_at
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            JOIN local_copies lc ON lc.vault_file_id=vf.id
-            WHERE vf.vault_id=2
-            ORDER BY fp.path
+            SELECT path, id::text AS vault_file_id,
+                   local_presence AS presence, local_file_type AS file_type,
+                   local_size AS size, local_mtime_ns AS mtime_ns,
+                   local_sha256 AS plaintext_sha256,
+                   local_seen_at AS last_seen_at, local_observed_at AS observed_at
+            FROM files
+            WHERE vault_id=2
+            ORDER BY path
             """
         ).fetchall()
 
@@ -100,15 +94,15 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
         ]
         ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
         self.connection.execute(
-            "UPDATE local_copies SET plaintext_sha256=%s WHERE vault_file_id=%s",
-            ("d" * 64, ids["stable.bin"]),
+            "UPDATE files SET local_sha256=%s WHERE id=%s",
+            (bytes.fromhex("d" * 64), ids["stable.bin"]),
         )
         self.catalog.observe_local_copies_batch(
             vault_id=2,
             entries=[("stable.bin", "regular", 50, 7, "2026-07-21T10:01:00+00:00")],
         )
         rows = self._rows()
-        self.assertEqual(rows[0]["plaintext_sha256"], "d" * 64)
+        self.assertEqual(bytes(rows[0]["plaintext_sha256"]).hex(), "d" * 64)
 
     def test_batch_clears_digest_when_size_changes(self) -> None:
         entries = [
@@ -116,8 +110,8 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
         ]
         ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
         self.connection.execute(
-            "UPDATE local_copies SET plaintext_sha256=%s WHERE vault_file_id=%s",
-            ("d" * 64, ids["mutating.bin"]),
+            "UPDATE files SET local_sha256=%s WHERE id=%s",
+            (bytes.fromhex("d" * 64), ids["mutating.bin"]),
         )
         self.catalog.observe_local_copies_batch(
             vault_id=2,
@@ -166,12 +160,7 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
         self.assertEqual(migrated_ref.returncode, 0, migrated_ref.stderr)
         serialized_rows = None
         with PostgresConnection(str(ref_db)) as reference:
-            reference.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                """
-            )
+            seed_vault(reference)
             catalog = ArchiveCatalog(reference)
             for path, file_type, size, mtime_ns, observed_at in [
                 ("photos/a.jpg", "regular", 100, 1, "2026-07-21T10:00:00+00:00"),
@@ -188,14 +177,12 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
                 )
             serialized_rows = reference.execute(
                 """
-                SELECT fp.path, lc.presence, lc.file_type, lc.size, lc.mtime_ns,
-                       lc.last_seen_at
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                JOIN local_copies lc ON lc.vault_file_id=vf.id
-                WHERE vf.vault_id=2
-                ORDER BY fp.path
+                SELECT path, local_presence AS presence,
+                       local_file_type AS file_type, local_size AS size,
+                       local_mtime_ns AS mtime_ns, local_seen_at AS last_seen_at
+                FROM files
+                WHERE vault_id=2
+                ORDER BY path
                 """
             ).fetchall()
 
@@ -282,20 +269,18 @@ class CatalogScanBatchStatementCountTests(unittest.TestCase):
         counting = CountingConnection(self.connection)
         catalog = ArchiveCatalog(counting)
         catalog.observe_local_copies_batch(vault_id=2, entries=entries)
-        # 1 vault lock touch + 1 bulk identity lookup + 1 bulk UPDATE +
-        # 1 bulk INSERT + dirty marking.  Far below 100 per-file calls.
-        self.assertLessEqual(len(statements), 10)
+        # 1 vault lock touch + 1 bulk upsert + 1 consent revocation + 1
+        # dirty-ancestor write: constant, far below 100 per-file calls.
+        self.assertLessEqual(len(statements), 4)
         self.assertEqual(len(self._rows()), 100)
 
     def _rows(self) -> list[dict]:
         return self.connection.execute(
             """
-            SELECT fp.path, vf.id AS vault_file_id
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=2
-            ORDER BY fp.path
+            SELECT path, id AS vault_file_id
+            FROM files
+            WHERE vault_id=2
+            ORDER BY path
             """
         ).fetchall()
 

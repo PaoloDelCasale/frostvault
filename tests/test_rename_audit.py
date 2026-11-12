@@ -1,19 +1,20 @@
-"""Rename safety/validation contracts; routine renames are no longer logged (#416)."""
+"""Routine automatic renames are not logged (#416).
+
+The #188 confirmation races moved to ``tests/test_catalog_rename`` (#587).
+"""
 from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
 
 import hashlib
 import tempfile
-import threading
 import unittest
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.catalog import ArchiveCatalog
 from app.config import settings
 
 from app.security import hash_password
@@ -135,196 +136,6 @@ class RenameAuditPersistenceTests(unittest.TestCase):
             return old_id
 
 
-
-
-    def test_issue_188_two_concurrent_confirms_consume_one_candidate_once(self) -> None:
-        """Competing automatic matches consume one candidate and queue one Job."""
-        old_id = self._seed_digest_rename(
-            old_path="concurrent/old.txt",
-            new_path="concurrent/new.txt",
-            with_verified_version=True,
-        )
-
-        start = threading.Barrier(2)
-
-        def confirm_once(_: int) -> tuple[int, dict[str, object]]:
-            start.wait(timeout=10)
-            try:
-                with PostgresConnection(str(self.database_path)) as connection:
-                    catalog = ArchiveCatalog(connection)
-                    catalog.confirm_file_rename(
-                        vault_file_id=old_id,
-                        new_path="concurrent/new.txt",
-                        changed_at="2026-07-21T11:05:00+00:00",
-                        vault_id=self.vault_id,
-                    )
-                    catalog.queue_jobs(
-                        vault_id=self.vault_id, path="concurrent/new.txt",
-                        action="rename", requested_by=self.owner_id,
-                        requested_at="2026-07-21T11:05:00+00:00",
-                        group_id=str(uuid.uuid4()), is_directory=False,
-                    )
-                return 202, {}
-            except VaultFileNotFound:
-                return 404, {"detail": "Vault File not found"}
-
-        with ThreadPoolExecutor(max_workers=2) as workers:
-            outcomes = list(workers.map(confirm_once, range(2)))
-
-        statuses = [status for status, _body in outcomes]
-        self.assertEqual(statuses.count(202), 1, outcomes)
-        self.assertEqual(statuses.count(404), 1, outcomes)
-        self.assertEqual(
-            [body for status, body in outcomes if status == 404],
-            [{"detail": "Vault File not found"}],
-        )
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            catalog = ArchiveCatalog(connection)
-            current = catalog.get_file_by_path(self.vault_id, "concurrent/new.txt")
-            history = catalog.list_path_history(old_id, vault_id=self.vault_id)
-            retired = connection.execute(
-                "SELECT COUNT(*) AS total FROM vault_files WHERE status='retired'"
-            ).fetchone()["total"]
-            copies = connection.execute(
-                "SELECT COUNT(*) AS total FROM local_copies"
-            ).fetchone()["total"]
-            audits = connection.execute(
-                """
-                SELECT id FROM audit_events
-                WHERE event='vault_file_renamed' AND vault_id=%s
-                """,
-                (self.vault_id,),
-            ).fetchall()
-            jobs = connection.execute(
-                """
-                SELECT id FROM jobs
-                WHERE vault_file_id=%s AND action='rename'
-                """,
-                (old_id,),
-            ).fetchall()
-
-        self.assertIsNotNone(current)
-        self.assertEqual(current["id"], old_id)
-        self.assertEqual(
-            [entry["path"] for entry in history],
-            ["concurrent/old.txt", "concurrent/new.txt"],
-        )
-        self.assertEqual(retired, 1)
-        self.assertEqual(copies, 1)
-        self.assertEqual(len(audits), 0)
-        self.assertEqual(len(jobs), 1)
-
-    def test_issue_188_scan_state_change_wins_before_confirmation_claim(self) -> None:
-        """A scanner reservation commits first; confirmation observes its new state."""
-        old_id = self._seed_digest_rename(
-            old_path="scan-race/old.txt",
-            new_path="scan-race/new.txt",
-        )
-        scanner_reserved = threading.Event()
-        release_scanner = threading.Event()
-        scanner_done = threading.Event()
-        scanner_errors: list[BaseException] = []
-
-        def scanner_state_change() -> None:
-            try:
-                with PostgresConnection(str(self.database_path)) as connection:
-                    connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (self.vault_id,))
-                    connection.execute(
-                        """
-                        UPDATE local_copies
-                        SET presence='present', plaintext_sha256=%s, observed_at=%s
-                        WHERE vault_file_id=%s
-                        """,
-                        ("b" * 64, "2026-07-21T12:00:00+00:00", old_id),
-                    )
-                    scanner_reserved.set()
-                    if not release_scanner.wait(timeout=10):
-                        raise TimeoutError("test did not release scanner transaction")
-            except BaseException as exc:  # Preserve failures from the worker thread.
-                scanner_errors.append(exc)
-            finally:
-                scanner_done.set()
-
-        scanner = threading.Thread(target=scanner_state_change)
-        scanner.start()
-        self.addCleanup(release_scanner.set)
-        self.addCleanup(scanner.join)
-        self.assertTrue(scanner_reserved.wait(timeout=10))
-
-        reservation_attempted = threading.Event()
-        original_reservation = ArchiveCatalog._reserve_rename_confirmation
-
-        def note_reservation(catalog: ArchiveCatalog, vault_id: int) -> None:
-            reservation_attempted.set()
-            original_reservation(catalog, vault_id)
-
-        confirmation_outcome: list[str] = []
-
-        def confirm_while_scanner_holds_write_lock() -> None:
-            try:
-                with PostgresConnection(str(self.database_path)) as connection:
-                    ArchiveCatalog(connection).confirm_file_rename(
-                        vault_file_id=old_id,
-                        new_path="scan-race/new.txt",
-                        changed_at="2026-07-21T12:01:00+00:00",
-                        vault_id=self.vault_id,
-                    )
-            except VaultFileNotFound:
-                confirmation_outcome.append("not_found")
-            else:
-                confirmation_outcome.append("confirmed")
-
-        confirmer = threading.Thread(target=confirm_while_scanner_holds_write_lock)
-        try:
-            with patch.object(
-                ArchiveCatalog,
-                "_reserve_rename_confirmation",
-                autospec=True,
-                side_effect=note_reservation,
-            ):
-                confirmer.start()
-                self.assertTrue(reservation_attempted.wait(timeout=10))
-                release_scanner.set()
-                self.assertTrue(scanner_done.wait(timeout=10))
-                confirmer.join(timeout=10)
-        finally:
-            release_scanner.set()
-            scanner.join(timeout=10)
-            confirmer.join(timeout=10)
-
-        self.assertFalse(scanner.is_alive())
-        self.assertFalse(confirmer.is_alive())
-        self.assertEqual(scanner_errors, [])
-        self.assertEqual(confirmation_outcome, ["not_found"])
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            source_copy = connection.execute(
-                """
-                SELECT presence, plaintext_sha256
-                FROM local_copies WHERE vault_file_id=%s
-                """,
-                (old_id,),
-            ).fetchone()
-            active = connection.execute(
-                "SELECT COUNT(*) AS total FROM vault_files WHERE status='active'"
-            ).fetchone()["total"]
-            current_paths = connection.execute(
-                "SELECT COUNT(*) AS total FROM file_paths WHERE valid_to IS NULL"
-            ).fetchone()["total"]
-            audits = connection.execute(
-                "SELECT COUNT(*) AS total FROM audit_events"
-            ).fetchone()["total"]
-            jobs = connection.execute(
-                "SELECT COUNT(*) AS total FROM jobs"
-            ).fetchone()["total"]
-
-        self.assertEqual(source_copy["presence"], "present")
-        self.assertEqual(source_copy["plaintext_sha256"], "b" * 64)
-        self.assertEqual(active, 2)
-        self.assertEqual(current_paths, 2)
-        self.assertEqual(audits, 0)
-        self.assertEqual(jobs, 0)
 
 
     def test_routine_auto_rename_does_not_create_action_log_entries(self) -> None:
