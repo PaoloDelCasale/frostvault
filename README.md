@@ -782,6 +782,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
+| DB history retention | `OPERATIONAL_HISTORY_RETENTION_DAYS` (30), `AUDIT_RETENTION_DAYS` (90), `OPERATIONAL_RETENTION_INTERVAL_SECONDS` (60), `OPERATIONAL_RETENTION_BATCH_SIZE` (100) |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through
@@ -789,9 +790,55 @@ migration `0048_essential_administration`, move any required database overrides
 into deployment environment variables; the migration discards those overrides.
 See [ADR-0009](docs/adr/0009-effective-system-configuration.md).
 
+### Operational history retention
+
+[ADR-0035](docs/adr/0035-preproduction-baseline-and-upload-redesign.md) defaults to
+30 days for eligible terminal operational history/read-resolved notifications,
+and independently 90 days for the redacted audit log. Both day values have a
+minimum of 1; `0` never means immediate deletion. Set
+`OPERATIONAL_RETENTION_INTERVAL_SECONDS=0` to disable this maintenance. Otherwise
+the worker schedules it every 60 seconds by default, off the Job claim path.
+`OPERATIONAL_RETENTION_BATCH_SIZE` is clamped to 1–1000 (default 100): each tick
+visits at most one page per category in four DB-only transactions. Pages use
+persistent bounded high-water cursors; locked/newly eligible/late-committing rows
+are revisited after wraparound. Age is a strict cutoff, so rows exactly at the
+boundary remain. Backlogs can take multiple sweeps to converge. Per-statement
+and lock timeouts defer work; deadlock/serialization retries replay DB work only.
+
+**Current safe subset, not full evidence garbage collection:**
+
+- Ordinary notifications must be read; problems must also be resolved. Age starts
+  at the latest creation/read/resolution timestamp, not original creation.
+  Unread rows, open problems and pending email deliveries are retained. Terminal
+  deliveries expire only with an eligible notification and after their own final
+  update is old enough; delivery rows are pruned explicitly in bounded pages,
+  never swept away with an unbounded cascade.
+- Audit rows expire after the independent audit period, regardless of actor
+  (`owner`, `emergency`, `system`); remaining actor values are never rewritten.
+- Only cancelled upload Jobs with no preparation snapshot/digest, Archive Version,
+  reconcile-only flag, live claim, pending notification, provenance, cleanup,
+  episode, discovery, deletion/move, audit or notification reference can expire.
+  Open per-file incidents/reconciliation/episodes and open per-Vault problems
+  exclude them too. All other Jobs remain, including completed uploads whose
+  independent digest can still be cleanup authority and failed uploads used to
+  resolve grouped problems through history rather than a foreign key.
+
+All upload intents (even `settled`), receipts, multipart journals, cleanup
+inventories/proofs (even completed), remediation history/links/discovery, and
+Archive Versions (even `purged`) currently remain. `snapshot_cleanup._has_lineage`
+and `_keeper` still consult historical intents/receipts, Job expected digests and
+inventory target scope for **future** cleanup decisions. Settled is not proof
+that these references are dead; intents also lack a reliable settled-at clock.
+Purged version identities can remain referenced by proof, Job, conflict, move,
+incident, or serialized inventory state. Independent immutable evidence and
+explicit closure/reference accounting must replace those uses before broader
+history deletion is safe. No runtime schema introspection or blind cascading
+proof deletion is used. Retention never removes Local Copies, path history,
+cloud objects, files or metadata-backup artifacts, and grants no cleanup consent.
+
 There is no audit or worker-error page. Sensitive/destructive actions (including
 cloud deletion, Recovery Kit downloads and folder reconnects) retain an
-append-only, redacted action log. Worker errors appear as internal-error
+append-only, redacted action log within the configured audit period. Worker errors appear as internal-error
 problems in the notification center. The real scan/watcher reports every
 unreadable path there; inaccessible roots block protection. No background
 diagnostic walker or filesystem banner runs. `/metrics` retains process-local
