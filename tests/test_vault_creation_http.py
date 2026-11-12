@@ -44,10 +44,9 @@ class VaultCreationHttpTestCase(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', '') RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', '') RETURNING id
                 """,
-                (self.username,),
+                (),
             ).fetchone()["id"]
 
         overrides: dict[str, object] = {
@@ -265,7 +264,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
     def test_no_new_user_is_ever_provisioned_by_creating_a_vault(self) -> None:
         self._login()
         with PostgresConnection(str(self.database_path)) as connection:
-            before = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
+            before = connection.execute("SELECT COUNT(*) AS total FROM owner").fetchone()[
                 "total"
             ]
 
@@ -273,7 +272,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
         self.assertEqual(response.status_code, 201, response.text)
         with PostgresConnection(str(self.database_path)) as connection:
-            after = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
+            after = connection.execute("SELECT COUNT(*) AS total FROM owner").fetchone()[
                 "total"
             ]
         self.assertEqual(before, after)

@@ -424,10 +424,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded_again = run_alembic(path)
             self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
 
-    def test_head_creates_oidc_login_and_user_identities(self) -> None:
+    def test_historical_0072_creates_oidc_login_and_user_identities(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "oidc.db"
-            upgraded = run_alembic(path)
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
             with PostgresConnection(str(path)) as connection:
@@ -459,7 +459,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "protected.db"
-            upgraded = run_alembic(path)
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             with PostgresConnection(str(path)) as connection:
                 connection.execute(
@@ -493,10 +493,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertNotEqual(downgraded.returncode, 0)
             self.assertIn("would lose versioned archive data", downgraded.stderr)
 
-    def test_head_is_single_owner_and_keeps_password_nullable(self) -> None:
+    def test_historical_0072_is_single_owner_and_keeps_password_nullable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "single-owner.db"
-            upgraded = run_alembic(path)
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
             with PostgresConnection(str(path)) as connection:
@@ -584,7 +584,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             downgraded = run_alembic(path, "0004_oidc_login", command="downgrade")
             self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
-            reupgraded = run_alembic(path)
+            reupgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(reupgraded.returncode, 0, reupgraded.stderr)
 
     def test_single_owner_migration_keeps_the_first_administrator(self) -> None:
@@ -812,7 +812,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     (user_id,),
                 )
 
-            upgraded = run_alembic(path)
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
 
             with PostgresConnection(str(path)) as connection:
@@ -941,7 +941,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     """
                 )
 
-            upgraded = run_alembic(path)
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             with PostgresConnection(str(path)) as connection:
                 connection.execute(

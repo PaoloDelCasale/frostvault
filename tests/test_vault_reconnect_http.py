@@ -25,7 +25,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         result = run_alembic(self.db_path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
         configured = replace(settings, database_dsn=database_dsn(str(self.db_path)), cookie_secure=False,
                              archive_master_key=Fernet.generate_key().decode(), vault_s3_bucket="test-bucket",
                              frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))))
@@ -38,7 +38,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             token = create_session(connection, user_id=1, auth_method="oidc")
             if stale:
-                connection.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00' WHERE user_id=1")
+                connection.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00'")
         client.cookies.set(self.settings.session_cookie_name, token)
         return client, {"X-CSRF-Token": client.get("/api/me").json()["csrf_token"]}
 

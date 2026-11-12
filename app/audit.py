@@ -16,9 +16,15 @@ def audit_log(event: str, connection: Any | None = None, **fields: Any) -> None:
     including auth-backoff counters.
     """
     redacted = redact_sensitive(fields)
-    actor_user_id = redacted.pop("actor_user_id", None)
-    if actor_user_id is None and "actor_id" in redacted:
-        actor_user_id = redacted.get("actor_id")
+    actor_id = redacted.pop("actor_user_id", redacted.pop("actor_id", None))
+    actor = redacted.pop("actor", None)
+    if actor is None:
+        if event.startswith("break_glass_") or event in {"reauth_failed", "reauth_succeeded"} or (
+            event == "auth_backoff_blocked" and redacted.get("flow") in {"break_glass", "reauth"}
+        ):
+            actor = "emergency"
+        else:
+            actor = "owner" if actor_id is not None else "system"
     vault_id = redacted.pop("vault_id", None)
     job_id = redacted.pop("job_id", None)
     outcome = redacted.pop("outcome", None)
@@ -30,7 +36,7 @@ def audit_log(event: str, connection: Any | None = None, **fields: Any) -> None:
         record_audit_event(
             connection,
             event=event,
-            actor_user_id=actor_user_id,
+            actor=actor,
             vault_id=vault_id,
             job_id=job_id,
             outcome=outcome,
@@ -44,7 +50,7 @@ def audit_log(event: str, connection: Any | None = None, **fields: Any) -> None:
     emit_audit_log_line(
         event,
         outcome=outcome,
-        actor_user_id=actor_user_id,
+        actor=actor,
         vault_id=vault_id,
         job_id=job_id,
         correlation_id=correlation_id,

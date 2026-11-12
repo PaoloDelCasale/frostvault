@@ -63,7 +63,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider = VersionedProvider()
         with PostgresConnection(self.db_path) as connection:
             self.assertTrue(connection.execute("SHOW server_version_num").fetchone()["server_version_num"].startswith("16"))
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (2,'docs','Docs',%s,'bucket','docs')", (str(self.source),))
             enroll_vault_root_identity(connection, 2, str(self.source))
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(A), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())

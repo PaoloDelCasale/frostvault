@@ -3251,7 +3251,7 @@ class ArchiveCatalog:
                 claim_expires_at=%s,
                 updated_at=%s
             WHERE id IN ({placeholders})
-            RETURNING id, vault_file_id, requested_by, status, claim_token,
+            RETURNING id, vault_file_id, origin, status, claim_token,
                       claimed_at, claim_expires_at, requested_at
             """,
             (
@@ -3370,7 +3370,7 @@ class ArchiveCatalog:
         all_active = self.connection.execute(
             """
             SELECT id, status, claim_token, claim_expires_at,
-                   vault_file_id, requested_by
+                   vault_file_id, origin
             FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
               AND status NOT IN ('completed', 'failed', 'cancelled')
@@ -3763,13 +3763,13 @@ class ArchiveCatalog:
                 """
                 INSERT INTO jobs(
                     vault_id, vault_file_id, archive_version_id, path,
-                    action, status, requested_by, requested_at, updated_at,
+                    action, status, requested_at, updated_at,
                     group_id, group_path, total_bytes, transferred_bytes,
                     restore_tier, restore_days, estimated_cost_eur,
                     estimated_hours, pending_until, origin, target_storage_class,
                     upload_verification_requested
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, 0,
                     %s, %s, %s, %s, %s, %s, %s, %s
                 )
@@ -3787,7 +3787,6 @@ class ArchiveCatalog:
                     row["path"],
                     action,
                     initial_status,
-                    requested_by,
                     requested_at,
                     requested_at,
                     group_id,

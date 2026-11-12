@@ -39,8 +39,7 @@ class CatalogIncidentTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -172,9 +171,8 @@ class CatalogIncidentTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status,
-                    requested_by, requested_at, updated_at
-                ) VALUES (1, %s, 'docs/report.pdf', 'upload', 'uploading', 1,
+                    vault_id, vault_file_id, path, action, status, requested_at, updated_at
+                ) VALUES (1, %s, 'docs/report.pdf', 'upload', 'uploading',
                           '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')
                 """,
                 (self.file_id,),

@@ -35,9 +35,9 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         from app.sessions import create_session
         from app.services.operation_policies import get_policy
         self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
-        self.connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','test')")
+        self.connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'test')")
         token = create_session(self.connection, user_id=1, auth_method='local')
-        self.connection.execute('UPDATE sessions SET vault_id=9 WHERE user_id=1')
+        self.connection.execute('UPDATE sessions SET vault_id=9')
         self.connection.commit()
         with patch('app.main.settings', self.cfg), patch('app.database.settings', self.cfg), patch('app.sessions.settings', self.cfg):
             client = TestClient(app)

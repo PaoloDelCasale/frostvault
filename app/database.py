@@ -20,7 +20,7 @@ from .schema_state import DatabaseSchemaError, read_schema_revision
 
 
 INTEGRITY_ERRORS = (UniqueViolation,)
-HEAD_SCHEMA_REVISION = "0073_obligation_discovery"
+HEAD_SCHEMA_REVISION = "0074_owner_singleton"
 
 CONNECT_TIMEOUT_SECONDS = 10
 # Each operation slot may hold two handles at once (a unit opened while an
@@ -284,8 +284,7 @@ def _bootstrap_owner(connection: Any) -> None:
     the current password. A changed password revokes existing Sessions.
     """
     owner = connection.execute(
-        "SELECT id, username, display_name, password_hash FROM users "
-        "ORDER BY id LIMIT 1"
+        "SELECT id, display_name, password_hash FROM owner WHERE id=1 FOR UPDATE"
     ).fetchone()
     username = settings.bootstrap_admin_username.strip().lower()
     password = settings.bootstrap_admin_password
@@ -298,10 +297,10 @@ def _bootstrap_owner(connection: Any) -> None:
             )
         connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash)
-            VALUES (%s, %s, %s)
+            INSERT INTO owner(id, display_name, password_hash)
+            VALUES (1, %s, %s)
             """,
-            (username, display_name, hash_password(password)),
+            (display_name, hash_password(password)),
         )
         return
     if not username or not password:
@@ -311,19 +310,17 @@ def _bootstrap_owner(connection: Any) -> None:
     )
     if (
         password_current
-        and owner["username"] == username
         and owner["display_name"] == display_name
     ):
         return
     connection.execute(
         """
-        UPDATE users
-        SET username=%s, display_name=%s, password_hash=%s,
+        UPDATE owner
+        SET display_name=%s, password_hash=%s,
             session_version=session_version + %s
         WHERE id=%s
         """,
         (
-            username,
             display_name,
             owner["password_hash"] if password_current else hash_password(password),
             0 if password_current else 1,

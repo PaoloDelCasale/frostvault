@@ -50,8 +50,7 @@ class _AdoptionFixture(unittest.TestCase):
 
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', 'hash')"
             )
 
         self.settings = replace(

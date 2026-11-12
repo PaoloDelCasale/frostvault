@@ -40,7 +40,7 @@ class CloudDeletionTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         with self.connection() as connection:
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix,
                 root_identity_version,root_identity) VALUES (1,'photos','Photos',%s,'bucket','vaults/test/',%s,%s)""",
                                (str(self.source), vault_relocation.ROOT_IDENTITY_VERSION, vault_relocation.root_identity(self.source)))

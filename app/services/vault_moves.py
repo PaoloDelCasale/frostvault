@@ -146,11 +146,11 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
         if not str(row["object_key"]).startswith(vault["s3_prefix"].rstrip("/") + "/"):
             raise MoveBlocked("Source key is outside this Vault")
         job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,
-            action,status,requested_by,requested_at,updated_at,group_id,group_path,
+            action,status,requested_at,updated_at,group_id,group_path,
             total_bytes,transferred_bytes,target_storage_class,origin)
-            VALUES (%s,%s,%s,%s,'storage-class','queued',%s,%s,%s,%s,'',%s,0,%s,'manual')
+            VALUES (%s,%s,%s,%s,'storage-class','queued',%s,%s,%s,'',%s,0,%s,'manual')
             ON CONFLICT DO NOTHING RETURNING id""",
-            (vault_id,row["vault_file_id"],row["id"],row["path"],user_id,timestamp,timestamp,
+            (vault_id,row["vault_file_id"],row["id"],row["path"],timestamp,timestamp,
              group_id,row["size"],target)).fetchone()
         if not job:
             continue

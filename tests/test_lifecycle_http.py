@@ -20,7 +20,7 @@ class VaultLifecycleHttpTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("INSERT INTO vaults(id, uuid, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'uuid', 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid/')")
             token = create_session(connection, user_id=1, auth_method="oidc")
             csrf = csrf_token_for(connection, token)

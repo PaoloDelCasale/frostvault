@@ -51,9 +51,8 @@ class OperationPolicyHttpTests(unittest.TestCase):
     @staticmethod
     def _user(connection, name: str) -> int:
         return connection.execute(
-            "INSERT INTO users(username, display_name, password_hash) "
-            "VALUES (%s, %s, %s) RETURNING id",
-            (name, name.title(), hash_password("a secure test password")),
+            'INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s) RETURNING id',
+            (name.title(), hash_password("a secure test password"),),
         ).fetchone()["id"]
 
     def _authenticate(self, user_id: int) -> None:

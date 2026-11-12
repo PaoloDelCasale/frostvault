@@ -14,7 +14,7 @@ class ReconnectMigrationTests(unittest.TestCase):
             result = run_alembic(path, "0057_vault_local_release")
             self.assertEqual(result.returncode, 0, result.stderr)
             with PostgresConnection(path) as connection:
-                connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES(1,'owner','Owner','hash')")
+                connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
                 connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES(1,'photos','Photos','/sources/photos/root','bucket','vaults/one')")
                 catalog = ArchiveCatalog(connection)
                 version = catalog.record_archive_version(vault_id=1, path="photo.jpg", object_key="vaults/one/photo.jpg", provider_version_id="sole-copy", size=5,

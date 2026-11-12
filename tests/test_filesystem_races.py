@@ -312,8 +312,8 @@ class FilesystemCatalogTests(unittest.TestCase):
     def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
         target, version, _ = self.archive()
         with self.db() as connection:
-            connection.execute("""INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
-                requested_at, updated_at, group_id, archive_version_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed', 1,
+            connection.execute("""INSERT INTO jobs(vault_id, vault_file_id, path, action, status,
+                requested_at, updated_at, group_id, archive_version_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed',
                 %s, %s, 'old-recovery', %s FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id
                 WHERE fp.path='photo.jpg'""", (self.clock.isoformat(), self.clock.isoformat(), version))
             catalog = ArchiveCatalog(connection)

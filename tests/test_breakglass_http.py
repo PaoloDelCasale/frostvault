@@ -37,8 +37,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', %s)
                 """,
                 (hash_password(ADMIN_PASSWORD),),
             )
@@ -47,6 +46,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             settings,
             database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
+            bootstrap_admin_username="admin",
             oidc_enabled=True,
             oidc_issuer="https://issuer.example",
             oidc_client_id="client",
@@ -295,8 +295,7 @@ class BreakGlassHttpTests(unittest.TestCase):
     def test_wrong_password_verifies_once_against_the_real_hash(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             password_hash = connection.execute(
-                "SELECT password_hash FROM users WHERE username=%s",
-                ("admin",),
+                "SELECT password_hash FROM owner WHERE id=1",
             ).fetchone()["password_hash"]
 
         client = self._client(LOOPBACK)
@@ -314,7 +313,7 @@ class BreakGlassHttpTests(unittest.TestCase):
     ) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
-                "UPDATE users SET password_hash=NULL WHERE username='admin'"
+                "UPDATE owner SET password_hash=NULL WHERE id=1"
             )
         for username in ("unknown", "admin"):
             with self.subTest(username=username):

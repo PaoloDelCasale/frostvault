@@ -32,7 +32,7 @@ from .services.upload_snapshot import (
 from watchfiles import Change, awatch
 
 from .config import is_placeholder, settings, settings_snapshot
-from .owner import owner_user_id
+from .owner import OWNER_ID, job_actor
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
@@ -1995,7 +1995,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                         s3_client(),
                         bucket=vault["s3_bucket"],
                     )
-                    owner_id = owner_user_id(connection)
+                    owner_id = OWNER_ID
                     local_access = source_layout.vault_local_access(vault["source_root"])
                     if owner_id is not None and local_access.local_operations_allowed:
                         result["auto_local_cleanups"] = queue_auto_local_cleanups(
@@ -2019,7 +2019,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             # process_upload still requires successful preflight before writes.
             try:
                 with db() as connection:
-                    owner_id = owner_user_id(connection)
+                    owner_id = OWNER_ID
                     local_access = source_layout.vault_local_access(vault["source_root"])
                     if owner_id is not None and local_access.local_operations_allowed:
                         result["auto_uploads"] = queue_auto_uploads(
@@ -2083,7 +2083,7 @@ def _apply_auto_renames(
     catalog = ArchiveCatalog(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
     if requested_by is None:
-        requested_by = owner_user_id(connection)
+        requested_by = OWNER_ID
     if hash_missing:
         present_rows = connection.execute(
             """
@@ -4381,7 +4381,7 @@ def record_automatic_cleanup_outcome(
             audit_event_store.record_audit_event(
                 connection,
                 event=event,
-                actor_user_id=job.get("requested_by"),
+                actor=job_actor(job),
                 vault_id=job["vault_id"],
                 job_id=job["id"],
                 outcome=outcome,
@@ -5161,7 +5161,6 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 connection,
                 job_id=int(purge_job["id"]),
                 vault_file_id=purge_job["vault_file_id"],
-                actor_user_id=purge_job.get("requested_by"),
                 updated_at=stamp,
             )
         placeholders = ", ".join(["%s"] * len(expected_job_ids))
@@ -6162,7 +6161,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                     or current["decommission_state"] != "active"
                     or current["source_root"] != vault["source_root"]):
                 return 0
-            owner_id = owner_user_id(connection)
+            owner_id = OWNER_ID
             if owner_id is None:
                 return 0
             queued = 0

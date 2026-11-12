@@ -180,12 +180,11 @@ def admit(connection: Any, row: dict[str, Any], vault: dict[str, Any], *, user_i
             return None
     path = json.loads(row["target_json"])["path"]
     group = group_id or str(uuid.uuid4())
-    job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,
-        requested_by,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,
+    job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,
         upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested,retry_count)
-        VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,%s,0,%s,TRUE,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,0,%s,TRUE,%s,%s,%s,%s)
         ON CONFLICT DO NOTHING RETURNING id""",
-        (vault["id"],row["vault_file_id"],row["archive_version_id"],path,user_id,stamp,stamp,group,path,row["size"],
+        (vault["id"],row["vault_file_id"],row["archive_version_id"],path,stamp,stamp,group,path,row["size"],
          "automatic" if automatic else "manual",row["expected_sha256"],row["snapshot_json"],row["requested_mode"],row["retry_count"])).fetchone()
     if not job:
         return None
@@ -489,8 +488,8 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                 elif name == "obligations":
                     discover_obligations(connection, vault, stamp, TARGET_BATCH, deadline=deadline)
                 else:
-                    from ..owner import owner_user_id
-                    owner_id = owner_user_id(connection)
+                    from ..owner import OWNER_ID
+                    owner_id = OWNER_ID
                     if owner_id is None:
                         continue
                     rows = connection.execute(f"""SELECT r.* FROM upload_remediations r WHERE vault_id=%s

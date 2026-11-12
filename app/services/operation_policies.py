@@ -532,7 +532,7 @@ def queue_auto_local_cleanups(
             record_audit_event(
                 connection,
                 event="local_cleanup.auto_queued",
-                actor_user_id=requested_by,
+                actor="system",
                 vault_id=vault_id,
                 job_id=job_id,
                 outcome="queued",

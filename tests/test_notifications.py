@@ -46,22 +46,14 @@ class NotificationDeliveryTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s)
                 """,
                 (hash_password("owner-password-1"),),
             )
             self.user_id = connection.execute(
-                "SELECT id FROM users WHERE username='owner'"
+                "SELECT id FROM owner WHERE id=1"
             ).fetchone()["id"]
-            self.outsider_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('outsider', 'Outsider', %s)
-                RETURNING id
-                """,
-                (hash_password("outsider-password-1"),),
-            ).fetchone()["id"]
+            self.outsider_id = 2  # forbidden principal; never inserted
             connection.execute(
                 """
                 INSERT INTO vaults(
@@ -83,14 +75,14 @@ class NotificationDeliveryTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status, requested_by,
+                    vault_id, vault_file_id, path, action, status,
                     requested_at, updated_at
                 ) VALUES (
-                    %s, %s, 'a.txt', 'upload', 'completed', %s,
+                    %s, %s, 'a.txt', 'upload', 'completed',
                     '2026-07-22T00:00:00+00:00', '2026-07-22T00:00:00+00:00'
                 )
                 """,
-                (self.vault_id, vault_file["id"], self.user_id),
+                (self.vault_id, vault_file["id"],),
             )
             self.job_id = connection.execute(
                 "SELECT id FROM jobs ORDER BY id DESC LIMIT 1"
@@ -130,18 +122,16 @@ class NotificationDeliveryTests(unittest.TestCase):
                         ), 1,
                     )
                     row = connection.execute(
-                        "SELECT in_app_enabled, dedupe_key FROM notifications "
-                        "WHERE user_id=%s AND job_id=%s AND event=%s",
-                        (self.user_id, self.job_id, event),
+                        'SELECT in_app_enabled, dedupe_key FROM notifications WHERE job_id=%s AND event=%s',
+                        (self.job_id, event,),
                     ).fetchone()
                     self.assertTrue(row["in_app_enabled"])
                     self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:{event}")
                 self.assertEqual(len(notifications.list_in_app_notifications(
                     connection, user_id=self.user_id
                 )), 2)
-                self.assertEqual(notifications.list_in_app_notifications(
-                    connection, user_id=self.outsider_id
-                ), [])
+                with self.assertRaises(ValueError):
+                    notifications.list_in_app_notifications(connection, user_id=self.outsider_id)
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) AS total FROM notification_deliveries"
                 ).fetchone()["total"], 0)
@@ -264,7 +254,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertTrue(marked["read"])
         self.assertIsNotNone(stored["read_at"])
 
-    def test_mark_notification_read_rejects_cross_user_without_mutation(self) -> None:
+    def test_mark_notification_read_rejects_non_owner_without_mutation(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
@@ -274,16 +264,14 @@ class NotificationDeliveryTests(unittest.TestCase):
                 title="Upload verified",
                 body="ok",
             )
-            marked = notifications.mark_notification_read(
-                connection,
-                notification_id=item["id"],
-                user_id=self.outsider_id,
-            )
+            with self.assertRaises(ValueError):
+                notifications.mark_notification_read(
+                    connection, notification_id=item["id"], user_id=self.outsider_id,
+                )
             stored = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s", (item["id"],)
             ).fetchone()
 
-        self.assertIsNone(marked)
         self.assertIsNone(stored["read_at"])
 
     def test_list_filters_unread_and_read_independently(self) -> None:
@@ -372,7 +360,7 @@ class NotificationDeliveryTests(unittest.TestCase):
 
         self.assertEqual(len(fetched), 201)
 
-    def test_mark_all_notifications_read_is_idempotent_and_user_scoped(self) -> None:
+    def test_mark_all_notifications_read_is_idempotent_and_preserves_email_only_history(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
@@ -390,7 +378,8 @@ class NotificationDeliveryTests(unittest.TestCase):
             )
             outsider = notifications.enqueue_notification(
                 connection,
-                user_id=self.outsider_id,
+                user_id=1,
+                channels=("email",),
                 vault_id=None,
                 event="upload_verified",
                 title="Outsider personal",
@@ -404,8 +393,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             )
 
             owner_rows = connection.execute(
-                "SELECT id, read_at FROM notifications WHERE user_id=%s ORDER BY id",
-                (self.user_id,),
+                "SELECT id, read_at FROM notifications ORDER BY id",
             ).fetchall()
             outsider_row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
@@ -425,9 +413,8 @@ class NotificationDeliveryTests(unittest.TestCase):
         def fail_after_sql_error(connection, *, job_id):
             del job_id
             connection.execute(
-                "INSERT INTO notifications(user_id, event, title, created_at) "
-                "VALUES (%s, 'recovery_completed', 'Recovery completed', 'now')",
-                (self.user_id,),
+                "INSERT INTO notifications( event, title, created_at) VALUES ( 'recovery_completed', 'Recovery completed', 'now')",
+                (),
             )
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
             return 0
@@ -507,20 +494,12 @@ class NotificationReadHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s)
                 RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
-            self.outsider_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('outsider', 'Outsider', %s)
-                RETURNING id
-                """,
-                (hash_password("outsider-password-1"),),
-            ).fetchone()["id"]
+            self.outsider_id = 2  # forbidden principal; never inserted
             self.vault_id = connection.execute(
                 """
                 INSERT INTO vaults(
@@ -550,10 +529,10 @@ class NotificationReadHttpTests(unittest.TestCase):
                 connection, user_id=self.owner_id, auth_method="local"
             )
             self.owner_csrf = csrf_token_for(connection, self.owner_token) or ""
-            self.outsider_token = create_session(
-                connection, user_id=self.outsider_id, auth_method="local"
-            )
-            self.outsider_csrf = csrf_token_for(connection, self.outsider_token) or ""
+            with self.assertRaises(ValueError):
+                create_session(connection, user_id=2, auth_method="local")
+            self.outsider_token = "invalid-session"
+            self.outsider_csrf = "invalid-csrf"
 
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
@@ -652,7 +631,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row["read_at"])
 
-    def test_cross_user_mark_read_returns_404_without_mutation(self) -> None:
+    def test_invalid_session_cannot_mark_read_without_mutation(self) -> None:
         notification_id = self._create_notification()
         self._authenticate(self.outsider_token, self.outsider_csrf)
 
@@ -662,7 +641,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             json={"notification_id": notification_id},
         )
 
-        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.status_code, 403, response.text)
         with PostgresConnection(str(self.path)) as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
@@ -742,7 +721,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         invalid = self.client.get("/api/notifications?status=snoozed")
         self.assertEqual(invalid.status_code, 422, invalid.text)
 
-    def test_mark_all_read_http_is_idempotent_and_authz_scoped(self) -> None:
+    def test_mark_all_read_http_is_idempotent_and_requires_live_session(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
@@ -760,7 +739,8 @@ class NotificationReadHttpTests(unittest.TestCase):
             )
             outsider = notifications.enqueue_notification(
                 connection,
-                user_id=self.outsider_id,
+                user_id=1,
+                channels=("email",),
                 vault_id=None,
                 event="upload_verified",
                 title="Outsider",
@@ -785,9 +765,8 @@ class NotificationReadHttpTests(unittest.TestCase):
 
         with PostgresConnection(str(self.path)) as connection:
             owner_unread = connection.execute(
-                "SELECT COUNT(*) AS total FROM notifications "
-                "WHERE user_id=%s AND read_at IS NULL",
-                (self.owner_id,),
+                'SELECT COUNT(*) AS total FROM notifications WHERE in_app_enabled=TRUE AND read_at IS NULL',
+                (),
             ).fetchone()["total"]
             outsider_row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
@@ -796,8 +775,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             owner_ids = {
                 row["id"]: row["read_at"]
                 for row in connection.execute(
-                    "SELECT id, read_at FROM notifications WHERE user_id=%s",
-                    (self.owner_id,),
+                    "SELECT id, read_at FROM notifications",
                 ).fetchall()
             }
         self.assertEqual(owner_unread, 0)
@@ -810,8 +788,7 @@ class NotificationReadHttpTests(unittest.TestCase):
             "/api/notifications/read-all",
             headers={"X-CSRF-Token": self.outsider_csrf},
         )
-        self.assertEqual(outsider_response.status_code, 200, outsider_response.text)
-        self.assertEqual(outsider_response.json()["marked_count"], 1)
+        self.assertEqual(outsider_response.status_code, 403, outsider_response.text)
 
 
 if __name__ == "__main__":

@@ -38,8 +38,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('alice', 'Alice', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', %s)
                 RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
@@ -70,7 +69,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             )
             self.csrf_token = csrf_token_for(connection, self.raw_token)
             session = connection.execute(
-                "SELECT id FROM sessions WHERE user_id=%s", (self.user_id,)
+                'SELECT id FROM sessions ', ()
             ).fetchone()
             self.session_id = session["id"]
             connection.execute(
@@ -149,13 +148,12 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             ).fetchall()
             events = connection.execute(
                 """
-                SELECT event, actor_user_id, detail_json
+                SELECT event, actor, detail_json
                 FROM audit_events
-                WHERE actor_user_id=%s
+                WHERE actor='emergency'
                   AND event IN ('reauth_failed', 'auth_backoff_blocked')
                 ORDER BY id
                 """,
-                (self.user_id,),
             ).fetchall()
 
         self.assertEqual(
@@ -170,7 +168,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertIn("auth_backoff_blocked", {row["event"] for row in events})
         for event in events:
             detail = json.loads(event["detail_json"])
-            self.assertEqual(event["actor_user_id"], self.user_id)
+            self.assertEqual(event["actor"], "emergency")
             self.assertEqual(detail.get("flow"), "reauth")
             self.assertNotIn("password", detail)
             self.assertNotIn("secret", detail)
@@ -236,7 +234,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             ).fetchall()
             success = connection.execute(
                 """
-                SELECT actor_user_id, detail_json
+                SELECT actor, detail_json
                 FROM audit_events
                 WHERE event='reauth_succeeded'
                 ORDER BY id DESC LIMIT 1
@@ -248,7 +246,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             {("ip", self.CLIENT_IP), ("account", "alice")},
         )
         self.assertEqual(reauth_rows, [])
-        self.assertEqual(success["actor_user_id"], self.user_id)
+        self.assertEqual(success["actor"], "emergency")
         success_detail = json.loads(success["detail_json"])
         self.assertEqual(success_detail.get("flow"), "reauth")
         self.assertNotIn("password", success_detail)

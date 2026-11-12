@@ -53,9 +53,7 @@ def _sha256_hex(payload: bytes) -> str:
 def _seed_vault(connection, *, vault_id: int = 2, source_root: str = "/source") -> None:
     connection.execute(
         """
-        INSERT INTO users(
-            id, username, display_name, password_hash
-        ) VALUES (1, 'owner', 'Owner', 'hash')
+        INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
         """
     )
     connection.execute(
@@ -1033,9 +1031,7 @@ class PlaintextNamespaceRenameTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
+                    INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -1246,11 +1242,11 @@ class RenameRestartTests(unittest.TestCase):
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
+                        action, status, requested_at, updated_at,
                         group_id, group_path, total_bytes, transferred_bytes,
                         message
                     ) VALUES (
-                        2, %s, %s, %s, 'rename', 'cleaning', 1,
+                        2, %s, %s, %s, 'rename', 'cleaning',
                         '2026-07-21T11:12:00+00:00', '2026-07-21T11:12:00+00:00',
                         'group-1', %s, %s, 0, 'Hiding the previous cloud key'
                     )
@@ -1834,11 +1830,11 @@ class RenameDestinationProofTests(unittest.TestCase):
                     """
                     INSERT INTO jobs(
                         vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
+                        action, status, requested_at, updated_at,
                         group_id, group_path, total_bytes, transferred_bytes,
                         message
                     ) VALUES (
-                        2, %s, %s, %s, 'rename', 'queued', 1,
+                        2, %s, %s, %s, 'rename', 'queued',
                         '2026-07-21T11:12:00+00:00', '2026-07-21T11:12:00+00:00',
                         'group-1', %s, %s, 0, 'Verifying the new cloud key'
                     )

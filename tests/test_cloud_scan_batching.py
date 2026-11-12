@@ -39,8 +39,7 @@ from tests.test_database import run_alembic
 def _seed_vault(connection: PostgresConnection, *, source_root: str = "/source") -> None:
     connection.execute(
         """
-        INSERT INTO users(id, username, display_name, password_hash)
-        VALUES (1, 'owner', 'Owner', 'hash')
+        INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
         """
     )
     connection.execute(
@@ -126,7 +125,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     conn = psycopg.connect(database_dsn(database_path), options="-c lock_timeout=1000")
                     try:
                         conn.execute(
-                            "UPDATE users SET display_name='concurrent' WHERE id=1"
+                            "UPDATE owner SET display_name='concurrent' WHERE id=1"
                         )
                         conn.commit()
                     finally:
@@ -157,7 +156,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             self.assertEqual(concurrent_error, [])
             with PostgresConnection(str(database_path)) as connection:
                 name = connection.execute(
-                    "SELECT display_name FROM users WHERE id=1"
+                    "SELECT display_name FROM owner WHERE id=1"
                 ).fetchone()["display_name"]
             self.assertEqual(name, "concurrent")
 
@@ -403,11 +402,10 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at,
+                        vault_id, vault_file_id, path, action, status, requested_at, updated_at,
                         claim_token, claimed_at, claim_expires_at
                     ) VALUES (
-                        2, %s, 'held.txt', 'upload', 'uploading', 1,
+                        2, %s, 'held.txt', 'upload', 'uploading',
                         '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00',
                         'live-worker', '2026-07-21T10:00:00+00:00',
                         '2026-07-21T10:05:00+00:00'

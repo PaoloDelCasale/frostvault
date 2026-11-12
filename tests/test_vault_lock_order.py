@@ -44,8 +44,7 @@ class DatabaseCase(unittest.TestCase):
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
         with PostgresConnection(self.path) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash)"
-                " VALUES (1,'owner','Owner','hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')"
             )
             for vault_id in (2, 3):
                 connection.execute(
@@ -194,7 +193,7 @@ class WorkerErrorLoggingTests(DatabaseCase):
 
     def test_exception_is_logged_even_when_no_owner_exists_to_notify(self):
         with PostgresConnection(self.path) as connection:
-            connection.execute("DELETE FROM users")
+            connection.execute("DELETE FROM owner")
             with self.assertLogs("app.services.worker_errors", level="ERROR"):
                 worker_errors.record_worker_error(connection, component="startup", exc=RuntimeError("x"))
 

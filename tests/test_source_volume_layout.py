@@ -42,8 +42,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
 
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', 'hash')"
             )
 
         self.settings = replace(
@@ -471,8 +470,7 @@ class LocalOpsGateTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', 'hash')"
             )
             self.vault_id = connection.execute(
                 """
@@ -570,8 +568,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s) RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', %s) RETURNING id
                 """,
                 (hash_password("admin-password-1"),),
             ).fetchone()["id"]

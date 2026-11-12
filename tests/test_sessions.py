@@ -34,11 +34,10 @@ def _insert_user(
 ) -> int:
     row = connection.execute(
         """
-        INSERT INTO users(username, display_name, password_hash)
-        VALUES (%s, %s, %s)
+        INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s)
         RETURNING id
         """,
-        (username, username.title(), "hash"),
+        (username.title(), "hash",),
     ).fetchone()
     return row["id"]
 
@@ -71,7 +70,7 @@ class SessionStoreTests(unittest.TestCase):
 
         self.assertIsNotNone(session)
         self.assertEqual(session["user"]["id"], user_id)
-        self.assertEqual(session["user"]["username"], "paola")
+        self.assertEqual(session["user"]["username"], settings.bootstrap_admin_username.strip().lower())
 
     def _set_session_column(self, column: str, value: str) -> None:
         with self._connect() as connection:
@@ -129,7 +128,7 @@ class SessionStoreTests(unittest.TestCase):
         token = self._new_session()
         with self._connect() as connection:
             connection.execute(
-                "UPDATE users SET session_version=session_version+1"
+                "UPDATE owner SET session_version=session_version+1"
             )
         with self._connect() as connection:
             self.assertIsNone(resolve_session(connection, token))
@@ -137,7 +136,7 @@ class SessionStoreTests(unittest.TestCase):
     def test_bug_004_csrf_honors_session_version(self) -> None:
         """[BUG-004][Req: REQ-008] force-logout must invalidate CSRF lookup.
 
-        After users.session_version bump, csrf_token_for must return None
+        After owner.session_version bump, csrf_token_for must return None
         just like resolve_session (parity for CSRF middleware fail-closed).
         """
         with self._connect() as connection:
@@ -148,7 +147,7 @@ class SessionStoreTests(unittest.TestCase):
             self.assertIsNotNone(csrf_token_for(connection, token))
             self.assertIsNotNone(resolve_session(connection, token))
             connection.execute(
-                "UPDATE users SET session_version=session_version+1 WHERE id=%s",
+                "UPDATE owner SET session_version=session_version+1 WHERE id=%s",
                 (user_id,),
             )
             self.assertIsNone(resolve_session(connection, token))

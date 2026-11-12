@@ -408,8 +408,7 @@ class _SchedulerDbMixin:
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')"
             )
             for vault_id, slug in ((10, "alpha"), (20, "beta")):
                 connection.execute(
@@ -471,18 +470,18 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             # Three older Jobs in vault 10, one newer Job in vault 20.
             connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
+                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) "
+                "SELECT 10, id, 'a.txt', 'upload', 'queued', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
                 "FROM vault_files WHERE vault_id=10 ORDER BY id LIMIT 1"
             )
             connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'b.txt', 'upload', 'queued', 1, '2026-07-01T00:01:00+00:00', '2026-07-01T00:01:00+00:00' "
+                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) "
+                "SELECT 10, id, 'b.txt', 'upload', 'queued', '2026-07-01T00:01:00+00:00', '2026-07-01T00:01:00+00:00' "
                 "FROM vault_files WHERE vault_id=10 ORDER BY id DESC LIMIT 1"
             )
             connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 20, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:02:00+00:00', '2026-07-01T00:02:00+00:00' "
+                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) "
+                "SELECT 20, id, 'a.txt', 'upload', 'queued', '2026-07-01T00:02:00+00:00', '2026-07-01T00:02:00+00:00' "
                 "FROM vault_files WHERE vault_id=20 ORDER BY id LIMIT 1"
             )
 
@@ -513,8 +512,8 @@ class FairSchedulerIntegrationTests(_SchedulerDbMixin, unittest.TestCase):
     def test_cancelled_queued_job_is_not_started(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by, requested_at, updated_at) "
-                "SELECT 10, id, 'a.txt', 'upload', 'queued', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
+                "INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) "
+                "SELECT 10, id, 'a.txt', 'upload', 'queued', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00' "
                 "FROM vault_files WHERE vault_id=10 ORDER BY id LIMIT 1"
             )
             job_id = connection.execute("SELECT id FROM jobs").fetchone()["id"]

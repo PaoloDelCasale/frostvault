@@ -144,13 +144,13 @@ class CancelGroupConnection(RecordingConnection):
 
     def execute(self, sql: str, params=()):
         self.statements.append((sql, tuple(params)))
-        if self.automatic_cleanup and "SELECT id, path, requested_by" in sql:
+        if self.automatic_cleanup and "SELECT id, path, origin" in sql:
             return JobQueueResult(
                 [
                     {
                         "id": 10,
                         "path": "docs/file.txt",
-                        "requested_by": 1,
+                        "origin": "automatic",
                         "archive_version_id": "version-1",
                     }
                 ]
@@ -423,9 +423,7 @@ class StorageCleanupTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
+                    INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -465,9 +463,7 @@ class StorageCleanupTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
+                    INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                     """
                 )
                 connection.execute(
@@ -876,11 +872,9 @@ class StorageCleanupTests(unittest.TestCase):
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at, total_bytes
+                        vault_id, vault_file_id, path, action, status, requested_at, updated_at, total_bytes
                     ) VALUES (
-                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
-                        1, '2026-07-21T10:05:00+00:00',
+                        2, %s, 'docs/file.txt', 'free-space', 'cleaning', '2026-07-21T10:05:00+00:00',
                         '2026-07-21T10:05:00+00:00', %s
                     )
                     RETURNING id
@@ -941,11 +935,9 @@ class StorageCleanupTests(unittest.TestCase):
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at, total_bytes
+                        vault_id, vault_file_id, path, action, status, requested_at, updated_at, total_bytes
                     ) VALUES (
-                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
-                        1, '2026-07-21T10:05:00+00:00',
+                        2, %s, 'docs/file.txt', 'free-space', 'cleaning', '2026-07-21T10:05:00+00:00',
                         '2026-07-21T10:05:00+00:00', %s
                     )
                     RETURNING id
@@ -1030,7 +1022,7 @@ class StorageCleanupTests(unittest.TestCase):
         record_audit_event.assert_called_once_with(
             connection,
             event="local_cleanup.cancelled",
-            actor_user_id=7,
+            actor="owner",
             vault_id=2,
             job_id=10,
             outcome="cancelled",
@@ -1074,7 +1066,7 @@ class StorageCleanupTests(unittest.TestCase):
         cleanup_scheduler.assert_called_once_with(
             connection,
             vault_id=987,
-            requested_by=42,
+            requested_by=1,
         )
 
     def cleanup_fixture(self, directory: str):
@@ -1094,9 +1086,7 @@ class StorageCleanupTests(unittest.TestCase):
         with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(
-                    id, username, display_name, password_hash
-                ) VALUES (1, 'owner', 'Owner', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                 """
             )
             connection.execute(

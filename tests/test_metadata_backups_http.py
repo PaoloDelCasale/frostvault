@@ -45,8 +45,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.admin_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s) RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -89,8 +88,8 @@ class MetadataBackupHttpTests(unittest.TestCase):
             raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
             if reauth:
                 connection.execute(
-                    "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
-                    ("2099-01-01T00:00:00+00:00", user_id),
+                    'UPDATE sessions SET reauth_at=%s ',
+                    ("2099-01-01T00:00:00+00:00",),
                 )
             csrf_token = csrf_token_for(connection, raw_token)
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)

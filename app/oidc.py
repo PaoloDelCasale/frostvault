@@ -330,30 +330,22 @@ class IdentityRejected(Exception):
 def bind_owner_identity(connection: Any, claims: OidcClaims) -> int:
     """Return the owner id for ``claims``, binding it on the first login.
 
-    The owner holds at most one Identity per issuer. The first successful
-    login from the configured issuer binds its subject; any other subject
-    from that issuer is rejected afterwards (#412, #366 Q1).
+    The singleton row lock serializes first logins. A bound issuer is part
+    of the Identity too: changing configuration never silently rebinds it.
     """
-    from .owner import owner_user_id
-
-    owner_id = owner_user_id(connection)
-    if owner_id is None:
-        raise IdentityRejected("no_owner")
-    # Serialize concurrent first logins: only one subject may be bound.
-    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
+    if claims.issuer != settings.oidc_issuer or not claims.subject:
+        raise IdentityRejected("identity_mismatch")
     bound = connection.execute(
-        "SELECT user_id, subject FROM user_identities WHERE issuer=%s",
-        (claims.issuer,),
+        "SELECT issuer, subject FROM owner WHERE id=1 FOR UPDATE"
     ).fetchone()
-    if bound is not None:
-        if bound["subject"] != claims.subject or int(bound["user_id"]) != owner_id:
+    if bound is None:
+        raise IdentityRejected("no_owner")
+    if bound["issuer"] is not None:
+        if (bound["issuer"], bound["subject"]) != (claims.issuer, claims.subject):
             raise IdentityRejected("identity_mismatch")
-        return owner_id
+        return 1
     connection.execute(
-        """
-        INSERT INTO user_identities(user_id, issuer, subject, created_at)
-        VALUES (%s, %s, %s, %s)
-        """,
-        (owner_id, claims.issuer, claims.subject, _now().isoformat()),
+        "UPDATE owner SET issuer=%s, subject=%s WHERE id=1",
+        (claims.issuer, claims.subject),
     )
-    return owner_id
+    return 1

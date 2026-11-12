@@ -33,23 +33,22 @@ class OidcHttpTests(unittest.TestCase):
         with PostgresConnection(str(database_path)) as connection:
             self.user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('alice', 'Alice', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
             connection.execute(
                 """
-                INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                VALUES (%s, %s, %s, '2026-07-21T00:00:00+00:00')
+                UPDATE owner SET issuer=%s, subject=%s WHERE id=1
                 """,
-                (self.user_id, self.provider.issuer, self.subject),
+                (self.provider.issuer, self.subject),
             )
 
         self.test_settings = replace(
             settings,
             database_dsn=database_dsn(str(database_path)),
             cookie_secure=False,
+            bootstrap_admin_username="alice",
             oidc_enabled=True,
             oidc_issuer=self.provider.issuer,
             oidc_client_id=self.provider.client_id,
@@ -209,20 +208,20 @@ class OidcHttpTests(unittest.TestCase):
 
     def test_first_login_binds_the_owner_identity(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("DELETE FROM user_identities")
+            connection.execute("UPDATE owner SET issuer=NULL, subject=NULL WHERE id=1")
 
         first = self._complete_login("first-subject")
         self.assertEqual(first.status_code, 303, first.text)
         self.assertEqual(self.client.get("/api/me").json()["username"], "alice")
         with PostgresConnection(str(self.database_path)) as connection:
             identities = connection.execute(
-                "SELECT user_id, issuer, subject FROM user_identities"
+                "SELECT id, issuer, subject FROM owner"
             ).fetchall()
         self.assertEqual(
             identities,
             [
                 {
-                    "user_id": self.user_id,
+                    "id": 1,
                     "issuer": self.provider.issuer,
                     "subject": "first-subject",
                 }

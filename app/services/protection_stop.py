@@ -54,7 +54,7 @@ def stop_protection(connection: Any, *, vault_id: int, actor_user_id: int,
                 AND status NOT IN ('completed','failed','cancelled') LIMIT 1""", (vault_id,)).fetchone()
             if not active:
                 connection.execute("UPDATE protection_stops SET cloud_disposition='keep' WHERE vault_id=%s", (vault_id,))
-                record_audit_event(connection, event="folder_protection.cloud_retained", actor_user_id=actor_user_id,
+                record_audit_event(connection, event="folder_protection.cloud_retained", actor=("owner" if actor_user_id is not None else "system"),
                                    vault_id=vault_id, outcome="success", reason=reason.strip(),
                                    group_id=existing["group_id"], completed_deletions_not_undone=True)
                 reconcile_one(connection, vault_id)
@@ -76,11 +76,11 @@ def stop_protection(connection: Any, *, vault_id: int, actor_user_id: int,
                 actor_user_id=actor_user_id, requested_at=at, confirmation=confirmation,
                 reason=reason, origin="stop-protection")
             group_id = scheduled.group_id
-    connection.execute("""INSERT INTO protection_stops(vault_id,requested_at,requested_by,
-        cloud_disposition,group_id,reason) VALUES (%s,%s,%s,%s,%s,%s)""",
-                       (vault_id, at, actor_user_id, cloud_disposition, group_id, reason.strip()))
+    connection.execute("""INSERT INTO protection_stops(vault_id,requested_at,
+        cloud_disposition,group_id,reason) VALUES (%s,%s,%s,%s,%s)""",
+                       (vault_id, at, cloud_disposition, group_id, reason.strip(),))
     connection.execute("UPDATE vaults SET decommission_state='decommissioning' WHERE id=%s", (vault_id,))
-    record_audit_event(connection, event="folder_protection.stopped", actor_user_id=actor_user_id,
+    record_audit_event(connection, event="folder_protection.stopped", actor=("owner" if actor_user_id is not None else "system"),
                        vault_id=vault_id, outcome="requested", cloud_disposition=cloud_disposition,
                        group_id=group_id, reason=reason.strip(), local_data="retained")
     reconcile_one(connection, vault_id)
@@ -104,7 +104,7 @@ def reconcile_one(connection: Any, vault_id: int) -> None:
     at = cloud_deletion.now_iso()
     connection.execute("""UPDATE vaults SET decommission_state='decommissioned',
         decommissioned_at=%s,root_released_at=%s WHERE id=%s""", (at, at, vault_id))
-    record_audit_event(connection, event="folder_protection.root_released", actor_user_id=None,
+    record_audit_event(connection, event="folder_protection.root_released", actor="system",
                        vault_id=vault_id, outcome="success", local_data="retained")
 
 

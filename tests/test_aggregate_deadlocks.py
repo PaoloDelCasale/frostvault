@@ -124,7 +124,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
         with PostgresConnection(self.path) as connection:
             self.assertEqual(connection.execute("SHOW server_version_num").fetchone()["server_version_num"][:2], "16")
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
                 VALUES (2,'docs','Docs',%s,'bucket','docs')""", (str(self.source),))
             from app.services.vault_relocation import enroll_vault_root_identity
@@ -146,9 +146,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 catalog.observe_local_copy(vault_id=2, path=path, file_type="regular",
                     size=len(PAYLOAD), mtime_ns=target.stat().st_mtime_ns, observed_at=STAMP)
                 file_id = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=2 AND path=%s AND valid_to IS NULL", (path,)).fetchone()["vault_file_id"]
-                job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                    requested_by,requested_at,updated_at,total_bytes)
-                    VALUES (2,%s,%s,'upload','queued',1,%s,%s,%s) RETURNING id""",
+                job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes)
+                    VALUES (2,%s,%s,'upload','queued',%s,%s,%s) RETURNING id""",
                     (file_id, path, STAMP, STAMP, len(PAYLOAD))).fetchone()
                 jobs.append(job["id"])
             aggregates.flush_directory_aggregates(connection, vault_id=2)
@@ -386,9 +385,8 @@ class AggregateDeadlockTests(unittest.TestCase):
                 with PostgresConnection(self.path) as c:
                     old = c.execute("SELECT * FROM jobs WHERE id=%s", (original,)).fetchone()
                     c.execute("UPDATE archive_versions SET integrity=%s WHERE id=%s", (integrity, old["archive_version_id"]))
-                    new = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                        requested_by,requested_at,updated_at,total_bytes)
-                        VALUES (2,%s,%s,'upload','queued',1,%s,%s,%s) RETURNING id""",
+                    new = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes)
+                        VALUES (2,%s,%s,'upload','queued',%s,%s,%s) RETURNING id""",
                         (old["vault_file_id"], old["path"], STAMP, STAMP, len(PAYLOAD))).fetchone()["id"]
                 attempts = []
                 original_link = ArchiveCatalog.link_job_version

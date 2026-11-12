@@ -650,7 +650,7 @@ class PermissionRecoveryBoundaryTests(Harness):
         self.stack.enter_context(patch("app.storage.validate_cloud_vault"))
         self.stack.enter_context(patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0))
         self.stack.enter_context(patch("app.storage.s3_client"))
-        self.stack.enter_context(patch("app.storage.owner_user_id", return_value=None))
+        self.stack.enter_context(patch("app.storage.OWNER_ID", None))
         self.stack.enter_context(patch("app.storage.record_catalog_revision"))
         task = self.start(root)
         try:

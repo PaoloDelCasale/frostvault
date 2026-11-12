@@ -290,7 +290,7 @@ def _reconnect_vault_root(
     record_audit_event(
         connection,
         event="vault_folder_reconnected",
-        actor_user_id=actor_user_id,
+        actor=("owner" if actor_user_id is not None else "system"),
         vault_id=vault_id,
         outcome="success",
         visibility="owner",

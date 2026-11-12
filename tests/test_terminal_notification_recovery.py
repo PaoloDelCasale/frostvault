@@ -34,8 +34,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')"
             )
             connection.execute(
                 "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')"

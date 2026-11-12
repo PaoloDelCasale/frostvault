@@ -10,7 +10,7 @@ import hashlib
 from collections.abc import Collection
 from typing import Any
 
-from ..owner import owner_user_id
+from ..owner import OWNER_ID
 from .notifications import now_iso, set_problem
 
 
@@ -18,7 +18,7 @@ def report_problem(
     connection: Any, *, event: str, vault_id: int | None = None,
     path: str = "", component: str = "", active: bool = True,
 ) -> dict[str, Any] | None:
-    owner_id = owner_user_id(connection)
+    owner_id = OWNER_ID
     if owner_id is None:
         return None
     identity = hashlib.sha256(

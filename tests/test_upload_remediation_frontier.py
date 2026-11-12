@@ -142,8 +142,8 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         av, file_id = self.seed_owned(snapshot=False)
         with self.db() as connection:
             original = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,
-                action,status,requested_by,requested_at,updated_at,upload_plaintext_sha256,upload_verification_requested)
-                VALUES (2,%s,%s,'report.txt','upload','completed',1,%s,%s,%s,'read_back') RETURNING id""",
+                action,status,requested_at,updated_at,upload_plaintext_sha256,upload_verification_requested)
+                VALUES (2,%s,%s,'report.txt','upload','completed',%s,%s,%s,'read_back') RETURNING id""",
                 (file_id,av,storage.now_iso(),storage.now_iso(),hashlib.sha256(A).hexdigest())).fetchone()["id"]
         self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
@@ -242,8 +242,8 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         with self.db() as connection:
             av = connection.execute("SELECT * FROM archive_versions").fetchone()
             other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,
-                action,status,requested_by,requested_at,updated_at,upload_plaintext_sha256,upload_snapshot_json)
-                VALUES (2,%s,%s,'report.txt','upload','failed',1,%s,%s,%s,%s) RETURNING id""",
+                action,status,requested_at,updated_at,upload_plaintext_sha256,upload_snapshot_json)
+                VALUES (2,%s,%s,'report.txt','upload','failed',%s,%s,%s,%s) RETURNING id""",
                 (self.file_id,av["id"],storage.now_iso(),storage.now_iso(),av["plaintext_sha256"],av["upload_snapshot_json"])).fetchone()["id"]
             remediation.capture_failure(connection,other,storage.now_iso())
         self.assertEqual(remediation.sweep(self.db), 1)
@@ -259,8 +259,8 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         first = self.admit(); self.run_job(first); keeper = self.assert_keeper(first)
         with self.db() as connection:
             wrong = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,
-                action,status,requested_by,requested_at,updated_at,upload_plaintext_sha256)
-                VALUES (2,%s,%s,'report.txt','upload','failed',1,%s,%s,%s) RETURNING id""",
+                action,status,requested_at,updated_at,upload_plaintext_sha256)
+                VALUES (2,%s,%s,'report.txt','upload','failed',%s,%s,%s) RETURNING id""",
                 (self.file_id,keeper["id"],storage.now_iso(),storage.now_iso(),hashlib.sha256(B).hexdigest())).fetchone()["id"]
             remediation.capture_failure(connection,wrong,storage.now_iso())
         for _ in range(3):

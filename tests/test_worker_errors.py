@@ -19,7 +19,7 @@ class WorkerErrorTests(unittest.TestCase):
             result = run_alembic(path)
             self.assertEqual(result.returncode, 0, result.stderr)
             with PostgresConnection(str(path)) as connection:
-                connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
+                connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
                 for _ in range(2):
                     worker_errors.record_worker_error(connection, component="cloud_scan", exc=RuntimeError("SECRET raw exception"), password="SECRET")
                 english = notifications.list_in_app_notifications(connection, user_id=1, locale="en")

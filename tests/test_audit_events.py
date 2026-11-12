@@ -25,13 +25,12 @@ class AuditEventPersistenceTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Owner', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s)
                 """,
-                ("owner", hash_password("owner-password-1")),
+                (hash_password("owner-password-1"),),
             )
             self.owner_id = connection.execute(
-                "SELECT id FROM users WHERE username=%s", ("owner",)
+                "SELECT id FROM owner WHERE id=1"
             ).fetchone()["id"]
             connection.execute(
                 """
@@ -50,7 +49,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
             recorded = audit_events.record_audit_event(
                 connection,
                 event="vault_root_relocated",
-                actor_user_id=self.owner_id,
+                actor="owner",
                 vault_id=self.vault_id,
                 outcome="success",
                 correlation_id="corr-1",
@@ -66,7 +65,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
         self.assertEqual(recorded["correlation_id"], "corr-1")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["id"], recorded["id"])
-        self.assertEqual(events[0]["actor_user_id"], self.owner_id)
+        self.assertEqual(events[0]["actor"], "owner")
         detail = events[0]["detail"]
         self.assertEqual(detail["target_user_id"], 99)
         self.assertEqual(detail["role"], "viewer")
@@ -76,7 +75,7 @@ class AuditEventPersistenceTests(unittest.TestCase):
             recorded = audit_events.record_audit_event(
                 connection,
                 event="break_glass_failed",
-                actor_user_id=None,
+                actor="emergency",
                 vault_id=None,
                 outcome="failure",
                 password="super-secret-password",

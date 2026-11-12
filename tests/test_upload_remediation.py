@@ -148,8 +148,8 @@ class UploadRemediationTests(unittest.TestCase):
         original = self.fail_after_ack()
         with self.db() as connection:
             for status in ("queued","failed","completed"):
-                other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at)
-                    VALUES (2,%s,'report.txt','upload',%s,1,%s,%s) RETURNING id""",(self.file_id,status,storage.now_iso(),storage.now_iso())).fetchone()["id"]
+                other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                    VALUES (2,%s,'report.txt','upload',%s,%s,%s) RETURNING id""",(self.file_id,status,storage.now_iso(),storage.now_iso())).fetchone()["id"]
                 notifications.reconcile_problem_states(connection)
                 self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s",(original,)).fetchone()["problem_status"],"open",status)
                 connection.execute("UPDATE jobs SET status='failed' WHERE id=%s",(other,))
@@ -274,8 +274,8 @@ class UploadRemediationTests(unittest.TestCase):
     def test_other_live_and_expired_claims_are_not_absence_of_active_work(self):
         self.fail_after_ack()
         with self.db() as connection:
-            other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at,claim_token,claim_expires_at)
-                VALUES (2,%s,'report.txt','recover','queued',1,%s,%s,'other-live-claim',%s) RETURNING id""",(self.file_id,storage.now_iso(),storage.now_iso(),storage._claim_expiry_at())).fetchone()["id"]
+            other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,claim_token,claim_expires_at)
+                VALUES (2,%s,'report.txt','recover','queued',%s,%s,'other-live-claim',%s) RETURNING id""",(self.file_id,storage.now_iso(),storage.now_iso(),storage._claim_expiry_at())).fetchone()["id"]
         self.assertEqual(remediation.sweep(self.db),0)
         future = (datetime.now(timezone.utc)+timedelta(seconds=20)).isoformat()
         with self.db() as connection:
@@ -309,8 +309,8 @@ class UploadRemediationTests(unittest.TestCase):
         self.assert_keeper(resumed)
         with self.db() as connection:
             for _ in range(55):
-                connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at)
-                    VALUES (2,%s,'report.txt','upload','completed',1,%s,%s)""",(self.file_id,storage.now_iso(),storage.now_iso()))
+                connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                    VALUES (2,%s,'report.txt','upload','completed',%s,%s)""",(self.file_id,storage.now_iso(),storage.now_iso()))
         client = self.http_client()
         with patch("app.main._allowed_hosts",return_value=[]):
             recent = client.get("/api/jobs?vault_id=2")

@@ -67,8 +67,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -88,12 +87,12 @@ class JobMessagePersistenceTests(unittest.TestCase):
             self.job_id = connection.execute(
                 """
                 INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status, requested_by,
+                    vault_id, vault_file_id, path, action, status,
                     requested_at, updated_at
                 ) VALUES (
                     2,
                     (SELECT id FROM vault_files WHERE vault_id=2 LIMIT 1),
-                    'a.txt', 'upload', 'queued', 1,
+                    'a.txt', 'upload', 'queued',
                     '2026-07-22T10:00:00+00:00', '2026-07-22T10:00:00+00:00'
                 )
                 RETURNING id
@@ -180,8 +179,7 @@ class JobMessageHttpTests(unittest.TestCase):
             password_hash = hash_password(self.PASSWORD)
             user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s)
                 RETURNING id
                 """,
                 (password_hash,),
@@ -205,16 +203,16 @@ class JobMessageHttpTests(unittest.TestCase):
                 """
                 INSERT INTO jobs(
                     vault_id, vault_file_id, path, action, status, message,
-                    message_key, message_params, requested_by, requested_at, updated_at
+                    message_key, message_params, requested_at, updated_at
                 ) VALUES (
                     %s,
                     (SELECT id FROM vault_files WHERE vault_id=%s LIMIT 1),
                     'a.txt', 'upload', 'completed', 'Upload verified',
-                    'job.upload_verified', '{}', %s,
+                    'job.upload_verified', '{}',
                     '2026-07-22T10:00:00+00:00', '2026-07-22T10:00:00+00:00'
                 )
                 """,
-                (vault_id, vault_id, user_id),
+                (vault_id, vault_id,),
             )
             self.user_id = user_id
             self.vault_id = vault_id

@@ -34,7 +34,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.clock = self.start
         self.access = SimpleNamespace(local_operations_allowed=True, volume_alias=None, volume_health="healthy")
         with self.db() as connection:
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("""
                 INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix,
                                    root_identity, root_identity_version)

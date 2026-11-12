@@ -429,7 +429,7 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                     "with db() as connection:",
                     "    connection.execute('SET TRANSACTION READ ONLY')",
                     "    revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()['version_num']",
-                    "    owner = connection.execute('SELECT username FROM users').fetchone()['username']",
+                    "    owner = connection.execute('SELECT display_name FROM owner WHERE id=1').fetchone()['display_name']",
                     "print(json.dumps({'revision': revision, 'owner': owner}))",
                 )
             ),
@@ -697,7 +697,7 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             combined_logs = logs.stdout + logs.stderr
             revision, owner = self._inspect_postgresql_database(container_name)
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
-            self.assertEqual(owner, username)
+            self.assertEqual(owner, "SmokeAdmin")
             self._down(root, project_name)
 
             self.assertIn(

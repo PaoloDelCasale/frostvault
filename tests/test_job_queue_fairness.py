@@ -105,8 +105,7 @@ class QueueFixture(unittest.TestCase):
         self.vaults: dict[int, dict] = {}
         with self.db() as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')"
             )
             for vault_id, slug in ((2, "photos"), (3, "docs")):
                 root = self.base / slug
@@ -261,9 +260,9 @@ class TierWindowTests(QueueFixture):
                 )
                 connection.execute(
                     """
-                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
+                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status,
                                      requested_at, updated_at, origin)
-                    VALUES (2, %s, %s, 'rename', 'queued', 1, %s, %s, 'manual')
+                    VALUES (2, %s, %s, 'rename', 'queued', %s, %s, 'manual')
                     """,
                     (file_id, f"op{index}.jpg", self.clock.isoformat(), self.clock.isoformat()),
                 )
@@ -689,9 +688,9 @@ class FailureGroupingTests(QueueFixture):
                 )
                 job_id = connection.execute(
                     """
-                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
+                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status,
                                      requested_at, updated_at, origin)
-                    VALUES (2, %s, %s, 'upload', 'failed', 1, %s, %s, 'automatic') RETURNING id
+                    VALUES (2, %s, %s, 'upload', 'failed', %s, %s, 'automatic') RETURNING id
                     """,
                     (file_id, f"f{index}.jpg", self.clock.isoformat(), self.clock.isoformat()),
                 ).fetchone()["id"]

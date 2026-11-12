@@ -71,25 +71,25 @@ def create_session(
     ip: str | None = None,
     user_agent: str | None = None,
 ) -> str:
+    if user_id != 1:
+        raise ValueError("A Session can represent only the Owner")
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     now = _now()
     user = connection.execute(
-        "SELECT session_version FROM users WHERE id=%s",
-        (user_id,),
+        "SELECT session_version FROM owner WHERE id=1",
     ).fetchone()
     if not user:
-        raise ValueError("Cannot create a session for an unknown user")
+        raise ValueError("Cannot create a Session before Owner bootstrap")
     connection.execute(
         """
         INSERT INTO sessions(
-            id, user_id, token_hash, auth_method, csrf_token, session_version,
+            id, token_hash, auth_method, csrf_token, session_version,
             created_at, last_seen_at, idle_expires_at, absolute_expires_at,
             reauth_at, ip, user_agent
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
-            user_id,
             _hash_token(raw_token),
             auth_method,
             secrets.token_urlsafe(TOKEN_BYTES),
@@ -123,15 +123,17 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
         return None
     user = connection.execute(
         """
-        SELECT id, username, display_name, session_version
-        FROM users WHERE id=%s
+        SELECT id, display_name, session_version
+        FROM owner WHERE id=1
         """,
-        (row["user_id"],),
     ).fetchone()
     if not user:
         return None
     if row["session_version"] != user["session_version"]:
         return None
+    # Username remains an environment-owned public API field, not a catalog
+    # identity. A restored catalog always uses the current emergency login name.
+    user["username"] = settings.bootstrap_admin_username.strip().lower()
     # Repeat liveness predicates when sliding the deadline.  A logout or expiry
     # committed by another process between the SELECT and this UPDATE must win.
     touched = connection.execute(
@@ -180,7 +182,7 @@ def csrf_token_for(connection: Any, raw_token: str | None) -> str | None:
                s.session_version AS session_session_version,
                u.session_version AS user_session_version
         FROM sessions s
-        JOIN users u ON u.id = s.user_id
+        JOIN owner u ON u.id = 1
         WHERE s.token_hash=%s
         """,
         (_hash_token(raw_token),),

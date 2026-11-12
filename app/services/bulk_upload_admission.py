@@ -62,7 +62,7 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
     group_id = str(uuid.UUID(request_id)) if request_id else str(uuid.uuid4())
     existing = connection.execute("SELECT * FROM bulk_upload_admissions WHERE group_id=%s", (group_id,)).fetchone()
     if existing:
-        if existing["vault_id"] != vault_id or existing["path"] != path or existing["requested_by"] != user_id:
+        if existing["vault_id"] != vault_id or existing["path"] != path:
             raise ValueError("Upload request identifier already used for a different scope")
         return public_status(existing)
     if not _ready(vault):
@@ -79,10 +79,10 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
     """, [vault_id, *params]).fetchone()
     stamp = _now()
     row = connection.execute("""
-        INSERT INTO bulk_upload_admissions(group_id,vault_id,requested_by,requested_at,updated_at,
+        INSERT INTO bulk_upload_admissions(group_id,vault_id,requested_at,updated_at,
             path,verification_mode,vault_identity_json,watermark,selected_count,status)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *
-    """, (group_id, vault_id, user_id, stamp, stamp, path,
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *
+    """, (group_id, vault_id, stamp, stamp, path,
           get_policy(connection, vault_id).effective_upload_verification(), _identity(vault),
           selection["watermark"], selection["selected"],
           "pending" if selection["selected"] else "completed")).fetchone()
@@ -161,7 +161,7 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
     if path_ids:
         from ..catalog import ArchiveCatalog
         job_ids, total_bytes, _ = ArchiveCatalog(connection).queue_jobs(
-            vault_id=vault_id, path=request["path"], action="upload", requested_by=request["requested_by"],
+            vault_id=vault_id, path=request["path"], action="upload", requested_by=1,
             requested_at=stamp, group_id=group_id, is_directory=True,
             whole_vault=not request["path"], origin=request["origin"], admission_path_ids=path_ids,
             admission_verification_mode=request["verification_mode"])

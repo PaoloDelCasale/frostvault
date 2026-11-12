@@ -42,8 +42,7 @@ class RecoveryHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s) RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]

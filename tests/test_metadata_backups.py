@@ -58,8 +58,7 @@ class CreateMetadataBackupTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', 'hash')
                 """
             )
             connection.execute(
@@ -112,9 +111,9 @@ class CreateMetadataBackupTests(unittest.TestCase):
         restored_db = self.root / "restored"
         restore_database(restored_db, payload["database"])
         with PostgresConnection(str(restored_db)) as connection:
-            users = connection.execute("SELECT username FROM users").fetchall()
+            owners = connection.execute("SELECT id, display_name FROM owner").fetchall()
             vaults = connection.execute("SELECT slug FROM vaults").fetchall()
-        self.assertEqual([row["username"] for row in users], ["admin"])
+        self.assertEqual(owners, [{"id": 1, "display_name": "Admin"}])
         self.assertEqual([row["slug"] for row in vaults], ["docs"])
 
 
@@ -230,8 +229,7 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', 'hash')
                 """
             )
         self.master_key = Fernet.generate_key().decode("ascii")
@@ -280,8 +278,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', 'hash')
                 """
             )
         self.master_key = Fernet.generate_key().decode("ascii")
@@ -605,12 +602,11 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', 'hash')
                 """
             )
             self.admin_id = connection.execute(
-                "SELECT id FROM users WHERE username='admin'"
+                "SELECT id FROM owner WHERE id=1"
             ).fetchone()["id"]
         self.master_key = Fernet.generate_key().decode("ascii")
         self.store = RecordingObjectStore()
@@ -630,8 +626,8 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
                 )
             status = metadata_backups.backup_status(connection)
             notes = connection.execute(
-                "SELECT event, title FROM notifications WHERE user_id=%s",
-                (self.admin_id,),
+                'SELECT event, title FROM notifications ',
+                (),
             ).fetchall()
 
         self.assertEqual(status["last_status"], "failed")
@@ -647,7 +643,7 @@ class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
         Seam: ``_verify_postgres_dump_isolated`` — producer of
         ``verification_mode=temp_database`` results used by
         ``verify_restore_isolated`` / scheduled verify. After ``createdb``
-        succeeds, if ``psql`` COUNT cannot prove users/vaults/alembic_version,
+        succeeds, if ``psql`` COUNT cannot prove owner/vaults/alembic_version,
         raise ``BackupError`` — do not return ``ok: True`` with null counts.
         Distinct from intentional ``pg_restore_list`` fallback (former BUG-003).
         """
@@ -656,7 +652,7 @@ class TempDatabaseVerifyProvenCountsTests(unittest.TestCase):
         restore_soft = MagicMock(returncode=1, stderr=b"WARNING: role missing", stdout=b"")
         psql_fail = MagicMock(
             returncode=1,
-            stderr="ERROR: relation \"users\" does not exist\n",
+            stderr="ERROR: relation \"owner\" does not exist\n",
             stdout="",
         )
         drop_ok = MagicMock(returncode=0, stderr=b"", stdout=b"")

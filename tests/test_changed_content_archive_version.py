@@ -45,8 +45,7 @@ def _sha(payload: bytes) -> str:
 def _seed_user_vault(connection: PostgresConnection, source: Path) -> None:
     connection.execute(
         """
-        INSERT INTO users(id, username, display_name, password_hash)
-        VALUES (1, 'owner', 'Owner', 'hash')
+        INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
         """
     )
     connection.execute(

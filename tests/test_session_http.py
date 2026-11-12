@@ -30,16 +30,16 @@ class SessionHttpTests(unittest.TestCase):
         with PostgresConnection(str(database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Alice', %s)
                 """,
-                (self.username, hash_password(self.password)),
+                (hash_password(self.password),),
             )
 
         self.settings = replace(
             settings,
             database_dsn=database_dsn(str(database_path)),
             cookie_secure=False,
+            bootstrap_admin_username=self.username,
         )
         for target in (
             "app.main.settings",

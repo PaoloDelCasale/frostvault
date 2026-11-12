@@ -880,10 +880,13 @@ def login(action: LoginRequest, request: Request, response: Response):
             retry_after = blocked.retry_after
         else:
             user = connection.execute(
-                "SELECT * FROM users WHERE lower(username)=lower(%s)",
-                (username,),
+                "SELECT * FROM owner WHERE id=1",
             ).fetchone()
-            eligible = bool(user and user["password_hash"])
+            expected_username = settings.bootstrap_admin_username.strip().lower()
+            eligible = bool(
+                user and user["password_hash"] and expected_username
+                and username == expected_username
+            )
             password_hash = (
                 user["password_hash"] if eligible else DUMMY_PASSWORD_HASH
             )
@@ -983,7 +986,7 @@ def reauth(
 
         if retry_after is None:
             row = connection.execute(
-                "SELECT password_hash FROM users WHERE id=%s", (user["id"],)
+                "SELECT password_hash FROM owner WHERE id=1"
             ).fetchone()
             password_valid = bool(
                 row
@@ -1566,9 +1569,8 @@ def open_problems(request: Request, page: int = Query(1, ge=1),
     with db() as connection:
         notification_service.reconcile_problem_states(connection)
         rows = connection.execute(
-            "SELECT * FROM notifications WHERE user_id=%s AND in_app_enabled=TRUE "
-            "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
-            (user["id"], (page - 1) * 100),
+            "SELECT * FROM notifications WHERE in_app_enabled=TRUE AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
+            ((page - 1) * 100,),
         ).fetchall()
         return {"items": [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows],
                 "open_problem_count": notification_service.count_open_problems(connection, user_id=user["id"])}
@@ -1722,7 +1724,7 @@ def download_recovery_kit(
         raise HTTPException(409, str(exc)) from None
     with db() as connection:
         audit_event_store.record_audit_event(connection, event="recovery_kit_downloaded",
-                           actor_user_id=int(user["id"]), outcome="success", visibility="owner")
+                           actor="owner", outcome="success", visibility="owner")
     return Response(payload, media_type="application/octet-stream", headers={
         "Content-Disposition": 'attachment; filename="frostvault-recovery-kit.json"',
         "Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff",
@@ -1740,7 +1742,7 @@ def acknowledge_recovery_kit(
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
         audit_event_store.record_audit_event(connection, event="recovery_kit_custody_acknowledged",
-                           actor_user_id=int(user["id"]), outcome="success", visibility="owner",
+                           actor="owner", outcome="success", visibility="owner",
                            fingerprint=action.fingerprint)
         return recovery_kit_service.kit_status(connection)
 
@@ -1775,7 +1777,7 @@ def run_metadata_backup(
         audit_event_store.record_audit_event(
             connection,
             event="metadata_backup_created",
-            actor_user_id=admin["id"],
+            actor="owner",
             outcome="success",
             reason=action.reason,
             digest_sha256=result["digest_sha256"],
@@ -1809,7 +1811,7 @@ def download_metadata_backup(
         audit_event_store.record_audit_event(
             connection,
             event="metadata_backup_downloaded",
-            actor_user_id=admin["id"],
+            actor="owner",
             outcome="success",
             visibility="admin",
             run_id=run_id,
@@ -2828,7 +2830,7 @@ def _cancel_active_jobs(
     if job_action == "free-space":
         automatic_cleanup_rows = connection.execute(
             """
-            SELECT id, path, requested_by, archive_version_id
+            SELECT id, path, origin, archive_version_id
             FROM jobs
             WHERE vault_id=%s AND id = ANY(%s) AND action='free-space'
               AND origin='automatic'
@@ -2861,7 +2863,7 @@ def _cancel_active_jobs(
         audit_event_store.record_audit_event(
             connection,
             event="local_cleanup.cancelled",
-            actor_user_id=actor_user_id,
+            actor=("owner" if actor_user_id is not None else "system"),
             vault_id=vault["id"],
             job_id=int(row["id"]),
             outcome="cancelled",
@@ -3000,13 +3002,13 @@ def approve_recover(
         expire_pending(connection, vault_id=vault["id"], group_id=action.group_id, now=timestamp)
         rows = connection.execute(
             """
-            UPDATE jobs SET status='queued', approved_by=%s, approved_at=%s,
+            UPDATE jobs SET status='queued', approved_at=%s,
                 pending_until=NULL, message=%s, updated_at=%s
             WHERE vault_id=%s AND group_id=%s AND action='recover'
               AND status='pending_approval'
             RETURNING id
             """,
-            (user["id"], timestamp,
+            (timestamp,
              "High-impact restore approved; RestoreObject cannot be cancelled after AWS accepts it",
              timestamp, vault["id"], action.group_id),
         ).fetchall()

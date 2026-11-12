@@ -29,8 +29,7 @@ class MigrateOnStartTests(unittest.TestCase):
         with PostgresConnection(str(path)) as connection:
             return connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('backup-admin', 'Backup Admin', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Backup Admin', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -59,14 +58,13 @@ class MigrateOnStartTests(unittest.TestCase):
             notification = connection.execute(
                 """
                 SELECT event, body FROM notifications
-                WHERE user_id=%s
                 ORDER BY id DESC LIMIT 1
                 """,
-                (admin_id,),
+                (),
             ).fetchone()
             notification_count = connection.execute(
-                "SELECT COUNT(*) AS total FROM notifications WHERE user_id=%s",
-                (admin_id,),
+                'SELECT COUNT(*) AS total FROM notifications ',
+                (),
             ).fetchone()["total"]
 
         self.assertEqual(run_count, 1)

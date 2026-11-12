@@ -105,8 +105,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner@example.com', 'Owner', 'hash')"
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')"
             )
             connection.execute(
                 """

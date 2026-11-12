@@ -134,7 +134,7 @@ def _row_notification(
     in_app_value = row.get("in_app_enabled")
     return {
         "id": row["id"],
-        "user_id": row["user_id"],
+        "user_id": 1,
         "vault_id": row.get("vault_id"),
         "job_id": row.get("job_id"),
         "event": row["event"],
@@ -159,9 +159,9 @@ def _row_notification(
 
 def _owner_recipients(connection: Any) -> list[dict[str, Any]]:
     """The single owner is the only notification recipient (#412)."""
-    from ..owner import owner_user_id
+    from ..owner import OWNER_ID
 
-    owner_id = owner_user_id(connection)
+    owner_id = OWNER_ID
     return [] if owner_id is None else [{"user_id": owner_id}]
 
 
@@ -213,8 +213,10 @@ def enqueue_notification(
     """Persist one notification and attach any requested outbound channels.
 
     ``in_app_enabled`` preserves visibility for historical email-only rows.
-    ``dedupe_key`` is optional for legacy callers and unique per User when set.
+    ``dedupe_key`` is optional and unique installation-wide when set.
     """
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     requested_channels = tuple(dict.fromkeys(channels))
     for channel in requested_channels:
         if channel not in {"in_app", "email"}:
@@ -240,15 +242,13 @@ def enqueue_notification(
     if dedupe_key is None:
         row = connection.execute(
             """
-            INSERT INTO notifications(
-                user_id, vault_id, job_id, event, title, body,
+            INSERT INTO notifications( vault_id, job_id, event, title, body,
                 title_key, body_key, message_params, in_app_enabled,
                 dedupe_key, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES ( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
-                user_id,
                 vault_id,
                 job_id,
                 event,
@@ -265,16 +265,14 @@ def enqueue_notification(
     else:
         row = connection.execute(
             """
-            INSERT INTO notifications(
-                user_id, vault_id, job_id, event, title, body,
+            INSERT INTO notifications( vault_id, job_id, event, title, body,
                 title_key, body_key, message_params, in_app_enabled,
                 dedupe_key, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT(user_id, dedupe_key) DO NOTHING
+            ) VALUES ( %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(dedupe_key) DO NOTHING
             RETURNING *
             """,
             (
-                user_id,
                 vault_id,
                 job_id,
                 event,
@@ -292,11 +290,11 @@ def enqueue_notification(
             row = connection.execute(
                 """
                 SELECT * FROM notifications
-                WHERE user_id=%s AND dedupe_key=%s
+                WHERE dedupe_key=%s
                 ORDER BY id
                 LIMIT 1
                 """,
-                (user_id, dedupe_key),
+                (dedupe_key,),
             ).fetchone()
             if row is None:
                 raise RuntimeError("Notification deduplication lookup failed")
@@ -390,9 +388,9 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
         existing = connection.execute(
             """
             SELECT id FROM notifications
-            WHERE user_id=%s AND dedupe_key=%s
+            WHERE dedupe_key=%s
             """,
-            (user_id, dedupe_key),
+            (dedupe_key,),
         ).fetchone()
         enqueue_notification(
             connection,
@@ -420,8 +418,8 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
                     read_at=CASE WHEN %s OR {RESOLUTION_SQL} THEN COALESCE(n.read_at,%s)
                         ELSE n.read_at END
                     FROM jobs original WHERE original.id=n.job_id
-                      AND n.user_id=%s AND n.dedupe_key=%s""",
-                (already_closed, already_closed, now_iso(), already_closed, now_iso(), user_id, dedupe_key),
+                      AND n.dedupe_key=%s""",
+                (already_closed, already_closed, now_iso(), already_closed, now_iso(), dedupe_key),
             )
         if existing is None:
             enqueued += 1
@@ -449,8 +447,8 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     user_id = int(recipients[0]["user_id"])
     from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL
     own = connection.execute(
-        "SELECT 1 FROM notifications WHERE user_id=%s AND dedupe_key=%s",
-        (user_id, f"job:{int(job['id'])}:job_failed"),
+        'SELECT 1 FROM notifications WHERE dedupe_key=%s',
+        (f"job:{int(job['id'])}:job_failed",),
     ).fetchone()
     if own is not None:
         return False
@@ -467,8 +465,8 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     ).fetchone()
     in_burst = int(burst["total"] or 0) > GROUP_THRESHOLD
     previous = connection.execute(
-        "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
-        (user_id, group_key),
+        'SELECT * FROM notifications WHERE dedupe_key=%s',
+        (group_key,),
     ).fetchone()
     since = cutoff
     if previous is not None:
@@ -489,10 +487,10 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         recent = connection.execute(
             """
             SELECT count(*) AS total FROM notifications
-            WHERE user_id=%s AND vault_id=%s AND event='job_failed'
+            WHERE vault_id=%s AND event='job_failed'
               AND problem_status='open' AND created_at >= %s
             """,
-            (user_id, vault_id, cutoff),
+            (vault_id, cutoff,),
         ).fetchone()
         if int(recent["total"] or 0) < GROUP_THRESHOLD:
             return False
@@ -500,10 +498,10 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
         retired = connection.execute(
             """
             SELECT message_params FROM notifications
-            WHERE user_id=%s AND vault_id=%s AND event='job_failed_group'
+            WHERE vault_id=%s AND event='job_failed_group'
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, vault_id),
+            (vault_id,),
         ).fetchone()
         if retired is not None:
             retired_last = str(parse_message_params(retired.get("message_params")).get("last") or "")
@@ -592,9 +590,9 @@ def _enqueue_incident_notification(
         existing = connection.execute(
             """
             SELECT id FROM notifications
-            WHERE user_id=%s AND dedupe_key=%s
+            WHERE dedupe_key=%s
             """,
-            (user_id, dedupe_key),
+            (dedupe_key,),
         ).fetchone()
         enqueue_notification(
             connection,
@@ -610,9 +608,8 @@ def _enqueue_incident_notification(
             channels=tuple(channels),
         )
         connection.execute(
-            "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') "
-            "WHERE user_id=%s AND dedupe_key=%s",
-            (user_id, dedupe_key),
+            "UPDATE notifications SET problem_status=COALESCE(problem_status, 'open') WHERE dedupe_key=%s",
+            (dedupe_key,),
         )
         if existing is None:
             enqueued += 1
@@ -737,10 +734,10 @@ def set_problem(
     owner_id = int(recipients[0]["user_id"])
     # Serialize episodes, but remain compatible with FK KEY SHARE acquired by
     # concurrent Job/notification inserts while they hold a Vault lock.
-    connection.execute("SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (owner_id,))
+    connection.execute("SELECT id FROM owner WHERE id=1 FOR NO KEY UPDATE")
     previous = connection.execute(
-        "SELECT * FROM notifications WHERE user_id=%s AND dedupe_key=%s",
-        (owner_id, key),
+        'SELECT * FROM notifications WHERE dedupe_key=%s',
+        (key,),
     ).fetchone()
     stamp = now_iso()
     if not active:
@@ -815,10 +812,11 @@ def reconcile_problem_states(connection: Any) -> None:
 
 
 def count_open_problems(connection: Any, *, user_id: int) -> int:
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     reconcile_problem_states(connection)
     row = connection.execute(
-        "SELECT count(*) AS total FROM notifications WHERE user_id=%s "
-        "AND COALESCE(in_app_enabled,TRUE)=TRUE AND problem_status='open'", (user_id,),
+        "SELECT count(*) AS total FROM notifications WHERE COALESCE(in_app_enabled,TRUE)=TRUE AND problem_status='open'", (),
     ).fetchone()
     return int(row["total"] or 0)
 
@@ -831,8 +829,7 @@ def _visible_notification_predicate(alias: str = "n") -> str:
     """
     prefix = f"{alias}." if alias else ""
     return f"""
-        {prefix}user_id=%s
-        AND COALESCE({prefix}in_app_enabled, TRUE)=TRUE
+        COALESCE({prefix}in_app_enabled, TRUE)=TRUE
     """
 
 
@@ -865,9 +862,11 @@ def list_in_app_notifications(
     ``limit`` accepts up to 201 so HTTP handlers can probe ``has_more`` at the
     public maximum page size of 200.
     """
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     reconcile_problem_states(connection)
     clauses = [_visible_notification_predicate()]
-    params: list[Any] = [user_id]
+    params: list[Any] = []
 
     normalized_status = _normalize_notification_status(status)
     if normalized_status == "unread":
@@ -896,6 +895,8 @@ def list_in_app_notifications(
 
 
 def count_unread_notifications(connection: Any, *, user_id: int) -> int:
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     reconcile_problem_states(connection)
     row = connection.execute(
         f"""
@@ -904,7 +905,6 @@ def count_unread_notifications(connection: Any, *, user_id: int) -> int:
         WHERE {_visible_notification_predicate()}
           AND n.read_at IS NULL
         """,
-        (user_id,),
     ).fetchone()
     return int(row["total"] or 0) if row else 0
 
@@ -916,6 +916,8 @@ def mark_notification_read(
     user_id: int,
     locale: str | None = None,
 ) -> dict[str, Any] | None:
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
@@ -925,7 +927,7 @@ def mark_notification_read(
         SET read_at=COALESCE(read_at, %s)
         WHERE id=%s AND {update_predicate}
         """,
-        (stamp, notification_id, user_id),
+        (stamp, notification_id),
     )
     select_predicate = _visible_notification_predicate("n")
     row = connection.execute(
@@ -933,7 +935,7 @@ def mark_notification_read(
         SELECT n.* FROM notifications n
         WHERE n.id=%s AND {select_predicate}
         """,
-        (notification_id, user_id),
+        (notification_id,),
     ).fetchone()
     return _row_notification(row, locale=locale) if row else None
 
@@ -949,6 +951,8 @@ def mark_all_notifications_read(
     in-app visibility predicate are left untouched. Returns the number of
     rows newly stamped plus the authoritative remaining unread count.
     """
+    if user_id != 1:
+        raise ValueError("Notifications belong only to the Owner")
     reconcile_problem_states(connection)
     stamp = now_iso()
     update_predicate = _visible_notification_predicate("")
@@ -959,7 +963,7 @@ def mark_all_notifications_read(
         WHERE {update_predicate}
           AND read_at IS NULL
         """,
-        (stamp, user_id),
+        (stamp,),
     )
     marked_count = int(getattr(result, "rowcount", 0) or 0)
     return {
@@ -1002,7 +1006,7 @@ def deliver_pending_notifications(
     pending = connection.execute(
         """
         SELECT d.*, n.event AS n_event, n.title AS n_title, n.body AS n_body,
-               n.user_id AS n_user_id, n.vault_id AS n_vault_id, n.job_id AS n_job_id,
+               n.vault_id AS n_vault_id, n.job_id AS n_job_id,
                n.message_params AS n_message_params
         FROM notification_deliveries d
         JOIN notifications n ON n.id = d.notification_id
@@ -1044,7 +1048,7 @@ def deliver_pending_notifications(
                         "template": row["n_event"],
                         "subject": rendered["subject"],
                         "body": rendered["body"],
-                        "user_id": row["n_user_id"],
+                        "user_id": 1,
                         "from_address": smtp_config.get("from_address"),
                         "to_address": to_address,
                         "host": smtp_config.get("host"),

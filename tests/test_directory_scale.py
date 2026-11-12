@@ -923,11 +923,9 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.connection.execute(
             """
             INSERT INTO jobs(
-                vault_id, vault_file_id, path, action, status,
-                requested_by, requested_at, updated_at
+                vault_id, vault_file_id, path, action, status, requested_at, updated_at
             ) VALUES (
-                2, %s, 'purge/me.bin', 'cloud-purge', 'running',
-                NULL, '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
+                2, %s, 'purge/me.bin', 'cloud-purge', 'running', '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
             )
             """,
             (file_id,),

@@ -107,8 +107,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', %s)",
+                "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s)",
                 (hash_password("correct-horse-battery-staple"),),
             )
             connection.execute(
@@ -170,11 +169,11 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 """
                 SELECT id, transition_version
                 FROM sessions
-                WHERE user_id=%s AND revoked_at IS NULL
+                WHERE revoked_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (user_id,),
+                (),
             ).fetchone()
             if vault_id is not None:
                 set_session_vault(
@@ -190,10 +189,10 @@ class CatalogEventsHttpTests(unittest.TestCase):
             row = connection.execute(
                 """
                 SELECT id FROM sessions
-                WHERE user_id=%s AND revoked_at IS NULL
+                WHERE revoked_at IS NULL
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                (user_id,),
+                (),
             ).fetchone()
         return str(row["id"])
 
@@ -788,7 +787,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         def bump_user_version() -> None:
             with PostgresConnection(str(self.db_path)) as connection:
                 connection.execute(
-                    "UPDATE users SET session_version=session_version+1 WHERE id=1"
+                    "UPDATE owner SET session_version=session_version+1 WHERE id=1"
                 )
 
         events = asyncio.run(self._consume_until_error(bump_user_version))

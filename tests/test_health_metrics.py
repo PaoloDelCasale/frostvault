@@ -38,8 +38,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s)
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Admin', %s)
                 """,
                 (hash_password("admin-password-1"),),
             )

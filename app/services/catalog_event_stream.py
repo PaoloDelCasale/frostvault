@@ -264,6 +264,8 @@ def stream_tick_snapshot(
     """
     vault_id = int(vault_id)
     user_id = int(user_id)
+    if user_id != 1:
+        raise ValueError("A Session can represent only the Owner")
     after_revision = max(0, int(after_revision))
     stamp = now or datetime.now(timezone.utc)
     statements = [0]
@@ -280,14 +282,14 @@ def stream_tick_snapshot(
                    u.session_version AS user_session_version,
                    CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END AS vault_available
             FROM sessions s
-            JOIN users u ON u.id = s.user_id
+            JOIN owner u ON u.id = 1
             LEFT JOIN vaults v
               ON v.id = %s
              AND v.enabled = TRUE
              AND v.decommission_state = 'active'
-            WHERE s.id = %s AND s.user_id = %s
+            WHERE s.id = %s
             """,
-            (vault_id, session_id, user_id),
+            (vault_id, session_id,),
         ).fetchone()
 
         if row is None:
@@ -386,7 +388,7 @@ def session_stream_state(session_id: str) -> dict[str, Any] | None:
                    s.session_version AS session_session_version,
                    u.session_version AS user_session_version
             FROM sessions s
-            JOIN users u ON u.id = s.user_id
+            JOIN owner u ON u.id = 1
             WHERE s.id=%s
             """,
             (session_id,),

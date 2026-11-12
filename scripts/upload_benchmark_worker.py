@@ -58,6 +58,10 @@ def run_sample(config):
     require(storage.settings.bandwidth_limit_kibps in {None, 0}, "Bandwidth limit must be disabled")
     require(storage.settings.upload_verification == config["mode"], "Default verification mode drift")
     count, concurrency = config["files"], config["concurrency"]
+    # The *same* harness runs against fixed v0.5.5 as well as the new
+    # baseline. This is explicit historical fixture setup, never a production
+    # schema adapter; keep the old sample's requester FK cost unchanged.
+    legacy_owner_fixture = database.HEAD_SCHEMA_REVISION == "0072_upload_lineage_indexes"
     provider, probe = MemoryS3(), Probe()
     setup_started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="fv-upload-benchmark-") as temporary, ExitStack() as stack:
@@ -76,7 +80,10 @@ def run_sample(config):
                           for key in ("fsync", "synchronous_commit", "full_page_writes")}
             require(version // 10000 == 16, "PG16 is required")
             require(all(value == "on" for value in durability.values()), "Durability must stay on")
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES(1,'owner','Owner','test-only')")
+            if legacy_owner_fixture:
+                connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES(1,'owner','Owner','test-only')")
+            else:
+                connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'test-only')")
             connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
                 VALUES(2,'docs','Docs',%s,'benchmark-only','docs')""", (str(source),))
             enroll_vault_root_identity(connection, 2, str(source))
@@ -107,9 +114,15 @@ def run_sample(config):
                         size=len(payload), mtime_ns=target.stat().st_mtime_ns, observed_at=storage.now_iso())
                     file_id = connection.execute("""SELECT vault_file_id FROM file_paths
                         WHERE vault_id=2 AND path=%s AND valid_to IS NULL""", (path,)).fetchone()["vault_file_id"]
-                    job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                        requested_by,requested_at,updated_at,total_bytes,upload_verification_requested)
-                        VALUES(2,%s,%s,'upload','queued',1,%s,%s,%s,%s) RETURNING id""",
+                    if legacy_owner_fixture:
+                        query = """INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
+                            requested_by,requested_at,updated_at,total_bytes,upload_verification_requested)
+                            VALUES(2,%s,%s,'upload','queued',1,%s,%s,%s,%s) RETURNING id"""
+                    else:
+                        query = """INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
+                            requested_at,updated_at,total_bytes,upload_verification_requested)
+                            VALUES(2,%s,%s,'upload','queued',%s,%s,%s,%s) RETURNING id"""
+                    job = connection.execute(query,
                         (file_id, path, storage.now_iso(), storage.now_iso(), len(payload), config["mode"])).fetchone()
                     jobs.append(job["id"])
                     expected[path] = hashlib.sha256(payload).hexdigest()

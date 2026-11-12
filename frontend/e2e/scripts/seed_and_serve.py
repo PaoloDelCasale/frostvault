@@ -69,10 +69,9 @@ def _seed(paths: dict[str, Path]) -> dict:
     with db() as connection:
         owner_id = connection.execute(
             """
-            INSERT INTO users(username, display_name, password_hash)
-            VALUES (%s, %s, %s) RETURNING id
+            INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s) RETURNING id
             """,
-            (OWNER_USERNAME, "E2E Owner", password_hash),
+            ("E2E Owner", password_hash,),
         ).fetchone()["id"]
 
         primary_id = connection.execute(
@@ -199,8 +198,8 @@ def _seed(paths: dict[str, Path]) -> dict:
             connection, user_id=owner_id, auth_method="local"
         )
         connection.execute(
-            "UPDATE sessions SET vault_id=%s WHERE user_id=%s",
-            (primary_id, owner_id),
+            'UPDATE sessions SET vault_id=%s ',
+            (primary_id,),
         )
 
         credentials = {
@@ -239,7 +238,7 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "AWS_SECRET_ACCESS_KEY": "test",
         "AWS_DEFAULT_REGION": "eu-south-1",
         "AWS_EC2_METADATA_DISABLED": "true",
-        "BOOTSTRAP_ADMIN_USERNAME": "",
+        "BOOTSTRAP_ADMIN_USERNAME": OWNER_USERNAME,
         "BOOTSTRAP_ADMIN_PASSWORD": "",
         "SOURCES_ROOT": str(RUNTIME / "sources"),
         "FROSTVAULT_TEST_SOURCES_ROOT": str(RUNTIME / "sources"),

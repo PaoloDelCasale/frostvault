@@ -85,7 +85,7 @@ def _row_to_event(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row["created_at"],
         "event": row["event"],
         "outcome": row.get("outcome"),
-        "actor_user_id": row.get("actor_user_id"),
+        "actor": row["actor"],
         "vault_id": row.get("vault_id"),
         "job_id": row.get("job_id"),
         "correlation_id": row.get("correlation_id"),
@@ -98,7 +98,7 @@ def record_audit_event(
     connection: Any,
     *,
     event: str,
-    actor_user_id: int | None = None,
+    actor: str = "system",
     vault_id: int | None = None,
     job_id: int | None = None,
     outcome: str | None = None,
@@ -118,6 +118,8 @@ def record_audit_event(
     if visibility not in {"vault", "admin", "owner"}:
         raise ValueError(f"invalid audit visibility: {visibility}")
 
+    if actor not in {"owner", "emergency", "system"}:
+        raise ValueError(f"invalid audit actor: {actor}")
     detail = redact_sensitive(fields)
     created_at = now_iso()
     detail_json = json.dumps(detail, sort_keys=True, default=str)
@@ -125,7 +127,7 @@ def record_audit_event(
     row = connection.execute(
         """
         INSERT INTO audit_events(
-            created_at, event, outcome, actor_user_id, vault_id, job_id,
+            created_at, event, outcome, actor, vault_id, job_id,
             correlation_id, visibility, detail_json
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
@@ -134,7 +136,7 @@ def record_audit_event(
             created_at,
             event,
             outcome,
-            actor_user_id,
+            actor,
             vault_id,
             job_id,
             correlation_id,
@@ -148,7 +150,7 @@ def record_audit_event(
         emit_audit_log_line(
             event,
             outcome=outcome,
-            actor_user_id=actor_user_id,
+            actor=actor,
             vault_id=vault_id,
             job_id=job_id,
             correlation_id=correlation_id,

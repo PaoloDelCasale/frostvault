@@ -627,7 +627,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
                 "-At",
                 "-c",
                 "SELECT "
-                "(SELECT COUNT(*) FROM users), "
+                "(SELECT COUNT(*) FROM owner), "
                 "(SELECT COUNT(*) FROM vaults), "
                 "(SELECT version_num FROM alembic_version LIMIT 1)",
             ],
@@ -801,10 +801,10 @@ def backup_status(connection: Any) -> dict[str, Any]:
 def notify_owner_of_backup_failure(
     connection: Any, *, reason: str, error_message: str
 ) -> None:
-    from ..owner import owner_user_id
+    from ..owner import OWNER_ID
     from .notifications import enqueue_notification
 
-    owner_id = owner_user_id(connection)
+    owner_id = OWNER_ID
     if owner_id is None:
         return
     enqueue_notification(

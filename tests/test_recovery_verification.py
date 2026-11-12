@@ -116,9 +116,7 @@ def _prepare_cloud_only_version(
     with PostgresConnection(str(database_path)) as connection:
         connection.execute(
             """
-            INSERT INTO users(
-                id, username, display_name, password_hash
-            ) VALUES (1, 'owner', 'Owner', 'hash')
+            INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
             """
         )
         connection.execute(

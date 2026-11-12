@@ -40,10 +40,9 @@ class RenameAuditPersistenceTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, %s, %s) RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s) RETURNING id
                 """,
-                ("owner", "Owner", hash_password(self.PASSWORD)),
+                ("Owner", hash_password(self.PASSWORD),),
             ).fetchone()["id"]
             self.vault_id = connection.execute(
                 """

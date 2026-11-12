@@ -1,15 +1,14 @@
-"""The single owner of this FrostVault instance (#412, #366 Q1).
+"""The installation's only principal (ADR-0017 and ADR-0035).
 
-FrostVault has exactly one User: the owner. The row is created at first
-startup from ``BOOTSTRAP_ADMIN_*`` and every Vault belongs to it. Background
-work that needs a recipient or a requester resolves it here.
+The database enforces this identity with ``owner.id CHECK (id = 1)``. Runtime
+work never needs to look up a recipient/requester: every Vault, Session and
+notification belongs to the Owner. Bootstrap creates its credentials before
+services start.
 """
-from __future__ import annotations
 
-from typing import Any
+OWNER_ID = 1
 
 
-def owner_user_id(connection: Any) -> int | None:
-    """Return the owner's id, or ``None`` before bootstrap has run."""
-    row = connection.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
-    return int(row["id"]) if row else None
+def job_actor(job: dict) -> str:
+    """Audit the initiating principal, not the worker executing its request."""
+    return "system" if job.get("origin") == "automatic" else "owner"

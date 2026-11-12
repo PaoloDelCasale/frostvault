@@ -126,7 +126,7 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
 
 def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     """Dates are persisted successful evidence; missing dates remain explicit."""
-    from ..owner import owner_user_id
+    from ..owner import OWNER_ID
     from .component_health import load_vault_health
     from .cost_estimates import estimate_storage_month, list_prices
     from .protection_states import observation_is_unconfirmed
@@ -162,9 +162,8 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     cost = sum(estimate_storage_month(prices, size_bytes=int(row["bytes"]), storage_class=row["storage_class"]).estimated_cost_eur
                for row in connection.execute("SELECT storage_class, COALESCE(sum(size),0) AS bytes FROM archive_versions "
                                              "WHERE availability='available' GROUP BY storage_class").fetchall())
-    owner = owner_user_id(connection)
-    problems = connection.execute("SELECT event, vault_id, body_key, message_params FROM notifications "
-                                  "WHERE user_id=%s AND problem_status='open' ORDER BY id", (owner,)).fetchall() if owner else []
+    owner = OWNER_ID
+    problems = connection.execute("SELECT event, vault_id, body_key, message_params FROM notifications WHERE problem_status='open' ORDER BY id", ()).fetchall() if owner else []
     return {"states": totals, "vaults": vaults, "last_verified_backup": verified["at"],
             "open_problems": len(problems), "problems": [dict(row) for row in problems],
             "freed_files": int(freed["files"]), "freed_bytes": int(freed["bytes"]),
@@ -174,23 +173,23 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
 
 
 def maintain_notifications(connection: Any, *, now: datetime | None = None) -> None:
-    from ..owner import owner_user_id
+    from ..owner import OWNER_ID
     global _last_maintenance
     automatic = now is None
     tick = time.monotonic()
     if automatic and tick - _last_maintenance < 60:
         return
     now = now or datetime.now(timezone.utc)
-    owner = owner_user_id(connection)
+    owner = OWNER_ID
     if owner is None:
         return
     # Serialize summary scheduling and episode updates against another worker.
-    connection.execute("SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (owner,))
+    connection.execute("SELECT id FROM owner WHERE id=1 FOR NO KEY UPDATE")
     for vault in connection.execute("SELECT * FROM vaults WHERE enabled=TRUE AND decommission_state='active'").fetchall():
         monitor_vault(connection, vault, now=now)
     inbox.reconcile_problem_states(connection)
-    latest = connection.execute("SELECT created_at FROM notifications WHERE user_id=%s AND event='weekly_summary' ORDER BY id DESC LIMIT 1",
-                                (owner,)).fetchone()
+    latest = connection.execute("SELECT created_at FROM notifications WHERE event='weekly_summary' ORDER BY id DESC LIMIT 1",
+                                ()).fetchone()
     if latest and now - _time(latest["created_at"], now) < timedelta(days=7):
         if automatic:
             _last_maintenance = tick

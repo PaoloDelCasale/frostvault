@@ -69,7 +69,7 @@ class VaultReconnectTests(unittest.TestCase):
         identity = patch.object(source_identity, "fingerprint_for_mount", return_value="mount-a")
         self.identity = identity.start(); self.addCleanup(identity.stop)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             connection.execute("""INSERT INTO vaults(id,uuid,slug,name,source_root,s3_bucket,s3_prefix)
                 VALUES (7,'11111111-1111-1111-1111-111111111111','photos','Photos',%s,'bucket','vaults/immutable/')""", (str(self.old),))
             vault_relocation.enroll_vault_root_identity(connection, 7, str(self.old))

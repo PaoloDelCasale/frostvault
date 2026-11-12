@@ -41,8 +41,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.owner_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s) RETURNING id
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', %s) RETURNING id
                 """,
                 (hash_password(self.PASSWORD),),
             ).fetchone()["id"]
@@ -51,6 +50,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             settings,
             database_dsn=database_dsn(str(self.database_path)),
             cookie_secure=False,
+            bootstrap_admin_username="owner",
             frontend_dist_dir=str(self.dist_dir),
         )
         for target in (

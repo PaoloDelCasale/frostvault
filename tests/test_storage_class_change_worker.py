@@ -37,8 +37,7 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'x')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'x')
                 """
             )
             connection.execute(
@@ -80,12 +79,12 @@ class StorageClassChangeWorkerTests(unittest.TestCase):
                 """
                 INSERT INTO jobs(
                     vault_id, vault_file_id, archive_version_id, path,
-                    action, status, requested_by, requested_at, updated_at,
+                    action, status, requested_at, updated_at,
                     group_id, group_path, total_bytes, transferred_bytes,
                     target_storage_class, origin
                 ) VALUES (
                     1, %s, %s, 'report.txt',
-                    'storage-class', 'queued', 1, '2026-07-21T12:00:00+00:00',
+                    'storage-class', 'queued', '2026-07-21T12:00:00+00:00',
                     '2026-07-21T12:00:00+00:00',
                     'g1', 'report.txt', 12, 0,
                     'STANDARD_IA', 'manual'

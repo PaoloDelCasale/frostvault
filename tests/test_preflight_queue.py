@@ -41,7 +41,7 @@ class PreflightQueueTests(unittest.TestCase):
         self.observed = (self.now - timedelta(minutes=10)).isoformat()
         self.vaults = []
         with self.db() as c:
-            c.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            c.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
             for i in (1, 2):
                 root = self.base / str(i)
                 root.mkdir()

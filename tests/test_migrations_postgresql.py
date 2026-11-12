@@ -250,11 +250,11 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertEqual(
             removed_tables & set(sa.inspect(self.engine).get_table_names()), set()
         )
-        user_columns = {
-            column["name"] for column in sa.inspect(self.engine).get_columns("users")
+        owner_columns = {
+            column["name"] for column in sa.inspect(self.engine).get_columns("owner")
         }
-        self.assertNotIn("is_admin", user_columns)
-        self.assertNotIn("active", user_columns)
+        self.assertEqual(owner_columns, {"id", "display_name", "password_hash", "session_version", "issuer", "subject"})
+        self.assertTrue({"users", "user_identities"}.isdisjoint(sa.inspect(self.engine).get_table_names()))
         revision_columns = {
             column["name"]
             for column in sa.inspect(self.engine).get_columns(
@@ -387,7 +387,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 sa.text(
                     """
                     SELECT
-                        (SELECT COUNT(*) FROM users WHERE id=7) AS users,
+                        (SELECT COUNT(*) FROM owner WHERE id=1) AS owner,
                         (SELECT COUNT(*) FROM vaults WHERE id=2) AS vaults,
                         (SELECT COUNT(*) FROM vault_files WHERE vault_id=2) AS files,
                         (SELECT COUNT(*) FROM jobs WHERE id=9) AS jobs,
@@ -400,7 +400,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             ).mappings().one()
 
         self.assertEqual(dict(preserved), {
-            "users": 1,
+            "owner": 1,
             "vaults": 1,
             "files": 1,
             "jobs": 1,
@@ -537,9 +537,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             connection.execute(
                 sa.text(
                     """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (7, 'owner', 'Owner', 'hash')
+                    INSERT INTO owner(id, display_name, password_hash)
+                    VALUES (1, 'Owner', 'hash')
                     """
                 )
             )
@@ -570,7 +569,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 "vault_id": 2,
                 "path": "report.txt",
                 "action": "upload",
-                "requested_by": 7,
+                "requested_by": 1,
                 "requested_at": "2026-07-21T10:01:00+00:00",
                 "group_id": "group",
                 "is_directory": False,
@@ -596,9 +595,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with self._connection() as connection:
             connection.execute(
                 """
-                INSERT INTO users(
-                    id, username, display_name, password_hash
-                ) VALUES (7, 'owner', 'Owner', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')
                 """
             )
             connection.execute(
@@ -645,7 +642,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 vault_id=2,
                 path="report.txt",
                 action="upload",
-                requested_by=7,
+                requested_by=1,
                 requested_at="2026-07-21T10:02:00+00:00",
                 group_id="protected",
                 is_directory=False,
@@ -662,7 +659,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 vault_id=2,
                 path="report.txt",
                 action="upload",
-                requested_by=7,
+                requested_by=1,
                 requested_at="2026-07-21T10:04:00+00:00",
                 group_id="changed",
                 is_directory=False,
@@ -686,8 +683,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         with psycopg.connect(connect_url, row_factory=dict_row) as connection:
             user_id = connection.execute(
                 """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('notification-owner', 'Notification Owner', 'hash')
+                INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Notification Owner', 'hash')
                 RETURNING id
                 """
             ).fetchone()["id"]
@@ -726,11 +722,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
             def fail_inside_savepoint(connection, *, job_id):
                 connection.execute(
                     """
-                    INSERT INTO notifications(
-                        user_id, vault_id, job_id, event, title, body, created_at
-                    ) VALUES (%s, %s, %s, 'recovery_completed', 'Partial', '', %s)
+                    INSERT INTO notifications( vault_id, job_id, event, title, body, created_at
+                    ) VALUES ( %s, %s, 'recovery_completed', 'Partial', '', %s)
                     """,
-                    (user_id, vault_id, job_id, "2026-07-22T10:02:00+00:00"),
+                    (vault_id, job_id, "2026-07-22T10:02:00+00:00",),
                 )
                 connection.execute(
                     "INSERT INTO missing_notification_table(id) VALUES (1)"
