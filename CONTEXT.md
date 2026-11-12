@@ -83,7 +83,8 @@ _Avoid_: Source file, local version
 
 **Archive Version**:
 An immutable internal identity for one cloud representation of a Vault File's
-content, whether still recoverable or superseded.
+content: the Current Snapshot, a replacement in progress, or a superseded one
+kept only until its exact cleanup completes.
 _Avoid_: Object, backup, revision
 
 **Current Snapshot**:
