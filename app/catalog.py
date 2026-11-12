@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
+from .services.job_admission import (
+    JOB_LEASE_HELD_STATUSES,
+    TERMINAL_JOB_STATUSES,
+    lock_vault,
+)
 from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
     VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
@@ -1971,6 +1976,15 @@ class ArchiveCatalog:
         )
         return items, total
 
+    # -- Jobs: claims, leases and the fair scheduler (#589) ---------------------
+    #
+    # A claim is one row in ``job_leases`` (token, expiry), never a column of
+    # the Job: renewal is a HOT update of that row and nothing else. The lease
+    # token changes only while its Job row is locked (claim, takeover,
+    # release, end), so a worker that locks the Job row and then reads its
+    # lease sees a fresh answer; cancellation, takeover and expiry are always
+    # checked on that live state (ADR-0035), never on a cached generation.
+
     @staticmethod
     def _claimable_job_status_sql(
         *,
@@ -1988,25 +2002,34 @@ class ArchiveCatalog:
         """
         status = f"{prefix}status"
         action = f"{prefix}action"
-        retry_after = f"{prefix}retry_after"
-        pending_until = f"{prefix}pending_until"
+        run_after = f"{prefix}run_after"
         updated_at = f"{prefix}updated_at"
         clauses = [
             f"{status}='queued'",
-            f"({status}='retrying' AND ({retry_after} IS NULL OR {retry_after} <= %s))",
+            f"({status}='retrying' AND ({run_after} IS NULL OR {run_after} <= %s::timestamptz))",
             (
                 f"({action}='cloud-purge' AND {status}='pending_delay' "
-                f"AND {pending_until} IS NOT NULL AND {pending_until} <= %s)"
+                f"AND {run_after} <= %s::timestamptz)"
             ),
         ]
         params: list[Any] = [now, now]
         if include_restoring:
             clauses.append(
                 f"({action} IN ('recover', 'storage-class') "
-                f"AND {status}='restoring' AND {updated_at} <= %s)"
+                f"AND {status}='restoring' AND {updated_at} <= %s::timestamptz)"
             )
             params.append(restore_due_before)
         return "(" + " OR ".join(clauses) + ")", params
+
+    @staticmethod
+    def _stop_protection_purge_sql(prefix: str) -> str:
+        return f"""(
+            {prefix}action = 'cloud-purge' AND EXISTS (
+                SELECT 1 FROM cloud_purge_requests stop_request
+                WHERE stop_request.group_id = {prefix}group_id
+                  AND stop_request.stop_protection
+            )
+        )"""
 
     @classmethod
     def _claimable_job_predicate_sql(
@@ -2020,8 +2043,11 @@ class ArchiveCatalog:
 
         Keeping candidate selection, conditional acquisition, and queue depth on
         this predicate prevents monitoring from reporting rows a worker cannot
-        acquire.  In particular, due ``restoring`` Jobs and expired leases use
-        exactly the same definition everywhere.
+        acquire. An active Vault runs its ordinary work; a stopping Vault runs
+        only the purge consented by Stop Protection; a paused Vault holds every
+        new cloud Job except recoveries and a storage-class change already
+        restoring (ADR-0033). A live lease, anywhere in a purge group, keeps
+        the Job unclaimable.
         """
         runnable_sql, params = cls._claimable_job_status_sql(
             prefix=prefix,
@@ -2029,65 +2055,50 @@ class ArchiveCatalog:
             restore_due_before=restore_due_before,
             include_restoring=True,
         )
-        vault_id = f"{prefix}vault_id"
-        group_id = f"{prefix}group_id"
-        action = f"{prefix}action"
-        lease_token = f"{prefix}claim_token"
-        lease_expiry = f"{prefix}claim_expires_at"
-        correlated_prefix = prefix or "jobs."
+        stop_purge = cls._stop_protection_purge_sql(prefix)
         predicate = f"""
             {runnable_sql}
-            AND (
-                    {action} = 'recover'
-                 OR ({action} = 'storage-class' AND {prefix}status = 'restoring')
-                 OR {prefix}origin = 'stop-protection'
-                 OR NOT COALESCE((
-                        SELECT pause_vault.paused FROM vaults pause_vault
-                        WHERE pause_vault.id={correlated_prefix}vault_id
-                    ), FALSE)
+            AND EXISTS (
+                SELECT 1 FROM vaults scope_vault
+                WHERE scope_vault.id = {prefix}vault_id
+                  AND (
+                        (scope_vault.lifecycle = 'active' AND NOT {stop_purge})
+                     OR (scope_vault.lifecycle = 'stopping' AND {stop_purge})
+                  )
+                  AND (
+                        NOT scope_vault.paused
+                     OR {prefix}action = 'recover'
+                     OR ({prefix}action = 'storage-class' AND {prefix}status = 'restoring')
+                  )
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM job_leases live_lease
+                WHERE live_lease.job_id = {prefix}id
+                  AND live_lease.expires_at > %s::timestamptz
             )
             AND (
-                    {prefix}action <> 'upload'
-                 OR {prefix}origin <> 'automatic'
-                 OR {prefix}archive_version_id IS NOT NULL
-                 OR COALESCE((
-                        SELECT upload_policy.auto_upload
-                        FROM vault_operation_policies upload_policy
-                        WHERE upload_policy.vault_id={correlated_prefix}vault_id
-                    ), TRUE)
-            )
-            AND (
-                    {lease_token} IS NULL
-                 OR {lease_expiry} IS NULL
-                 OR {lease_expiry} <= %s
-            )
-            AND (
-                    {action} <> 'cloud-purge'
-                 OR (
-                        {group_id} IS NOT NULL
-                    AND NOT EXISTS (
+                    {prefix}action <> 'cloud-purge'
+                 OR NOT EXISTS (
                         SELECT 1 FROM jobs purge_peer
-                        WHERE purge_peer.vault_id={vault_id}
-                          AND purge_peer.group_id={group_id}
-                          AND purge_peer.action='cloud-purge'
+                        WHERE purge_peer.vault_id = {prefix}vault_id
+                          AND purge_peer.group_id = {prefix}group_id
+                          AND purge_peer.action = 'cloud-purge'
                           AND purge_peer.status NOT IN ('completed', 'failed', 'cancelled')
                           AND (
                                 (
                                     purge_peer.status <> 'queued'
                                 AND NOT (
-                                    purge_peer.status='pending_delay'
-                                    AND purge_peer.pending_until IS NOT NULL
-                                    AND purge_peer.pending_until <= %s
+                                    purge_peer.status = 'pending_delay'
+                                    AND purge_peer.run_after <= %s::timestamptz
                                 )
                                 )
-                            OR (
-                                    purge_peer.claim_token IS NOT NULL
-                                AND purge_peer.claim_expires_at IS NOT NULL
-                                AND purge_peer.claim_expires_at > %s
-                            )
+                             OR EXISTS (
+                                    SELECT 1 FROM job_leases peer_lease
+                                    WHERE peer_lease.job_id = purge_peer.id
+                                      AND peer_lease.expires_at > %s::timestamptz
+                                )
                           )
                     )
-                 )
             )
         """
         return predicate, [*params, now, now, now]
@@ -2097,6 +2108,13 @@ class ArchiveCatalog:
     _SCHEDULING_TIER_SQL = (
         "CASE WHEN j.origin='automatic' THEN 2 WHEN j.action<>'upload' THEN 0 ELSE 1 END"
     )
+
+    @staticmethod
+    def _lease_token(claim_token: Any) -> str:
+        """A lease token is a UUID; anything else is a programming error."""
+        if not claim_token:
+            raise ValueError("A Job claim token is required")
+        return str(uuid.UUID(str(claim_token)))
 
     def list_claimable_jobs(
         self,
@@ -2119,6 +2137,7 @@ class ArchiveCatalog:
         the worker already found not runnable *before* the window is cut.
         ``limit`` defaults the per-Vault window, not a global cut: every eligible
         Vault must be visible to the turn selector, including aged tier-2 work.
+        Each row carries the File's current path and its Vault's root and bucket.
         """
         if limit <= 0:
             return []
@@ -2134,18 +2153,19 @@ class ArchiveCatalog:
         # already-served bulk queue's windows or local readiness checks.
         idle_filter = """
             AND NOT EXISTS (
-                SELECT 1 FROM jobs serving WHERE serving.vault_id=v.id
-                  AND serving.claim_token IS NOT NULL AND serving.claim_expires_at > %s
-                  AND serving.status NOT IN ('completed', 'failed', 'cancelled')
+                SELECT 1 FROM jobs serving
+                JOIN job_leases serving_lease ON serving_lease.job_id = serving.id
+                WHERE serving.vault_id = v.id
+                  AND serving_lease.expires_at > %s::timestamptz
             )
         """ if unserved_only else ""
         return self.connection.execute(
             f"""
-            SELECT j.*, v.source_root, v.s3_bucket,
-                   v.s3_prefix,
-                   v.uuid AS vault_uuid, v.name AS vault_name,
-                   v.decommission_state
+            SELECT j.*, f.path, v.source_root, v.uuid AS vault_uuid,
+                   v.name AS vault_name, v.lifecycle AS vault_lifecycle,
+                   t.bucket AS s3_bucket
             FROM vaults v
+            JOIN vault_targets t ON t.id = v.target_id
             CROSS JOIN LATERAL (
                 SELECT ranked.* FROM (
                     SELECT j.*,
@@ -2154,19 +2174,14 @@ class ArchiveCatalog:
                                ORDER BY j.requested_at ASC, j.id ASC
                            ) AS tier_rank
                     FROM jobs j
-                    WHERE j.vault_id=v.id
-                      AND (
-                            (v.enabled=TRUE AND v.decommission_state='active'
-                             AND j.origin IN ('manual','automatic'))
-                         OR (v.decommission_state='decommissioning'
-                             AND j.origin='stop-protection' AND j.action='cloud-purge')
-                      )
+                    WHERE j.vault_id = v.id
                       AND ({predicate})
                       AND j.id <> ALL(%s::bigint[])
                 ) ranked
                 WHERE ranked.tier_rank <= {window}
             ) j
-            WHERE v.relocation_state='ready' {idle_filter}
+            JOIN files f ON f.id = j.file_id
+            WHERE v.lifecycle IN ('active', 'stopping') {idle_filter}
             ORDER BY {tier} ASC,
                      j.requested_at ASC, j.id ASC
             """,
@@ -2212,35 +2227,21 @@ class ArchiveCatalog:
         return result
 
     def active_job_counts(self, *, now: str) -> dict[int, int]:
-        """Jobs currently holding a live lease, per Vault (scheduler fairness)."""
+        """Jobs currently holding a live lease, per Vault (scheduler fairness).
+
+        A terminal Job holds no lease (the schema releases it), so a live lease
+        is running work by construction.
+        """
         rows = self.connection.execute(
             """
-            SELECT vault_id, count(*) AS total FROM jobs
-            WHERE claim_token IS NOT NULL AND claim_expires_at > %s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            GROUP BY vault_id
+            SELECT j.vault_id, count(*) AS total
+            FROM job_leases l JOIN jobs j ON j.id = l.job_id
+            WHERE l.expires_at > %s::timestamptz
+            GROUP BY j.vault_id
             """,
             (now,),
         ).fetchall()
         return {int(row["vault_id"]): int(row["total"]) for row in rows}
-
-    @staticmethod
-    def _claim_is_available(row: dict[str, Any], *, now: str) -> bool:
-        token = row.get("claim_token")
-        expiry = row.get("claim_expires_at")
-        # A partially written legacy/malformed claim never blocks recovery.
-        return not token or not expiry or str(expiry) <= now
-
-    @staticmethod
-    def _purge_job_is_runnable(row: dict[str, Any], *, now: str) -> bool:
-        status = row.get("status")
-        if status == "queued":
-            return True
-        return (
-            status == "pending_delay"
-            and row.get("pending_until") is not None
-            and str(row["pending_until"]) <= now
-        )
 
     def _lock_claim_vault(self, job_id: int) -> bool:
         """Vault-first shared fence against pause/lifecycle changes.
@@ -2298,12 +2299,14 @@ class ArchiveCatalog:
     ) -> dict[str, Any] | None:
         """Atomically lease one runnable Job.
 
-        The conditional UPDATE locks the matching PostgreSQL row while it
-        rechecks the predicate.  A loser therefore observes no
-        returned row instead of executing a stale in-memory selection.
+        Vault (shared, skip if contended), then the scheduler turn, then the
+        Job row (skip if locked); the predicate is rechecked in a fresh
+        statement under those locks. An expired lease is taken over only if it
+        is still expired on its latest row version: a renewal that won keeps it.
+        A loser observes no returned row instead of executing a stale
+        in-memory selection.
         """
-        if not claim_token:
-            raise ValueError("A Job claim token is required")
+        token = self._lease_token(claim_token)
         if not self._lock_claim_vault(job_id):
             return None
         if not self._lock_scheduler_turn(job_id, scheduler_generation):
@@ -2313,29 +2316,30 @@ class ArchiveCatalog:
         ).fetchone() is None:
             return None
         claimable_sql, claimable_params = self._claimable_job_predicate_sql(
-            prefix="",
+            prefix="j.",
             now=now,
             restore_due_before=restore_due_before,
         )
         claimed = self.connection.execute(
             f"""
-            UPDATE jobs
-            SET claim_token=%s,
-                claimed_at=%s,
-                claim_expires_at=%s
-            WHERE id=%s
-              AND action<>'cloud-purge'
-              AND ({claimable_sql})
-            RETURNING id, status, claim_token, claimed_at, claim_expires_at,
-                      updated_at
+            WITH target AS (
+                SELECT j.id, j.status, j.updated_at FROM jobs j
+                WHERE j.id=%s AND j.action<>'cloud-purge' AND ({claimable_sql})
+            ), lease AS (
+                INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+                SELECT id, %s, %s, %s FROM target
+                ON CONFLICT (job_id) DO UPDATE
+                SET token=EXCLUDED.token, claimed_at=EXCLUDED.claimed_at,
+                    expires_at=EXCLUDED.expires_at
+                WHERE job_leases.expires_at <= %s::timestamptz
+                RETURNING job_id, token, claimed_at, expires_at
+            )
+            SELECT target.id, target.status, target.updated_at,
+                   lease.token::text AS claim_token, lease.claimed_at,
+                   lease.expires_at AS claim_expires_at
+            FROM target JOIN lease ON lease.job_id = target.id
             """,
-            (
-                claim_token,
-                claimed_at,
-                claim_expires_at,
-                job_id,
-                *claimable_params,
-            ),
+            (job_id, *claimable_params, token, claimed_at, claim_expires_at, now),
         ).fetchone()
         if claimed is not None:
             self._consume_scheduler_turn(job_id, now=claimed_at)
@@ -2359,19 +2363,20 @@ class ArchiveCatalog:
         executable when every non-terminal member is due and unclaimed (or its
         prior lease has expired). PostgreSQL locks the group rows in deterministic
         ``requested_at, id`` order.  This prevents two workers from splitting a
-        destructive group between themselves.
+        destructive group between themselves: the group claims all its members
+        or none, including under partial row contention.
         """
-        if not claim_token:
-            raise ValueError("A Job claim token is required")
+        token = self._lease_token(claim_token)
         if not self._lock_claim_vault(lead_job_id):
             return []
         # Resolve the group before taking Job locks. The advisory fence below
         # serializes different lead nominations for the same destructive group.
         lead = self.connection.execute(
-            """
-            SELECT vault_id, group_id
-            FROM jobs
-            WHERE id=%s AND action='cloud-purge'
+            f"""
+            SELECT j.vault_id, j.group_id, v.paused, v.lifecycle,
+                   {self._stop_protection_purge_sql('j.')} AS stop_protection
+            FROM jobs j JOIN vaults v ON v.id = j.vault_id
+            WHERE j.id=%s AND j.action='cloud-purge'
             """,
             (lead_job_id,),
         ).fetchone()
@@ -2387,11 +2392,11 @@ class ArchiveCatalog:
         ).fetchone()
         if not advisory or not advisory["acquired"]:
             return []
-        if self.connection.execute(
-            """SELECT 1 FROM jobs j JOIN vaults v ON v.id=j.vault_id
-               WHERE j.id=%s AND v.paused AND j.origin<>'stop-protection'""",
-            (lead_job_id,),
-        ).fetchone():
+        lifecycle_admits = (
+            (lead["lifecycle"] == "active" and not lead["stop_protection"])
+            or (lead["lifecycle"] == "stopping" and lead["stop_protection"])
+        )
+        if lead["paused"] or not lifecycle_admits:
             return []
         if not self._lock_scheduler_turn(lead_job_id, scheduler_generation):
             return []
@@ -2401,13 +2406,20 @@ class ArchiveCatalog:
         ).fetchall()
         rows = self.connection.execute(
             """
-            SELECT id, status, pending_until, claim_token, claim_expires_at,
-                   requested_at
-            FROM jobs
-            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-            ORDER BY requested_at ASC, id ASC FOR UPDATE SKIP LOCKED
+            SELECT j.id, j.status,
+                   (j.status = 'queued' OR (
+                        j.status = 'pending_delay' AND j.run_after <= %s::timestamptz
+                   )) AS runnable,
+                   NOT EXISTS (
+                       SELECT 1 FROM job_leases live_lease
+                       WHERE live_lease.job_id = j.id
+                         AND live_lease.expires_at > %s::timestamptz
+                   ) AS available
+            FROM jobs j
+            WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+            ORDER BY j.requested_at ASC, j.id ASC FOR UPDATE SKIP LOCKED
             """,
-            (lead["vault_id"], lead["group_id"]),
+            (now, now, lead["vault_id"], lead["group_id"]),
         ).fetchall()
         # Never split a purge group when a status writer holds one member.
         if {row['id'] for row in rows} != {row['id'] for row in expected}:
@@ -2418,47 +2430,51 @@ class ArchiveCatalog:
             if row["status"] not in TERMINAL_JOB_STATUSES
         ]
         if not active or any(
-            not self._claim_is_available(row, now=now)
-            or not self._purge_job_is_runnable(row, now=now)
-            for row in active
+            not row["available"] or not row["runnable"] for row in active
         ):
             return []
 
         ids = [int(row["id"]) for row in active]
-        placeholders = ", ".join(["%s"] * len(ids))
-        claimed = self.connection.execute(
-            f"""
-            UPDATE jobs
-            SET status='cleaning',
-                message=%s,
-                message_key=%s,
-                message_params=NULL,
-                claim_token=%s,
-                claimed_at=%s,
-                claim_expires_at=%s,
-                updated_at=%s
-            WHERE id IN ({placeholders})
-            RETURNING id, vault_file_id, requested_by, status, claim_token,
-                      claimed_at, claim_expires_at, requested_at
+        self.connection.execute("SAVEPOINT purge_group_claim")
+        leased = self.connection.execute(
+            """
+            INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+            SELECT member, %s, %s, %s FROM unnest(%s::bigint[]) AS member
+            ON CONFLICT (job_id) DO UPDATE
+            SET token=EXCLUDED.token, claimed_at=EXCLUDED.claimed_at,
+                expires_at=EXCLUDED.expires_at
+            WHERE job_leases.expires_at <= %s::timestamptz
+            RETURNING job_id
             """,
-            (
-                message,
-                message_key,
-                claim_token,
-                claimed_at,
-                claim_expires_at,
-                claimed_at,
-                *ids,
-            ),
+            (token, claimed_at, claim_expires_at, ids, now),
         ).fetchall()
-        if claimed:
-            self._consume_scheduler_turn(lead_job_id, now=claimed_at)
-        # RETURNING order is not a SQL contract.  Preserve the scheduler's
-        # deterministic ordering for the selected lead and tests.
-        return sorted(
-            claimed,
-            key=lambda row: (str(row.get("requested_at") or ""), int(row["id"])),
+        if len(leased) != len(ids):
+            # A previous holder renewed one member meanwhile: all or nothing.
+            self.connection.execute("ROLLBACK TO SAVEPOINT purge_group_claim")
+            return []
+        self.connection.execute("RELEASE SAVEPOINT purge_group_claim")
+        self.connection.execute(
+            """
+            UPDATE jobs
+            SET status='cleaning', message=%s, message_key=%s,
+                message_params=NULL, updated_at=%s
+            WHERE id = ANY(%s::bigint[])
+            """,
+            (message, message_key, claimed_at, ids),
         )
+        self._consume_scheduler_turn(lead_job_id, now=claimed_at)
+        # Keep the scheduler's deterministic ordering for the selected lead.
+        return self.connection.execute(
+            """
+            SELECT j.id, j.file_id, j.status, j.requested_at,
+                   l.token::text AS claim_token, l.claimed_at,
+                   l.expires_at AS claim_expires_at
+            FROM jobs j JOIN job_leases l ON l.job_id = j.id
+            WHERE j.id = ANY(%s::bigint[])
+            ORDER BY j.requested_at ASC, j.id ASC
+            """,
+            (ids,),
+        ).fetchall()
 
     def renew_job_claim(
         self,
@@ -2467,21 +2483,44 @@ class ArchiveCatalog:
         claim_token: str,
         now: str,
         claim_expires_at: str,
+        lock_job: bool = False,
     ) -> dict[str, Any] | None:
-        """Renew a live claim, returning no row after cancellation or takeover."""
+        """Extend a live claim, returning no row after cancellation, takeover or expiry.
+
+        Only the lease row is rewritten (a HOT update). With ``lock_job`` the
+        Job row is locked first, in the claim's lock order (Job, then lease):
+        until the surrounding transaction commits no cancellation or takeover
+        can win, and one that already won is seen here.
+        """
+        token = self._lease_token(claim_token)
+        if lock_job:
+            return self.connection.execute(
+                """
+                WITH job AS (
+                    SELECT id, status, updated_at FROM jobs
+                    WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+                    FOR NO KEY UPDATE
+                )
+                UPDATE job_leases l SET expires_at=%s
+                FROM job
+                WHERE l.job_id = job.id AND l.token=%s
+                  AND l.expires_at > %s::timestamptz
+                RETURNING job.id, job.status, l.token::text AS claim_token,
+                          l.claimed_at, l.expires_at AS claim_expires_at,
+                          job.updated_at
+                """,
+                (job_id, claim_expires_at, token, now),
+            ).fetchone()
         return self.connection.execute(
             """
-            UPDATE jobs
-            SET claim_expires_at=%s
-            WHERE id=%s
-              AND claim_token=%s
-              AND claim_expires_at IS NOT NULL
-              AND claim_expires_at > %s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            RETURNING id, status, claim_token, claimed_at, claim_expires_at,
-                      updated_at
+            UPDATE job_leases l SET expires_at=%s
+            FROM jobs j
+            WHERE l.job_id=%s AND j.id = l.job_id AND l.token=%s
+              AND l.expires_at > %s::timestamptz
+            RETURNING j.id, j.status, l.token::text AS claim_token,
+                      l.claimed_at, l.expires_at AS claim_expires_at, j.updated_at
             """,
-            (claim_expires_at, job_id, claim_token, now),
+            (claim_expires_at, job_id, token, now),
         ).fetchone()
 
     def job_claim_is_live(self, *, job_id: int, claim_token: str, now: str) -> bool:
@@ -2492,15 +2531,132 @@ class ArchiveCatalog:
         """
         return self.connection.execute(
             """
-            SELECT 1 FROM jobs
-            WHERE id=%s
-              AND claim_token=%s
-              AND claim_expires_at IS NOT NULL
-              AND claim_expires_at > %s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
+            SELECT 1 FROM job_leases
+            WHERE job_id=%s AND token=%s AND expires_at > %s::timestamptz
             """,
-            (job_id, claim_token, now),
+            (job_id, self._lease_token(claim_token), now),
         ).fetchone() is not None
+
+    def transition_job(
+        self,
+        *,
+        job_id: int,
+        status: str,
+        message: str,
+        message_key: str | None,
+        message_params: Any,
+        now: str,
+        claim_token: str | None = None,
+        claim_expires_at: str | None = None,
+        transferred_bytes: int | None = None,
+        run_after: str | None = None,
+        retry_count: int | None = None,
+    ) -> bool:
+        """Move a Job to ``status``, compare-and-swap on its live lease.
+
+        With a claim the Job row is locked first and the lease checked fresh:
+        a held status extends the lease, a waiting status gives it back, a
+        terminal status ends the Job (the schema drops the lease). A
+        cancellation, takeover or expiry that won makes this a no-op. Without
+        a claim (administrative callers) only a non-terminal Job moves.
+        A terminal Job never moves again.
+        """
+        if claim_token:
+            token = self._lease_token(claim_token)
+            if status in JOB_LEASE_HELD_STATUSES:
+                if not claim_expires_at:
+                    raise ValueError("A held Job needs its lease expiry")
+                if self.renew_job_claim(
+                    job_id=job_id, claim_token=token, now=now,
+                    claim_expires_at=claim_expires_at, lock_job=True,
+                ) is None:
+                    return False
+            elif self.connection.execute(
+                """
+                WITH job AS (
+                    SELECT id FROM jobs
+                    WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+                    FOR NO KEY UPDATE
+                )
+                DELETE FROM job_leases l USING job
+                WHERE l.job_id = job.id AND l.token=%s
+                  AND l.expires_at > %s::timestamptz
+                RETURNING l.job_id
+                """,
+                (job_id, token, now),
+            ).fetchone() is None:
+                return False
+        params = message_params
+        if isinstance(params, Mapping):
+            params = json.dumps(dict(params))
+        result = self.connection.execute(
+            """
+            UPDATE jobs
+            SET status=%s, message=%s, message_key=%s, message_params=%s::jsonb,
+                updated_at=%s,
+                transferred_bytes=COALESCE(%s, transferred_bytes),
+                run_after=COALESCE(%s::timestamptz, run_after),
+                retry_count=COALESCE(%s, retry_count)
+            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (status, message, message_key, params, now,
+             None if transferred_bytes is None else max(0, int(transferred_bytes)),
+             run_after, retry_count, job_id),
+        )
+        return result.rowcount == 1
+
+    def cancel_jobs(
+        self,
+        *,
+        vault_id: int,
+        job_ids: Sequence[int],
+        message: str,
+        message_key: str | None,
+        now: str,
+    ) -> list[int]:
+        """Cancel non-terminal Jobs of one Vault; the caller holds the Vault lock.
+
+        Cancellation wins on live state: it locks each Job row and ends it,
+        which drops any lease (schema trigger), so the next renewal, progress
+        or status write of a worker holding that lease finds nothing to update.
+        """
+        rows = self.connection.execute(
+            """
+            UPDATE jobs
+            SET status='cancelled', message=%s, message_key=%s,
+                message_params='{}'::jsonb, updated_at=%s
+            WHERE vault_id=%s AND id = ANY(%s::bigint[])
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            RETURNING id
+            """,
+            (message, message_key, now, vault_id, [int(job_id) for job_id in job_ids]),
+        ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def record_job_progress(
+        self,
+        *,
+        job_id: int,
+        transferred_bytes: int,
+        now: str,
+        claim_token: str | None = None,
+        claim_expires_at: str | None = None,
+    ) -> bool:
+        """Persist progress; with a claim, only while the lease is live (and extend it)."""
+        if claim_token:
+            if self.renew_job_claim(
+                job_id=job_id, claim_token=claim_token, now=now,
+                claim_expires_at=claim_expires_at or now, lock_job=True,
+            ) is None:
+                return False
+        result = self.connection.execute(
+            """
+            UPDATE jobs SET transferred_bytes=%s, updated_at=%s
+            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (max(0, int(transferred_bytes)), now, job_id),
+        )
+        return result.rowcount == 1
 
     def renew_purge_group_claim(
         self,
@@ -2512,29 +2668,129 @@ class ArchiveCatalog:
         now: str,
         claim_expires_at: str,
     ) -> bool:
-        """Hold every member of a claimed purge group through one DB step."""
-        rows = self.connection.execute(
+        """Hold every member of a claimed purge group through one DB step.
+
+        The members' Job rows are locked first, in group order, then their
+        leases: a cancellation of the group either wins before this point or
+        waits until the surrounding transaction commits.
+        """
+        token = self._lease_token(claim_token)
+        self.connection.execute(
             """
-            UPDATE jobs
-            SET claim_expires_at=%s
+            SELECT id FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
               AND status='cleaning'
-              AND claim_token=%s
-              AND claim_expires_at IS NOT NULL
-              AND claim_expires_at > %s
-            RETURNING id
+            ORDER BY requested_at ASC, id ASC
+            FOR NO KEY UPDATE
             """,
-            (
-                claim_expires_at,
-                vault_id,
-                group_id,
-                claim_token,
-                now,
-            ),
+            (vault_id, group_id),
         ).fetchall()
-        return {int(row["id"]) for row in rows} == {
+        rows = self.connection.execute(
+            """
+            UPDATE job_leases l SET expires_at=%s
+            FROM jobs j
+            WHERE j.id = l.job_id
+              AND j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+              AND j.status='cleaning'
+              AND l.token=%s
+              AND l.expires_at > %s::timestamptz
+            RETURNING l.job_id
+            """,
+            (claim_expires_at, vault_id, group_id, token, now),
+        ).fetchall()
+        return {int(row["job_id"]) for row in rows} == {
             int(job_id) for job_id in expected_job_ids
         }
+
+    def release_purge_group_claim(
+        self, *, vault_id: int, group_id: str, claim_token: str, now: str,
+    ) -> list[int]:
+        """Give a claimed purge group back before any provider deletion.
+
+        Only members still leased by ``claim_token`` return to ``queued``; the
+        group's consent (``cloud_purge_requests``) and deadline stay intact.
+        """
+        token = self._lease_token(claim_token)
+        self.connection.execute(
+            """
+            SELECT id FROM jobs
+            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
+              AND status='cleaning'
+            ORDER BY requested_at ASC, id ASC
+            FOR NO KEY UPDATE
+            """,
+            (vault_id, group_id),
+        ).fetchall()
+        released = self.connection.execute(
+            """
+            DELETE FROM job_leases l USING jobs j
+            WHERE j.id = l.job_id
+              AND j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+              AND j.status='cleaning'
+              AND l.token=%s AND l.expires_at > %s::timestamptz
+            RETURNING l.job_id
+            """,
+            (vault_id, group_id, token, now),
+        ).fetchall()
+        ids = [int(row["job_id"]) for row in released]
+        if ids:
+            self.connection.execute(
+                """
+                UPDATE jobs SET status='queued', updated_at=%s
+                WHERE id = ANY(%s::bigint[])
+                """,
+                (now, ids),
+            )
+        return ids
+
+    def settle_stale_job(
+        self,
+        *,
+        job_id: int,
+        status: str,
+        message: str,
+        now: str,
+        progress: str | None = None,
+    ) -> bool:
+        """Publish one restart decision only if no worker holds a live lease.
+
+        The Job row is locked first; an expired lease is then deleted under
+        its own row lock, so a renewal that won keeps the Job. Any lease still
+        present afterwards is live and the decision is dropped.
+        """
+        if progress not in {None, "reset", "complete"}:
+            raise ValueError("Unknown progress update")
+        if self.connection.execute(
+            """
+            SELECT id FROM jobs
+            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            FOR NO KEY UPDATE
+            """,
+            (job_id,),
+        ).fetchone() is None:
+            return False
+        self.connection.execute(
+            "DELETE FROM job_leases WHERE job_id=%s AND expires_at <= %s::timestamptz",
+            (job_id, now),
+        )
+        if self.connection.execute(
+            "SELECT 1 FROM job_leases WHERE job_id=%s", (job_id,),
+        ).fetchone() is not None:
+            return False
+        progress_sql = {
+            None: "",
+            "reset": ", transferred_bytes=0",
+            "complete": ", transferred_bytes=total_bytes",
+        }[progress]
+        result = self.connection.execute(
+            f"""
+            UPDATE jobs SET status=%s, message=%s, message_key=NULL,
+                message_params=NULL, updated_at=%s{progress_sql}
+            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (status, message, now, job_id),
+        )
+        return result.rowcount == 1
 
     def load_claimed_purge_group(
         self,
@@ -2556,22 +2812,21 @@ class ArchiveCatalog:
             return [], []
         all_active = self.connection.execute(
             """
-            SELECT id, status, claim_token, claim_expires_at,
-                   vault_file_id, requested_by
-            FROM jobs
-            WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-              AND status NOT IN ('completed', 'failed', 'cancelled')
-            ORDER BY requested_at ASC, id ASC
+            SELECT j.id, j.status, j.file_id,
+                   l.token::text AS claim_token, l.expires_at AS claim_expires_at,
+                   COALESCE(
+                       j.status = 'cleaning' AND l.token = %s
+                       AND l.expires_at > %s::timestamptz, FALSE
+                   ) AS owned
+            FROM jobs j
+            LEFT JOIN job_leases l ON l.job_id = j.id
+            WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+              AND j.status NOT IN ('completed', 'failed', 'cancelled')
+            ORDER BY j.requested_at ASC, j.id ASC
             """,
-            (lead["vault_id"], lead["group_id"]),
+            (self._lease_token(claim_token), now, lead["vault_id"], lead["group_id"]),
         ).fetchall()
-        if not all_active or any(
-            row["status"] != "cleaning"
-            or row.get("claim_token") != claim_token
-            or not row.get("claim_expires_at")
-            or str(row["claim_expires_at"]) <= now
-            for row in all_active
-        ):
+        if not all_active or not all(row["owned"] for row in all_active):
             return [], []
         job_ids = [int(row["id"]) for row in all_active]
         placeholders = ", ".join(["%s"] * len(job_ids))
@@ -2593,7 +2848,7 @@ class ArchiveCatalog:
         restore_due_before: str,
         exclude_job_ids: Sequence[int] = (),
     ) -> int:
-        """Count runnable, currently unleased queued Job rows.
+        """Count runnable, currently unleased Jobs.
 
         ``exclude_job_ids`` leaves out Jobs the worker already found not
         runnable right now, so they are not reported as work that should move.
@@ -2611,15 +2866,7 @@ class ArchiveCatalog:
             f"""
             SELECT COUNT(*) AS total
             FROM jobs j
-            JOIN vaults v ON v.id=j.vault_id
-            WHERE v.relocation_state='ready'
-              AND (
-                    (v.enabled=TRUE AND v.decommission_state='active'
-                     AND j.origin IN ('manual','automatic'))
-                 OR (v.decommission_state='decommissioning'
-                     AND j.origin='stop-protection' AND j.action='cloud-purge')
-              )
-              AND ({predicate})
+            WHERE ({predicate})
               AND j.id <> ALL(%s::bigint[])
             """,
             [*params, [int(job_id) for job_id in exclude_job_ids]],
@@ -2697,17 +2944,60 @@ class ArchiveCatalog:
         )
 
     @staticmethod
-    def recovery_selection_scope(selection: Sequence[tuple[str, bool]]) -> tuple[str, list[Any]]:
+    def recovery_selection_scope(
+        selection: Sequence[tuple[str, bool]], column: str = "f.path",
+    ) -> tuple[str, list[Any]]:
         """One union of paths, never a concatenation that duplicates overlaps.
 
-        Callers normalize paths first. The surrounding query must bind vf.vault_id.
-        starts_with treats SQL wildcard characters literally.
+        Callers normalize paths first. The surrounding query must bind the
+        Vault. starts_with treats SQL wildcard characters literally; the empty
+        directory is the whole Vault.
         """
         clauses, params = [], []
         for path, is_directory in selection:
-            clauses.append("starts_with(fp.path, %s)" if is_directory else "fp.path=%s")
-            params.append(path + "/" if is_directory else path)
+            if not is_directory:
+                clauses.append(f"{column}=%s")
+                params.append(path)
+            elif not path:
+                clauses.append("TRUE")
+            else:
+                clauses.append(f"starts_with({column}, %s)")
+                params.append(path + "/")
         return "(" + " OR ".join(clauses) + ")", params
+
+    @staticmethod
+    def _queue_candidate_allowed(action: str, row: Mapping[str, Any]) -> bool:
+        current = row["archive_version_id"] is not None
+        available = current and row["availability"] == "available"
+        verified_available = available and row["integrity"] == "verified"
+        if action == "upload":
+            # Cloud history is not protection. Admit a new Archive Version
+            # when the current Local Copy is not backed by a verified,
+            # available, digest-matching version. Unchanged protected
+            # content stays ineligible so duplicates are not queued.
+            return local_copy_is_upload_eligible(row)
+        if action == "recover":
+            return row["presence"] != "present" and verified_available
+        if action == "free-space":
+            return (
+                row["presence"] == "present"
+                and row["file_type"] == "regular"
+                and verified_available
+                and row["matched_archive_version_id"] == row["archive_version_id"]
+                and row["local_sha256"] is not None
+                and row["local_sha256"] == row["version_sha256"]
+            )
+        if action == "rename":
+            # The File already points at its new path. A rename Job migrates
+            # verified cloud content to that path's key.
+            return (
+                row["presence"] == "present"
+                and row["file_type"] == "regular"
+                and verified_available
+            )
+        if action == "storage-class":
+            return available
+        raise ValueError(f"Unsupported job action: {action}")
 
     def queue_jobs(
         self,
@@ -2715,7 +3005,6 @@ class ArchiveCatalog:
         vault_id: int,
         path: str,
         action: str,
-        requested_by: int,
         requested_at: str,
         group_id: str,
         is_directory: bool,
@@ -2724,16 +3013,23 @@ class ArchiveCatalog:
         restore_days: int | None = None,
         estimated_cost_eur: float | None = None,
         estimated_hours: float | None = None,
-        initial_status: str = "queued",
-        pending_until: str | None = None,
         origin: str = "manual",
         target_storage_class: str | None = None,
         whole_vault: bool = False,
         recovery_selection: Sequence[tuple[str, bool]] | None = None,
-        admission_path_ids: Sequence[int] | None = None,
+        admission_file_ids: Sequence[str] | None = None,
         admission_verification_mode: str | None = None,
     ) -> tuple[list[int], int, int]:
-        # This write is deliberately first: take the Vault row lock before
+        """Admit one Job per eligible File into one Job group.
+
+        A File has at most one active operation (the schema's partial unique
+        index); a File that already has one is skipped, never queued twice.
+        Per-action details go to their own tables: upload verification to
+        ``job_uploads``, restore tier/days to ``job_restores``, the target
+        class to ``job_storage_class_changes``, the restore estimate to the
+        group's ``restore_requests``. Returns (job ids, bytes, eligible count).
+        """
+        # This lock is deliberately first: take the Vault row lock before
         # the candidate read and inserts.
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
@@ -2741,25 +3037,24 @@ class ArchiveCatalog:
         self.last_skipped_same_class = 0
         if origin not in {"manual", "automatic"}:
             raise ValueError("Unsupported Job origin")
-        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
-        params: list[Any] = [vault_id]
-        if admission_path_ids is not None:
-            if action != "upload" or origin != "manual":
-                raise ValueError("Bounded admission is only for manual uploads")
-            clauses.append("fp.id=ANY(%s::bigint[])")
-            params.append(list(admission_path_ids))
+        if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
+            raise ValueError(f"Unsupported job action: {action}")
         if admission_verification_mode not in {None, "s3_checksum", "read_back"}:
             raise ValueError("Invalid admission verification mode")
-        clauses.append(
-            """
-            NOT EXISTS (
-                SELECT 1 FROM jobs pending
-                WHERE pending.vault_file_id=vf.id
-                  AND pending.status NOT IN (%s, %s, %s)
-            )
-            """
-        )
-        params.extend(TERMINAL_JOB_STATUSES)
+        clauses = [
+            "f.vault_id=%s",
+            """NOT EXISTS (
+                SELECT 1 FROM jobs open_job
+                WHERE open_job.file_id=f.id
+                  AND open_job.status NOT IN ('completed', 'failed', 'cancelled')
+            )""",
+        ]
+        params: list[Any] = [vault_id]
+        if admission_file_ids is not None:
+            if action != "upload":
+                raise ValueError("Bounded admission is only for uploads")
+            clauses.append("f.id=ANY(%s::uuid[])")
+            params.append([str(file_id) for file_id in admission_file_ids])
         if recovery_selection:
             if action != "recover":
                 raise ValueError("Selections are only supported for recovery")
@@ -2769,231 +3064,170 @@ class ArchiveCatalog:
         elif whole_vault:
             pass
         elif is_directory:
-            escaped = (
-                path.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
-            clauses.append("fp.path LIKE %s ESCAPE '\\'")
-            params.append(f"{escaped}/%")
+            scope, scope_params = self.recovery_selection_scope([(path, True)])
+            clauses.append(scope)
+            params.extend(scope_params)
         else:
-            clauses.append("fp.path=%s")
+            clauses.append("f.path=%s")
             params.append(path)
-        if action == "recover" and archive_version_id:
-            # Exact IDs pin the current snapshot; they cannot select history,
-            # including legacy available copies retained fail-closed at upgrade.
-            clauses.append("""
-                av.id=(SELECT current_snapshot.id FROM archive_versions current_snapshot
-                       WHERE current_snapshot.vault_file_id=vf.id
-                         AND current_snapshot.integrity='verified'
-                         AND current_snapshot.availability='available'
-                       ORDER BY current_snapshot.version_number DESC LIMIT 1)
-            """)
-        if action in {"recover", "storage-class"} and archive_version_id and not is_directory and not whole_vault:
-            candidates = self.connection.execute(
-                f"""
-                SELECT
-                    vf.id AS vault_file_id,
-                    fp.path,
-                    lc.presence,
-                    lc.file_type,
-                    lc.size AS local_size,
-                    lc.plaintext_sha256 AS local_sha256,
-                    lc.matched_archive_version_id,
-                    lc.cloud_only_version_id,
-                    av.id AS archive_version_id,
-                    av.size AS cloud_size,
-                    av.plaintext_sha256 AS version_sha256,
-                    av.integrity,
-                    av.availability,
-                    av.storage_class,
-                    av.restore_state
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-                JOIN archive_versions av ON av.id=%s AND av.vault_file_id=vf.id
-                WHERE {" AND ".join(clauses)}
-                ORDER BY lower(fp.path)
-                """,
-                [archive_version_id, *params],
-            ).fetchall()
-        else:
-            candidates = self.connection.execute(
-                f"""
-                SELECT
-                    vf.id AS vault_file_id,
-                    fp.path,
-                    lc.presence,
-                    lc.file_type,
-                    lc.size AS local_size,
-                    lc.plaintext_sha256 AS local_sha256,
-                    lc.matched_archive_version_id,
-                    lc.cloud_only_version_id,
-                    av.id AS archive_version_id,
-                    av.size AS cloud_size,
-                    av.plaintext_sha256 AS version_sha256,
-                    av.integrity,
-                    av.availability,
-                    av.storage_class,
-                    av.restore_state
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-                LEFT JOIN archive_versions av
-                  ON av.id=(
-                      SELECT latest.id
-                      FROM archive_versions latest
-                      WHERE latest.vault_file_id=vf.id
-                        AND latest.availability NOT IN ('missing', 'purged')
-                        AND (
-                            %s NOT IN ('recover', 'storage-class')
-                            OR (
-                                latest.availability='available'
-                                AND (
-                                    %s <> 'recover'
-                                    OR latest.integrity='verified'
-                                )
-                            )
-                        )
-                      ORDER BY latest.version_number DESC
-                      LIMIT 1
-                  )
-                WHERE {" AND ".join(clauses)}
-                ORDER BY lower(fp.path)
-                """,
-                [action, action, *params],
-            ).fetchall()
+        if archive_version_id and action != "upload":
+            # Exact IDs pin the current snapshot; they cannot select history.
+            clauses.append("f.current_version_id=%s")
+            params.append(archive_version_id)
+        candidates = self.connection.execute(
+            f"""
+            SELECT
+                f.id AS file_id,
+                f.path,
+                f.local_presence AS presence,
+                f.local_file_type AS file_type,
+                f.local_size,
+                f.local_sha256,
+                f.matched_version_id AS matched_archive_version_id,
+                f.held_version_id AS cloud_only_version_id,
+                cur.id AS archive_version_id,
+                cur.size AS cloud_size,
+                cur.plaintext_sha256 AS version_sha256,
+                cur.integrity,
+                cur.availability,
+                cur.storage_class
+            FROM files f
+            LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
+            WHERE {" AND ".join(clauses)}
+            ORDER BY f.path
+            """,
+            params,
+        ).fetchall()
         eligible = []
         remediation_job_ids: list[int] = []
         skipped_same = 0
         target_class = (target_storage_class or "").upper() or None
         for row in candidates:
-            if action == "upload":
-                # Cloud history is not protection. Admit a new Archive Version
-                # when the current Local Copy is not backed by a verified,
-                # available, digest-matching version. Unchanged protected
-                # content stays ineligible so duplicates are not queued.
-                allowed = local_copy_is_upload_eligible(row)
-                if allowed:
-                    from .services import upload_remediation
-                    handled, resumed = upload_remediation.intercept_upload(
-                        self.connection, vault_id=vault_id, file_id=row["vault_file_id"],
-                        user_id=requested_by, stamp=requested_at,
-                        automatic=origin == "automatic", group_id=group_id,
-                    )
-                    if handled:
-                        if resumed:
-                            remediation_job_ids.append(int(resumed["job_id"]))
-                            self._mark_path_aggregates_dirty(vault_id, row["path"])
-                        allowed = False
-            elif action == "recover":
-                allowed = (
-                    row["presence"] != "present"
-                    and row["archive_version_id"] is not None
-                    and row["integrity"] == "verified"
-                    and row["availability"] == "available"
+            allowed = self._queue_candidate_allowed(action, row)
+            if allowed and action == "upload":
+                from .services import upload_remediation
+                handled, resumed = upload_remediation.intercept_upload(
+                    self.connection, vault_id=vault_id, file_id=row["file_id"],
+                    stamp=requested_at, automatic=origin == "automatic",
+                    group_id=group_id,
                 )
-            elif action == "free-space":
-                allowed = (
-                    row["presence"] == "present"
-                    and row["file_type"] == "regular"
-                    and row["archive_version_id"] is not None
-                    and row["integrity"] == "verified"
-                    and row["availability"] == "available"
-                    and row["matched_archive_version_id"]
-                    == row["archive_version_id"]
-                    and row["local_sha256"] is not None
-                    and row["local_sha256"] == row["version_sha256"]
-                )
-            elif action == "rename":
-                # Confirmed Path History already points at the new path. A rename
-                # job migrates verified cloud content to that path's key when a
-                # prior verified Archive Version still exists.
-                allowed = (
-                    row["presence"] == "present"
-                    and row["file_type"] == "regular"
-                    and row["archive_version_id"] is not None
-                    and row["integrity"] == "verified"
-                    and row["availability"] == "available"
-                )
-            elif action == "storage-class":
-                allowed = (
-                    row["archive_version_id"] is not None
-                    and row["availability"] == "available"
-                    and row["restore_state"] != "restoring"
-                )
-                if allowed and target_class:
-                    current = (row["storage_class"] or "STANDARD").upper()
-                    if current == target_class:
-                        skipped_same += 1
-                        allowed = False
-            else:
-                raise ValueError(f"Unsupported job action: {action}")
+                if handled:
+                    if resumed:
+                        remediation_job_ids.append(int(resumed["job_id"]))
+                        self._mark_path_aggregates_dirty(vault_id, row["path"])
+                    allowed = False
+            if allowed and action == "storage-class" and target_class:
+                current = (row["storage_class"] or "STANDARD").upper()
+                if current == target_class:
+                    skipped_same += 1
+                    allowed = False
             if allowed:
                 eligible.append(row)
         self.last_skipped_same_class = skipped_same
-
-        job_ids: list[int] = list(remediation_job_ids)
-        total_bytes = sum(int(row["total_bytes"] or 0) for row in self.connection.execute(
-            "SELECT total_bytes FROM jobs WHERE id=ANY(%s)", (remediation_job_ids,),
-        ).fetchall()) if remediation_job_ids else 0
-        upload_mode = (admission_verification_mode or self._upload_verification_mode(vault_id)) if action == "upload" else None
-        for row in eligible:
-            size = int(
-                row["cloud_size"]
-                if action in {"recover", "storage-class"}
-                else row["local_size"] or 0
+        job_ids = list(remediation_job_ids)
+        if not eligible:
+            return job_ids, 0, len(remediation_job_ids)
+        sizes = [
+            int(
+                (row["local_size"] if action == "upload" else row["cloud_size"])
+                or 0
             )
-            job = self.connection.execute(
+            for row in eligible
+        ]
+        self.connection.execute(
+            """
+            INSERT INTO job_groups(id, vault_id, path, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (group_id, vault_id, "" if whole_vault or recovery_selection else path,
+             requested_at),
+        )
+        # ON CONFLICT: a File that gained an active operation since the read
+        # (one per File) is skipped, not failed.
+        inserted = self.connection.execute(
+            """
+            INSERT INTO jobs(
+                vault_id, file_id, archive_version_id, group_id, action,
+                status, origin, total_bytes, requested_at, updated_at
+            )
+            SELECT %s, item.file_id, item.version_id, %s, %s,
+                   'queued', %s, item.size, %s, %s
+            FROM unnest(%s::uuid[], %s::uuid[], %s::bigint[], %s::int[])
+                 AS item(file_id, version_id, size, ord)
+            ORDER BY item.ord
+            ON CONFLICT DO NOTHING
+            RETURNING id, file_id
+            """,
+            (
+                vault_id, group_id, action, origin, requested_at, requested_at,
+                [str(row["file_id"]) for row in eligible],
+                [
+                    None if action == "upload" else row["archive_version_id"]
+                    for row in eligible
+                ],
+                sizes,
+                list(range(len(eligible))),
+            ),
+        ).fetchall()
+        by_file = {str(row["file_id"]): int(row["id"]) for row in inserted}
+        admitted = [
+            (by_file[str(row["file_id"])], row, size)
+            for row, size in zip(eligible, sizes)
+            if str(row["file_id"]) in by_file
+        ]
+        new_ids = [job_id for job_id, _row, _size in admitted]
+        if action == "upload" and new_ids:
+            self.connection.execute(
                 """
-                INSERT INTO jobs(
-                    vault_id, vault_file_id, archive_version_id, path,
-                    action, status, requested_by, requested_at, updated_at,
-                    group_id, group_path, total_bytes, transferred_bytes,
-                    restore_tier, restore_days, estimated_cost_eur,
-                    estimated_hours, pending_until, origin, target_storage_class,
-                    upload_verification_requested
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, 0,
-                    %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT DO NOTHING
-                RETURNING id
+                INSERT INTO job_uploads(job_id, verification_mode)
+                SELECT job_id, %s FROM unnest(%s::bigint[]) AS job_id
                 """,
                 (
-                    vault_id,
-                    row["vault_file_id"],
-                    (
-                        None
-                        if action == "upload"
-                        else row["archive_version_id"]
-                    ),
-                    row["path"],
-                    action,
-                    initial_status,
-                    requested_by,
-                    requested_at,
-                    requested_at,
-                    group_id,
-                    path if path else (row["path"] if not whole_vault else ""),
-                    size,
-                    restore_tier if self._carries_restore(action, row) else None,
-                    restore_days if self._carries_restore(action, row) else None,
-                    estimated_cost_eur if action in {"recover", "storage-class"} else None,
-                    estimated_hours if action in {"recover", "storage-class"} else None,
-                    pending_until if action == "recover" else None,
-                    origin,
-                    target_class if action == "storage-class" else None,
-                    upload_mode,
+                    admission_verification_mode
+                    or self._upload_verification_mode(vault_id),
+                    new_ids,
                 ),
-            ).fetchone()
-            if job is None:
-                continue
-            job_ids.append(int(job["id"]))
-            if action == "upload":
-                self._mark_path_aggregates_dirty(vault_id, row["path"])
-            total_bytes += size
+            )
+            mark_paths_dirty(
+                self.connection, vault_id,
+                [row["path"] for _job_id, row, _size in admitted],
+            )
+        restoring = [
+            job_id for job_id, row, _size in admitted
+            if restore_tier and restore_days and self._carries_restore(action, row)
+        ]
+        if restoring:
+            self.connection.execute(
+                """
+                INSERT INTO job_restores(job_id, action, tier, days)
+                SELECT job_id, %s, %s, %s FROM unnest(%s::bigint[]) AS job_id
+                """,
+                (action, restore_tier, int(restore_days), restoring),
+            )
+        if action == "storage-class" and target_class and new_ids:
+            self.connection.execute(
+                """
+                INSERT INTO job_storage_class_changes(job_id, target_storage_class)
+                SELECT job_id, %s FROM unnest(%s::bigint[]) AS job_id
+                """,
+                (target_class, new_ids),
+            )
+        if (
+            action in {"recover", "storage-class"}
+            and new_ids
+            and (estimated_cost_eur is not None or estimated_hours is not None)
+        ):
+            self.connection.execute(
+                """
+                INSERT INTO restore_requests(group_id, estimated_cost_eur, estimated_hours)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (group_id) DO UPDATE
+                SET estimated_cost_eur=EXCLUDED.estimated_cost_eur,
+                    estimated_hours=EXCLUDED.estimated_hours
+                """,
+                (group_id, estimated_cost_eur, estimated_hours),
+            )
+        job_ids.extend(new_ids)
+        total_bytes = sum(size for _job_id, _row, size in admitted)
         return job_ids, total_bytes, len(eligible) + len(remediation_job_ids)

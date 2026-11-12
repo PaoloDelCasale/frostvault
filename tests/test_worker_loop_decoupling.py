@@ -29,7 +29,8 @@ from app.storage import (
     process_jobs_once,
     shutdown_background_executors,
 )
-from tests.test_database import run_alembic
+from tests.catalog_support import seed_vault
+from tests.postgres import run_alembic
 
 
 class WorkerLoopDecouplingTests(unittest.TestCase):
@@ -41,16 +42,18 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
         # Transfer concurrency is isolated from the independently tested gate.
         self.enterContext(patch('app.storage.validate_cloud_vault'))
         self.enterContext(patch('app.storage.cloud_preflight_gate.dispatch_ready',return_value=True))
+        # Durable failure backlog, readiness and Source Volume problems are
+        # ported with their own tables (#590, #592); not under test here.
+        self.enterContext(patch('app.storage.observe_failed_job_backlog', return_value=(0, 0.0)))
+        self.enterContext(patch('app.storage.cloud_preflight_gate.snapshot',
+                                return_value={'status': 'ready'}))
+        self.enterContext(patch('app.storage.sweep_source_volume_problems', return_value=0))
+        # Upload Remediation episodes are ported separately (#592).
+        self.enterContext(patch('app.services.upload_remediation.transition'))
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
-            )
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'alpha', 'alpha', '/source/alpha', 'bucket', 'alpha')"
-            )
+            seed_vault(connection, vault_id=10, source_root="/source/alpha", name="alpha")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=10,
@@ -75,19 +78,13 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
+                        vault_id, file_id, action, status, requested_at, updated_at
                     )
-                    SELECT 10, id, %s, 'upload', 'queued', 1, %s, %s
-                    FROM vault_files
-                    WHERE vault_id=10 AND id=(
-                        SELECT vf.id FROM vault_files vf
-                        JOIN file_paths fp ON fp.vault_file_id=vf.id
-                         AND fp.valid_to IS NULL AND fp.path=%s
-                    )
+                    SELECT 10, f.id, 'upload', 'queued', %s, %s
+                    FROM files f WHERE f.vault_id=10 AND f.path=%s
                     RETURNING id
                     """,
-                    (path, requested_at, requested_at, path),
+                    (requested_at, requested_at, path),
                 ).fetchone()["id"]
             )
 

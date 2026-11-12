@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.services import health, notifications, vault_relocation
 from app.sessions import create_session, csrf_token_for
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 
 
@@ -104,22 +106,16 @@ class QueueFixture(unittest.TestCase):
         self.roots: dict[int, Path] = {}
         self.vaults: dict[int, dict] = {}
         with self.db() as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
-            )
+            insert_owner(connection)
             for vault_id, slug in ((2, "photos"), (3, "docs")):
                 root = self.base / slug
                 root.mkdir()
                 self.roots[vault_id] = root
-                connection.execute(
-                    """
-                    INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix,
-                                       root_identity, root_identity_version)
-                    VALUES (%s, %s, %s, %s, 'test-bucket', %s, %s, %s)
-                    """,
-                    (vault_id, slug, slug.title(), str(root), slug,
-                     vault_relocation.root_identity(str(root)), vault_relocation.ROOT_IDENTITY_VERSION),
+                insert_vault(
+                    connection, id=vault_id, name=slug.title(), source_root=str(root),
+                    bucket="test-bucket",
+                    root_identity=vault_relocation.root_identity(str(root)),
+                    root_identity_version=vault_relocation.ROOT_IDENTITY_VERSION,
                 )
                 self.vaults[vault_id] = dict(
                     connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
@@ -138,6 +134,12 @@ class QueueFixture(unittest.TestCase):
             patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
+            # Upload Remediation episodes are ported by #592.
+            patch("app.services.upload_remediation.intercept_upload", return_value=(False, None)),
+            patch("app.services.upload_remediation.transition"),
+            patch("app.storage._held_transition_may_share_vault", return_value=True),
+            # Per-Vault operation policies are not in the v0.6 baseline yet.
+            patch("app.catalog.ArchiveCatalog._upload_verification_mode", return_value="s3_checksum"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -153,11 +155,36 @@ class QueueFixture(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         os.utime(target, (1_500_000_000, 1_500_000_000))
-        storage.apply_filesystem_changes(self.vaults[vault_id], {(Change.modified, str(target))})
+        # The scanner and the automatic-upload policy move to the new model
+        # with #593/#590: observe the Local Copy through the catalog directly.
+        with self.db() as connection:
+            ArchiveCatalog(connection).observe_local_copy(
+                vault_id=vault_id, path=name, file_type="regular", size=len(content),
+                mtime_ns=1_500_000_000 * 10**9, observed_at=self.clock.isoformat(),
+            )
         return target
 
     def queue(self, vault_id):
-        return storage.queue_vault_auto_uploads(self.vaults[vault_id], now=self.clock)
+        """Admit one automatic upload per File that never had a Job."""
+        queued = 0
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            paths = connection.execute(
+                """
+                SELECT f.path FROM files f
+                WHERE f.vault_id=%s AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id)
+                ORDER BY f.path
+                """,
+                (vault_id,),
+            ).fetchall()
+            for row in paths:
+                job_ids, _total, _eligible = catalog.queue_jobs(
+                    vault_id=vault_id, path=row["path"], action="upload",
+                    requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()),
+                    is_directory=False, origin="automatic",
+                )
+                queued += len(job_ids)
+        return queued
 
     def jobs(self, vault_id=None):
         with self.db() as connection:
@@ -217,8 +244,8 @@ class ClaimableWindowTests(QueueFixture):
         self.write(2, "manual.jpg")
         with self.db() as connection:
             manual, _, _ = ArchiveCatalog(connection).queue_jobs(
-                vault_id=2, path="manual.jpg", action="upload", requested_by=1,
-                requested_at=self.clock.isoformat(), group_id="manual", is_directory=False,
+                vault_id=2, path="manual.jpg", action="upload",
+                requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
         # The window is cut per Vault and per tier: the manual upload is its
         # own tier, so older automatic ones can never push it out of the window.
@@ -251,21 +278,20 @@ class ClaimableWindowTests(QueueFixture):
 
 
 class TierWindowTests(QueueFixture):
-    def add_owner_operations(self, count):
+    def add_owner_operations(self, count, *, action="rename", origin="manual"):
         with self.db() as connection:
             for index in range(count):
-                file_id = f"11111111-0000-0000-0000-{index:012d}"
-                connection.execute(
-                    "INSERT INTO vault_files(id, vault_id, status, created_at) VALUES (%s, 2, 'active', %s)",
-                    (file_id, self.clock.isoformat()),
-                )
+                file_id = connection.execute(
+                    "INSERT INTO files(vault_id, path, path_since) VALUES (2, %s, %s) RETURNING id",
+                    (f"op{index}.jpg", self.clock.isoformat()),
+                ).fetchone()["id"]
                 connection.execute(
                     """
-                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
+                    INSERT INTO jobs(vault_id, file_id, action, status,
                                      requested_at, updated_at, origin)
-                    VALUES (2, %s, %s, 'rename', 'queued', 1, %s, %s, 'manual')
+                    VALUES (2, %s, %s, 'queued', %s, %s, %s)
                     """,
-                    (file_id, f"op{index}.jpg", self.clock.isoformat(), self.clock.isoformat()),
+                    (file_id, action, self.clock.isoformat(), self.clock.isoformat(), origin),
                 )
 
     def test_a_flood_of_owner_operations_does_not_hide_uploads_of_the_same_vault(self):
@@ -281,15 +307,14 @@ class TierWindowTests(QueueFixture):
         self.assertEqual(rows[0]["action"], "rename")
 
     def test_automatic_cleanup_ranks_with_automatic_uploads_not_owner_operations(self):
-        self.add_owner_operations(1)
-        with self.db() as connection:
-            connection.execute("UPDATE jobs SET action='free-space', origin='automatic'")
+        # A Job keeps its action and origin: admit the cleanup as automatic.
+        self.add_owner_operations(1, action="free-space", origin="automatic")
         self.write(2, "manual.jpg")
         self.advance(300)
         with self.db() as connection:
             manual, _, _ = ArchiveCatalog(connection).queue_jobs(
-                vault_id=2, path="manual.jpg", action="upload", requested_by=1,
-                requested_at=self.clock.isoformat(), group_id="manual", is_directory=False,
+                vault_id=2, path="manual.jpg", action="upload",
+                requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
         rows = self.candidates(limit=10, per_vault_limit=5)
         self.assertEqual(rows[0]["id"], manual[0])
@@ -303,8 +328,15 @@ class TierWindowTests(QueueFixture):
         live = (self.clock + timedelta(minutes=5)).isoformat()
         stale = (self.clock - timedelta(minutes=5)).isoformat()
         with self.db() as connection:
-            connection.execute("UPDATE jobs SET claim_token='x', claim_expires_at=%s WHERE vault_id=2", (live,))
-            connection.execute("UPDATE jobs SET claim_token='y', claim_expires_at=%s WHERE vault_id=3", (stale,))
+            for vault_id, expires_at in ((2, live), (3, stale)):
+                connection.execute(
+                    """
+                    INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+                    SELECT id, gen_random_uuid(), %s::timestamptz - interval '10 minutes', %s
+                    FROM jobs WHERE vault_id=%s
+                    """,
+                    (expires_at, expires_at, vault_id),
+                )
             counts = ArchiveCatalog(connection).active_job_counts(now=self.clock.isoformat())
         self.assertEqual(counts, {2: 1})
 
@@ -329,7 +361,11 @@ class UnrunnableHeadTests(QueueFixture):
                 connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (job["id"],))
 
         with patch("app.storage.validate_cloud_vault"), patch("app.storage.process_job", side_effect=process), \
-                patch("app.storage._automatic_upload_state", side_effect=state):
+                patch("app.storage._automatic_upload_state", side_effect=state), \
+                patch("app.storage.observe_failed_job_backlog", return_value=(0, 0.0)), \
+                patch("app.storage.cloud_preflight_gate.snapshot", return_value={"status": "ready"}), \
+                patch("app.storage.cloud_preflight_gate.dispatch_ready", return_value=True), \
+                patch("app.storage.sweep_source_volume_problems", return_value=0):
             self.assertEqual(storage.process_jobs_once(), 1)
             # The next ticks do not re-read the Jobs set aside: nothing else is runnable.
             self.assertEqual(storage.process_jobs_once(), 0)
@@ -809,7 +845,7 @@ class CancelPendingHttpTests(QueueFixture):
             self.addCleanup(patcher.stop)
         self.client = TestClient(main.app, client=("127.0.0.1", 50000))
         with self.db() as connection:
-            token = create_session(connection, user_id=1, auth_method="oidc")
+            token = create_session(connection, auth_method="oidc")
             csrf = csrf_token_for(connection, token)
         self.client.cookies.set(settings.session_cookie_name, token)
         self.headers = {"X-CSRF-Token": csrf}

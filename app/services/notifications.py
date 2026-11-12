@@ -585,25 +585,16 @@ def enqueue_job_terminal_notification_best_effort(
 
 
 def mark_terminal_notification_done(connection: Any, *, job_id: int) -> bool:
+    """Leave the outbox: ending the Job queued it (``job_terminal_notifications``)."""
     result = connection.execute(
-        """
-        UPDATE jobs
-        SET terminal_notification_status='done'
-        WHERE id=%s AND status IN ('completed', 'failed')
-        """,
-        (job_id,),
+        "DELETE FROM job_terminal_notifications WHERE job_id=%s", (job_id,),
     )
     return bool(getattr(result, "rowcount", 0))
 
 
 def pending_terminal_notification_count(connection: Any) -> int:
     row = connection.execute(
-        """
-        SELECT COUNT(*) AS total
-        FROM jobs
-        WHERE status IN ('completed', 'failed')
-          AND terminal_notification_status='pending'
-        """
+        "SELECT COUNT(*) AS total FROM job_terminal_notifications"
     ).fetchone()
     return int(row["total"] or 0) if row is not None else 0
 
@@ -614,10 +605,8 @@ def reconcile_pending_terminal_notifications(
     """Retry terminal notification materialization left pending after a fault."""
     rows = connection.execute(
         """
-        SELECT id FROM jobs
-        WHERE status IN ('completed', 'failed')
-          AND terminal_notification_status='pending'
-        ORDER BY updated_at ASC, id ASC
+        SELECT job_id AS id FROM job_terminal_notifications
+        ORDER BY queued_at ASC, job_id ASC
         LIMIT %s
         """,
         (limit,),

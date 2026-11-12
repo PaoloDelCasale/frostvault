@@ -2185,7 +2185,9 @@ HIGH_IMPACT_RESTORE_HELD_MESSAGE = (
 )
 
 
-def _hold_high_impact_recovery(connection: Any, job_ids: list[int]) -> dict[str, Any]:
+def _hold_high_impact_recovery(
+    connection: Any, job_ids: list[int], group_id: str,
+) -> dict[str, Any]:
     """Evaluate Restore Approval once, at queue time, for a whole group.
 
     Runs in the queueing transaction, so no worker can claim a Job before the
@@ -2195,11 +2197,12 @@ def _hold_high_impact_recovery(connection: Any, job_ids: list[int]) -> dict[str,
     """
     rows = connection.execute(
         """
-        SELECT av.storage_class, av.restore_state, j.restore_tier, j.restore_days,
-               sum(j.total_bytes) AS bytes
+        SELECT av.storage_class, av.restore_state, r.tier AS restore_tier,
+               r.days AS restore_days, sum(j.total_bytes) AS bytes
         FROM jobs j JOIN archive_versions av ON av.id=j.archive_version_id
+        LEFT JOIN job_restores r ON r.job_id=j.id
         WHERE j.id=ANY(%s)
-        GROUP BY av.storage_class, av.restore_state, j.restore_tier, j.restore_days
+        GROUP BY av.storage_class, av.restore_state, r.tier, r.days
         """,
         (job_ids,),
     ).fetchall()
@@ -2207,26 +2210,21 @@ def _hold_high_impact_recovery(connection: Any, job_ids: list[int]) -> dict[str,
     if not impact["requires_restore"]:
         return impact
     timestamp = now_iso()
-    # Every Job carries the request's Cost Estimate, which the group shows.
-    connection.execute(
-        """
-        UPDATE jobs SET estimated_cost_eur=%s, estimated_hours=%s
-        WHERE id=ANY(%s)
-        """,
-        (impact["estimated_cost_eur"], impact["estimated_hours"], job_ids),
+    from .services import recovery_approval
+    # The request carries one Cost Estimate, which the group shows.
+    recovery_approval.record_estimate(
+        connection, group_id=group_id,
+        estimated_cost_eur=impact["estimated_cost_eur"],
+        estimated_hours=impact["estimated_hours"],
     )
     if impact["high_impact"]:
         hold_seconds = int(_runtime_settings().restore_approval_hold_seconds)
-        pending_until = (
+        deadline = (
             datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
         ).isoformat()
-        connection.execute(
-            """
-            UPDATE jobs
-            SET status='pending_approval', message=%s, pending_until=%s, updated_at=%s
-            WHERE id=ANY(%s) AND status='queued'
-            """,
-            (HIGH_IMPACT_RESTORE_HELD_MESSAGE, pending_until, timestamp, job_ids),
+        recovery_approval.hold(
+            connection, group_id=group_id, job_ids=job_ids, deadline=deadline,
+            message=HIGH_IMPACT_RESTORE_HELD_MESSAGE, now=timestamp,
         )
         notification_service.enqueue_recovery_approval_best_effort(connection, job_ids=job_ids)
     return impact
@@ -2400,7 +2398,6 @@ def queue_jobs(
             vault_id=vault_id,
             path=logical_path,
             action=action,
-            requested_by=user_id,
             requested_at=now_iso(),
             group_id=group_id,
             is_directory=is_directory,
@@ -2417,7 +2414,7 @@ def queue_jobs(
         if directory_recover and not (
             job_ids
             and connection.execute(
-                "SELECT 1 FROM jobs WHERE id=ANY(%s) AND restore_tier IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM job_restores WHERE job_id=ANY(%s) LIMIT 1",
                 (job_ids,),
             ).fetchone()
         ):
@@ -2425,7 +2422,7 @@ def queue_jobs(
             resolved_tier = resolved_days = None
         approval_required = False
         if action == "recover" and job_ids:
-            impact = _hold_high_impact_recovery(connection, job_ids)
+            impact = _hold_high_impact_recovery(connection, job_ids, group_id)
             approval_required = bool(impact["high_impact"])
             if impact["requires_restore"]:
                 estimated_cost_eur = impact["estimated_cost_eur"]
@@ -2516,7 +2513,9 @@ def recover_estimate(
             WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
               AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
         )"""
-        scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(selection or [(logical_path, True)])
+        scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(
+            selection or [(logical_path, True)], column="fp.path",
+        )
         with db() as connection:
             classes = connection.execute(
                 f"SELECT av.storage_class, av.restore_state, sum(av.size) AS bytes FROM vault_files vf "
@@ -2823,27 +2822,18 @@ def _cancel_active_jobs(
     if job_action == "free-space":
         automatic_cleanup_rows = connection.execute(
             """
-            SELECT id, path, requested_by, archive_version_id
-            FROM jobs
-            WHERE vault_id=%s AND id = ANY(%s) AND action='free-space'
-              AND origin='automatic'
-              AND status NOT IN ('completed', 'failed', 'cancelled')
+            SELECT j.id, f.path, j.archive_version_id
+            FROM jobs j JOIN files f ON f.id = j.file_id
+            WHERE j.vault_id=%s AND j.id = ANY(%s) AND j.action='free-space'
+              AND j.origin='automatic'
+              AND j.status NOT IN ('completed', 'failed', 'cancelled')
             """,
             (vault["id"], job_ids),
         ).fetchall()
     cancel_jobs(job_ids)
-    connection.execute(
-        """
-        UPDATE jobs
-        SET status='cancelled',
-            message=%s,
-            message_key=%s,
-            message_params=%s,
-            updated_at=%s
-        WHERE id = ANY(%s)
-          AND status NOT IN ('completed', 'failed', 'cancelled')
-        """,
-        [message, message_key, "{}", now_iso(), job_ids],
+    ArchiveCatalog(connection).cancel_jobs(
+        vault_id=vault["id"], job_ids=job_ids, message=message,
+        message_key=message_key, now=now_iso(),
     )
     if job_action == "upload":
         from .services import upload_remediation
@@ -2988,27 +2978,16 @@ def approve_recover(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    from .services.recovery_approval import expire_pending
+    from .services import recovery_approval
 
     with db() as connection:
         connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
         # Read the clock AFTER the lock: waiting for another decision must never
         # allow a late approval. Keep subsecond precision at the deadline.
         timestamp = datetime.now(timezone.utc).isoformat()
-        expire_pending(connection, vault_id=vault["id"], group_id=action.group_id, now=timestamp)
-        rows = connection.execute(
-            """
-            UPDATE jobs SET status='queued', approved_by=%s, approved_at=%s,
-                pending_until=NULL, message=%s, updated_at=%s
-            WHERE vault_id=%s AND group_id=%s AND action='recover'
-              AND status='pending_approval'
-            RETURNING id
-            """,
-            (user["id"], timestamp,
-             "High-impact restore approved; RestoreObject cannot be cancelled after AWS accepts it",
-             timestamp, vault["id"], action.group_id),
-        ).fetchall()
-        job_ids = [int(row["id"]) for row in rows]
+        job_ids = recovery_approval.approve(
+            connection, vault_id=vault["id"], group_id=action.group_id, now=timestamp,
+        )
     # Commit expiration even when the approval is refused.
     if not job_ids:
         raise HTTPException(409, "No high-impact restore is waiting for approval (it may have expired)")

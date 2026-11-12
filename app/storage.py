@@ -121,6 +121,7 @@ from .services.shutdown import (
 )
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
+from .services.job_admission import JOB_LEASE_HELD_STATUSES, TERMINAL_JOB_STATUSES
 from .services.job_scheduler import effective_priority, job_priority, select_fair_jobs
 from .services.operation_policies import (
     get_policy,
@@ -178,10 +179,7 @@ CLAIM_CHECKPOINT_RENEW_SECONDS = 15.0
 EXPIRED_LEASE_RECONCILE_BATCH = 100
 # How often the backlog gauges and the stall detector re-read a deep queue.
 BACKLOG_OBSERVE_SECONDS = 10.0
-JOB_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-JOB_LEASE_HELD_STATUSES = frozenset(
-    {"downloading", "uploading", "verifying", "cleaning"}
-)
+JOB_TERMINAL_STATUSES = frozenset(TERMINAL_JOB_STATUSES)
 _JOB_COUNTER_ACTIONS = frozenset(
     {
         "upload",
@@ -397,8 +395,8 @@ def ensure_job_claim_owned_in_transaction(
 ) -> None:
     """Fence a catalog/audit transaction behind the currently owned lease.
 
-    The conditional renewal holds the Job row lock until the surrounding
-    transaction commits.  A cancellation/takeover that won first therefore
+    The conditional renewal locks the Job row, then its lease, until the
+    surrounding transaction commits (the claim's lock order).  A cancellation/takeover that won first therefore
     prevents every post-provider catalog or audit write in that transaction.
     """
     shutdown_state.checkpoint()
@@ -416,6 +414,7 @@ def ensure_job_claim_owned_in_transaction(
         claim_token=str(claim_token),
         now=timestamp,
         claim_expires_at=_claim_expiry_at(timestamp),
+        lock_job=True,
     )
     if current is None:
         _mark_claim_lost(job_id)
@@ -2161,8 +2160,7 @@ def _apply_auto_renames(
                 vault_id=vault["id"],
                 path=path,
                 action="rename",
-                requested_by=requested_by,
-                requested_at=now_iso(),
+                    requested_at=now_iso(),
                 group_id=uuid.uuid4().hex,
                 is_directory=False,
             )
@@ -2325,35 +2323,23 @@ def _set_job_in_transaction(
         (job_id,),
     )
     current = connection.execute(
-        "SELECT status, action, vault_id, path FROM jobs WHERE id=%s", (job_id,),
+        """SELECT j.status, j.action, j.vault_id, f.path
+           FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.id=%s""",
+        (job_id,),
     ).fetchone()
     if current is not None:
         previous_status, action = current["status"], current["action"]
-    notify_sql = ", terminal_notification_status='pending'" if status in {"completed", "failed"} else ""
-    progress_sql = ", transferred_bytes=%s" if transferred_bytes is not None else ""
-    progress_params = [max(0, transferred_bytes)] if transferred_bytes is not None else []
-    if claim_token:
-        lease_set = "claim_expires_at=%s" if held else "claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL"
-        lease_params = [_claim_expiry_at(timestamp)] if held else []
-        result = connection.execute(
-            f"""UPDATE jobs SET status=%s, message=%s, message_key=%s,
-                message_params=%s, updated_at=%s, {lease_set}{notify_sql}{progress_sql}
-            WHERE id=%s AND claim_token=%s
-              AND claim_expires_at IS NOT NULL AND claim_expires_at > %s
-              AND status NOT IN ('completed', 'failed', 'cancelled')""",
-            (status, message, message_key,
-             format_message_params(params) if message_key else None,
-             timestamp, *lease_params, *progress_params, job_id, claim_token, timestamp),
-        )
-    else:
-        result = connection.execute(
-            f"""UPDATE jobs SET status=%s, message=%s, message_key=%s,
-                message_params=%s, updated_at=%s{notify_sql}{progress_sql} WHERE id=%s""",
-            (status, message, message_key,
-             format_message_params(params) if message_key else None,
-             timestamp, *progress_params, job_id),
-        )
-    updated = _claim_write_succeeded(result)
+    updated = ArchiveCatalog(connection).transition_job(
+        job_id=job_id,
+        status=status,
+        message=message,
+        message_key=message_key,
+        message_params=format_message_params(params) if message_key else None,
+        now=timestamp,
+        claim_token=claim_token,
+        claim_expires_at=_claim_expiry_at(timestamp) if held else None,
+        transferred_bytes=transferred_bytes,
+    )
     if updated and action == "upload":
         from .services import upload_remediation
         upload_remediation.transition(
@@ -2434,66 +2420,21 @@ def schedule_upload_retry(
         ).fetchone()
         if current is not None:
             action = current["action"]
-        if claim_token:
-            result = connection.execute(
-                """
-                UPDATE jobs
-                SET status='retrying',
-                    message=%s,
-                    message_key=%s,
-                    message_params=%s,
-                    retry_count=%s,
-                    retry_after=%s,
-                    updated_at=%s,
-                    claim_token=NULL,
-                    claimed_at=NULL,
-                    claim_expires_at=NULL
-                WHERE id=%s
-                  AND claim_token=%s
-                  AND claim_expires_at IS NOT NULL
-                  AND claim_expires_at > %s
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                """,
-                (
-                    message,
-                    message_key,
-                    format_message_params(params) if message_key else None,
-                    retry_count,
-                    retry_after,
-                    timestamp,
-                    job_id,
-                    claim_token,
-                    timestamp,
-                ),
-            )
-        else:
-            result = connection.execute(
-                """
-                UPDATE jobs
-                SET status='retrying',
-                    message=%s,
-                    message_key=%s,
-                    message_params=%s,
-                    retry_count=%s,
-                    retry_after=%s,
-                    updated_at=%s
-                WHERE id=%s
-                """,
-                (
-                    message,
-                    message_key,
-                    format_message_params(params) if message_key else None,
-                    retry_count,
-                    retry_after,
-                    timestamp,
-                    job_id,
-                ),
-            )
-        if _claim_write_succeeded(result) and action == "upload":
+        updated = ArchiveCatalog(connection).transition_job(
+            job_id=job_id,
+            status="retrying",
+            message=message,
+            message_key=message_key,
+            message_params=format_message_params(params) if message_key else None,
+            now=timestamp,
+            claim_token=claim_token,
+            run_after=retry_after,
+            retry_count=retry_count,
+        )
+        if updated and action == "upload":
             from .services import upload_remediation
             upload_remediation.transition(connection, job_id, "retrying", timestamp, suspension=remediation_suspension)
             _dirty_job_protection(connection, job_id)
-    updated = _claim_write_succeeded(result)
     if updated and not remediation_suspension:
         # A wait for the Source Volume is not a retry of the transfer.
         _record_committed_job_counter("retries", action)
@@ -2512,36 +2453,13 @@ def set_job_progress(
         return False
     claim_token = claim_token or _claim_token_for(job_id)
     with owned_connection(db()) as connection:
-        if claim_token:
-            result = connection.execute(
-                """
-                UPDATE jobs
-                SET transferred_bytes=%s,
-                    updated_at=%s,
-                    claim_expires_at=%s
-                WHERE id=%s
-                  AND claim_token=%s
-                  AND claim_expires_at IS NOT NULL
-                  AND claim_expires_at > %s
-                  AND status NOT IN ('completed', 'failed', 'cancelled')
-                """,
-                (
-                    max(0, transferred_bytes),
-                    timestamp,
-                    _claim_expiry_at(timestamp),
-                    job_id,
-                    claim_token,
-                    timestamp,
-                ),
-            )
-        else:
-            result = connection.execute(
-                """
-                UPDATE jobs SET transferred_bytes=%s, updated_at=%s WHERE id=%s
-                """,
-                (max(0, transferred_bytes), timestamp, job_id),
-            )
-    return _claim_write_succeeded(result)
+        return ArchiveCatalog(connection).record_job_progress(
+            job_id=job_id,
+            transferred_bytes=transferred_bytes,
+            now=timestamp,
+            claim_token=claim_token,
+            claim_expires_at=_claim_expiry_at(timestamp),
+        )
 
 
 def _remove_abandoned_restore_files(target: Path) -> None:
@@ -2606,15 +2524,11 @@ def cleanup_abandoned_restore_files() -> int:
 
 def _dirty_job_protection(connection: Any, job_id: int) -> None:
     row = connection.execute(
-        "SELECT vault_id, path FROM jobs WHERE id=%s AND action='upload'", (job_id,),
+        """SELECT j.vault_id, f.path FROM jobs j JOIN files f ON f.id = j.file_id
+           WHERE j.id=%s AND j.action='upload'""", (job_id,),
     ).fetchone()
     if row:
         mark_path_dirty(connection, int(row["vault_id"]), row["path"])
-
-
-def _reconcile_claim_is_stale_sql() -> str:
-    """Predicate that lets restart repair legacy or expired claims, never live ones."""
-    return "(claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= %s)"
 
 
 def _reconcile_job_transition(
@@ -2628,25 +2542,13 @@ def _reconcile_job_transition(
     complete_progress: bool = False,
 ) -> bool:
     """Publish one restart decision only if no worker renewed the old lease."""
-    progress_sql = ""
-    if reset_progress:
-        progress_sql = ", transferred_bytes=0"
-    elif complete_progress:
-        progress_sql = ", transferred_bytes=total_bytes"
-    notify_sql = ""
-    if status in {"completed", "failed"}:
-        notify_sql = ", terminal_notification_status='pending'"
-    result = connection.execute(
-        f"""
-        UPDATE jobs SET status='{status}'{progress_sql}{notify_sql},
-            message=%s, updated_at=%s,
-            claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL
-        WHERE {_reconcile_claim_is_stale_sql()} AND id=%s
-          AND status NOT IN ('completed', 'failed', 'cancelled')
-        """,
-        (message, timestamp, timestamp, job_id),
+    updated = ArchiveCatalog(connection).settle_stale_job(
+        job_id=job_id,
+        status=status,
+        message=message,
+        now=timestamp,
+        progress="reset" if reset_progress else "complete" if complete_progress else None,
     )
-    updated = _claim_write_succeeded(result)
     if updated:
         _dirty_job_protection(connection, job_id)
     if updated and status in {"completed", "failed"}:
@@ -3025,11 +2927,15 @@ def _reconcile_cloud_purge_group(
         raise RuntimeError("Cloud purge is missing its group identity")
     group_rows = connection.execute(
         """
-        SELECT * FROM jobs
-        WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-        ORDER BY requested_at ASC, id ASC
+        SELECT j.*, EXISTS (
+            SELECT 1 FROM job_leases l
+            WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
+        ) AS lease_live
+        FROM jobs j
+        WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+        ORDER BY j.requested_at ASC, j.id ASC
         """,
-        (lead["vault_id"], group_id),
+        (timestamp, lead["vault_id"], group_id),
     ).fetchall()
     active_rows = [
         row for row in group_rows if row["status"] not in JOB_TERMINAL_STATUSES
@@ -3039,12 +2945,7 @@ def _reconcile_cloud_purge_group(
     # queued; those are harmless as long as every active member is unleased.
     if (
         not active_rows
-        or any(
-            row.get("claim_token")
-            and row.get("claim_expires_at")
-            and str(row["claim_expires_at"]) > timestamp
-            for row in active_rows
-        )
+        or any(row["lease_live"] for row in active_rows)
         or any(row["status"] not in {"cleaning", "queued"} for row in active_rows)
     ):
         return {"completed": 0, "requeued": 0, "failed": 0}
@@ -3139,12 +3040,12 @@ def observe_stuck_lease_jobs() -> tuple[int, float]:
         row = connection.execute(
             f"""
             SELECT COUNT(*) AS total,
-                   MIN(j.claim_expires_at) AS oldest_expiry,
+                   MIN(l.expires_at) AS oldest_expiry,
                    MIN(j.updated_at) AS oldest_update
             FROM jobs j
+            LEFT JOIN job_leases l ON l.job_id = j.id
             WHERE {_INTERRUPTED_JOB_SQL}
-              AND (j.claim_token IS NULL OR j.claim_expires_at IS NULL
-                   OR j.claim_expires_at <= %s)
+              AND (l.job_id IS NULL OR l.expires_at <= %s::timestamptz)
             """,
             (timestamp,),
         ).fetchone()
@@ -3203,12 +3104,16 @@ def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
         timestamp = now_iso()
         jobs = connection.execute(
             f"""
-            SELECT j.*, v.source_root, v.s3_bucket
+            SELECT j.*, f.path, v.source_root, t.bucket AS s3_bucket
             FROM jobs j
+            JOIN files f ON f.id = j.file_id
             JOIN vaults v ON v.id=j.vault_id
+            JOIN vault_targets t ON t.id = v.target_id
             WHERE {_INTERRUPTED_JOB_SQL}
-              AND (j.claim_token IS NULL OR j.claim_expires_at IS NULL
-                   OR j.claim_expires_at <= %s)
+              AND NOT EXISTS (
+                  SELECT 1 FROM job_leases l
+                  WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
+              )
             ORDER BY j.requested_at ASC, j.id ASC
             LIMIT %s
             """,
@@ -3235,11 +3140,13 @@ def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
                     # blindly.  Mark every stale group member terminal instead.
                     group_rows = connection.execute(
                         """
-                        SELECT id FROM jobs
-                        WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-                          AND status='cleaning'
-                          AND (claim_token IS NULL OR claim_expires_at IS NULL
-                               OR claim_expires_at <= %s)
+                        SELECT j.id FROM jobs j
+                        WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+                          AND j.status='cleaning'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM job_leases l
+                              WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
+                          )
                         """,
                         (job["vault_id"], job.get("group_id"), timestamp),
                     ).fetchall()
@@ -3333,7 +3240,7 @@ def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
                                 outcome = "failed"
                             else:
                                 ArchiveCatalog(connection).mark_local_copy_missing(
-                                    job["vault_file_id"], observed_at=timestamp
+                                    job["file_id"], observed_at=timestamp
                                 )
                                 message = "Local space freed (reconciled after restart)"
                                 outcome = "completed"
@@ -5137,7 +5044,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         _mark_claim_lost(int(job["id"]))
         raise JobLeaseLost("Cloud purge claim was lost")
     with db() as connection:
-        # This conditional UPDATE holds all Jobs' row locks through finalization,
+        # This renewal locks all Jobs' rows, then their leases, through finalization,
         # so a cancellation either wins before this point or observes terminal
         # Jobs afterward; it can never be overwritten by finalize_purge_job.
         if not ArchiveCatalog(connection).renew_purge_group_claim(
@@ -5161,16 +5068,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 actor="system" if purge_job.get("origin") == "automatic" else "owner",
                 updated_at=stamp,
             )
-        placeholders = ", ".join(["%s"] * len(expected_job_ids))
-        connection.execute(
-            f"""
-            UPDATE jobs
-            SET claim_token=NULL, claimed_at=NULL, claim_expires_at=NULL
-            WHERE id IN ({placeholders})
-              AND status IN ('completed', 'failed', 'cancelled')
-            """,
-            expected_job_ids,
-        )
+        # A Job that ended dropped its lease with it (schema trigger).
     if failures:
         # finalize_purge_job already persisted failed status; avoid double-write
         # through process_job's exception handler.
@@ -5198,11 +5096,9 @@ def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
     # The group was leased as cleaning, but preflight precedes DeleteObjects.
     # Release the complete group; keep exact deletion consent and its deadline.
     with owned_connection(db()) as connection:
-        connection.execute(
-            "UPDATE jobs SET status='queued',claim_token=NULL,claimed_at=NULL,claim_expires_at=NULL "
-            "WHERE vault_id=%s AND group_id=%s AND action='cloud-purge' AND status='cleaning' "
-            "AND claim_token=%s AND claim_expires_at>%s",
-            (job["vault_id"], job["group_id"], job["claim_token"], now_iso()),
+        ArchiveCatalog(connection).release_purge_group_claim(
+            vault_id=int(job["vault_id"]), group_id=str(job["group_id"]),
+            claim_token=str(job["claim_token"]), now=now_iso(),
         )
 
 
@@ -5380,8 +5276,11 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 # execution; no filesystem action is attempted here.
                 return False
         if job["status"] == "restoring":
-            last_check = datetime.fromisoformat(job["updated_at"])
-            age = (datetime.now(timezone.utc) - last_check).total_seconds()
+            last_check = _parse_iso_datetime(job["updated_at"])
+            age = (
+                (datetime.now(timezone.utc) - last_check).total_seconds()
+                if last_check is not None else float("inf")
+            )
             if age < runtime.restore_poll_interval:
                 return False
         if job["action"] == "upload" and job["status"] in {"queued", "retrying"}:
@@ -5939,11 +5838,6 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     continue
                 if vault_relocation.local_work_suspended({"id": vault_id}):
                     continue
-                if (
-                    job.get("origin") != "stop-protection"
-                    and protection_stop_service.local_work_suspended(job)
-                ):
-                    continue
                 if job["action"] == "cloud-purge":
                     if not job.get("group_id"):
                         continue
@@ -6024,7 +5918,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
         if shutdown_state.requested:
             break
         claimed_at = now_iso()
-        claim_token = uuid.uuid4().hex
+        claim_token = str(uuid.uuid4())
         claim_expires_at = _claim_expiry_at(claimed_at)
         generation = (job.get('scheduler_generation')
                       if effective_priority(job) < job_priority(job) else None)

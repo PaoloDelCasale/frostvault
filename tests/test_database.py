@@ -30,7 +30,10 @@ __all__ = ["run_alembic"]
 BASELINE_TABLES = {
     "alembic_version", "owner", "vault_targets", "vaults", "files",
     "file_path_history", "archive_versions", "directory_aggregate_status",
-    "directory_aggregate_dirty", "jobs", "sessions", "oidc_login", "auth_backoff",
+    "directory_aggregate_dirty", "job_groups", "jobs", "job_leases", "job_uploads",
+    "job_restores", "job_storage_class_changes", "restore_requests",
+    "cloud_purge_requests", "scheduler_vault_turns", "job_terminal_notifications",
+    "sessions", "oidc_login", "auth_backoff",
     "audit_events", "notifications", "notification_deliveries", "upload_snapshots",
     "upload_snapshot_jobs", "upload_attempts", "upload_receipts", "upload_multiparts",
 }
@@ -333,8 +336,8 @@ class BaselineSchemaTests(unittest.TestCase):
             "SELECT confrelid::regclass::text AS referenced FROM pg_constraint WHERE contype = 'f'"
         )}
         self.assertEqual(referenced, {
-            "vault_targets", "vaults", "files", "archive_versions", "jobs", "notifications",
-            "upload_snapshots", "upload_attempts",
+            "vault_targets", "vaults", "files", "archive_versions", "job_groups", "jobs",
+            "notifications", "upload_snapshots", "upload_attempts",
         })
         # No per-user attribution survives anywhere (#586).
         attribution = {

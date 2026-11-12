@@ -161,7 +161,7 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
     if path_ids:
         from ..catalog import ArchiveCatalog
         job_ids, total_bytes, _ = ArchiveCatalog(connection).queue_jobs(
-            vault_id=vault_id, path=request["path"], action="upload", requested_by=request["requested_by"],
+            vault_id=vault_id, path=request["path"], action="upload",
             requested_at=stamp, group_id=group_id, is_directory=True,
             whole_vault=not request["path"], origin=request["origin"], admission_path_ids=path_ids,
             admission_verification_mode=request["verification_mode"])

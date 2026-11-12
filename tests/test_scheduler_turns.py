@@ -4,6 +4,7 @@ import unittest
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import uuid
 
 from app.catalog import ArchiveCatalog
 from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
@@ -71,7 +72,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
     def claim(self, job_id, seconds=0, generation=None):
         with PostgresConnection(self.path) as connection:
             return ArchiveCatalog(connection).claim_job(
-                job_id=job_id, claim_token=f'claim-{job_id}-{seconds}', claimed_at=self.stamp(seconds),
+                job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(seconds),
                 claim_expires_at=self.stamp(seconds + 300), now=self.stamp(seconds),
                 restore_due_before=self.stamp(seconds), scheduler_generation=generation)
 
@@ -81,10 +82,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
                                       (vault_id,)).fetchone()
 
     def auto_job(self, vault_id=20, path='a.txt'):
-        job = self._insert_upload_job(vault_id=vault_id, path=path)
-        with PostgresConnection(self.path) as connection:
-            connection.execute("UPDATE jobs SET origin='automatic' WHERE id=%s", (job,))
-        return job
+        return self._insert_upload_job(vault_id=vault_id, path=path, origin='automatic')
 
     def test_continuously_served_manual_backlog_yields_after_900_not_1800(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')
@@ -136,7 +134,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.observe()
         self.observe(600)
         with PostgresConnection(self.path) as connection:
-            connection.execute("UPDATE jobs SET status='retrying', retry_after=%s WHERE id=%s",
+            connection.execute("UPDATE jobs SET status='retrying', run_after=%s WHERE id=%s",
                                (self.stamp(4000), auto))
         self.assertEqual(self.observe(3000), [])
         self.observe(4000)
@@ -185,7 +183,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(self.state()['generation'], 1)
         self.assertEqual(self.state()['wait_seconds'], 0)
         with PostgresConnection(self.path) as connection:
-            self.assertEqual(connection.execute('SELECT count(*) AS n FROM jobs WHERE claim_token IS NOT NULL')
+            self.assertEqual(connection.execute('SELECT count(*) AS n FROM job_leases')
                              .fetchone()['n'], 1)
 
     def test_claim_waiting_for_accounting_never_holds_a_bulk_writers_next_job(self):
@@ -203,7 +201,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
                             waiting.set()
                         return connection.execute(sql, params)
                 return ArchiveCatalog(ObserveLock()).claim_job(
-                    job_id=second, claim_token='contender', claimed_at=test.stamp(700),
+                    job_id=second, claim_token=str(uuid.uuid4()), claimed_at=test.stamp(700),
                     claim_expires_at=test.stamp(1000), now=test.stamp(700),
                     restore_due_before=test.stamp(700))
 
@@ -221,9 +219,18 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(self.state()['wait_seconds'], 600)
 
     def test_contended_purge_member_cannot_split_a_group_or_consume_a_turn(self):
-        ids = [self.auto_job(), self.auto_job(path='b.txt')]
+        # Action and origin are immutable: insert the purge group as such.
+        group = str(uuid.uuid4())
         with PostgresConnection(self.path) as connection:
-            connection.execute("UPDATE jobs SET action='cloud-purge', origin='manual', group_id='turn-552'")
+            connection.execute("INSERT INTO job_groups(id, vault_id, created_at) VALUES (%s, 20, %s)",
+                               (group, self.stamp()))
+            connection.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'r')",
+                               (group,))
+            ids = [connection.execute(
+                """INSERT INTO jobs(vault_id, file_id, group_id, action, requested_at, updated_at)
+                   VALUES (20, %s, %s, 'cloud-purge', %s, %s) RETURNING id""",
+                (self.file_ids[(20, path)], group, '2026-07-01T00:00:00+00:00',
+                 '2026-07-01T00:00:00+00:00')).fetchone()['id'] for path in ('a.txt', 'b.txt')]
         self.observe()
         self.observe(900)
         before = self.state()
@@ -231,7 +238,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         def claim_group():
             with PostgresConnection(self.path) as connection:
                 return ArchiveCatalog(connection).claim_purge_group(
-                    lead_job_id=ids[0], claim_token='purge', claimed_at=self.stamp(900),
+                    lead_job_id=ids[0], claim_token=str(uuid.uuid4()), claimed_at=self.stamp(900),
                     claim_expires_at=self.stamp(1200), now=self.stamp(900),
                     message='deleting', message_key='job.cloud_purge_deleting')
 
@@ -289,15 +296,15 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         before = self.state()
         with PostgresConnection(self.path) as connection:
             result = ArchiveCatalog(connection).claim_job(
-                job_id=auto, claim_token='rolled-back', claimed_at=self.stamp(1800),
+                job_id=auto, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(1800),
                 claim_expires_at=self.stamp(2100), now=self.stamp(1800),
                 restore_due_before=self.stamp(1800), scheduler_generation=0)
             self.assertIsNotNone(result)
             connection.rollback()
         self.assertEqual(self.state(), before)
         with PostgresConnection(self.path) as connection:
-            self.assertIsNone(connection.execute('SELECT claim_token FROM jobs WHERE id=%s', (auto,))
-                              .fetchone()['claim_token'])
+            self.assertIsNone(connection.execute('SELECT token FROM job_leases WHERE job_id=%s', (auto,))
+                              .fetchone())
 
     def test_busy_observation_does_not_scan_already_served_bulk_windows(self):
         manual = self._insert_upload_job(vault_id=10, path='a.txt')

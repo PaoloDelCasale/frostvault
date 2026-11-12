@@ -210,9 +210,12 @@ def format_message_params(params: Mapping[str, Any] | None) -> str:
     return json.dumps(dict(params), ensure_ascii=False, sort_keys=True)
 
 
-def parse_message_params(raw: str | None) -> dict[str, Any]:
+def parse_message_params(raw: str | Mapping[str, Any] | None) -> dict[str, Any]:
+    """Read Job message parameters: ``jobs.message_params`` is ``jsonb``."""
     if not raw:
         return {}
+    if isinstance(raw, Mapping):
+        return dict(raw)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:

@@ -323,7 +323,7 @@ class RenameSafetyTests(_CatalogFixture):
             old_id, _ = self.seed_rename(catalog, old_path="a.txt", new_path="b.txt")
             connection.execute(
                 "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
-                "VALUES (2, %s, 'recover', 'running', 'manual')",
+                "VALUES (2, %s, 'recover', 'downloading', 'manual')",
                 (old_id,),
             )
             self.assertEqual(catalog.list_rename_candidates(vault_id=2), [])
@@ -339,10 +339,11 @@ class RenameSafetyTests(_CatalogFixture):
                 observed_at="2026-07-21T10:00:00+00:00",
             )
             group = uuid.uuid4()
+            connection.execute("INSERT INTO job_groups(id, vault_id) VALUES (%s, 2)", (group,))
             for file_id in (old_id, sibling):
                 connection.execute(
-                    "INSERT INTO jobs(vault_id, file_id, action, status, origin, group_id) "
-                    "VALUES (2, %s, 'cloud-purge', 'pending_delay', 'manual', %s)",
+                    "INSERT INTO jobs(vault_id, file_id, action, status, origin, group_id, run_after) "
+                    "VALUES (2, %s, 'cloud-purge', 'pending_delay', 'manual', %s, now() + interval '7 days')",
                     (file_id, group),
                 )
             connection.commit()
