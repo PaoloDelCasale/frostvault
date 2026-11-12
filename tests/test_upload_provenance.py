@@ -107,8 +107,7 @@ class ProvenanceLockModeTests(unittest.TestCase):
         for shared in (False, True):
             with self.subTest(shared=shared), patch.object(provenance, "target", return_value=pinned) as target, \
                     patch.object(provenance, "load_for_job", return_value=intent), \
-                    patch.object(provenance, "receipt", return_value=None), \
-                    patch("app.services.upload_remediation_discovery.capture"):
+                    patch.object(provenance, "receipt", return_value=None):
                 connection = MagicMock()
                 provenance.require_target(connection, job, pinned, shared=shared)
                 provenance.prepare(connection, job, pinned=pinned, snapshot=MagicMock(),

@@ -74,20 +74,18 @@ class UploadRemediationFrontierTests(unittest.TestCase):
             self.assertIsNotNone(connection.execute("SELECT completed_at FROM snapshot_cleanup_inventories").fetchone()["completed_at"])
         return original
 
-    def test_empty_sweep_table_recovers_all_cursors_and_drains_expired_fact(self):
+    def test_empty_sweep_table_recovers_all_cursors_and_discovers_durable_version(self):
         av, _ = self.seed_owned()
         with self.db() as connection:
             connection.execute("DELETE FROM upload_remediation_sweep")
-            connection.execute("UPDATE upload_remediation_facts SET due_at=%s",
-                ((datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),))
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_facts").fetchone()["n"], 1)
+            self.assertIsNone(connection.execute("SELECT to_regclass('upload_remediation_facts') absent").fetchone()["absent"])
         with patch("app.storage.s3_client", side_effect=AssertionError("Sweep must remain DB-only")):
             self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
             cursors = connection.execute("SELECT name,last_tick_at FROM upload_remediation_sweep ORDER BY name").fetchall()
-            self.assertEqual([r["name"] for r in cursors], ["admission", "discovery", "facts"])
+            self.assertEqual([r["name"] for r in cursors], ["admission", "discovery", "obligations"])
             self.assertTrue(all(r["last_tick_at"] for r in cursors))
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_facts").fetchone()["n"], 0)
+            self.assertEqual(connection.execute("SELECT integrity FROM archive_versions WHERE id=%s", (av,)).fetchone()["integrity"], "unverified", "Discovery is not proof")
             resumed = connection.execute("SELECT current_job_id FROM upload_remediations").fetchone()["current_job_id"]
         self.run_job(resumed)
         self.assertEqual(self.assert_keeper(resumed)["id"], av)
@@ -103,7 +101,7 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         remediation.observe(self.db)
         with self.db() as connection:
             self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_remediation_stale'").fetchone()["problem_status"], "open")
-            connection.execute("DELETE FROM upload_remediation_sweep WHERE name='facts'")
+            connection.execute("DELETE FROM upload_remediation_sweep WHERE name='obligations'")
         self.assertTrue(remediation.sweep_health(self.db)["missing_ticks"])
         remediation.observe(self.db)
         self.assertIn("upload_remediation_last_tick_unixtime 0", metrics.render_prometheus())
@@ -118,11 +116,11 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         av, _ = self.seed_owned()
         stale = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         with self.db() as connection:
-            connection.execute("UPDATE upload_remediation_sweep SET last_vault_id=99,last_tick_at=%s WHERE name='facts'", (stale,))
+            connection.execute("UPDATE upload_remediation_sweep SET last_vault_id=99,last_tick_at=%s WHERE name='obligations'", (stale,))
         with self.db() as held:
-            held.execute("SELECT name FROM upload_remediation_sweep WHERE name='facts' FOR UPDATE")
+            held.execute("SELECT name FROM upload_remediation_sweep WHERE name='obligations' FOR UPDATE")
             self.assertEqual(remediation.sweep(self.db), 0)
-            row = held.execute("SELECT last_vault_id,last_tick_at FROM upload_remediation_sweep WHERE name='facts'").fetchone()
+            row = held.execute("SELECT last_vault_id,last_tick_at FROM upload_remediation_sweep WHERE name='obligations'").fetchone()
             self.assertEqual(row, {"last_vault_id": 99, "last_tick_at": stale})
         self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
@@ -147,7 +145,6 @@ class UploadRemediationFrontierTests(unittest.TestCase):
                 action,status,requested_by,requested_at,updated_at,upload_plaintext_sha256,upload_verification_requested)
                 VALUES (2,%s,%s,'report.txt','upload','completed',1,%s,%s,%s,'read_back') RETURNING id""",
                 (file_id,av,storage.now_iso(),storage.now_iso(),hashlib.sha256(A).hexdigest())).fetchone()["id"]
-            discovery.capture(connection,storage.now_iso(),version_id=av)
         self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
             resumed = connection.execute("SELECT current_job_id FROM upload_remediations").fetchone()["current_job_id"]
@@ -156,13 +153,14 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         self.assertEqual(self.row(original)["status"], "completed")
         self.assertEqual((self.provider.puts,self.provider.gets,self.provider.deletes), (0,1,0))
 
-    def test_send_started_facts_without_failed_original_resume_without_second_put(self):
+    def test_open_send_without_failed_original_resumes_without_second_put(self):
         original = self.fail_after_ack()
         with self.db() as connection:
             # Populated legacy fixture: materialized intent, terminal original,
             # no failed-origin discovery. Do not change provider facts/evidence.
             connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (original,))
             connection.execute("DELETE FROM upload_remediation_discovery")
+            connection.execute("UPDATE upload_intents SET created_at=%s", ((datetime.now(timezone.utc)-timedelta(seconds=30)).isoformat(),))
         before = self.row(original)
         self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
@@ -221,6 +219,23 @@ class UploadRemediationFrontierTests(unittest.TestCase):
             self.assertIsNotNone(late["read_at"])
         self.run_job(second); self.assert_keeper(second)
         self.assertEqual((self.provider.puts,self.provider.gets,self.provider.deletes), (1,1,1))
+
+    def test_new_cleanup_blocks_survive_equal_or_older_timestamps_of_resolved_episodes(self):
+        self.fail_after_ack()
+        first = self.admit(); self.run_job(first); self.assert_keeper(first)
+        for index in range(2):
+            self.provider.add('docs/report.txt', A, version=f'clock-skew-duplicate-{index}')
+            self.scan()
+            with self.db() as connection:
+                connection.execute("UPDATE snapshot_reconciliation_blocks SET updated_at='2020-01-01T00:00:00+00:00'")
+                history = connection.execute("SELECT id,resolved_at FROM upload_remediations WHERE state='resolved' ORDER BY id").fetchall()
+            self.assertEqual(remediation.sweep(self.db), 1)
+            with self.db() as connection:
+                resumed = connection.execute("SELECT current_job_id FROM upload_remediations WHERE state='queued'").fetchone()['current_job_id']
+                self.assertEqual(connection.execute("SELECT id,resolved_at FROM upload_remediations WHERE state='resolved' ORDER BY id").fetchall(), history)
+            self.run_job(resumed); self.assert_keeper(resumed)
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.provider.deletes, 2)
 
     def test_intent_and_verified_reuse_originals_deduplicate_exact_av(self):
         original = self.completion_gap()
@@ -284,7 +299,7 @@ class UploadRemediationFrontierTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_jobs").fetchone()["n"], 12)
         self.assertEqual((self.provider.puts,self.provider.gets,self.provider.deletes), (0,0,0))
 
-    def test_locked_vault_does_not_starve_next_vault_or_lose_its_facts(self):
+    def test_locked_vault_does_not_starve_next_vault_or_lose_its_obligations(self):
         self.seed_owned(); self.seed_owned(vault_id=3)
         with patch.object(remediation,"VAULT_BATCH",1):
             with self.db() as held:
@@ -295,7 +310,7 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         with self.db() as connection:
             self.assertEqual({r["vault_id"] for r in connection.execute("SELECT vault_id FROM upload_remediations").fetchall()}, {2,3})
 
-    def test_timeslice_keeps_unprocessed_facts_for_next_tick(self):
+    def test_timeslice_keeps_unprocessed_obligations_for_next_tick(self):
         self.seed_owned(); self.seed_owned(path="other.txt")
         clock = [0.0]
         enroll = discovery.enroll
@@ -306,8 +321,147 @@ class UploadRemediationFrontierTests(unittest.TestCase):
         with patch.object(remediation,"monotonic",side_effect=lambda:clock[0]), patch.object(discovery,"monotonic",side_effect=lambda:clock[0]), patch.object(discovery,"enroll",side_effect=exhaust):
             self.assertEqual(remediation.sweep(self.db), 1)
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_facts").fetchone()["n"], 1)
+            sql, params = discovery.obligation_query(vault_sql="2", stamp=storage.now_iso())
+            self.assertEqual(len(connection.execute(sql, params).fetchall()), 1)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM archive_versions WHERE integrity='unverified'").fetchone()["n"], 2)
         self.assertEqual(remediation.sweep(self.db), 1)
+
+    def test_completed_ordinary_upload_leaves_no_discovery_backlog(self):
+        from app.services import metrics
+        original = self.queue(); self.run_job(original); self.assert_keeper(original)
+        for _ in range(3):
+            self.assertEqual(remediation.sweep(self.db), 0)
+        with self.db() as connection:
+            sql, params = discovery.obligation_query(vault_sql='2', stamp=storage.now_iso())
+            self.assertEqual(connection.execute(sql, params).fetchall(), [])
+            self.assertEqual(connection.execute('SELECT count(*) n FROM upload_remediations').fetchone()['n'], 0)
+        remediation.observe(self.db)
+        self.assertIn('upload_remediation_discovery_backlog 0', metrics.render_prometheus())
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_global_send_grace_does_not_hide_targeted_no_second_send_obligation(self):
+        original = self.fail_after_ack()
+        stamp = storage.now_iso()
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (original,))
+            connection.execute('DELETE FROM upload_remediation_discovery')
+            connection.execute('UPDATE upload_intents SET created_at=%s', (stamp,))
+            sql, params = discovery.obligation_query(vault_sql='2', stamp=stamp)
+            self.assertEqual(connection.execute(sql, params).fetchall(), [])
+            sql, params = discovery.obligation_query(vault_sql='2', stamp=stamp, file_id=self.file_id)
+            self.assertEqual(len(connection.execute(sql, params).fetchall()), 1)
+        self.assertEqual(remediation.sweep(self.db, stamp), 0)
+        later = (datetime.fromisoformat(stamp)+timedelta(seconds=discovery.SEND_GRACE_SECONDS+1)).isoformat()
+        self.assertEqual(remediation.sweep(self.db, later), 1)
+        with self.db() as connection:
+            episode = connection.execute('SELECT * FROM upload_remediations').fetchone()
+            self.assertEqual(episode['due_at'], later)
+        self.run_job(episode['current_job_id']); self.assert_keeper(episode['current_job_id'])
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_cancelled_open_send_is_discovered_but_never_autonomously_resumed(self):
+        original = self.fail_after_ack()
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (original,))
+            connection.execute('DELETE FROM upload_remediation_discovery')
+            connection.execute("UPDATE upload_intents SET created_at='2020-01-01T00:00:00+00:00'")
+        for _ in range(3):
+            self.assertEqual(remediation.sweep(self.db), 0)
+        with self.db() as connection:
+            row = connection.execute('SELECT * FROM upload_remediations').fetchone()
+            self.assertEqual(row['state'], 'cancelled')
+            self.assertIsNone(row['current_job_id'])
+            self.assertTrue(connection.execute('SELECT send_started FROM upload_intents').fetchone()['send_started'])
+            self.assertEqual(connection.execute('SELECT count(*) n FROM jobs').fetchone()['n'], 1)
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_settled_transition_leaves_unverified_version_discoverable(self):
+        original = self.fail_after_ack()
+        av, _ = self.seed_owned()
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (original,))
+            connection.execute('DELETE FROM upload_remediation_discovery')
+            connection.execute('UPDATE upload_intents SET archive_version_id=%s,settled=TRUE', (av,))
+        self.assertEqual(remediation.sweep(self.db), 1)
+        with self.db() as connection:
+            episode = connection.execute('SELECT * FROM upload_remediations').fetchone()
+            self.assertIsNone(episode['intent_id'], 'Never replay a settled inventory')
+            self.assertEqual(episode['archive_version_id'], av)
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_enrollment_rollback_loses_no_durable_source(self):
+        av, _ = self.seed_owned()
+        enroll = discovery.enroll
+        def crash(*args, **kwargs):
+            enroll(*args, **kwargs)
+            raise RuntimeError('crash before discovery commit')
+        with patch.object(discovery, 'enroll', side_effect=crash):
+            with self.assertRaisesRegex(RuntimeError, 'before discovery commit'):
+                remediation.sweep(self.db)
+        with self.db() as connection:
+            self.assertEqual(connection.execute('SELECT count(*) n FROM upload_remediations').fetchone()['n'], 0)
+            self.assertEqual(connection.execute('SELECT integrity FROM archive_versions WHERE id=%s', (av,)).fetchone()['integrity'], 'unverified')
+        self.assertEqual(remediation.sweep(self.db), 1)
+
+    def test_small_batch_skips_enrolled_cancelled_blocked_active_and_not_due_targets(self):
+        stamp = storage.now_iso()
+        for path, state in [('active','active'), ('cancelled','cancelled'), ('blocked','blocked'),
+                            ('waiting','suspended'), ('runnable','pending')]:
+            av, file_id = self.seed_owned(path=path)
+            with self.db() as connection:
+                if state == 'active':
+                    active_version = av
+                    # Even an expired lease belongs to its original active Job.
+                    connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
+                        requested_by,requested_at,updated_at,claim_expires_at)
+                        VALUES (2,%s,%s,'upload','uploading',1,%s,%s,'2020-01-01T00:00:00+00:00')""", (file_id,path,stamp,stamp))
+                elif state != 'pending':
+                    vault = connection.execute('SELECT * FROM vaults WHERE id=2').fetchone()
+                    row = discovery.enroll(connection, None, vault, stamp, version_id=av)
+                    connection.execute("UPDATE upload_remediations SET state=%s,due_at='2099-01-01T00:00:00+00:00' WHERE id=%s", (state,row['id']))
+                else:
+                    runnable = av
+        from app.services import metrics
+        remediation.observe(self.db)
+        self.assertIn('upload_remediation_discovery_backlog 1', metrics.render_prometheus())
+        with patch.object(remediation, 'TARGET_BATCH', 1):
+            self.assertEqual(remediation.sweep(self.db), 1)
+        remediation.observe(self.db)
+        self.assertIn('upload_remediation_discovery_backlog 0', metrics.render_prometheus())
+        with self.db() as connection:
+            rows = connection.execute("SELECT archive_version_id FROM upload_remediations WHERE state='queued'").fetchall()
+            self.assertEqual(rows, [{'archive_version_id':runnable}])
+            self.assertEqual(connection.execute("SELECT due_at FROM upload_remediations WHERE state='suspended'").fetchone()['due_at'], '2099-01-01T00:00:00+00:00')
+            connection.execute("UPDATE jobs SET status='completed' WHERE path='active'")
+        with patch.object(remediation, 'TARGET_BATCH', 1):
+            self.assertEqual(remediation.sweep(self.db), 1)
+        with self.db() as connection:
+            self.assertEqual(connection.execute('SELECT state FROM upload_remediations WHERE archive_version_id=%s', (active_version,)).fetchone()['state'], 'queued')
+        self.assertEqual((self.provider.puts,self.provider.gets,self.provider.deletes), (0,0,0))
+
+    def test_per_file_frontier_has_index_ranges_on_history_even_with_generic_plan(self):
+        import json
+        from tests.test_small_upload_cost import _whole_relation_reads
+        _, file_id = self.seed_owned()
+        sql, params = discovery.obligation_query(vault_sql='2', stamp=storage.now_iso(), file_id=file_id, limit=1)
+        # Three separate equality binds, never a nullable OR that loses index
+        # ranges when PostgreSQL switches to a generic prepared plan.
+        for index in range(1, len(params)+1):
+            sql = sql.replace('%s', f'${index}', 1)
+        with self.db() as connection:
+            connection.execute('SET LOCAL enable_seqscan=off')
+            # This is an indexability contract, not a plan-cost assertion on a
+            # tiny fixture. Do not let an empty-side hash/merge anti-join turn
+            # an available point lookup into a full index walk.
+            connection.execute('SET LOCAL enable_hashjoin=off')
+            connection.execute('SET LOCAL enable_mergejoin=off')
+            connection.execute('SET LOCAL plan_cache_mode=force_generic_plan')
+            connection.execute(f'PREPARE obligation_lookup(text,text,text) AS {sql}')
+            plan = connection.execute(f"EXPLAIN (FORMAT JSON) EXECUTE obligation_lookup('{file_id}','{file_id}','{file_id}')").fetchone()['QUERY PLAN']
+        found = set()
+        for branch in plan:
+            _whole_relation_reads(branch['Plan'], found)
+        self.assertFalse(found & {'jobs','upload_intents','archive_versions','upload_remediations','vault_files'}, json.dumps(plan))
 
     def test_namespace_changed_after_admission_fails_before_provider_observation(self):
         self.seed_owned()

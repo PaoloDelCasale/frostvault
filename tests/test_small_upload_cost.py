@@ -27,7 +27,7 @@ from tests.postgres import PostgresConnection
 HISTORY_TABLES = frozenset({
     "jobs", "file_paths", "vault_files", "local_copies", "archive_versions",
     "upload_intents", "upload_intent_jobs", "upload_receipts",
-    "snapshot_cleanup_inventories", "upload_remediation_facts",
+    "snapshot_cleanup_inventories", "upload_remediations",
 })
 # Measured: 5 exclusive Vault row locks and 1 lease extension per upload (10 and
 # 16 before this change). The second extension allows for one keeper beat.

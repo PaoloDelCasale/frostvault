@@ -371,7 +371,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         jobs = self.seed(4)
         with patch.object(storage, "_upload_catalog_unit", side_effect=audited):
             # Both read-back metadata writes, digest/reuse reads (no keeper yet),
-            # prepare and its nested require_target, send-started + capture.
+            # prepare and its nested require_target, durable send-started.
             self.assertTrue(self.run_job(jobs[0]))
             # A materialized continuation must propagate SHARE through
             # require_target, then link the exact receipt without sending again.
@@ -454,7 +454,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         combined = "\n".join(sql for units in recordings for unit in units for sql in unit)
         for sql in ("insert into upload_intent_jobs", "insert into upload_intents",
                     "update upload_intents set token=", "update upload_intents set settled=true",
-                    "update upload_intents set send_started=true", "insert into upload_remediation_facts",
+                    "update upload_intents set send_started=true",
                     "update jobs set archive_version_id=", "update jobs set upload_plaintext_sha256=",
                     "update archive_versions set verification_method=", "from upload_receipts"):
             self.assertIn(sql, combined)

@@ -98,6 +98,10 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         from tests.upload_multipart_journal_migration_contract import assert_upload_multipart_journal_migration
         assert_upload_multipart_journal_migration(self, self.run_alembic, self._connection)
 
+    def test_obligation_discovery_removes_queue_preserving_sources_and_cancelled_uncertainty(self):
+        from tests.upload_remediation_migration_contract import assert_obligation_discovery_migration
+        assert_obligation_discovery_migration(self, self.run_alembic, self._connection)
+
     def test_upload_remediation_populated_discovery_preserves_history_and_refuses_pending_downgrade(self):
         from tests.upload_remediation_migration_contract import assert_upload_remediation_migration
         assert_upload_remediation_migration(self, self.run_alembic, self._connection)
