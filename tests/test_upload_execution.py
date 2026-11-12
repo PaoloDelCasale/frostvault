@@ -12,6 +12,47 @@ import psycopg
 from app.services import upload_provenance as provenance
 
 
+class StatusCheckpointTests(unittest.TestCase):
+    def setUp(self):
+        from app import storage
+        from app.services.upload_execution import UploadExecution
+        self.worker = MagicMock()
+        self.worker.OperationCancelled = storage.OperationCancelled
+        self.worker.JobLeaseLost = storage.JobLeaseLost
+        self.worker.job_cancelled.return_value = False
+        self.worker._claim_is_lost.return_value = False
+        self.worker.set_job.return_value = True
+        self.execution = UploadExecution(self.worker)
+
+    def test_committed_status_cas_is_the_durable_checkpoint(self):
+        self.execution._status_checkpoint({'id': 42}, 'verifying', 'job.verifying_cloud_copy')
+        self.worker.shutdown_state.checkpoint.assert_called_once()
+        self.worker.set_job.assert_called_once_with(42, 'verifying', message_key='job.verifying_cloud_copy')
+        self.worker.ensure_job_active.assert_not_called()
+
+    def test_failed_status_cas_stops_before_provider_work(self):
+        self.worker.set_job.return_value = False
+        with self.assertRaises(self.worker.JobLeaseLost):
+            self.execution._status_checkpoint({'id': 42}, 'verifying', 'job.verifying_cloud_copy')
+        self.worker.ensure_job_active.assert_not_called()
+
+    def test_local_cancel_or_keeper_loss_prevents_the_status_write(self):
+        for cancelled, lost, error in ((True, False, self.worker.OperationCancelled),
+                                       (False, True, self.worker.JobLeaseLost)):
+            with self.subTest(cancelled=cancelled, lost=lost):
+                self.worker.job_cancelled.return_value = cancelled
+                self.worker._claim_is_lost.return_value = lost
+                with self.assertRaises(error):
+                    self.execution._status_checkpoint({'id': 42}, 'verifying', 'job.verifying_cloud_copy')
+                self.worker.set_job.assert_not_called()
+
+    def test_shutdown_prevents_the_status_write(self):
+        self.worker.shutdown_state.checkpoint.side_effect = self.worker.OperationCancelled('shutdown')
+        with self.assertRaises(self.worker.OperationCancelled):
+            self.execution._status_checkpoint({'id': 42}, 'verifying', 'job.verifying_cloud_copy')
+        self.worker.set_job.assert_not_called()
+
+
 class ReceiptJournalTests(unittest.TestCase):
     def test_callback_then_return_appends_the_same_committed_fact_once(self):
         journal = provenance.ReceiptJournal(MagicMock(), "intent", lambda: "now")

@@ -175,6 +175,23 @@ class UploadExecution:
     def _db(self, job: dict[str, Any], mutation: Any, *, shared: bool = False) -> Any:
         return self.worker._upload_catalog_unit(job, mutation, shared=shared)
 
+    def _status_checkpoint(self, job: dict[str, Any], status: str, message_key: str) -> None:
+        """One committed claim-fenced transition, not read/write/read DB units.
+
+        set_job's CAS checks the live token, expiry and nonterminal status and
+        commits before returning. A failed CAS must stop the attempt. Local
+        cancellation, shutdown and keeper loss still win before the write;
+        subsequent provider/effect boundaries retain their independent fences.
+        """
+        w, job_id = self.worker, job['id']
+        w.shutdown_state.checkpoint()
+        if w.job_cancelled(job_id):
+            raise w.OperationCancelled('Upload stopped')
+        if w._claim_is_lost(job_id):
+            raise w.JobLeaseLost('Upload claim was lost')
+        if not w.set_job(job_id, status, message_key=message_key):
+            raise w.JobLeaseLost('Upload claim was lost')
+
     def _automatic_gate(self, job: dict[str, Any], *, after_hash: bool = False) -> UploadOutcome | None:
         w = self.worker
         if job.get("origin") != "automatic":
@@ -203,7 +220,7 @@ class UploadExecution:
 
     def _snapshot(self, a: _Attempt) -> UploadOutcome | None:
         w, job = self.worker, a.job
-        w.set_job(job["id"], "uploading", message_key="job.hashing_local_file")
+        self._status_checkpoint(job, 'uploading', 'job.hashing_local_file')
         # Admission precedes the very first read/buffer allocation. Snapshot
         # evidence, not payload, survives this scope; its size is format-bounded.
         with a.pipeline.prepare.take(a.check_active, 2 * CHUNK_SIZE):
@@ -291,7 +308,7 @@ class UploadExecution:
 
     def _send(self, a: _Attempt, provider: str) -> None:
         w, job = self.worker, a.job
-        w.set_job(job["id"], "uploading", message_key="job.plain_upload")
+        self._status_checkpoint(job, 'uploading', 'job.plain_upload')
         self._refresh_journal_gate(a.pipeline)
         # Capacity exists BEFORE arming send-started and BEFORE the transport
         # materializes its validated buffers. Waiting cannot manufacture an
@@ -412,9 +429,7 @@ class UploadExecution:
 
     def _verify(self, a: _Attempt) -> None:
         w, job, target = self.worker, a.job, a.target
-        w.ensure_job_active(job["id"], "Upload stopped")
-        w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_copy")
-        w.ensure_job_active(job["id"], "Upload claim was lost")
+        self._status_checkpoint(job, 'verifying', 'job.verifying_cloud_copy')
         a.verification_started = True
         fallback = None
         checksum_proven = False
@@ -445,7 +460,7 @@ class UploadExecution:
         self._db(job, lambda catalog: catalog.set_version_verification_method(
             a.version_id, **a.verification), shared=True)
         if fallback:
-            w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_fallback")
+            self._status_checkpoint(job, 'verifying', 'job.verifying_cloud_fallback')
         source_size = a.local_stat.st_size if a.local_stat is not None else int(job.get("total_bytes") or target.get("cloud_size") or 0)
         digest, size = w._stream_plaintext_for_verification(job, target=target, source_size=source_size)
         a.verification["egress_bytes"] = size

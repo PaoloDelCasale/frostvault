@@ -198,6 +198,46 @@ class ClaimCheckpointTests(unittest.TestCase):
                     connection.execute("UPDATE jobs SET status='cancelled',claim_token=NULL WHERE id=%s", (job["id"],))
 
 
+class UploadStatusCASCheckpointTests(unittest.TestCase):
+    setUp = fixture.UploadProvenanceWorkerTests.setUp
+    queue = fixture.UploadProvenanceWorkerTests.queue
+
+    def assert_verification_transition_is_fenced(self, change):
+        job_id = self.queue()
+        original = storage.set_job
+        injected = []
+
+        def racing_status(changed_job, status, *args, **kwargs):
+            if kwargs.get('message_key') == 'job.verifying_cloud_copy':
+                with PostgresConnection(self.db_path) as connection:
+                    connection.execute(change, (changed_job,))
+                injected.append(changed_job)
+            return original(changed_job, status, *args, **kwargs)
+
+        with patch.object(storage, 'set_job', side_effect=racing_status):
+            fixture.UploadProvenanceWorkerTests.run_job(self, job_id)
+        self.assertEqual(injected, [job_id])
+        with PostgresConnection(self.db_path) as connection:
+            job = connection.execute('SELECT status FROM jobs WHERE id=%s', (job_id,)).fetchone()
+            version = connection.execute('SELECT integrity FROM archive_versions').fetchone()
+            current = connection.execute('SELECT current_version_id FROM vault_files').fetchone()
+            receipts = connection.execute('SELECT count(*) AS n FROM upload_receipts').fetchone()['n']
+        self.assertNotEqual(job['status'], 'completed')
+        self.assertEqual(version['integrity'], 'unverified')
+        self.assertIsNone(current['current_version_id'])
+        self.assertEqual(receipts, 1, 'Independent receipt must survive lost authority')
+        self.assertEqual(self.provider.deleted, [])
+
+    def test_remote_cancel_between_local_check_and_status_cas_stops_verification(self):
+        self.assert_verification_transition_is_fenced("UPDATE jobs SET status='cancelled' WHERE id=%s")
+
+    def test_takeover_between_local_check_and_status_cas_stops_verification(self):
+        self.assert_verification_transition_is_fenced("UPDATE jobs SET claim_token='new-worker' WHERE id=%s")
+
+    def test_expiry_between_local_check_and_status_cas_stops_verification(self):
+        self.assert_verification_transition_is_fenced("UPDATE jobs SET claim_expires_at='2000-01-01' WHERE id=%s")
+
+
 class BacklogObservationTests(unittest.TestCase):
     """The backlog gauges read the whole queue: a deep queue is sampled."""
 
