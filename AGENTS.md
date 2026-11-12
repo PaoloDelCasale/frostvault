@@ -92,9 +92,7 @@ that session directory. Do not start/restart a system PostgreSQL service.
 - Schema on start: an empty database is initialized with `alembic upgrade head`;
   a nonempty database at another revision, or without one, is refused before
   any write (ADR-0035). After a change to `0001_baseline`, drop and recreate
-  your local database (`dropdb frostvault && createdb frostvault`). Until #601
-  lands, the v0.5.x chain (`AUTO_MIGRATE`, `app.backup_upgrade`) is still in
-  the code; #601 removes it.
+  your local database (`dropdb frostvault && createdb frostvault`).
 - Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
   (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the

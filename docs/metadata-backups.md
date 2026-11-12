@@ -66,21 +66,14 @@ internal-error problems/metrics.
   `POST /api/general/metadata-backups/run` (CSRF),
   `GET /api/general/metadata-backups/download/{run_id}` (ciphertext only).
 
-### Upgrade gate
+### Schema revision
 
-Use `python -m app.backup_upgrade` (or `--skip-upgrade` for backup only). Failure
-blocks Alembic. Automatic startup (`AUTO_MIGRATE=1`) first proves that the
-recorded schema is a known ancestor of the single local expected head. Unknown,
-ahead, divergent or multiple revisions stop before any backup or upgrade.
-Fresh databases still validate the migration graph.
-
-A configured non-placeholder bucket requires an encrypted off-host pre-upgrade
-artifact with verified readback of its ciphertext digest and sidecar. Missing
-keys, cloud failures and verification errors block migration; output is limited
-to safe failure categories. Empty/documented-placeholder buckets are explicit
-local-only development: with a usable key there is a local encrypted artifact;
-without one startup reports that intentional outcome rather than pretending a
-backup exists. `AUTO_MIGRATE=0` permits manual control, not stale-schema serving.
+A metadata backup restores only into the release whose schema revision made it
+([ADR-0035](adr/0035-database-rebuilt-from-scratch.md)). There is no upgrade
+path: verification reads the dump's `alembic_version` before restoring anything
+and refuses a backup of any other revision, and the application refuses to
+start on, or to register a restore into, a database that is not at its revision.
+Nothing is ever stamped, upgraded, reset or adopted.
 
 ## Main route: manual PostgreSQL 16 restore
 
@@ -123,15 +116,17 @@ the private scratch directory. The downloaded kit includes these steps offline.
    psql -d frostvault_restored -At -c 'SELECT version_num FROM alembic_version'
    ```
 
-4. Validate metadata counts and revision against the matching release. Point
-   `PGDATABASE` at the restored database and **unset `DATABASE_URL`**, or securely
-   replace that DSN with the restored database's DSN: a configured `DATABASE_URL`
-   takes precedence over `PG*` for FrostVault commands. Verify the target before
-   any application command. For a supported older revision use
-   `python -m app.backup_upgrade`; unknown/ahead revisions require the matching
-   release, never forced stamps. Reapply non-secret deployment settings as needed.
+4. Validate metadata counts and revision against the matching release: the
+   revision must be the one of the release you run, otherwise FrostVault refuses
+   the catalog (recover it with the release that made it; there is no upgrade
+   or stamp). Point `PGDATABASE` at the restored database and **unset
+   `DATABASE_URL`**, or securely replace that DSN with the restored database's
+   DSN: a configured `DATABASE_URL` takes precedence over `PG*` for FrostVault
+   commands. Verify the target before any application command. Reapply
+   non-secret deployment settings as needed.
 5. **Before starting the app**, register the actual backup date from the saved
-   manifest against that restored database (after migration to 0058 or newer):
+   manifest against that restored database (refused unless it is at this
+   release's schema revision):
 
    ```bash
    python - <<'PY'
@@ -207,20 +202,12 @@ content. Listing is not permission to purge “extras” based on a stale catalo
 Cold retrieval, requests and transfer can incur AWS charges. This route recovers
 files, not catalog/settings/history, and does not create Vaults inside FrostVault.
 
-## Older formats and upgrades
+## Older formats
 
-PostgreSQL is the only supported backend (#422); `DB_BACKEND`/`SQLITE_PATH` are
-removed. Legacy SQLite artifacts cannot be fed to `pg_restore` or this release's
-verifier: retain the old release/artifacts for deliberate recovery, not automatic
-conversion. Migration 0051 refuses all encrypted legacy Vaults before DDL and
-never rewrites ciphertext or calls S3; recover wanted legacy content with the
-previous release and its old material before creating plaintext Vaults. The SDK
-upgrade (0052) does not reinterpret encrypted bytes. No compatibility guarantee
-exists for test Vaults (#362). Old metadata ciphertext still needs its original
-master key.
-
-Migration **0058_reconnect_recovery_kit** adds only per-Vault mount acceptance,
-installation custody and restore-warning state. It performs no filesystem/cloud
-operations, inherits no custody acknowledgment and does not rewrite catalog
-trust. Downgrade refuses accepted mount overrides because the previous release
-cannot enforce them. Follow existing pre-upgrade backup safeguards.
+PostgreSQL is the only supported backend. Catalogs and metadata backups of
+v0.5.x and earlier, including SQLite artifacts, are refused by v0.6: the
+database was rebuilt from scratch and its old cloud namespaces are not imported
+([ADR-0035](adr/0035-database-rebuilt-from-scratch.md)). Keep the previous
+release and its artifacts to read them, and recover their files with the
+emergency route above. Old metadata ciphertext still needs its original master
+key.

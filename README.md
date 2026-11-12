@@ -350,8 +350,8 @@ Local setup:
    delete permissions when cloud deletion is not being tested. Never use account
    root credentials.
 5. Run the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory),
-   then pull the published image and start the application (schema migrations
-   run automatically on start when `AUTO_MIGRATE=1`, the default):
+   then pull the published image and start the application (an empty database
+   is initialized on first start):
 
    ```bash
    docker compose pull
@@ -360,9 +360,6 @@ Local setup:
 
    Compose uses `ghcr.io/paolodelcasale/frostvault:latest`. Developers who need
    to change the image can still build from the `Dockerfile` locally.
-   Set `AUTO_MIGRATE=0` to keep upgrades manual (then run
-   `docker compose run --rm frostvault python -m app.backup_upgrade` before
-   `up`).
 While `REPLACE...` placeholder values remain, the application blocks AWS calls
 instead of trying other credentials available on the computer.
 
@@ -431,27 +428,16 @@ CREATE USER frostvault WITH PASSWORD 'A-LONG-PASSWORD';
 CREATE DATABASE frostvault OWNER frostvault;
 ```
 
-Schema changes are Alembic migrations. On container/app start, `AUTO_MIGRATE=1`
-(the default) brings the database to the expected revision: fresh databases run
-`alembic upgrade head`; existing databases that are behind take an encrypted
-pre-upgrade metadata backup first (see
-[docs/metadata-backups.md](docs/metadata-backups.md)), then upgrade. A failed
-backup with real backup configuration blocks startup. Set `AUTO_MIGRATE=0` for
-CI or fully manual release procedures, then run
-`docker compose run --rm frostvault python -m app.backup_upgrade` before
-starting a new application release. The application still validates the current
-revision after any automatic upgrade and refuses to serve on a stale schema.
-
-The first Alembic revision adopts only a database that exactly matches the
-current multi-user release; unknown or historical single-user schemas stop
-without modification. Existing cloud catalog rows migrate as unverified and
-cannot authorize local cleanup until a later read-back verification resolves
-their exact S3 version.
-
-Downgrade is supported only while the target legacy schema can represent all
-stored data. Alembic refuses a downgrade that would discard multiple Archive
-Versions, Path History, Delete Markers, digests, or verified state; restore a
-database backup instead.
+The v0.6 schema is a single Alembic revision, `0001_baseline`
+([ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)). On every start
+the application checks the database before any write: an **empty** database is
+initialized with `alembic upgrade head`; a database **at `0001_baseline`** is
+used; any other database (an older FrostVault revision, or tables without
+`alembic_version`) is **refused** with a clear message. FrostVault never
+upgrades, stamps, resets or adopts an older catalog, and refuses metadata
+backups of other revisions: v0.6 starts from an empty database and new Vaults
+use new cloud namespaces. Keep the previous release to read an older catalog or
+backup.
 
 If PostgreSQL runs directly on the server or exposes port `5432`, keep
 `PGHOST=host.docker.internal`. Otherwise, connect both containers to the same
@@ -564,9 +550,9 @@ docker compose up -d
 docker compose logs -f frostvault
 ```
 
-Schema migrations run automatically on start (`AUTO_MIGRATE=1` by default). Set
-`AUTO_MIGRATE=0` and run `python -m app.backup_upgrade` yourself when you want
-an explicit pre-upgrade gate outside the container entrypoint.
+On start an empty database is initialized and any database that is not at
+this release's schema revision is refused before any write (see
+[ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)).
 
 The service listens on `127.0.0.1:8080` by default. Use an HTTPS reverse proxy or
 Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.
@@ -906,8 +892,8 @@ cloud credentials.
 
 ## Development and tests
 
-Create a virtual environment, install the pinned dependencies, and run the
-database migration before starting the app:
+Create a virtual environment and install the pinned dependencies; the app
+initializes an empty database on start (`alembic upgrade head` does the same):
 
 ```bash
 python -m venv .venv
@@ -953,13 +939,13 @@ S3, Playwright, frontend and image verification (#410). Locally run only targete
 modules, for example:
 
 ```bash
-.venv/bin/python -m unittest tests.test_database.DatabaseMigrationTests.test_fresh_postgresql_database_migrates_to_a_startable_schema -v
+.venv/bin/python -m unittest tests.test_database -v
 ```
 
 All database tests require `TEST_POSTGRES_URL` pointing at an **isolated**
 PostgreSQL 16 server with a CREATEDB role. They create uniquely named databases
-and clone a real migrated HEAD template for fast empty fixtures; populated and
-pinned migration cases still execute Alembic. Missing configuration fails rather
+and clone a template created once by the real `0001_baseline` Alembic run.
+Missing configuration fails rather
 than skipping database regressions. S3-compatible cases additionally require
 `TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
 
