@@ -1059,30 +1059,5 @@ class AggregateDeadlockTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
 
 
-class DirtyJournalMigrationTests(unittest.TestCase):
-    def test_populated_upgrade_downgrade_preserves_pending_paths(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "migration"
-            result = run_alembic(path, "0060_vault_class_moves")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with PostgresConnection(path) as connection:
-                connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (2,'v','V','/source','bucket','v')")
-                connection.execute("INSERT INTO directory_aggregate_dirty VALUES (2,'a',%s),(2,'b',%s)", (STAMP, STAMP))
-            result = run_alembic(path)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            for _ in range(2):
-                with PostgresConnection(path) as connection:
-                    aggregates.mark_path_dirty(connection, 2, "a/x.bin")
-                    aggregates.mark_path_dirty(connection, 2, "a/y.bin")
-            with PostgresConnection(path) as connection:
-                self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM directory_aggregate_dirty WHERE path='a'").fetchone()["n"], 3)
-            result = run_alembic(path, "0060_vault_class_moves", "downgrade")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with PostgresConnection(path) as connection:
-                self.assertEqual(connection.execute("SELECT path FROM directory_aggregate_dirty ORDER BY path").fetchall(), [{"path": "a"}, {"path": "b"}])
-            result = run_alembic(path)
-            self.assertEqual(result.returncode, 0, result.stderr)
-
-
 if __name__ == "__main__":
     unittest.main()

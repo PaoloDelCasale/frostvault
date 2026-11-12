@@ -429,7 +429,7 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                     "with db() as connection:",
                     "    connection.execute('SET TRANSACTION READ ONLY')",
                     "    revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()['version_num']",
-                    "    owner = connection.execute('SELECT username FROM users').fetchone()['username']",
+                    "    owner = connection.execute('SELECT display_name FROM owner').fetchone()['display_name']",
                     "print(json.dumps({'revision': revision, 'owner': owner}))",
                 )
             ),
@@ -658,7 +658,6 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                 source_gid=gid,
                 source_mode=0o770,
                 extra_environment={
-                    "AUTO_MIGRATE": "1",
                     "BOOTSTRAP_ADMIN_USERNAME": username,
                     "BOOTSTRAP_ADMIN_PASSWORD": "Smoke-only-password-196",
                     "BOOTSTRAP_ADMIN_DISPLAY_NAME": "SmokeAdmin",
@@ -697,14 +696,13 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
             combined_logs = logs.stdout + logs.stderr
             revision, owner = self._inspect_postgresql_database(container_name)
             self.assertEqual(revision, HEAD_SCHEMA_REVISION)
-            self.assertEqual(owner, username)
+            self.assertEqual(owner, "SmokeAdmin")
             self._down(root, project_name)
 
             self.assertIn(
-                "AUTO_MIGRATE: ensuring database schema is current before uvicorn",
+                f"FrostVault schema: empty database, now at {HEAD_SCHEMA_REVISION}",
                 combined_logs,
             )
-            self.assertIn("AUTO_MIGRATE: bootstrapped", combined_logs)
             self.assertIn("Application startup complete.", combined_logs)
             self.assertEqual(self._inspect_host_metadata(data_dir), data_metadata)
             self.assertEqual(

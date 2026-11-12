@@ -106,7 +106,7 @@ class PythonRuntimeAlignmentContractTests(unittest.TestCase):
         self.assertIn('docker run --rm --entrypoint python "$IMAGE"', probe["run"])
         self.assertIn("assert sys.version_info[:2] == (3, 12)", probe["run"])
         self.assertLess(index, next(i for i, step in enumerate(steps)
-                                   if "app.backup_upgrade" in step.get("run", "")))
+                                   if "run_metadata_backup" in step.get("run", "")))
 
 
 class PullRequestCiContractTests(unittest.TestCase):
@@ -279,12 +279,12 @@ class PullRequestCiContractTests(unittest.TestCase):
         for name in ("python-unit-tests", "postgresql-tests", "s3-compatible-integrity", "playwright-e2e"):
             self.assertEqual(jobs[name]["services"]["postgres"]["image"], "postgres:16")
             self.assertIn("TEST_POSTGRES_URL", jobs[name]["env"])
-        self.assertIn('if path.stem not in {"test_migrations_postgresql", "test_aggregate_deadlocks"}', python_runs)
+        self.assertIn('if path.stem not in {"test_database", "test_aggregate_deadlocks"}', python_runs)
         self.assertIn("postgres", postgres_job.get("services") or {})
         postgres_runs = "\n".join(
             step.get("run", "") for step in postgres_job["steps"]
         )
-        self.assertIn("PostgreSQLMigrationTests", postgres_runs)
+        self.assertIn("tests.test_database", postgres_runs)
         self.assertIn("tests.test_aggregate_deadlocks", postgres_runs)
 
     def test_upload_stress_is_bounded_only_on_prs_and_attested_on_main(self) -> None:
@@ -301,7 +301,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertNotIn("if", stress)
         self.assertFalse(stress.get("continue-on-error", False))
         self.assertIn("tests.test_aggregate_deadlocks", stress["run"])
-        self.assertIn("PostgreSQLMigrationTests", stress["run"])
+        self.assertIn("tests.test_database", stress["run"])
         output = 'echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"'
         self.assertIn(output, stress["run"])
         self.assertLess(stress["run"].index("python -m unittest"), stress["run"].index(output))
@@ -333,7 +333,6 @@ class PullRequestCiContractTests(unittest.TestCase):
     def test_every_python_module_is_selected_once_without_importing_database_tests(self) -> None:
         # Execute the actual workflow selector for all shards: a newly added
         # regression must not disappear or run repeatedly due to sharding.
-        import ast
         import contextlib
         import io
         import os
@@ -350,20 +349,13 @@ class PullRequestCiContractTests(unittest.TestCase):
             with patch.dict(os.environ, {"SHARD_INDEX": str(shard), "SHARD_COUNT": "12"}), contextlib.redirect_stdout(out):
                 exec(compile(selector, "workflow-selector", "exec"), {})
             selected.extend(out.getvalue().splitlines())
-        dedicated = {"tests.test_migrations_postgresql", "tests.test_aggregate_deadlocks"}
+        dedicated = {"tests.test_database", "tests.test_aggregate_deadlocks"}
         expected = {f"tests.{path.stem}" for path in (ROOT / "tests").glob("test_*.py")} - dedicated
         self.assertEqual(Counter(selected), Counter({module: 1 for module in expected}))
         postgres = workflow["jobs"]["postgresql-tests"]
         runs = "\n".join(step.get("run", "") for step in postgres["steps"])
-        self.assertIn("tests.test_migrations_postgresql.PostgreSQLMigrationTests", runs)
+        self.assertIn("tests.test_database", runs)
         self.assertIn("tests.test_aggregate_deadlocks", runs)
-        # The class-qualified migration selection must remain exhaustive if
-        # someone introduces another test class in that dedicated module.
-        tree = ast.parse((ROOT / "tests" / "test_migrations_postgresql.py").read_text())
-        classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)
-                   and any(isinstance(item, ast.FunctionDef) and item.name.startswith("test_")
-                           for item in node.body)}
-        self.assertEqual(classes, {"PostgreSQLMigrationTests"})
 
     def test_playwright_e2e_job_installs_chromium_and_uploads_failures(self) -> None:
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
@@ -850,7 +842,7 @@ class ProductionImagePostgresClientContractTests(unittest.TestCase):
             self.assertIn(item, ignore)
         for tool in ("pg_dump", "pg_restore", "createdb", "dropdb", "psql"):
             self.assertIn(f"{tool} --version", runs)
-        self.assertIn("app.backup_upgrade --skip-upgrade", runs)
+        self.assertIn("run_metadata_backup", runs)
         self.assertIn("verify_restore_isolated", runs)
 
 

@@ -37,7 +37,7 @@ async def idle_producer():
 async def lifespan(app):
     with ExitStack() as patches:
         for name in (
-            "validate_settings", "prepare_sources_layout", "ensure_schema_current",
+            "validate_settings", "prepare_sources_layout",
             "initialize_database", "reconcile_source_volume_identities",
             "validate_nested_mounts_after_identity", "cleanup_abandoned_restore_files",
             "reconcile_interrupted_jobs", "vault_relocation_service.reconcile_vault_root_identities",

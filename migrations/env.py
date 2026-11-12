@@ -9,7 +9,10 @@ from sqlalchemy import URL, engine_from_config, pool
 
 
 config = context.config
-if config.config_file_name is not None:
+# The schema guard (app.schema_guard) runs Alembic in-process on its own
+# connection; it must not reconfigure the application's logging.
+provided_connection = config.attributes.get("connection")
+if config.config_file_name is not None and provided_connection is None:
     fileConfig(config.config_file_name)
 
 target_metadata = None
@@ -35,6 +38,12 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    if provided_connection is not None:
+        # Joins the caller's open transaction; the caller commits.
+        context.configure(connection=provided_connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = database_url().render_as_string(hide_password=False)
     connectable = engine_from_config(

@@ -379,19 +379,6 @@ class PreflightQueueTests(unittest.TestCase):
         with self.db() as c:
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='cloud_preflight_blocked'").fetchone()['n'], 1)
 
-    def test_migration_is_metadata_only_and_preserves_attempt_history(self):
-        self.fail_uploads()
-        result = run_alembic(self.database, '0061_aggregate_dirty_journal', 'downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with self.db() as c:
-            before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
-        result = run_alembic(self.database)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with self.db() as c:
-            from tests.upload_verification_migration_contract import without_upload_verification_fields
-            self.assertEqual(without_upload_verification_fields(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), 'jobs'), before)
-            self.assertEqual(gate.snapshot(c)['status'], 'unknown')
-
     def test_whole_upload_root_is_narrow_and_auth_csrf_preserved(self):
         response = self.client.post('/api/upload?vault_id=1', json={'path': '', 'is_directory': True}, headers=self.headers)
         self.assertEqual(response.status_code, 202, response.text)

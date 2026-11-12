@@ -2,7 +2,7 @@
 import json
 import unittest
 from dataclasses import replace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
 
@@ -75,7 +75,9 @@ class RecoveryKitTests(unittest.TestCase):
 
     def test_manual_restore_retires_deletion_items_before_cancelling_jobs(self):
         connection = Mock()
-        recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        # The schema guard itself is covered on PostgreSQL by tests.test_database.
+        with patch.object(recovery_kit, "require_current_schema"):
+            recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         statements = [" ".join(call.args[0].split()) for call in connection.execute.call_args_list]
         items = [sql for sql in statements if sql.startswith("UPDATE cloud_deletion_items")]
         self.assertEqual(len(items), 1, "Cancelled restore Jobs must not leave pending deletion consent")

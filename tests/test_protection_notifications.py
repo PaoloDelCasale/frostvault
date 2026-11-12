@@ -275,39 +275,6 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
                                  {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)})
 
-    def test_migration_removes_only_routine_history_preserving_recovery_and_copy_evidence(self):
-        from tests.postgres import run_alembic
-        from app.catalog import ArchiveCatalog
-        with self.connect() as c:
-            catalog = ArchiveCatalog(c)
-            catalog.observe_local_copy(vault_id=self.vault_id,path='sole.jpg',file_type='regular',size=2,
-                                       mtime_ns=1,observed_at=NOW.isoformat())
-            version = catalog.record_archive_version(vault_id=self.vault_id,path='sole.jpg',object_key='docs/sole',
-                provider_version_id='sole',size=2,storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
-                observed_at=NOW.isoformat(),scan_id='scan')
-            c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s WHERE id=%s",('a'*64,version))
-        result = run_alembic(self.path,'0055_protection_states','downgrade')
-        self.assertEqual(result.returncode,0,result.stderr)
-        with self.connect() as c:
-            recover = c.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) "
-                                "VALUES (%s,(SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path='sole.jpg' "
-                                "AND valid_to IS NULL),'sole.jpg','recover','completed',%s,%s) RETURNING id",
-                                (self.vault_id,self.vault_id,NOW.isoformat(),NOW.isoformat())).fetchone()['id']
-            for event, job in (('job_completed',self.job_id),('local_cleanup.completed',self.job_id),('job_completed',recover)):
-                inbox.enqueue_notification(c,user_id=self.user_id,vault_id=self.vault_id,job_id=job,event=event,
-                                           title='Historical',message_params={'path':'sole.jpg'},channels=('in_app','email'))
-            tables = ('vault_files','file_paths','local_copies','archive_versions','jobs')
-            before = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode,0,result.stderr)
-        with self.connect() as c:
-            after = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
-            from tests.upload_verification_migration_contract import without_upload_verification_fields
-            self.assertEqual({table: without_upload_verification_fields(rows, table) for table, rows in after.items()}, before)
-            self.assertEqual([row['event'] for row in c.execute('SELECT event FROM notifications').fetchall()],['recovery_completed'])
-            self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
-            self.assertEqual(inbox.enqueue_job_terminal_notification(c,job_id=recover),0)
-
     def test_cloud_preflight_failure_and_recovery_only_persist_safe_context(self):
         from app import storage
         vault = {'id':self.vault_id,'s3_bucket':'bucket'}

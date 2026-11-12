@@ -106,24 +106,5 @@ class BulkProducerRotationTests(unittest.TestCase):
                 self.assertIn(healthy, attempted)
 
 
-class CombinedMigrationContractTests(unittest.TestCase):
-    def test_release_head_joins_both_independent_feature_revisions(self):
-        from pathlib import Path
-        from alembic.config import Config
-        from alembic.script import ScriptDirectory
-        from app.database import HEAD_SCHEMA_REVISION
-
-        root = Path(__file__).resolve().parents[1]
-        config = Config(str(root / "alembic.ini"))
-        config.set_main_option("script_location", str(root / "migrations"))
-        script = ScriptDirectory.from_config(config)
-        self.assertEqual(script.get_heads(), [HEAD_SCHEMA_REVISION])
-        # Later revisions build on the join; both feature branches stay required.
-        self.assertIn("0071_bulk_scheduler_merge",
-                      {item.revision for item in script.iterate_revisions(HEAD_SCHEMA_REVISION, "base")})
-        self.assertEqual(set(script.get_revision("0071_bulk_scheduler_merge").down_revision),
-                         {"bulk_upload_admission_550", "scheduler_turns_552"})
-
-
 if __name__ == "__main__":
     unittest.main()

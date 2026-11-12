@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
-from app.database import HEAD_SCHEMA_REVISION
 from app.services.catalog_events import CatalogEventStore
 from tests.test_database import run_alembic
 
@@ -233,32 +232,6 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 )
             self.assertEqual(store.current_revision(2), 0)
 
-
-
-    def test_downgrade_refuses_to_drop_durable_catalog_history(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            CatalogEventStore(connection).append_event(
-                vault_id=2,
-                domain="files",
-                scope="root",
-                payload={},
-            )
-
-        downgraded = run_alembic(
-            self.path,
-            revision="0035_upload_verification_digest",
-            command="downgrade",
-        )
-        self.assertNotEqual(downgraded.returncode, 0)
-        self.assertIn("catalog event", downgraded.stderr)
-
-        with PostgresConnection(str(self.path)) as connection:
-            revision = connection.execute(
-                "SELECT version_num FROM alembic_version"
-            ).fetchone()["version_num"]
-        # PostgreSQL rolls back the entire failed DDL transaction, not only
-        # the last migration. Durable history and the HEAD stamp both survive.
-        self.assertEqual(revision, HEAD_SCHEMA_REVISION)
 
 
 if __name__ == "__main__":

@@ -239,7 +239,7 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
     if not rows:
         # Preserve #464's explicit claimed cleanup of a scan-discovered block.
         # No unrelated failed Job is resolved by electing a current keeper here.
-        result = provenance._schedule_resume_legacy(connection,vault=current,path=path,user_id=user_id,timestamp=timestamp)
+        result = provenance._schedule_resume_unenrolled(connection,vault=current,path=path,user_id=user_id,timestamp=timestamp)
         job = connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (result["job_id"],)).fetchone()
         intent = provenance.load_for_job(connection,job["id"])
         episode = _enroll(connection, None, current, timestamp, intent_id=intent["id"] if intent else None, version_id=job["archive_version_id"])
