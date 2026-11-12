@@ -89,6 +89,16 @@ class SmallUploadCostTests(unittest.TestCase):
                       and 'FOR UPDATE' not in query]
         self.assertEqual(standalone, [], 'Capture Local Copy generation in the fresh source snapshot')
 
+    def test_cleanup_state_and_keeper_binding_share_one_transaction(self):
+        self.upload()
+        units = [queries for groups in self.transactions.values() for queries in groups
+                 if any(query.startswith('UPDATE snapshot_cleanup_inventories SET keeper_id=') for query in queries)]
+        self.assertEqual(len(units), 1)
+        self.assertTrue(any(query.startswith('SELECT * FROM archive_versions WHERE id=') for query in units[0]),
+                        'Read the verified keeper in its binding transaction')
+        self.assertTrue(any(query.startswith('SELECT * FROM snapshot_cleanup_inventories WHERE job_id=') for query in units[0]),
+                        'Read the actual inventory in its binding transaction')
+
     def test_namespace_ownership_shares_the_initial_catalog_snapshot(self):
         self.upload()
         units = [queries for groups in self.transactions.values() for queries in groups

@@ -197,6 +197,26 @@ class PinnedNamespace:
         return pinned, json.loads(fresh.inventory_json)[pinned["key"]]
 
 
+def _existing_inventory(connection: Any, job: dict[str, Any], keeper_id: str | None) -> tuple[int, dict[str, Any] | None]:
+    """Resolve durable authority only; a historical pin is never a fresh observation."""
+    unbound_send = connection.execute("SELECT 1 FROM upload_intents i WHERE i.vault_file_id=%s AND i.send_started AND NOT i.settled AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.intent_id=i.id AND b.job_id=%s) LIMIT 1", (job["vault_file_id"],job["id"])).fetchone()
+    if unbound_send:
+        raise UploadBlocked("ambiguous_send")
+    bound = connection.execute("SELECT i.original_job_id FROM upload_intents i JOIN upload_intent_jobs b ON b.intent_id=i.id WHERE b.job_id=%s", (job["id"],)).fetchone()
+    inventory_job = bound["original_job_id"] if bound else job["id"]
+    old = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (inventory_job,)).fetchone()
+    if old:
+        return inventory_job, old
+    linked_id = keeper_id or job.get("archive_version_id")
+    if linked_id:
+        prior = connection.execute("SELECT b.* FROM snapshot_cleanup_inventories b JOIN jobs j ON j.id=b.job_id WHERE b.completed_at IS NULL AND (b.keeper_id=%s OR (b.keeper_id IS NULL AND j.archive_version_id=%s AND j.vault_file_id=%s))", (linked_id, linked_id, job["vault_file_id"])).fetchall()
+        if prior:
+            if len({(r["target_json"],r["inventory_json"]) for r in prior}) != 1:
+                raise UploadBlocked("inventory_changed")
+            return inventory_job, prior[0]
+    return inventory_job, None
+
+
 def pin_inventory(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: str | None = None) -> dict[str, Any]:
     """Commit/reuse cleanup authority without treating historical pins as fresh."""
     return pin_upload_namespace(worker, job, client, keeper_id=keeper_id).row
@@ -205,21 +225,9 @@ def pin_inventory(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: s
 def pin_upload_namespace(worker: Any, job: dict[str, Any], client: Any, *, keeper_id: str | None = None) -> PinnedNamespace:
     """Pin cleanup authority and expose fresh evidence only to this invocation."""
     with worker.db() as connection:
-        unbound_send = connection.execute("SELECT 1 FROM upload_intents i WHERE i.vault_file_id=%s AND i.send_started AND NOT i.settled AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.intent_id=i.id AND b.job_id=%s) LIMIT 1", (job["vault_file_id"],job["id"])).fetchone()
-        if unbound_send:
-            raise UploadBlocked("ambiguous_send")
-        bound = connection.execute("SELECT i.original_job_id FROM upload_intents i JOIN upload_intent_jobs b ON b.intent_id=i.id WHERE b.job_id=%s", (job["id"],)).fetchone()
-        inventory_job = bound["original_job_id"] if bound else job["id"]
-        old = connection.execute("SELECT * FROM snapshot_cleanup_inventories WHERE job_id=%s", (inventory_job,)).fetchone()
+        inventory_job, old = _existing_inventory(connection, job, keeper_id)
         if old:
             return PinnedNamespace(old)
-        linked_id = keeper_id or job.get("archive_version_id")
-        if linked_id:
-            prior = connection.execute("SELECT b.* FROM snapshot_cleanup_inventories b JOIN jobs j ON j.id=b.job_id WHERE b.completed_at IS NULL AND (b.keeper_id=%s OR (b.keeper_id IS NULL AND j.archive_version_id=%s AND j.vault_file_id=%s))", (linked_id, linked_id, job["vault_file_id"])).fetchall()
-            if prior:
-                if len({(r["target_json"],r["inventory_json"]) for r in prior}) != 1:
-                    raise UploadBlocked("inventory_changed")
-                return PinnedNamespace(prior[0])
         rows = connection.execute("SELECT object_key FROM archive_versions WHERE vault_file_id=%s AND availability<>'purged'", (job["vault_file_id"],)).fetchall()
         paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
         # Read-only unit: SHARE fences lifecycle/identity/admission writers and
@@ -249,40 +257,65 @@ def pin_upload_namespace(worker: Any, job: dict[str, Any], client: Any, *, keepe
     return PinnedNamespace(row, fresh=fresh)
 
 
+@dataclass(frozen=True)
+class _CleanupState:
+    keeper: dict[str, Any]
+    pinned: dict[str, Any]
+    rows: list[dict[str, Any]]
+    catalog_markers: list[dict[str, Any]]
+    keys: set[str]
+    batch: dict[str, Any]
+    baseline: dict[str, Any]
+
+
+@retry_database_unit
+def _bind_cleanup_state(worker: Any, job: dict[str, Any], keeper_id: str, provider: str) -> _CleanupState | None:
+    """Read and bind existing authority in one DB-only audited SHARE unit.
+
+    None means no pin exists: the caller must observe/save it OUTSIDE this
+    replay, then reload all state. Invalid existing pins never take that path.
+    """
+    with owned_connection(worker.db()) as connection:
+        with _validated_target(connection, job,
+                key=worker.expected_cloud_key(job['path'], job['s3_prefix']),
+                provider=provider, shared=True) as pinned:
+            worker.ensure_job_claim_owned_in_transaction(connection, job, 'Snapshot inventory claim lost')
+            keeper = _keeper(connection, job, keeper_id, provider)
+            _, batch = _existing_inventory(connection, job, keeper_id)
+            if batch is None:
+                return None
+            rows = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND id<>%s AND availability<>'purged'", (job['vault_file_id'], keeper_id)).fetchall()
+            paths = connection.execute('SELECT path FROM file_paths WHERE vault_file_id=%s', (job['vault_file_id'],)).fetchall()
+            catalog_markers = connection.execute('SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id', (job['vault_file_id'],)).fetchall()
+            keys = {keeper['object_key']} | {row['object_key'] for row in rows if row['object_key']}
+            keys |= {worker.expected_cloud_key(row['path'], job['s3_prefix']) for row in paths}
+            baseline = json.loads(batch['inventory_json'])
+            historical_pin = json.loads(batch['target_json'])
+            if provider != historical_pin['provider'] or set(baseline) != keys:
+                raise UploadBlocked('identity_changed')
+            require_target(connection, job, pinned, shared=True)
+            require_target(connection, job, historical_pin, shared=True)
+            result = connection.execute('UPDATE snapshot_cleanup_inventories SET keeper_id=%s WHERE job_id=%s AND (keeper_id IS NULL OR keeper_id=%s) RETURNING job_id', (keeper_id, batch['job_id'], keeper_id)).fetchone()
+            if not result:
+                raise UploadBlocked('identity_changed')
+            return _CleanupState(keeper, pinned, rows, catalog_markers, keys, batch, baseline)
+
+
 def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> int:
     active = lambda: worker.ensure_job_active(job["id"], "Snapshot cleanup stopped")
     worker._require_upload_source_identity(job)
     provider = provider_identity(client)
-    # Pin DB ownership first. Runtime source/root checks are outside replayable units.
-    with worker.db() as connection:
-        keeper = _keeper(connection, job, keeper_id, provider)
-        # Read-only unit (audited SHARE). Later exclusive units compare this pin.
-        pinned = target(connection, job, key=keeper["object_key"], provider=provider, shared=True)
-        rows = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND id<>%s AND availability<>'purged'", (job["vault_file_id"], keeper_id)).fetchall()
-        paths = connection.execute("SELECT path FROM file_paths WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchall()
-        catalog_markers = connection.execute("SELECT * FROM delete_markers WHERE vault_file_id=%s ORDER BY id", (job["vault_file_id"],)).fetchall()
-    keys = {keeper["object_key"]} | {r["object_key"] for r in rows if r["object_key"]}
-    keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
-    batch = pin_inventory(worker, job, client, keeper_id=keeper_id)
-    baseline = json.loads(batch["inventory_json"])
-    require_pinned = json.loads(batch["target_json"])
-    if provider != require_pinned["provider"] or set(baseline) != keys:
-        raise UploadBlocked("identity_changed")
-    @retry_database_unit
-    def bind_keeper() -> None:
-        with owned_connection(worker.db()) as connection:
-            # Writes this Job's own inventory row and lease only: audited SHARE.
-            # Validate BOTH pins under one actual lock, before committing the
-            # binding. The capability exists only inside this DB-only unit;
-            # provider observations below are never part of its retry.
-            with _validated_target(connection, job, key=pinned['key'], provider=provider, shared=True):
-                require_target(connection, job, pinned, shared=True)
-                require_target(connection, job, require_pinned, shared=True)
-            worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot inventory claim lost")
-            result = connection.execute("UPDATE snapshot_cleanup_inventories SET keeper_id=%s WHERE job_id=%s AND (keeper_id IS NULL OR keeper_id=%s) RETURNING job_id", (keeper_id, batch["job_id"], keeper_id)).fetchone()
-            if not result:
-                raise UploadBlocked("identity_changed")
-    bind_keeper()
+    state = _bind_cleanup_state(worker, job, keeper_id, provider)
+    if state is None:
+        # Cold path only: provider observations and their save never belong to
+        # the replay above. Reload, do not reuse pre-observation catalog state.
+        pin_inventory(worker, job, client, keeper_id=keeper_id)
+        state = _bind_cleanup_state(worker, job, keeper_id, provider)
+        if state is None:
+            raise UploadBlocked('inventory_changed')
+    keeper, pinned, rows = state.keeper, state.pinned, state.rows
+    catalog_markers, keys = state.catalog_markers, state.keys
+    batch, baseline = state.batch, state.baseline
     expected = {key: inventory(client, job["s3_bucket"], key) for key in sorted(keys)}
     keep_key, keep_version = keeper["object_key"], keeper["provider_version_id"]
     if keep_version not in expected[keep_key]["versions"]:
