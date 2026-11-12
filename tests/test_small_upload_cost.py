@@ -82,6 +82,13 @@ class SmallUploadCostTests(unittest.TestCase):
         self.assertEqual(self.row(job_id)["status"], "completed", self.row(job_id)["message"])
         return statements, renew.call_count
 
+    def test_local_generation_does_not_open_a_standalone_read_transaction(self):
+        statements, _ = self.upload()
+        standalone = [query for query, _ in statements
+                      if query.startswith('SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies')
+                      and 'FOR UPDATE' not in query]
+        self.assertEqual(standalone, [], 'Capture Local Copy generation in the fresh source snapshot')
+
     def test_namespace_ownership_shares_the_initial_catalog_snapshot(self):
         self.upload()
         units = [queries for groups in self.transactions.values() for queries in groups
@@ -233,6 +240,37 @@ class SourceIdentityCheckpointTests(unittest.TestCase):
             self.assertEqual(db.call_count, 1, 'Do not open separate lease and source transactions')
         self.validate.assert_called_once()
 
+    def native_generation(self, job):
+        with PostgresConnection(self.db_path) as connection:
+            return connection.execute('''SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,
+                observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s''',
+                (job['vault_file_id'],)).fetchone()
+
+    def test_source_returns_native_generation_in_the_same_read(self):
+        job = self.pinned_job()
+        expected = self.native_generation(job)
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with patch.object(storage, 'db', wraps=storage.db) as db:
+                observed = storage._require_upload_source_identity(job)
+            self.assertEqual(db.call_count, 1)
+        self.assertEqual(observed, expected)
+        self.validate.assert_called_once()
+
+    def test_absent_local_copy_is_not_an_all_null_generation(self):
+        job = self.pinned_job()
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute('DELETE FROM local_copies WHERE vault_file_id=%s', (job['vault_file_id'],))
+        with storage._job_claim_context(job):
+            self.assertIsNone(storage._require_upload_source_identity(job))
+        self.validate.assert_called_once()
+
+    def test_unclaimed_source_probe_keeps_native_generation_without_claim_authority(self):
+        job = self.pinned_job()
+        self.assertIsNone(storage._claim_token_for(job['id']))
+        self.assertEqual(storage._require_upload_source_identity(job), self.native_generation(job))
+        self.validate.assert_called_once()
+
     def assert_revoked_claim_stops_before_filesystem_probe(self, change):
         job = self.pinned_job()
         with storage._job_claim_context(job):
@@ -352,6 +390,48 @@ class UploadVerificationCommitTests(unittest.TestCase):
     queue = fixture.UploadProvenanceWorkerTests.queue
     run_job = fixture.UploadProvenanceWorkerTests.run_job
     row = fixture.UploadProvenanceWorkerTests.row
+
+    def test_absent_local_generation_is_recreated_after_verification(self):
+        removed = []
+
+        def remove_observation(stage, **kwargs):
+            if stage == 'acknowledged':
+                with PostgresConnection(self.db_path) as connection:
+                    connection.execute('DELETE FROM local_copies WHERE vault_file_id=%s', (self.file_id,))
+                removed.append(True)
+
+        self.provider.hook = remove_observation
+        job_id = self.queue()
+        self.run_job(job_id)
+        keeper = fixture.UploadProvenanceWorkerTests.assert_keeper(self, job_id)
+        self.assertEqual(removed, [True])
+        with PostgresConnection(self.db_path) as connection:
+            local = connection.execute('SELECT * FROM local_copies WHERE vault_file_id=%s', (self.file_id,)).fetchone()
+        self.assertEqual(local['matched_archive_version_id'], keeper['id'])
+        self.assertEqual(local['plaintext_sha256'], keeper['plaintext_sha256'])
+        self.assertEqual(self.provider.puts, 1)
+
+    def test_newer_local_generation_during_inspection_wins_publication_cas(self):
+        job_id = self.queue()
+        inspect = storage._inspect_local_copy_for_upload_snapshot
+        newer = []
+
+        def observe_new_generation(job, **kwargs):
+            result = inspect(job, **kwargs)
+            with PostgresConnection(self.db_path) as connection:
+                connection.execute('UPDATE local_copies SET observed_at=%s WHERE vault_file_id=%s',
+                                   ('2099-01-01T00:00:00+00:00', job['vault_file_id']))
+                newer.append(connection.execute('SELECT * FROM local_copies WHERE vault_file_id=%s',
+                                                (job['vault_file_id'],)).fetchone())
+            return result
+
+        with patch.object(storage, '_inspect_local_copy_for_upload_snapshot', side_effect=observe_new_generation):
+            self.run_job(job_id)
+        fixture.UploadProvenanceWorkerTests.assert_keeper(self, job_id)
+        self.assertEqual(len(newer), 1)
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(connection.execute('SELECT * FROM local_copies').fetchone(), newer[0])
+        self.assertEqual(self.provider.puts, 1)
 
     def test_verification_and_cleanup_status_have_the_same_transaction_id(self):
         execute = psycopg.Cursor.execute

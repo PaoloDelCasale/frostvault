@@ -3455,24 +3455,39 @@ class SourceVolumeUnavailable(RuntimeError):
     """The Source Volume cannot be read right now; this is not an identity change."""
 
 
+_UPLOAD_LOCAL_GENERATION_FIELDS = (
+    'size', 'mtime_ns', 'plaintext_sha256', 'matched_archive_version_id',
+    'observed_at', 'content_observed_at',
+)
+
+
 @retry_database_unit
-def _load_upload_source_vault(job: dict[str, Any], claim_token: str) -> dict[str, Any] | None:
-    """One read snapshot for the live claim and current Vault, no filesystem I/O."""
+def _load_upload_source_vault(job: dict[str, Any], claim_token: str | None) -> dict[str, Any] | None:
+    """One DB snapshot for claim, Vault and Local Copy generation, no filesystem I/O."""
     with owned_connection(db()) as connection:
         return connection.execute(
-            """SELECT v.*, EXISTS (
-                SELECT 1 FROM jobs j WHERE j.id=%s AND j.claim_token=%s
-                  AND j.claim_expires_at IS NOT NULL AND j.claim_expires_at>%s
-                  AND j.status NOT IN ('completed','failed','cancelled')
-            ) AS _upload_claim_live
-            FROM vaults v WHERE v.id=%s""",
-            (job['id'], claim_token, now_iso(), job['vault_id']),
+            """SELECT v.*, lc.vault_file_id AS _local_id,
+                lc.size AS _local_size, lc.mtime_ns AS _local_mtime_ns,
+                lc.plaintext_sha256 AS _local_plaintext_sha256,
+                lc.matched_archive_version_id AS _local_matched_archive_version_id,
+                lc.observed_at AS _local_observed_at,
+                lc.content_observed_at AS _local_content_observed_at,
+                EXISTS (
+                    SELECT 1 FROM jobs j WHERE j.id=%s AND j.claim_token=%s
+                      AND j.claim_expires_at IS NOT NULL AND j.claim_expires_at>%s
+                      AND j.status NOT IN ('completed','failed','cancelled')
+                ) AS _upload_claim_live
+            FROM vaults v LEFT JOIN local_copies lc ON lc.vault_file_id=%s
+            WHERE v.id=%s""",
+            (job['id'], claim_token, now_iso(), job['vault_file_id'], job['vault_id']),
         ).fetchone()
 
 
-def _require_upload_source_identity(job: dict[str, Any]) -> None:
-    """Source Volume/root I/O is outside replayable DB transactions.
+def _require_upload_source_identity(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Require fresh source identity; return its coobserved Local Copy generation.
 
+    The generation is only an optimistic publication CAS input, NOT reusable
+    root/lease authority. All filesystem checks run after the DB read closes.
     ``identity_changed`` is reserved for a root that was observed and differs
     from the enrolled one. An unreadable/unavailable volume waits (#486).
     """
@@ -3490,21 +3505,23 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
             raise OperationCancelled('Upload source claim lost')
         if _claim_is_lost(job['id']):
             raise JobLeaseLost('Upload source claim lost')
-        vault = _load_upload_source_vault(job, token)
-        if vault is not None and not vault.pop('_upload_claim_live'):
-            _mark_claim_lost(job['id'])
-            raise JobLeaseLost('Upload source claim lost')
-        if vault is None:
-            # Preserve lease-loss precedence when deletion removed both rows.
-            ensure_job_active(job['id'], 'Upload source claim lost')
     else:
         # A first/due checkpoint must still renew; never use a stale cached
         # renewal to read through expiry, or bypass direct unclaimed callers.
         ensure_job_active(job['id'], 'Upload source claim lost')
-        with db() as connection:
-            vault = connection.execute('SELECT * FROM vaults WHERE id=%s', (job['vault_id'],)).fetchone()
+    vault = _load_upload_source_vault(job, token)
+    if vault is not None:
+        live = vault.pop('_upload_claim_live')
+        if token is not None and not live:
+            _mark_claim_lost(job['id'])
+            raise JobLeaseLost('Upload source claim lost')
+    elif token is not None:
+        # Preserve lease-loss precedence when deletion removed both rows.
+        ensure_job_active(job['id'], 'Upload source claim lost')
     if not vault or vault["source_root"] != job["source_root"]:
         raise UploadBlocked("identity_changed")
+    local_id = vault.pop('_local_id')
+    generation = {name: vault.pop('_local_' + name) for name in _UPLOAD_LOCAL_GENERATION_FIELDS}
     if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
         raise SourceVolumeUnavailable("Source Volume is unavailable")
     try:
@@ -3513,6 +3530,7 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
         raise SourceVolumeUnavailable(str(exc)) from exc
     except Exception as exc:
         raise UploadBlocked("identity_changed") from exc
+    return generation if local_id is not None else None
 
 
 def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, Any]:
@@ -3633,9 +3651,7 @@ def _complete_verified_upload(
     Source observation happens once outside DB retries. Catalog generation CAS
     protects a newer Local Copy B; a replay never moves or re-reads filesystem.
     """
-    _require_upload_source_identity(job)
-    with db() as connection:
-        local_before = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
+    local_before = _require_upload_source_identity(job)
     from .services.upload_pipeline import preparation_capacity
     # A changed Local Copy can require another bounded hashing pass. Borrow
     # preparation capacity before reading it, never during a catalog transaction.
