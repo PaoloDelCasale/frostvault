@@ -7,7 +7,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0076_operational_retention"
-down_revision = "0074_owner_singleton"
+down_revision = "0075_file_state"
 branch_labels = None
 depends_on = None
 

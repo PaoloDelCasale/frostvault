@@ -79,6 +79,29 @@ class KeeperReferenceTests(unittest.TestCase):
             _keeper(connection, job, "keeper")
         self.assertEqual(raised.exception.reason, "proof_mismatch")
 
+    def test_local_observation_binds_cloud_only_reference_once(self):
+        # Exercise the actual dynamically assembled call, not a copied query.
+        for recovered in (None, STAMP):
+            for hold in (False, True):
+                for stability in (False, True):
+                    with self.subTest(recovered=recovered, hold=hold, stability=stability):
+                        connection = Mock()
+                        catalog = ArchiveCatalog(connection)
+                        with patch.object(catalog, "_get_or_create_file", return_value="file"), \
+                             patch.object(catalog, "_supports_cloud_only_hold", return_value=hold), \
+                             patch.object(catalog, "_supports_content_observation", return_value=stability), \
+                             patch.object(catalog, "_cancel_reappeared_deletions"), \
+                             patch.object(catalog, "_mark_path_aggregates_dirty"):
+                            catalog.observe_local_copy(vault_id=2, path="a.txt", file_type="regular",
+                                size=7, mtime_ns=123, observed_at=STAMP, recovered_at=recovered)
+                        call = next(call for call in connection.execute.call_args_list
+                                    if "INSERT INTO local_copies" in call.args[0])
+                        sql, parameters = call.args
+                        self.assertEqual(sql.count("%s"), len(parameters))
+                        if hold and recovered is None:
+                            self.assertIn("current_version_id", sql)
+                            self.assertEqual(parameters[-1], "file")
+
     def test_temporary_migration_refuses_old_versions_before_any_ddl(self):
         path = Path(__file__).resolve().parents[1] / "migrations/versions/0075_file_state.py"
         spec = importlib.util.spec_from_file_location("file_state_migration", path)

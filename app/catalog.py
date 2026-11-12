@@ -41,10 +41,12 @@ def _only_cloud_copy_sql(file_id_sql: str) -> str:
     """
     return f"""(
         SELECT only_copy.id FROM archive_versions only_copy
+        JOIN vault_files current_file
+          ON current_file.id=only_copy.vault_file_id
+         AND current_file.current_version_id=only_copy.id
         WHERE only_copy.vault_file_id={file_id_sql}
           AND only_copy.integrity='verified'
           AND only_copy.availability='available'
-          AND only_copy.id=(SELECT current_version_id FROM vault_files WHERE id={file_id_sql})
     )"""
 
 
