@@ -375,22 +375,28 @@ class VaultMoveTests(unittest.TestCase):
                 cloud_deletion.schedule_cloud_purge(c,vault_id=1,paths=['report.txt'],is_directory=False,
                     actor_user_id=1,requested_at=storage.now_iso(),confirmation='Docs',reason='delete')
 
-    def test_ledger_migration_is_metadata_only_and_refuses_unsafe_downgrade(self):
+    def test_baseline_downgrade_refusal_preserves_active_and_cancelled_move_evidence(self):
         from tests.test_database import run_alembic
+        from app.database import HEAD_SCHEMA_REVISION
         self.schedule()
-        with PostgresConnection(str(self.path)) as c:
-            from tests.upload_verification_migration_contract import without_upload_verification_fields
-            before=without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions')
-        refused=run_alembic(self.path,'0059_delayed_cloud_deletion','downgrade')
-        self.assertNotEqual(refused.returncode,0)
-        with PostgresConnection(str(self.path)) as c:
-            c.execute("UPDATE jobs SET status='cancelled' WHERE id=%s",(self.job_id,))
-        for revision,command in (('0059_delayed_cloud_deletion','downgrade'),('head','upgrade')):
-            result=run_alembic(self.path,revision,command)
-            self.assertEqual(result.returncode,0,result.stderr)
-            with PostgresConnection(str(self.path)) as c:
-                self.assertEqual(without_upload_verification_fields(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), 'archive_versions'),before)
-        self.assertEqual(self.provider.deleted,[])
+        for cancel in (False, True):
+            with self.subTest(cancelled=cancel):
+                with PostgresConnection(str(self.path)) as c:
+                    if cancel:
+                        c.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (self.job_id,))
+                    before = c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall()
+                    jobs_before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
+                refused = run_alembic(self.path, '0059_delayed_cloud_deletion', 'downgrade')
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn('incompatible Current Snapshot baseline cannot be downgraded', refused.stderr)
+                reentry = run_alembic(self.path)
+                self.assertEqual(reentry.returncode, 0, reentry.stderr)
+                with PostgresConnection(str(self.path)) as c:
+                    self.assertEqual(c.execute('SELECT * FROM archive_versions ORDER BY id').fetchall(), before)
+                    self.assertEqual(c.execute('SELECT * FROM jobs ORDER BY id').fetchall(), jobs_before)
+                    self.assertEqual(c.execute('SELECT version_num FROM alembic_version').fetchone()['version_num'], HEAD_SCHEMA_REVISION)
+        self.assertEqual(self.provider.copies, 0)
+        self.assertEqual(self.provider.deleted, [])
 
     def test_worker_cannot_publish_after_claim_takeover(self):
         self.schedule()

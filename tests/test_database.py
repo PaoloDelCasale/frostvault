@@ -138,10 +138,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                 {"id", "vault_id", "revision", "domain", "scope", "payload_json", "created_at"},
             )
 
-    def test_catalog_state_schema_round_trips_through_0035_when_empty(self) -> None:
+    def test_historical_catalog_state_round_trips_through_0035_when_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog-state-round-trip.db"
-            upgraded = run_alembic(path)
+            # This proves a historical migration, not baseline rollback support.
+            upgraded = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             downgraded = run_alembic(
                 path,
@@ -411,7 +412,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(row["token_hash"], "legacy-token-hash")
             self.assertEqual(row["csrf_token"], "legacy-csrf")
 
-    def test_lossless_schema_can_downgrade_and_upgrade_again(self) -> None:
+    def test_incompatible_baseline_refuses_downgrade_and_allows_head_reentry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rollback.db"
             upgraded = run_alembic(path)
@@ -422,7 +423,14 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0001_current_schema",
                 command="downgrade",
             )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+            self.assertNotEqual(downgraded.returncode, 0)
+            self.assertIn("incompatible Current Snapshot baseline cannot be downgraded", downgraded.stderr)
+            from app.database import HEAD_SCHEMA_REVISION
+            with PostgresConnection(str(path)) as connection:
+                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"], HEAD_SCHEMA_REVISION)
+                self.assertIsNotNone(connection.execute("SELECT to_regclass('owner') AS name").fetchone()["name"])
+                columns = {row["column_name"] for row in connection.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='vault_files'").fetchall()}
+                self.assertLessEqual({"current_version_id", "replacing_version_id"}, columns)
 
             upgraded_again = run_alembic(path)
             self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
@@ -458,7 +466,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 }
             self.assertNotIn("oidc_login", names)
             self.assertNotIn("user_identities", names)
-        from app.catalog import ArchiveCatalog
+        from uuid import uuid4
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "protected.db"
@@ -472,20 +480,19 @@ class DatabaseMigrationTests(unittest.TestCase):
                     ) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
                     """
                 )
-                catalog = ArchiveCatalog(connection)
+                # Historical schema fixtures are SQL, never current catalog code.
+                file_id = str(uuid4())
+                connection.execute("INSERT INTO vault_files(id,vault_id,created_at) VALUES (%s,2,'2026-07-21')", (file_id,))
+                connection.execute("INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from) VALUES (%s,2,'report.txt','2026-07-21')", (file_id,))
                 for number in (1, 2):
-                    catalog.record_archive_version(
-                        vault_id=2,
-                        path="report.txt",
-                        object_key="docs/report.txt",
-                        provider_version_id=f"version-{number}",
-                        size=number,
-                        storage_class="STANDARD",
-                        etag=f"etag-{number}",
-                        uploaded_at=f"2026-07-2{number}T10:00:00+00:00",
-                        observed_at=f"2026-07-2{number}T10:00:00+00:00",
-                        scan_id=f"2026-07-2{number}T10:00:00+00:00",
-                    )
+                    connection.execute("""INSERT INTO archive_versions(
+                        id,vault_file_id,vault_id,version_number,object_key,
+                        provider_version_id,size,storage_class,etag,uploaded_at,
+                        discovered_at,origin,availability)
+                        VALUES (%s,%s,2,%s,'docs/report.txt',%s,%s,'STANDARD',%s,%s,%s,'discovered','available')""",
+                        (str(uuid4()), file_id, number, f"version-{number}", number,
+                         f"etag-{number}", f"2026-07-2{number}T10:00:00+00:00",
+                         f"2026-07-2{number}T10:00:00+00:00"))
 
             downgraded = run_alembic(
                 path,
@@ -495,6 +502,9 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             self.assertNotEqual(downgraded.returncode, 0)
             self.assertIn("would lose versioned archive data", downgraded.stderr)
+            with PostgresConnection(str(path)) as connection:
+                self.assertEqual([row["provider_version_id"] for row in connection.execute("SELECT provider_version_id FROM archive_versions ORDER BY version_number").fetchall()], ["version-1", "version-2"])
+                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"], "0072_upload_lineage_indexes")
 
     def test_historical_0072_is_single_owner_and_keeps_password_nullable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -898,7 +908,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0005_invites",
                 command="downgrade",
             )
-            self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+            self.assertNotEqual(downgraded.returncode, 0)
+            self.assertIn("incompatible Current Snapshot baseline cannot be downgraded", downgraded.stderr)
             with PostgresConnection(str(path)) as connection:
                 names = {
                     row["name"]
@@ -906,7 +917,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
                     ).fetchall()
                 }
-            self.assertNotIn("auth_backoff", names)
+            self.assertIn("auth_backoff", names)
 
     def test_downgrade_refuses_to_resurrect_a_missing_archive_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
