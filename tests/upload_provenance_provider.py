@@ -22,7 +22,9 @@ class VersionedProvider:
         self.hook = lambda stage, **kwargs: None
 
     def add(self, key, payload, metadata=None, *, version=None):
-        version = version or f"version-{len(self.objects)+1}"
+        # S3 never reuses a VersionId, even after an exact delete.
+        self._sequence = max(getattr(self, "_sequence", 0), len(self.objects)) + 1
+        version = version or f"version-{self._sequence}"
         self.objects[key, version] = (bytes(payload), dict(metadata or {}))
         return version
 

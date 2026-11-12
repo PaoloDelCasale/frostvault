@@ -37,6 +37,7 @@ BASELINE_TABLES = {
     "audit_events", "notifications", "notification_deliveries", "upload_snapshots",
     "upload_attempts", "upload_receipts", "upload_multiparts",
     "vault_operation_policies", "bulk_upload_admissions", "bulk_upload_exclusions",
+    "cleanup_batches", "cleanup_candidates",
 }
 
 
@@ -339,6 +340,7 @@ class BaselineSchemaTests(unittest.TestCase):
         self.assertEqual(referenced, {
             "vault_targets", "vaults", "files", "archive_versions", "job_groups", "jobs",
             "notifications", "upload_snapshots", "upload_attempts", "bulk_upload_admissions",
+            "cleanup_batches",
         })
         # No per-user attribution survives anywhere (#586).
         attribution = {

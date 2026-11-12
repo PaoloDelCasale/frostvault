@@ -13,7 +13,6 @@ from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from types import SimpleNamespace
 from app.services.upload_provenance import ProvenAbsent, UploadBlocked, TOKEN_KEY, inventory, provider_identity, reconcile, receipt
-from app.services.snapshot_cleanup import exact_duplicate
 from app.services.upload_snapshot import prepare_upload_snapshot
 from app.services.s3_upload import _UploadClient
 from app.services.s3_copy import _object_version_entries
@@ -283,29 +282,6 @@ class ProvenanceProviderTests(unittest.TestCase):
             with self.subTest(page=page), patch.object(self.provider, "list_object_versions", return_value=page):
                 with self.assertRaisesRegex(RuntimeError, reason):
                     _object_version_entries(self.provider, bucket="bucket", object_key="key")
-
-    def test_historical_exact_get_requires_identity_length_digest_and_no_token(self):
-        self.provider.add("key", b"independent A", version="duplicate")
-        exact_duplicate(self.provider, bucket="bucket", key="key", version="duplicate", digest=self.snapshot.plaintext_sha256, size=self.snapshot.size, check_active=lambda: None)
-        for response in (
-            {"VersionId": "other", "ContentLength": self.snapshot.size},
-            {"VersionId": "duplicate", "ContentLength": self.snapshot.size + 1},
-            {"VersionId": "duplicate", "ContentLength": self.snapshot.size, "Metadata": {TOKEN_KEY: "fake"}},
-        ):
-            body = io.BytesIO(b"independent A")
-            with self.subTest(response=response), patch.object(self.provider, "get_object", return_value={**response, "Body": body}):
-                with self.assertRaises(UploadBlocked):
-                    exact_duplicate(self.provider, bucket="bucket", key="key", version="duplicate", digest=self.snapshot.plaintext_sha256, size=self.snapshot.size, check_active=lambda: None)
-            self.assertTrue(body.closed)
-        self.assertEqual(self.provider.deletes, 0)
-
-    def test_historical_different_same_length_and_truncated_are_retained(self):
-        for data in (b"independent B", b"short"):
-            with self.subTest(data=data):
-                self.provider.add("key", data, version="different")
-                with self.assertRaises(UploadBlocked):
-                    exact_duplicate(self.provider, bucket="bucket", key="key", version="different", digest=self.snapshot.plaintext_sha256, size=self.snapshot.size, check_active=lambda: None)
-                self.assertIn(("key", "different"), self.provider.objects)
 
     def test_actual_botocore_mutator_failures_do_not_retry_hidden_put_or_completion(self):
         read = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode":"standard","total_max_attempts":4}))

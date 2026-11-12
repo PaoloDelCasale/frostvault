@@ -533,7 +533,11 @@ class IntegrityTests(_Fixture):
         provenance.journal_multipart(self.db, landed.id, "mpu", T1)
         version = self.land(landed)
         self.catalog.abandon_replacement(self.file_id, archive_version_id=version)
+        # The exact cleanup and its proof are covered in tests.test_upload_cleanup;
+        # here only the collection of the provenance left behind matters.
+        self.connection.execute("ALTER TABLE archive_versions DISABLE TRIGGER archive_versions_removed_with_proof")
         self.connection.execute("DELETE FROM archive_versions WHERE id=%s", (version,))
+        self.connection.execute("ALTER TABLE archive_versions ENABLE TRIGGER archive_versions_removed_with_proof")
         self.connection.execute("DELETE FROM upload_attempts WHERE id=%s", (landed.id,))
         self.connection.execute("UPDATE job_uploads SET snapshot_id=NULL WHERE snapshot_id=%s",
                                 (landed.admitted.id,))
