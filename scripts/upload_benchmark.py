@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare immutable v0.5.3 with a candidate using ONE external harness.
+"""Compare immutable v0.5.5 with a candidate using ONE external harness.
 
 Only disposable, loopback PostgreSQL 16 is accepted. No timing pass/fail gate.
 See docs/ci.md; --help requires neither app imports nor a DB connection.
@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-BASELINE_SHA = "628d065fe54a5c13364d5da7c58cb563d0bd80b7"
+BASELINE_SHA = "35d6f4ea3376592b64ea7f82a83a6cdea8428462"
 HARNESS_FILES = ("upload_benchmark.py", "upload_benchmark_support.py", "upload_benchmark_worker.py")
 
 
@@ -29,7 +29,7 @@ def require(condition, message):
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--baseline", type=Path, required=True, help="Clean checkout at fixed v0.5.3 SHA")
+    result.add_argument("--baseline", type=Path, required=True, help="Clean checkout at fixed v0.5.5 SHA")
     result.add_argument("--candidate", type=Path, required=True, help="Clean candidate checkout")
     result.add_argument("--output", type=Path, required=True, help="New artifact directory (must not exist)")
     result.add_argument("--disposable-postgres", action="store_true", required=True,
@@ -169,7 +169,7 @@ def main(argv=None):
     env["UPLOAD_VERIFICATION"] = args.mode
     roots = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
     shas = {label: git(root, "rev-parse", "HEAD") for label, root in roots.items()}
-    require(shas["baseline"] == BASELINE_SHA, "Baseline must be the fixed v0.5.3 SHA")
+    require(shas["baseline"] == BASELINE_SHA, "Baseline must be the fixed v0.5.5 SHA")
     for root in roots.values():
         require(not git(root, "status", "--porcelain", "--untracked-files=no"), "Compared checkout must have no tracked modifications")
     fixtures = {hashlib.sha256((root / "tests/postgres.py").read_bytes()).hexdigest() for root in roots.values()}

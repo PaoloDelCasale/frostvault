@@ -32,6 +32,9 @@ def sample(label, traced, repetition):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_adr0035_comparison_is_pinned_to_v055(self):
+        self.assertEqual(benchmark.BASELINE_SHA, '35d6f4ea3376592b64ea7f82a83a6cdea8428462')
+
     def test_frozen_baselines_keep_their_own_owner_schema_and_requester_cost(self):
         from scripts.upload_benchmark_worker import uses_legacy_owner_fixture
         for revision in ("0071_bulk_scheduler_merge", "0072_upload_lineage_indexes"):

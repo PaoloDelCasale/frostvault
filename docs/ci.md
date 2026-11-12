@@ -36,7 +36,7 @@ Workflow: [`.github/workflows/migrations.yml`](../.github/workflows/migrations.y
 | --- | --- | --- |
 | Unit and migration tests | Python `unittest` suite against isolated `postgres:16` services, partitioned across twelve parallel shards by packing largest test modules first. The stable aggregate requires all shards and the dedicated migration/concurrency job below. Each fixture uses its own database, with a migrated HEAD template for fresh fixtures; populated upgrades/downgrades still run Alembic. No database regression skips without configuration. | None. Live AWS/MinIO env vars are intentionally unset so S3 integration cases skip. |
 | PostgreSQL migration and concurrency tests | PostgreSQL-specific migration/concurrency cases against `postgres:16`, including #458: nested uploads through `process_job` on all 16 workers with concurrent aggregate maintenance and full-rollup parity (64 uploads on PRs; the full 1,024 on `main`), a real forced deadlock, commit-time aborts and exact-version/no-extra-PUT retry assertions on every PR, and #535: a small-upload burst (64 files on PRs; the full 2,048 on `main`) with the unchanged conservative files/second floor and bound on new PostgreSQL connections (pooled `db()`). Provider I/O is a thread-safe fake; actual SDK/cloud-compatible integrity remains in the S3 job below. | Ephemeral Postgres service only. |
-| Upload execution baseline comparison | Separate #562 descriptive benchmark: the same external harness compares fixed v0.5.3 with the candidate on one runner/PG16 service, at 1/4/16 workers, with five alternating repetitions per SHA and driver-probe profile. Real claims, Job execution, SDK orchestration and exact completed-after-cleanup assertions; in-memory S3 API responses, not AWS/HTTP throughput. Raw JSON, SQL-shape trace and summary artifact. No timing threshold and no change to existing stress/publication gates. | Ephemeral Postgres service only; synthetic SDK credentials, no network provider. |
+| Upload execution baseline comparison | Separate #562 descriptive benchmark, repinned by ADR-0035: the same external harness compares fixed v0.5.5 with the candidate on one runner/PG16 service, at 1/4/16 workers, with five alternating repetitions per SHA and driver-probe profile. Real claims, Job execution, SDK orchestration and exact completed-after-cleanup assertions; in-memory S3 API responses, not AWS/HTTP throughput. Raw JSON, SQL-shape trace and summary artifact. No timing threshold and no change to existing stress/publication gates. | Ephemeral Postgres service only; synthetic SDK credentials, no network provider. |
 | Frontend generate and typecheck | Regenerates the committed OpenAPI TypeScript artifacts from `frontend/openapi.json`, fails on generated-artifact drift, then runs the strict browser/Node/Vitest/Playwright TypeScript projects. | None. |
 | Frontend lint and unit tests | ESLint (including `e2e/`) and Vitest on Node 22, in parallel with typecheck and the production build. | None. |
 | Frontend unit tests (Node 24) | The same Vitest suite on Node 24, which `frontend/package.json` engines already allow. Guards Blob/Response/WebCrypto download checks that can pass on Node 22 and fail on jsdom+Node 24. | None. |
@@ -97,8 +97,9 @@ verification modes. Existing integrity tests and floors are not changed.
 
 `scripts/upload_benchmark.py` runs **its own identical worker/probes** against
 two clean checkouts; it does not copy candidate code into the baseline. The
-baseline must resolve to v0.5.3
-`628d065fe54a5c13364d5da7c58cb563d0bd80b7`. Each subprocess imports `app` from the
+baseline must resolve to v0.5.5
+`35d6f4ea3376592b64ea7f82a83a6cdea8428462` (ADR-0035). Historical artifacts
+against v0.5.3 are not the approved acceptance comparison. Each subprocess imports `app` from the
 specified checkout, uses its real migrations and the unchanged
 `tests/postgres.py` fixture (the harness refuses different fixture hashes), and
 creates uniquely named disposable databases. A manifest records both exact
@@ -171,7 +172,7 @@ use the **same Python 3.12 environment** and candidate harness for both:
 .venv/bin/python -m unittest tests.test_upload_benchmark -v  # no DB/network
 .venv/bin/python -m unittest tests.upload_benchmark_postgres_contract -v  # disposable PG16 required
 .venv/bin/python scripts/upload_benchmark.py \
-  --baseline /path/to/clean-v0.5.3 --candidate /path/to/clean-candidate \
+  --baseline /path/to/clean-v0.5.5 --candidate /path/to/clean-candidate \
   --output /path/to/sessioni/<session>/upload-comparison \
   --disposable-postgres \
   --mode s3_checksum --files 128 --concurrency 16 --warmup 32 --repetitions 5
