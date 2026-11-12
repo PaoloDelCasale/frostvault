@@ -82,6 +82,15 @@ class SmallUploadCostTests(unittest.TestCase):
         self.assertEqual(self.row(job_id)["status"], "completed", self.row(job_id)["message"])
         return statements, renew.call_count
 
+    def test_namespace_ownership_shares_the_initial_catalog_snapshot(self):
+        self.upload()
+        units = [queries for groups in self.transactions.values() for queries in groups
+                 if any(query.startswith('SELECT object_key FROM archive_versions WHERE vault_file_id=')
+                        for query in queries)]
+        self.assertEqual(len(units), 1)
+        self.assertTrue(any('FROM file_paths fp JOIN vault_files vf' in query for query in units[0]),
+                        'Namespace ownership must not open another transaction for the same pin')
+
     def test_one_upload_takes_a_bounded_number_of_exclusive_vault_locks(self):
         statements, _ = self.upload()
         modes = [" ".join(match.group(1).upper().split())

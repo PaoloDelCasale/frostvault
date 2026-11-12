@@ -15,7 +15,7 @@ from typing import Any
 
 from .database_retry import owned_connection, retry_database_unit
 from .cloud_preflight_gate import is_readiness_error
-from .upload_provenance import UploadBlocked, canonical, inventory, permission_denied_reason, provider_identity, target, require_target
+from .upload_provenance import UploadBlocked, canonical, inventory, permission_denied_reason, provider_identity, target, require_target, _validated_target
 from .s3_copy import _delete_s3_version
 from .vault_paths import expected_cloud_key
 
@@ -225,9 +225,8 @@ def pin_upload_namespace(worker: Any, job: dict[str, Any], client: Any, *, keepe
         # Read-only unit: SHARE fences lifecycle/identity/admission writers and
         # cannot upgrade (ADR-0031 audited units).
         pinned = target(connection, job, key=worker.expected_cloud_key(job["path"], job["s3_prefix"]), provider=provider_identity(client), shared=True)
-    keys = {pinned["key"]} | {r["object_key"] for r in rows if r["object_key"]}
-    keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
-    with worker.db() as connection:
+        keys = {pinned["key"]} | {r["object_key"] for r in rows if r["object_key"]}
+        keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
         _require_namespace_owner(connection, job, keys)
     baseline = {k: inventory(client, job["s3_bucket"], k) for k in sorted(keys)}
     if baseline != {k: inventory(client, job["s3_bucket"], k) for k in sorted(keys)}:
@@ -265,22 +264,25 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str, client: Any) -> in
     keys = {keeper["object_key"]} | {r["object_key"] for r in rows if r["object_key"]}
     keys |= {worker.expected_cloud_key(r["path"], job["s3_prefix"]) for r in paths}
     batch = pin_inventory(worker, job, client, keeper_id=keeper_id)
+    baseline = json.loads(batch["inventory_json"])
+    require_pinned = json.loads(batch["target_json"])
+    if provider != require_pinned["provider"] or set(baseline) != keys:
+        raise UploadBlocked("identity_changed")
     @retry_database_unit
     def bind_keeper() -> None:
         with owned_connection(worker.db()) as connection:
             # Writes this Job's own inventory row and lease only: audited SHARE.
-            require_target(connection, job, pinned, shared=True)
+            # Validate BOTH pins under one actual lock, before committing the
+            # binding. The capability exists only inside this DB-only unit;
+            # provider observations below are never part of its retry.
+            with _validated_target(connection, job, key=pinned['key'], provider=provider, shared=True):
+                require_target(connection, job, pinned, shared=True)
+                require_target(connection, job, require_pinned, shared=True)
             worker.ensure_job_claim_owned_in_transaction(connection, job, "Snapshot inventory claim lost")
             result = connection.execute("UPDATE snapshot_cleanup_inventories SET keeper_id=%s WHERE job_id=%s AND (keeper_id IS NULL OR keeper_id=%s) RETURNING job_id", (keeper_id, batch["job_id"], keeper_id)).fetchone()
             if not result:
                 raise UploadBlocked("identity_changed")
     bind_keeper()
-    baseline = json.loads(batch["inventory_json"])
-    require_pinned = json.loads(batch["target_json"])
-    with worker.db() as connection:
-        require_target(connection, job, require_pinned, shared=True)  # read-only unit
-    if provider != require_pinned["provider"] or set(baseline) != keys:
-        raise UploadBlocked("identity_changed")
     expected = {key: inventory(client, job["s3_bucket"], key) for key in sorted(keys)}
     keep_key, keep_version = keeper["object_key"], keeper["provider_version_id"]
     if keep_version not in expected[keep_key]["versions"]:
