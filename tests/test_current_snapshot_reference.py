@@ -94,25 +94,27 @@ class KeeperReferenceTests(unittest.TestCase):
     def test_local_observation_binds_cloud_only_reference_once(self):
         # Exercise the actual dynamically assembled call, not a copied query.
         for recovered in (None, STAMP):
-            for hold in (False, True):
-                for stability in (False, True):
-                    with self.subTest(recovered=recovered, hold=hold, stability=stability):
-                        connection = Mock()
-                        catalog = ArchiveCatalog(connection)
-                        with patch.object(catalog, "_get_or_create_file", return_value="file"), \
-                             patch.object(catalog, "_supports_cloud_only_hold", return_value=hold), \
-                             patch.object(catalog, "_supports_content_observation", return_value=stability), \
-                             patch.object(catalog, "_cancel_reappeared_deletions"), \
-                             patch.object(catalog, "_mark_path_aggregates_dirty"):
-                            catalog.observe_local_copy(vault_id=2, path="a.txt", file_type="regular",
-                                size=7, mtime_ns=123, observed_at=STAMP, recovered_at=recovered)
-                        call = next(call for call in connection.execute.call_args_list
-                                    if "INSERT INTO local_copies" in call.args[0])
-                        sql, parameters = call.args
-                        self.assertEqual(sql.count("%s"), len(parameters))
-                        if hold and recovered is None:
-                            self.assertIn("current_version_id", sql)
-                            self.assertEqual(parameters[-1], "file")
+            for file_type in ("regular", "symlink"):
+                with self.subTest(recovered=recovered, file_type=file_type):
+                    connection = Mock()
+                    catalog = ArchiveCatalog(connection)
+                    with patch.object(catalog, "_get_or_create_file", return_value="file"), \
+                         patch.object(catalog, "_cancel_reappeared_deletions"), \
+                         patch.object(catalog, "_mark_path_aggregates_dirty"):
+                        catalog.observe_local_copy(vault_id=2, path="a.txt", file_type=file_type,
+                            size=7, mtime_ns=123, observed_at=STAMP, recovered_at=recovered)
+                    call = next(call for call in connection.execute.call_args_list
+                                if "INSERT INTO local_copies" in call.args[0])
+                    sql, parameters = call.args
+                    self.assertEqual(sql.count("%s"), len(parameters))
+                    self.assertIn("content_observed_at", sql)
+                    self.assertIn("cloud_only_version_id", sql)
+                    if recovered is None:
+                        self.assertIn("current_version_id", sql)
+                        self.assertEqual(parameters[-1], "file")
+                    else:
+                        self.assertNotIn("current_version_id", sql)
+                        self.assertEqual(parameters[-1], "present" if file_type == "regular" else "unsupported")
 
     def test_temporary_migration_refuses_old_versions_before_any_ddl(self):
         path = Path(__file__).resolve().parents[1] / "migrations/versions/0075_file_state.py"
@@ -151,6 +153,20 @@ class SnapshotReferencePostgresTests(unittest.TestCase):
 
     def verify(self, catalog, version_id):
         catalog.mark_version_verified(version_id, plaintext_sha256=DIGEST, verified_at=STAMP)
+
+    def test_missing_required_column_fails_instead_of_adapting_the_catalog(self):
+        # A damaged/unsupported shape is not a request for legacy runtime mode.
+        with self.connection() as connection:
+            revision = connection.execute('SELECT version_num FROM alembic_version').fetchone()
+            connection.execute('ALTER TABLE local_copies DROP COLUMN content_observed_at')
+        with self.assertRaises(psycopg.errors.UndefinedColumn):
+            with self.connection() as connection:
+                ArchiveCatalog(connection).observe_local_copy(vault_id=2, path='a.txt',
+                    file_type='regular', size=7, mtime_ns=123, observed_at=STAMP)
+        with self.connection() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM vault_files').fetchone()['n'], 0)
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM file_paths').fetchone()['n'], 0)
+            self.assertEqual(connection.execute('SELECT version_num FROM alembic_version').fetchone(), revision)
 
     def test_verified_publication_is_atomic_and_ignores_chronology(self):
         with self.connection() as connection:

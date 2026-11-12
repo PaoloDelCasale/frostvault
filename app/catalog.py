@@ -83,58 +83,6 @@ class ArchiveCatalog:
         self.protection_unconfirmed = protection_unconfirmed
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
-        self._storage_class_source_supported: bool | None = None
-        self._cloud_only_hold_supported: bool | None = None
-        self._content_observation_supported: bool | None = None
-        self._delayed_deletion_supported: bool | None = None
-
-    def _supports_storage_class_source(self) -> bool:
-        """Keep migration-time catalog writes compatible with pre-0040 schemas."""
-        if self._storage_class_source_supported is not None:
-            return self._storage_class_source_supported
-        present = bool(self.connection.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema=current_schema()
-                  AND table_name='archive_versions'
-                  AND column_name='storage_class_source'
-            ) AS present
-            """
-        ).fetchone()["present"])
-        self._storage_class_source_supported = present
-        return present
-
-    def _supports_content_observation(self) -> bool:
-        """Historical migration fixtures can still write pre-0054 catalogs."""
-        if self._content_observation_supported is None:
-            self._content_observation_supported = bool(self.connection.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema=current_schema() AND table_name='local_copies'
-                      AND column_name='content_observed_at'
-                ) AS present
-                """
-            ).fetchone()["present"])
-        return self._content_observation_supported
-
-    def _supports_cloud_only_hold(self) -> bool:
-        """Keep migration-time catalog writes compatible with pre-0043 schemas."""
-        if self._cloud_only_hold_supported is not None:
-            return self._cloud_only_hold_supported
-        present = bool(self.connection.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema=current_schema()
-                  AND table_name='local_copies'
-                  AND column_name='cloud_only_version_id'
-            ) AS present
-            """
-        ).fetchone()["present"])
-        self._cloud_only_hold_supported = present
-        return present
 
     def _cancel_reappeared_deletions(self, vault_id: int, file_ids: list[str], at: str) -> None:
         """A reappearance permanently revokes pending consent, even if removed again.
@@ -142,12 +90,7 @@ class ArchiveCatalog:
         Observation already owns the Vault lock. Cancel the entire selection,
         never leave a partially authorized delayed request behind.
         """
-        if self._delayed_deletion_supported is None:
-            self._delayed_deletion_supported = bool(self.connection.execute("""
-                SELECT EXISTS (SELECT 1 FROM information_schema.tables
-                WHERE table_schema=current_schema() AND table_name='protection_stops') AS present
-            """).fetchone()["present"])
-        if not self._delayed_deletion_supported or not file_ids:
+        if not file_ids:
             return
         from .services.cloud_deletion import cancel_cloud_deletion
         placeholders = ','.join('%s' for _ in file_ids)
@@ -265,34 +208,30 @@ class ArchiveCatalog:
         file_id = self._get_or_create_file(vault_id, path, observed_at)
         presence = "present" if file_type == "regular" else "unsupported"
         last_seen_at = seen_at or observed_at
-        hold = self._supports_cloud_only_hold()
+        # Baseline columns are mandatory; historical fixtures must use their
+        # own SQL builder, never a shape-adapting runtime catalog.
         # A recovery writes back the cloud-only content itself: nothing to hold.
         hold_from_recovery = recovered_at is None
         only_cloud_copy = (
             _only_cloud_copy_sql("%s") if hold_from_recovery else "NULL"
         )
-        hold_column = ", cloud_only_version_id" if hold else ""
-        hold_value = (
-            f",\n                CASE WHEN CAST(%s AS TEXT)='present'"
-            f" THEN {only_cloud_copy} END"
-            if hold
-            else ""
-        )
-        hold_update = (
-            """
+        self.connection.execute(
+            f"""
+            INSERT INTO local_copies(
+                vault_file_id, presence, file_type, size, mtime_ns,
+                plaintext_sha256, matched_archive_version_id,
+                last_seen_at, observed_at, content_observed_at, cloud_only_version_id
+            ) VALUES (
+                %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s,
+                CASE WHEN CAST(%s AS TEXT)='present' THEN {only_cloud_copy} END
+            )
+            ON CONFLICT(vault_file_id) DO UPDATE SET
                 cloud_only_version_id=CASE
                     WHEN excluded.presence='present'
                      AND local_copies.presence<>'present'
                     THEN excluded.cloud_only_version_id
                     ELSE local_copies.cloud_only_version_id
-                END,"""
-            if hold
-            else ""
-        )
-        stability = self._supports_content_observation()
-        stability_column = ", content_observed_at" if stability else ""
-        stability_value = ", %s" if stability else ""
-        stability_update = """
+                END,
                 content_observed_at=CASE
                     WHEN (local_copies.presence, local_copies.file_type,
                           local_copies.size, local_copies.mtime_ns)
@@ -302,17 +241,7 @@ class ArchiveCatalog:
                     THEN excluded.observed_at
                     ELSE COALESCE(local_copies.content_observed_at,
                                   local_copies.observed_at, excluded.observed_at)
-                END,""" if stability else ""
-        self.connection.execute(
-            f"""
-            INSERT INTO local_copies(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at{stability_column}{hold_column}
-            ) VALUES (
-                %s, %s, %s, %s, %s, NULL, NULL, %s, %s{stability_value}{hold_value}
-            )
-            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}{stability_update}
+                END,
                 presence=excluded.presence,
                 file_type=excluded.file_type,
                 size=excluded.size,
@@ -360,9 +289,9 @@ class ArchiveCatalog:
                 mtime_ns,
                 last_seen_at,
                 observed_at,
-                *((observed_at,) if stability else ()),
-                *((presence,) if hold else ()),
-                *((file_id,) if hold and hold_from_recovery else ()),
+                observed_at,
+                presence,
+                *((file_id,) if hold_from_recovery else ()),
             ),
         )
         if recovered_at is not None:
@@ -717,11 +646,9 @@ class ArchiveCatalog:
                 raise RuntimeError("Archive Version publication owner/path changed")
         # Resolve existing Archive Version BEFORE minting a Vault File so a
         # cloud scan of a renamed file's old key cannot orphan a new identity.
-        source_supported = self._supports_storage_class_source()
-        source_column = ", storage_class_source" if source_supported else ""
         existing = self.connection.execute(
-            f"""
-            SELECT id, vault_file_id, storage_class{source_column}
+            """
+            SELECT id, vault_file_id, storage_class, storage_class_source
             FROM archive_versions
             WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
             """,
@@ -730,30 +657,21 @@ class ArchiveCatalog:
         if existing:
             if vault_file_id is not None and str(existing["vault_file_id"]) != str(vault_file_id):
                 raise RuntimeError("Exact provider identity belongs to another Vault File")
-            source = (
-                existing["storage_class_source"] or "unknown"
-                if source_supported
-                else "unknown"
-            )
+            source = existing["storage_class_source"] or "unknown"
             if storage_class and storage_class != existing["storage_class"]:
                 if source != "manual":
                     source = "discovered"
-            source_assignment = ", storage_class_source=%s" if source_supported else ""
-            update_params = [scan_id, storage_class, etag]
-            if source_supported:
-                update_params.append(source)
-            update_params.append(existing["id"])
             self.connection.execute(
-                f"""
+                """
                 UPDATE archive_versions
                 SET availability='available',
                     availability_checked_at=%s,
                     storage_class=%s,
-                    etag=%s
-                    {source_assignment}
+                    etag=%s,
+                    storage_class_source=%s
                 WHERE id=%s
                 """,
-                update_params,
+                (scan_id, storage_class, etag, source, existing["id"]),
             )
             from .services.catalog_incidents import resolve_archive_version_incidents
 
@@ -772,8 +690,6 @@ class ArchiveCatalog:
             (file_id,),
         )
         version_id = str(uuid.uuid4())
-        source_insert_column = ", storage_class_source" if source_supported else ""
-        source_insert_value = ", %s" if source_supported else ""
         insert_params = [
             version_id,
             file_id,
@@ -787,28 +703,21 @@ class ArchiveCatalog:
             observed_at,
             origin,
             scan_id,
+            "upload" if origin == "upload" else "discovered" if origin == "discovered" else "unknown",
         ]
-        if source_supported:
-            insert_params.append(
-                "upload"
-                if origin == "upload"
-                else "discovered"
-                if origin == "discovered"
-                else "unknown"
-            )
         self.connection.execute(
-            f"""
+            """
             INSERT INTO archive_versions(
                 id, vault_file_id, vault_id, object_key,
                 provider_version_id, size, storage_class, etag,
                 provider_checksums, plaintext_sha256, uploaded_at,
                 discovered_at, origin, integrity, verified_at,
                 availability, availability_checked_at, restore_state,
-                restore_expiry, restore_checked_at{source_insert_column}
+                restore_expiry, restore_checked_at, storage_class_source
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 NULL, NULL, %s, %s, %s, 'unverified', NULL,
-                'available', %s, NULL, NULL, NULL{source_insert_value}
+                'available', %s, NULL, NULL, NULL, %s
             )
             """,
             insert_params,

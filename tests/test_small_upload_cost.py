@@ -82,6 +82,11 @@ class SmallUploadCostTests(unittest.TestCase):
         self.assertEqual(self.row(job_id)["status"], "completed", self.row(job_id)["message"])
         return statements, renew.call_count
 
+    def test_runtime_catalog_does_not_probe_historical_feature_shapes(self):
+        statements, _ = self.upload()
+        probes = [query for query, _ in statements if 'information_schema' in query]
+        self.assertEqual(probes, [], 'Runtime requires the new baseline, not optional legacy columns/tables')
+
     def test_local_generation_does_not_open_a_standalone_read_transaction(self):
         statements, _ = self.upload()
         standalone = [query for query, _ in statements
