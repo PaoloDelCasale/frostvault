@@ -347,6 +347,149 @@ class UploadStatusCASCheckpointTests(unittest.TestCase):
         self.assert_verification_transition_is_fenced("UPDATE jobs SET claim_expires_at='2000-01-01' WHERE id=%s")
 
 
+class UploadVerificationCommitTests(unittest.TestCase):
+    setUp = fixture.UploadProvenanceWorkerTests.setUp
+    queue = fixture.UploadProvenanceWorkerTests.queue
+    run_job = fixture.UploadProvenanceWorkerTests.run_job
+    row = fixture.UploadProvenanceWorkerTests.row
+
+    def test_verification_and_cleanup_status_have_the_same_transaction_id(self):
+        execute = psycopg.Cursor.execute
+        verified, cleanup = [], []
+
+        def observe(cursor, query, params=None, **kwargs):
+            result = execute(cursor, query, params, **kwargs)
+            if isinstance(query, str):
+                destination = (verified if "integrity='verified', verified_at=" in query
+                    else cleanup if query.lstrip().startswith('UPDATE jobs SET status=')
+                    and params and params[2] == 'job.purging_previous_snapshot' else None)
+                if destination is not None:
+                    with cursor.connection.cursor() as probe:
+                        execute(probe, 'SELECT txid_current() AS id')
+                        destination.append(probe.fetchone()['id'])
+            return result
+
+        job_id = self.queue()
+        with patch.object(psycopg.Cursor, 'execute', observe):
+            self.run_job(job_id)
+        self.assertEqual(self.row(job_id)['status'], 'completed')
+        self.assertEqual(len(verified), 1)
+        self.assertEqual(cleanup, verified, 'Integrity and cleanup status must commit atomically')
+
+    def assert_deferred_abort_replays_no_effects(self, mode):
+        self.provider.add('docs/report.txt', fixture.A, version='old-orphan')
+        job_id = self.queue()
+        stages = []
+        self.provider.hook = lambda stage, **kwargs: stages.append(stage)
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute('UPDATE jobs SET upload_verification_requested=%s WHERE id=%s', (mode, job_id))
+            connection.execute('CREATE SEQUENCE verification_commit_attempt')
+            connection.execute('''CREATE FUNCTION verification_abort_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN IF nextval('verification_commit_attempt')=1 THEN
+                    RAISE EXCEPTION 'deferred verification abort' USING ERRCODE='40001';
+                END IF; RETURN NEW; END $$''')
+            connection.execute('''CREATE CONSTRAINT TRIGGER verification_commit_abort AFTER UPDATE ON archive_versions
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+                WHEN (NEW.integrity='verified' AND OLD.integrity<>'verified')
+                EXECUTE FUNCTION verification_abort_commit()''')
+        with patch.object(storage, '_inspect_local_copy_for_upload_snapshot',
+                          wraps=storage._inspect_local_copy_for_upload_snapshot) as inspect:
+            self.run_job(job_id)
+        fixture.UploadProvenanceWorkerTests.assert_keeper(self, job_id)
+        self.assertEqual(inspect.call_count, 1, 'DB replay must not repeat filesystem inspection')
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.provider.gets, 2 if mode == 'read_back' else 1)
+        self.assertEqual(self.provider.deleted, [('docs/report.txt', 'old-orphan')])
+        self.assertEqual(stages.count('list'), 6, 'DB replay must not repeat provider observations')
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(connection.execute('SELECT last_value FROM verification_commit_attempt').fetchone()['last_value'], 2)
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM upload_receipts').fetchone()['n'], 1)
+            self.assertIsNotNone(connection.execute('SELECT completed_at FROM snapshot_cleanup_inventories').fetchone()['completed_at'])
+
+    def test_deferred_checksum_commit_abort_does_not_repeat_effects(self):
+        self.assert_deferred_abort_replays_no_effects('s3_checksum')
+
+    def test_deferred_readback_commit_abort_does_not_repeat_effects(self):
+        self.assert_deferred_abort_replays_no_effects('read_back')
+
+    def assert_revoked_claim_before_cleanup_has_no_effects(self, change):
+        self.provider.add('docs/report.txt', fixture.A, version='old-orphan')
+        job_id = self.queue()
+        original = storage.purge_current_snapshot_superseded
+        revoked = []
+
+        def revoke(job, **kwargs):
+            with PostgresConnection(self.db_path) as connection:
+                connection.execute(change, (job['id'],))
+            revoked.append(job['id'])
+            return original(job, **kwargs)
+
+        with patch.object(storage, 'purge_current_snapshot_superseded', side_effect=revoke):
+            self.run_job(job_id)
+        self.assertEqual(revoked, [job_id])
+        self.assertNotEqual(self.row(job_id)['status'], 'completed')
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.provider.deleted, [])
+        self.assertIn(('docs/report.txt', 'old-orphan'), self.provider.objects)
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(connection.execute('SELECT integrity FROM archive_versions').fetchone()['integrity'], 'verified')
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM upload_receipts').fetchone()['n'], 1)
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM snapshot_reconciliation_blocks').fetchone()['n'], 0)
+            self.assertIsNone(connection.execute('SELECT completed_at FROM snapshot_cleanup_inventories').fetchone()['completed_at'])
+
+    def test_cancel_after_verification_commit_still_stops_cleanup(self):
+        self.assert_revoked_claim_before_cleanup_has_no_effects("UPDATE jobs SET status='cancelled' WHERE id=%s")
+
+    def test_takeover_after_verification_commit_still_stops_cleanup(self):
+        self.assert_revoked_claim_before_cleanup_has_no_effects("UPDATE jobs SET claim_token='another-worker' WHERE id=%s")
+
+    def test_expiry_after_verification_commit_still_stops_cleanup(self):
+        self.assert_revoked_claim_before_cleanup_has_no_effects("UPDATE jobs SET claim_expires_at='2000-01-01' WHERE id=%s")
+
+    def test_failed_cleanup_status_cas_rolls_back_verification_not_receipt(self):
+        self.provider.add('docs/report.txt', fixture.A, version='old-orphan')
+        job_id = self.queue()
+        original = storage._set_job_in_transaction
+        rejected = []
+        with PostgresConnection(self.db_path) as connection:
+            local_before = connection.execute('SELECT * FROM local_copies').fetchone()
+
+        def reject_cleanup(connection, changed_job, status, *args, **kwargs):
+            if kwargs.get('message_key') == 'job.purging_previous_snapshot':
+                verified = connection.execute('SELECT integrity FROM archive_versions').fetchone()
+                self.assertEqual(verified['integrity'], 'verified', 'Inject AFTER verification writes')
+                # Advance only the CAS clock beyond the persisted lease. The
+                # real PostgreSQL predicate, not a mocked result, rejects it.
+                with patch.object(storage, 'now_iso', return_value='2099-01-01T00:00:00+00:00'):
+                    updated = original(connection, changed_job, status, *args, **kwargs)
+                self.assertFalse(updated)
+                rejected.append(changed_job)
+                return updated
+            return original(connection, changed_job, status, *args, **kwargs)
+
+        with patch.object(storage, '_set_job_in_transaction', side_effect=reject_cleanup):
+            self.run_job(job_id)
+        self.assertEqual(rejected, [job_id])
+        self.assertNotEqual(self.row(job_id)['status'], 'completed')
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(connection.execute('SELECT integrity FROM archive_versions').fetchone()['integrity'], 'unverified')
+            self.assertIsNone(connection.execute('SELECT current_version_id FROM vault_files').fetchone()['current_version_id'])
+            self.assertEqual(connection.execute('SELECT * FROM local_copies').fetchone(), local_before)
+            self.assertEqual(connection.execute('SELECT COUNT(*) n FROM upload_receipts').fetchone()['n'], 1)
+            inventory = connection.execute('SELECT keeper_id,completed_at FROM snapshot_cleanup_inventories').fetchone()
+        self.assertIsNone(inventory['keeper_id'])
+        self.assertIsNone(inventory['completed_at'])
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.provider.deleted, [])
+        # A later claimant repairs the same exact receipt/version, not a new PUT.
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute("UPDATE jobs SET status='queued',claim_token=NULL,claim_expires_at=NULL WHERE id=%s", (job_id,))
+        self.run_job(job_id)
+        fixture.UploadProvenanceWorkerTests.assert_keeper(self, job_id)
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.provider.deleted, [('docs/report.txt', 'old-orphan')])
+
+
 class BacklogObservationTests(unittest.TestCase):
     """The backlog gauges read the whole queue: a deep queue is sampled."""
 

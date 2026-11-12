@@ -2322,17 +2322,17 @@ def _set_job_in_transaction(
     held = status in JOB_LEASE_HELD_STATUSES
     previous_status = None
     action = None
-    vault_lock = "NO KEY UPDATE"
-    if (
-        held and claim_token
-        and remediation_suspension is None and remediation_reason is None
-        and _held_transition_may_share_vault(connection, job_id)
-    ):
-        # ADR-0031: a held step changes no admission predicate. Keep Vault-first
-        # order before locking Jobs or append-only aggregate dirty FK marks.
-        vault_lock = "KEY SHARE"
     from .services.upload_provenance import _holds_exclusive_job_target
     if not _holds_exclusive_job_target(connection, job_id):
+        vault_lock = "NO KEY UPDATE"
+        if (
+            held and claim_token
+            and remediation_suspension is None and remediation_reason is None
+            and _held_transition_may_share_vault(connection, job_id)
+        ):
+            # ADR-0031: a held step changes no admission predicate. Keep Vault-first
+            # order before locking Jobs or append-only aggregate dirty FK marks.
+            vault_lock = "KEY SHARE"
         connection.execute(
             f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
             (job_id,),
@@ -3636,7 +3636,7 @@ def _complete_verified_upload(
     _require_upload_source_identity(job)
     with db() as connection:
         local_before = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
-    from .services.upload_pipeline import catalog_capacity, preparation_capacity
+    from .services.upload_pipeline import preparation_capacity
     # A changed Local Copy can require another bounded hashing pass. Borrow
     # preparation capacity before reading it, never during a catalog transaction.
     with preparation_capacity(job):
@@ -3654,40 +3654,42 @@ def _complete_verified_upload(
     local_observation_stable = observed_stat is not None and _local_stat_unchanged(source, observed_stat)
     verified_at = now_iso()
 
-    @retry_database_unit
-    def persist_verification() -> None:
-        with catalog_capacity(job), owned_connection(db()) as connection:
-            from .services import upload_provenance as provenance
-            provenance.target(connection, job, key=expected_cloud_key(job["path"], job["s3_prefix"]), provider="db-fence")
-            ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
-            catalog = ArchiveCatalog(connection)
-            if verification is not None:
-                catalog.set_version_verification_method(version_id, **verification)
-            if mark_verified:
-                catalog.mark_version_verified(
-                    version_id, plaintext_sha256=upload_digest, verified_at=verified_at,
-                )
-            local_current = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s FOR UPDATE", (job["vault_file_id"],)).fetchone()
-            publish_local = local_observation_stable and local_current == local_before
-            if publish_local and observed_stat is not None:
-                catalog.observe_local_copy(
-                    vault_id=job["vault_id"], path=job["path"], file_type="regular",
-                    size=observed_stat.st_size, mtime_ns=observed_stat.st_mtime_ns,
-                    observed_at=verified_at,
-                )
-            if publish_local and observed_digest is not None:
-                catalog.set_local_fingerprint(
-                    vault_id=job["vault_id"], path=job["path"],
-                    plaintext_sha256=observed_digest,
-                    matched_archive_version_id=version_id if matches_snapshot else None,
-                )
-                if matches_snapshot:
-                    connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
-                                       (job["vault_file_id"],))
+    def persist_verification(catalog: ArchiveCatalog) -> None:
+        # Exclusive from entry: publishing Integrity/local state can write
+        # aggregates and events. The status CAS shares that DB-only commit;
+        # a failed CAS rolls back proof/pointers, never the independent receipt.
+        connection = catalog.connection
+        if verification is not None:
+            catalog.set_version_verification_method(version_id, **verification)
+        if mark_verified:
+            catalog.mark_version_verified(
+                version_id, plaintext_sha256=upload_digest, verified_at=verified_at,
+            )
+        local_current = connection.execute("SELECT size,mtime_ns,plaintext_sha256,matched_archive_version_id,observed_at,content_observed_at FROM local_copies WHERE vault_file_id=%s FOR UPDATE", (job["vault_file_id"],)).fetchone()
+        publish_local = local_observation_stable and local_current == local_before
+        if publish_local and observed_stat is not None:
+            catalog.observe_local_copy(
+                vault_id=job["vault_id"], path=job["path"], file_type="regular",
+                size=observed_stat.st_size, mtime_ns=observed_stat.st_mtime_ns,
+                observed_at=verified_at,
+            )
+        if publish_local and observed_digest is not None:
+            catalog.set_local_fingerprint(
+                vault_id=job["vault_id"], path=job["path"],
+                plaintext_sha256=observed_digest,
+                matched_archive_version_id=version_id if matches_snapshot else None,
+            )
+            if matches_snapshot:
+                connection.execute("DELETE FROM protection_pending WHERE vault_file_id=%s",
+                                   (job["vault_file_id"],))
+        if not _set_job_in_transaction(
+            connection, job['id'], 'uploading', message_key='job.purging_previous_snapshot',
+        ):
+            raise JobLeaseLost('Upload cleanup transition claim was lost')
 
-    persist_verification()
-    set_job(job["id"], "uploading", message_key="job.purging_previous_snapshot")
-    ensure_job_active(job["id"], "Upload claim was lost")
+    _upload_catalog_unit(job, persist_verification)
+    # Cleanup starts with its own fresh source + live-claim read, before any
+    # provider observation. Do not insert another standalone lease read here.
     inventory_job_id = purge_current_snapshot_superseded(
         job,
         keep_version_id=str(version_id),
