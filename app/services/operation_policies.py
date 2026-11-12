@@ -145,13 +145,13 @@ def set_policy(
         """
         UPDATE vaults SET name=name
         WHERE id=%s
-        RETURNING id, decommission_state
+        RETURNING id, lifecycle
         """,
         (vault_id,),
     ).fetchone()
     if not locked:
         raise LookupError("vault_not_found")
-    if str(locked.get("decommission_state") or "active") != "active":
+    if locked["lifecycle"] != "active":
         raise LookupError("vault_quiesced")
     validate_policy_globs(policy, stored=get_policy(connection, vault_id))
     include_globs = _normalize_globs(policy.include_globs)
@@ -328,59 +328,50 @@ def queue_auto_uploads(
         return 0
     current = now or datetime.now(timezone.utc)
     vault = connection.execute(
-        "SELECT decommission_state FROM vaults WHERE id=%s",
-        (vault_id,),
+        "SELECT lifecycle FROM vaults WHERE id=%s", (vault_id,),
     ).fetchone()
-    if vault is None or str(vault["decommission_state"] or "active") != "active":
+    if vault is None or vault["lifecycle"] != "active":
         return 0
     catalog = ArchiveCatalog(connection)
+    # One row per File (#587): its Local Copy and its matched Archive Version.
+    # A purge in progress is an active Job of the File, so it is excluded too.
     rows = connection.execute(
         """
-        SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns,
-               COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
-               lc.plaintext_sha256, lc.matched_archive_version_id,
+        SELECT f.id AS file_id, f.path, f.local_size AS size, f.local_mtime_ns AS mtime_ns,
+               COALESCE(f.local_content_observed_at, f.local_observed_at) AS content_observed_at,
+               f.local_sha256 AS plaintext_sha256, f.matched_version_id AS matched_archive_version_id,
                av.integrity AS matched_integrity,
                av.availability AS matched_availability,
                av.plaintext_sha256 AS matched_sha256
-        FROM vault_files vf
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        JOIN local_copies lc ON lc.vault_file_id=vf.id
-        LEFT JOIN archive_versions av ON av.id=lc.matched_archive_version_id
-        WHERE vf.vault_id=%s
-          AND vf.status='active'
-          AND lc.presence='present'
-          AND lc.file_type='regular'
-          AND lc.cloud_only_version_id IS NULL
-          AND (av.availability IS NULL OR av.availability <> 'purged')
+        FROM files f
+        LEFT JOIN archive_versions av ON av.id=f.matched_version_id
+        WHERE f.vault_id=%s
+          AND f.local_presence='present'
+          AND f.local_file_type='regular'
+          AND f.held_version_id IS NULL
           AND NOT (
-              lc.matched_archive_version_id IS NOT NULL
-              AND lc.plaintext_sha256 IS NOT NULL
+              f.matched_version_id IS NOT NULL
+              AND f.local_sha256 IS NOT NULL
               AND av.integrity IS NOT DISTINCT FROM 'verified'
               AND av.availability IS NOT DISTINCT FROM 'available'
-              AND av.plaintext_sha256 IS NOT DISTINCT FROM lc.plaintext_sha256
+              AND av.plaintext_sha256 IS NOT DISTINCT FROM f.local_sha256
           )
           AND NOT EXISTS (
-              SELECT 1 FROM jobs active_job WHERE active_job.vault_file_id=vf.id
+              SELECT 1 FROM jobs active_job WHERE active_job.file_id=f.id
                 AND active_job.status NOT IN ('completed', 'failed', 'cancelled')
           )
           AND (
               (%s AND (SELECT latest.status FROM jobs latest
-                       WHERE latest.vault_file_id=vf.id AND latest.action='upload'
+                       WHERE latest.file_id=f.id AND latest.action='upload'
                        ORDER BY latest.id DESC LIMIT 1)='failed')
               OR (NOT %s AND NOT EXISTS (
-                  SELECT 1 FROM jobs stopped WHERE stopped.vault_file_id=vf.id
+                  SELECT 1 FROM jobs stopped WHERE stopped.file_id=f.id
                     AND stopped.action='upload' AND stopped.origin='automatic'
                     AND stopped.status IN ('failed', 'cancelled')
-                    AND stopped.requested_at >= COALESCE(lc.content_observed_at, lc.observed_at)
+                    AND stopped.requested_at >= COALESCE(f.local_content_observed_at, f.local_observed_at)
               ))
           )
-          AND NOT EXISTS (
-              SELECT 1 FROM cloud_deletion_items pending_delete
-              WHERE pending_delete.vault_file_id=vf.id
-                AND pending_delete.status='pending'
-          )
-        ORDER BY lower(fp.path)
+        ORDER BY lower(f.path)
         """,
         (vault_id, retry_failed_only, retry_failed_only),
     ).fetchall()
@@ -391,8 +382,8 @@ def queue_auto_uploads(
         if not auto_upload_path_is_included(path, policy):
             continue
         # Already protected only when the linked Archive Version is still
-        # verified, available, and digest-matching. Missing/purged/mismatched
-        # copies must not be treated as uploaded.
+        # verified, available, and digest-matching. Missing/mismatched copies
+        # must not be treated as uploaded.
         if (
             row["matched_archive_version_id"]
             and row["plaintext_sha256"]
@@ -400,8 +391,6 @@ def queue_auto_uploads(
             and row["matched_availability"] == "available"
             and row["matched_sha256"] == row["plaintext_sha256"]
         ):
-            continue
-        if row["matched_availability"] == "purged":
             continue
         try:
             local_path = safe_local_path(source_root, path)
@@ -418,7 +407,8 @@ def queue_auto_uploads(
             mtime_ns=int(stat_result.st_mtime_ns),
             now=current,
             stability_seconds=policy.stability_seconds,
-            content_observed_at=row["content_observed_at"],
+            content_observed_at=(row["content_observed_at"].isoformat()
+                                 if row["content_observed_at"] else None),
         ):
             continue
         job_ids, _total, _eligible = catalog.queue_jobs(

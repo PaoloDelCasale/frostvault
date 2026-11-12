@@ -34,9 +34,13 @@ Archive Version and Job tables and add their own:
 - ``notifications``, ``notification_deliveries``: the Owner's inbox and
   problems, deduplicated by a unique ``dedupe_key``, plus optional email
   deliveries (#586).
-- ``upload_snapshots``, ``upload_snapshot_jobs``, ``upload_attempts``,
-  ``upload_receipts``, ``upload_multiparts``: upload proofs, the snapshot and
-  its target stored once, attempts and receipts independent of the Job (#588).
+- ``upload_snapshots``, ``upload_attempts``, ``upload_receipts``,
+  ``upload_multiparts``: upload proofs, the snapshot and its target stored
+  once, attempts and receipts independent of the Job (#588); a Job reaches its
+  snapshot through ``job_uploads.snapshot_id`` (#590).
+- ``vault_operation_policies``: per-Vault automation policy;
+  ``bulk_upload_admissions`` / ``bulk_upload_exclusions``: durable folder
+  upload admission with a path cursor (#590).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -259,6 +263,76 @@ CREATE TABLE files (
     CONSTRAINT files_replacement_ck CHECK (replacing_version_id <> current_version_id)
 );
 
+-- Per-Vault automation policy (#590). A missing row means the defaults:
+-- automatic upload, a five-minute stability window, local release off and the
+-- installation's verification mode. suspended_at is the start of one
+-- continuous suspension of automatic upload.
+CREATE TABLE vault_operation_policies (
+    vault_id bigint PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,
+    auto_upload boolean NOT NULL DEFAULT true,
+    local_release_after_days integer,
+    stability_seconds integer NOT NULL DEFAULT 300,
+    include_globs_json text NOT NULL DEFAULT '[]',
+    exclude_globs_json text NOT NULL DEFAULT '[]',
+    upload_verification text COLLATE "C",
+    suspended_at timestamptz,
+    CONSTRAINT vault_operation_policies_release_ck CHECK (
+        local_release_after_days IN (90, 180, 365, 730)
+    ),
+    CONSTRAINT vault_operation_policies_stability_ck CHECK (stability_seconds >= 0),
+    CONSTRAINT vault_operation_policies_verification_ck CHECK (
+        upload_verification IN ('s3_checksum', 'read_back')
+    ),
+    CONSTRAINT vault_operation_policies_suspension_ck CHECK (
+        NOT auto_upload OR suspended_at IS NULL
+    )
+);
+
+-- Durable production of a manual folder upload (#590): not a transfer Job.
+-- Each bounded unit admits the next files by id after cursor, among the files
+-- that existed when the request was accepted (created_at <= requested_at),
+-- then commits the cursor and its Jobs together. group_id is the Job group.
+CREATE TABLE bulk_upload_admissions (
+    group_id uuid PRIMARY KEY,
+    vault_id bigint NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+    requested_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    last_attempted_at timestamptz,
+    path text COLLATE "C" NOT NULL,
+    origin text COLLATE "C" NOT NULL DEFAULT 'manual',
+    verification_mode text COLLATE "C" NOT NULL,
+    vault_identity_json text NOT NULL,
+    cursor uuid,
+    selected_count bigint NOT NULL DEFAULT 0,
+    processed_count bigint NOT NULL DEFAULT 0,
+    admitted_count bigint NOT NULL DEFAULT 0,
+    total_bytes bigint NOT NULL DEFAULT 0,
+    status text COLLATE "C" NOT NULL,
+    reason text COLLATE "C",
+    CONSTRAINT bulk_upload_admissions_origin_ck CHECK (origin IN ('manual', 'automatic')),
+    CONSTRAINT bulk_upload_admissions_mode_ck CHECK (
+        verification_mode IN ('s3_checksum', 'read_back')
+    ),
+    CONSTRAINT bulk_upload_admissions_status_ck CHECK (
+        status IN ('pending', 'completed', 'cancelled', 'invalidated')
+    ),
+    CONSTRAINT bulk_upload_admissions_counts_ck CHECK (
+        processed_count BETWEEN 0 AND selected_count
+        AND admitted_count >= 0 AND total_bytes >= 0
+    )
+);
+
+CREATE INDEX bulk_upload_admissions_pending_idx
+    ON bulk_upload_admissions (vault_id, requested_at, group_id)
+    WHERE status = 'pending';
+
+-- Subtrees cancelled from a pending admission before the cursor reached them.
+CREATE TABLE bulk_upload_exclusions (
+    group_id uuid NOT NULL REFERENCES bulk_upload_admissions(group_id) ON DELETE CASCADE,
+    path text COLLATE "C" NOT NULL,
+    CONSTRAINT bulk_upload_exclusions_pkey PRIMARY KEY (group_id, path)
+);
+
 -- Unique, unambiguous rename matches look files up by digest.
 CREATE INDEX files_rename_digest_idx ON files (vault_id, local_sha256)
     WHERE local_sha256 IS NOT NULL;
@@ -298,7 +372,9 @@ CREATE TRIGGER file_path_history_immutable
 -- progress, or superseded with open cleanup: no version numbering, no purged
 -- history. The row is deleted with its completed cleanup proof. Its cloud
 -- identity (file, key, provider VersionId, producing upload attempt) never
--- changes once known. An uploaded version reaches its expected proof through
+-- changes once known. verification_method / _fallback / _egress_bytes are the
+-- evidence of how the digest was proven (S3 checksum, or a read-back GET of
+-- the exact VersionId, possibly as fallback), recorded before the read. An uploaded version reaches its expected proof through
 -- upload_attempt_id (#588); plaintext_sha256 is the digest proven by
 -- verification (or the mismatching one), never a copy of the expectation.
 CREATE TABLE archive_versions (
@@ -313,6 +389,9 @@ CREATE TABLE archive_versions (
     availability text COLLATE "C" NOT NULL DEFAULT 'unknown',
     availability_checked_at timestamptz,
     verified_at timestamptz,
+    verification_method text COLLATE "C",
+    verification_fallback text COLLATE "C",
+    verification_egress_bytes bigint,
     upload_attempt_id uuid,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT archive_versions_file_scope_uq UNIQUE (id, file_id),
@@ -327,6 +406,18 @@ CREATE TABLE archive_versions (
     ),
     CONSTRAINT archive_versions_availability_ck CHECK (
         availability IN ('unknown', 'available', 'missing')
+    ),
+    CONSTRAINT archive_versions_verification_method_ck CHECK (
+        verification_method IN ('s3_checksum', 'read_back')
+    ),
+    CONSTRAINT archive_versions_verification_fallback_ck CHECK (
+        verification_fallback IS NULL OR (
+            verification_fallback IN ('checksum_missing', 'checksum_api_unsupported')
+            AND verification_method = 'read_back'
+        )
+    ),
+    CONSTRAINT archive_versions_verification_egress_ck CHECK (
+        verification_egress_bytes >= 0
     ),
     CONSTRAINT archive_versions_verified_ck CHECK (
         integrity <> 'verified' OR (
@@ -580,11 +671,18 @@ CREATE TABLE job_leases (
 
 -- Per-action details, one row per Job of that action at most; the composite
 -- key pins the detail to the action of its Job.
+-- job_uploads.snapshot_id is the Upload Snapshot the Job uploads or reconciles
+-- (#590, the former upload_snapshot_jobs link): set once at admission (or when
+-- a Job adopts an outstanding snapshot), cleared only when a stale snapshot is
+-- closed before any send. Deleting the Job (retention) removes only this link;
+-- the proofs stay. reconcile_only Jobs never send: they only settle the
+-- outstanding attempt they adopted.
 CREATE TABLE job_uploads (
     job_id bigint PRIMARY KEY,
     action text COLLATE "C" NOT NULL DEFAULT 'upload',
     verification_mode text COLLATE "C" NOT NULL,
     reconcile_only boolean NOT NULL DEFAULT false,
+    snapshot_id uuid,
     CONSTRAINT job_uploads_job_fk FOREIGN KEY (job_id, action)
         REFERENCES jobs (id, action) ON DELETE CASCADE,
     CONSTRAINT job_uploads_action_ck CHECK (action = 'upload'),
@@ -946,15 +1044,12 @@ CREATE TABLE upload_snapshots (
 CREATE UNIQUE INDEX upload_snapshots_open_file_uq ON upload_snapshots (file_id)
     WHERE closed_at IS NULL;
 
--- The upload detail of a Job: the snapshot it uploads or reconciles. Deleting
--- the Job (retention) removes only this link; the proofs stay.
-CREATE TABLE upload_snapshot_jobs (
-    job_id bigint PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-    snapshot_id uuid NOT NULL REFERENCES upload_snapshots(id) ON DELETE RESTRICT,
-    reconcile_only boolean NOT NULL DEFAULT false
-);
+ALTER TABLE job_uploads
+    ADD CONSTRAINT job_uploads_snapshot_fk FOREIGN KEY (snapshot_id)
+        REFERENCES upload_snapshots(id) ON DELETE RESTRICT;
 
-CREATE INDEX upload_snapshot_jobs_snapshot_idx ON upload_snapshot_jobs (snapshot_id);
+CREATE INDEX job_uploads_snapshot_idx ON job_uploads (snapshot_id)
+    WHERE snapshot_id IS NOT NULL;
 
 -- One send attempt of a snapshot: its own opaque token (S3 metadata) and the
 -- namespace inventory pinned just before the send. send_started_at is
@@ -1119,10 +1214,10 @@ CREATE TRIGGER upload_snapshots_guard
     FOR EACH ROW EXECUTE FUNCTION upload_snapshots_guard();
 
 -- A Job uploads or reconciles only a snapshot of its own Vault File.
-CREATE FUNCTION upload_snapshot_jobs_scope() RETURNS trigger
+CREATE FUNCTION job_uploads_snapshot_scope() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF NOT EXISTS (
+    IF NEW.snapshot_id IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM jobs j JOIN upload_snapshots s ON s.id = NEW.snapshot_id
         WHERE j.id = NEW.job_id AND j.action = 'upload'
           AND j.file_id = s.file_id AND j.vault_id = s.vault_id
@@ -1134,9 +1229,9 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER upload_snapshot_jobs_scope
-    BEFORE INSERT OR UPDATE ON upload_snapshot_jobs
-    FOR EACH ROW EXECUTE FUNCTION upload_snapshot_jobs_scope();
+CREATE TRIGGER job_uploads_snapshot_scope
+    BEFORE INSERT OR UPDATE OF snapshot_id ON job_uploads
+    FOR EACH ROW EXECUTE FUNCTION job_uploads_snapshot_scope();
 
 -- Attempts: opened only on an open snapshot, by a Job of the same file;
 -- identity immutable, send-start and settlement written once, the Job link

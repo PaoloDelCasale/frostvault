@@ -402,7 +402,7 @@ def _attempt(row: dict[str, Any]) -> UploadAttempt:
 
 def _bound(connection: Any, job_id: int) -> tuple[AdmittedSnapshot, bool] | None:
     row = connection.execute(
-        f"SELECT {_SNAPSHOT_COLUMNS}, b.reconcile_only FROM upload_snapshot_jobs b "
+        f"SELECT {_SNAPSHOT_COLUMNS}, b.reconcile_only FROM job_uploads b "
         f"JOIN {_SNAPSHOT_FROM} ON s.id=b.snapshot_id WHERE b.job_id=%s", (job_id,)).fetchone()
     return (_admitted(row), row["reconcile_only"]) if row else None
 
@@ -421,7 +421,7 @@ def load_for_job(connection: Any, job_id: int) -> UploadAttempt | None:
     snapshot needs a new attempt and token.
     """
     row = connection.execute(
-        f"SELECT {_ATTEMPT_COLUMNS} FROM upload_snapshot_jobs b JOIN {_ATTEMPT_FROM} "
+        f"SELECT {_ATTEMPT_COLUMNS} FROM job_uploads b JOIN {_ATTEMPT_FROM} "
         "ON a.snapshot_id=b.snapshot_id WHERE b.job_id=%s "
         "AND (a.settled_at IS NULL OR a.outcome='landed')", (job_id,)).fetchone()
     return _attempt(row) if row else None
@@ -512,8 +512,8 @@ def _close_snapshot(connection: Any, snapshot_id: Any, timestamp: Any, *, forget
     connection.execute("UPDATE upload_snapshots SET closed_at=%s WHERE id=%s AND closed_at IS NULL",
                        (timestamp, snapshot_id))
     if forget:
-        connection.execute("DELETE FROM upload_snapshot_jobs WHERE snapshot_id=%s AND NOT reconcile_only",
-                           (snapshot_id,))
+        connection.execute("UPDATE job_uploads SET snapshot_id=NULL "
+                           "WHERE snapshot_id=%s AND NOT reconcile_only", (snapshot_id,))
 
 
 def _admit(connection: Any, job: dict[str, Any], pinned: dict[str, Any], snapshot: UploadSnapshot,
@@ -531,8 +531,7 @@ def _admit(connection: Any, job: dict[str, Any], pinned: dict[str, Any], snapsho
          pinned["source_root"], pinned["root_identity"], pinned["provider"], local_generation,
          record["size"], record["mtime_ns"], record["plaintext_sha256"], record["part_size"],
          record["part_sha256"], requested, timestamp)).fetchone()
-    connection.execute("INSERT INTO upload_snapshot_jobs(job_id, snapshot_id) VALUES (%s,%s)",
-                       (job["id"], row["id"]))
+    _link(connection, job["id"], row["id"], requested)
     return AdmittedSnapshot(str(row["id"]), pinned["vault_id"], pinned["file_id"], dict(pinned),
                             snapshot, requested, local_generation, False)
 
@@ -793,7 +792,7 @@ def close_unsent_for_job(connection: Any, job: dict[str, Any], timestamp: Any) -
                                OR a.outcome='landed')) AS committed,
                   EXISTS (SELECT 1 FROM upload_attempts a JOIN upload_receipts r
                           ON r.attempt_id=a.id WHERE a.snapshot_id=s.id) AS received
-           FROM upload_snapshot_jobs b JOIN upload_snapshots s ON s.id=b.snapshot_id
+           FROM job_uploads b JOIN upload_snapshots s ON s.id=b.snapshot_id
            WHERE b.job_id=%s FOR UPDATE OF b""", (job["id"],)).fetchone()
     if not row or row["reconcile_only"] or row["committed"] or row["received"]:
         return False
@@ -802,24 +801,48 @@ def close_unsent_for_job(connection: Any, job: dict[str, Any], timestamp: Any) -
     if row["closed_at"] is None:
         _close_snapshot(connection, row["snapshot_id"], timestamp, forget=True)
     else:
-        connection.execute("DELETE FROM upload_snapshot_jobs WHERE job_id=%s", (job["id"],))
+        connection.execute("UPDATE job_uploads SET snapshot_id=NULL WHERE job_id=%s", (job["id"],))
     return True
 
 
-def bind_for_resume(connection: Any, job_id: int, attempt: UploadAttempt) -> None:
-    """Bind a reconcile-only Job to the snapshot of an uncertain attempt.
+def _link(connection: Any, job_id: int, snapshot_id: Any, mode: str, *,
+          reconcile_only: bool | None = None) -> None:
+    """Point the Job's upload detail at a snapshot (the former binding row).
 
-    A cancelled original or bound Job is never resurrected.
+    A Job admitted by queue_jobs already has its detail; a Job created
+    elsewhere gets one in the snapshot's mode. A link is set once: a Job never
+    switches to another snapshot while one is linked.
+    """
+    linked = connection.execute(
+        """INSERT INTO job_uploads(job_id, verification_mode, reconcile_only, snapshot_id)
+           VALUES (%s, %s, COALESCE(%s, false), %s)
+           ON CONFLICT (job_id) DO UPDATE SET snapshot_id=EXCLUDED.snapshot_id,
+               reconcile_only=COALESCE(%s, job_uploads.reconcile_only)
+           WHERE job_uploads.snapshot_id IS NULL OR job_uploads.snapshot_id=EXCLUDED.snapshot_id
+           RETURNING job_id""",
+        (job_id, mode, reconcile_only, snapshot_id, reconcile_only)).fetchone()
+    if linked is None:
+        raise UploadBlocked("identity_changed")
+
+
+def bind_for_resume(connection: Any, job_id: int, attempt: UploadAttempt, *,
+                    reconcile_only: bool | None = True) -> None:
+    """Bind a Job to the snapshot of an uncertain attempt.
+
+    A resume Job is reconcile-only (the default); the upload worker binds an
+    ordinary Job that finds the file's outstanding attempt with
+    ``reconcile_only=None``, keeping the Job's own flag, so it may send the
+    same snapshot again (a new attempt) after a proven no-write. A cancelled
+    original or bound Job is never resurrected.
     """
     cancelled = connection.execute(
         """SELECT 1 FROM jobs j WHERE j.status='cancelled' AND (j.id=%s OR j.id IN (
-               SELECT b.job_id FROM upload_snapshot_jobs b WHERE b.snapshot_id=%s)) LIMIT 1""",
+               SELECT b.job_id FROM job_uploads b WHERE b.snapshot_id=%s)) LIMIT 1""",
         (attempt.job_id, attempt.admitted.id)).fetchone()
     if cancelled:
         raise UploadBlocked("identity_changed")
-    connection.execute("INSERT INTO upload_snapshot_jobs(job_id, snapshot_id, reconcile_only) "
-                       "VALUES (%s,%s,TRUE) ON CONFLICT (job_id) DO NOTHING",
-                       (job_id, attempt.admitted.id))
+    _link(connection, job_id, attempt.admitted.id, attempt.admitted.verification,
+          reconcile_only=reconcile_only)
 
 
 def proven_absent(connection: Any, attempt_id: str | None) -> bool:

@@ -93,7 +93,7 @@ class DatabaseRetryTests(unittest.TestCase):
         ), patch.object(storage.notification_service,'set_problem',side_effect=[DeadlockDetected(),None]) as notify, patch(
             'app.services.database_retry.time.sleep'
         ):
-            storage._record_upload_reconciliation_block({'vault_file_id':'file','vault_id':1,'path':'a'},'inventory_changed')
+            storage._record_upload_reconciliation_block({'file_id':'file','vault_id':1,'path':'a'},'inventory_changed')
         self.assertEqual(notify.call_count,2)
         self.assertEqual(connection.close.call_count,3)
 
