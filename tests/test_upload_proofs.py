@@ -64,7 +64,7 @@ class _Fixture(unittest.TestCase):
         return snapshot
 
     def new_job(self, *, file_id: str | None = None, vault_id: int = 2,
-                status: str = "running") -> dict:
+                status: str = "uploading") -> dict:
         file_id = file_id or self.file_id
         row = self.connection.execute(
             "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
@@ -212,16 +212,21 @@ class SnapshotOnceTests(_Fixture):
         self.connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=2")
         with self.blocked("vault_suspended"):
             self.pin()
-        other = self.new_job(status="queued")
-        with self.blocked("active_operation"):
-            self.pin()
+        # One active operation per File is the schema's (#589): a second
+        # active Job on the File is refused before it could race the pin.
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            self.new_job(status="queued")
+        self.connection.rollback()
         self.connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (self.job["id"],))
         with self.blocked("owner_cancelled"):
             self.pin()
-        self.connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (self.job["id"],))
+        # A terminal Job is final: the resolved one is another Job, admitted
+        # once the first is closed again (the block rolled the cancel back).
+        self.connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (self.job["id"],))
+        done = self.new_job(status="uploading")
+        self.connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (done["id"],))
         with self.blocked("already_resolved"):
-            self.pin()
-        self.assertIsNotNone(other)
+            self.pin(done)
 
     def test_a_changed_content_closes_the_unsent_snapshot_never_rewrites_it(self) -> None:
         first = self.prepare()
@@ -474,7 +479,8 @@ class IntegrityTests(_Fixture):
     def test_proofs_are_immutable(self) -> None:
         attempt = self.started()
         version = self.land(attempt)
-        other = self.new_job(status="queued")
+        # Another Job of the File; one active operation per File, so a closed one.
+        other = self.new_job(status="cancelled")
         statements = [
             ("UPDATE upload_snapshots SET plaintext_sha256=%s WHERE id=%s", (bytes(32), attempt.admitted.id)),
             ("UPDATE upload_snapshots SET path='b.txt' WHERE id=%s", (attempt.admitted.id,)),
