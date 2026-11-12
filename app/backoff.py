@@ -19,6 +19,9 @@ DECAY_SECONDS = 60 * 60
 # its counters persist independently from sign-in counters.
 _REAUTH_IP_KEY_PREFIX = "reauth:ip:"
 _REAUTH_ACCOUNT_KEY_PREFIX = "reauth:account:"
+# The single Owner is the only account: every Emergency Password sign-in
+# attempt counts against it, whatever username a client submits.
+OWNER_ACCOUNT_KEY = "owner"
 
 
 def reauth_ip_key(client_ip: str) -> str:
@@ -26,9 +29,9 @@ def reauth_ip_key(client_ip: str) -> str:
     return f"{_REAUTH_IP_KEY_PREFIX}{client_ip}"
 
 
-def reauth_account_key(user_id: int) -> str:
-    """Return the Local Reauthentication-only account counter key."""
-    return f"{_REAUTH_ACCOUNT_KEY_PREFIX}{user_id}"
+def reauth_account_key() -> str:
+    """Return the Owner's Local Reauthentication-only account counter key."""
+    return f"{_REAUTH_ACCOUNT_KEY_PREFIX}owner"
 
 
 class BackoffError(Exception):
@@ -43,10 +46,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse(value: str) -> datetime:
-    return datetime.fromisoformat(value)
-
-
 def _load(connection: Any, scope: str, key: str) -> dict[str, Any] | None:
     return connection.execute(
         "SELECT * FROM auth_backoff WHERE scope=%s AND key=%s",
@@ -55,7 +54,7 @@ def _load(connection: Any, scope: str, key: str) -> dict[str, Any] | None:
 
 
 def _is_decayed(row: dict[str, Any], now: datetime) -> bool:
-    return now - _parse(row["updated_at"]) >= timedelta(seconds=DECAY_SECONDS)
+    return now - row["updated_at"] >= timedelta(seconds=DECAY_SECONDS)
 
 
 def _backoff_seconds(failure_count: int) -> int:
@@ -68,11 +67,11 @@ def _backoff_seconds(failure_count: int) -> int:
 def _next_allowed(row: dict[str, Any]) -> datetime | None:
     """Read a stored deadline, or derive it after an interrupted write."""
     if row["next_allowed_at"]:
-        return _parse(row["next_allowed_at"])
+        return row["next_allowed_at"]
     delay = _backoff_seconds(int(row["failure_count"]))
     if not delay:
         return None
-    return _parse(row["updated_at"]) + timedelta(seconds=delay)
+    return row["updated_at"] + timedelta(seconds=delay)
 
 
 def guard(connection: Any, *, scope: str, key: str) -> None:
@@ -90,7 +89,7 @@ def guard(connection: Any, *, scope: str, key: str) -> None:
 
 def record_failure(
     connection: Any, *, scope: str, key: str
-) -> tuple[int, str | None]:
+) -> tuple[int, datetime | None]:
     """Atomically count one failure and return its committed count and deadline.
 
     The ``ON CONFLICT ... DO UPDATE`` is a write on the conflicting row, so
@@ -99,12 +98,10 @@ def record_failure(
     Python-side read.
     """
     now = _now()
-    now_iso = now.isoformat()
-    decay_cutoff = (now - timedelta(seconds=DECAY_SECONDS)).isoformat()
-    # The stored deadline values are ISO timestamps represented as text.
+    decay_cutoff = now - timedelta(seconds=DECAY_SECONDS)
     # The final value is the capped deadline for every count beyond this range.
     deadline_values = tuple(
-        (now + timedelta(seconds=_backoff_seconds(count))).isoformat()
+        now + timedelta(seconds=_backoff_seconds(count))
         for count in range(THRESHOLD, THRESHOLD + 7)
     )
     row = connection.execute(
@@ -135,7 +132,7 @@ def record_failure(
         (
             scope,
             key,
-            now_iso,
+            now,
             decay_cutoff,
             decay_cutoff,
             THRESHOLD - 1,

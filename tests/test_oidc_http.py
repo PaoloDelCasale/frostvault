@@ -16,6 +16,7 @@ from app import main, oidc
 from app.config import settings
 
 from tests.oidc_fake import FakeOidcProvider
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.proxy_stack import uvicorn_proxy_app
 from tests.test_database import run_alembic
 
@@ -31,19 +32,14 @@ class OidcHttpTests(unittest.TestCase):
         self.provider = FakeOidcProvider()
         self.subject = "subject-123"
         with PostgresConnection(str(database_path)) as connection:
-            self.user_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('alice', 'Alice', 'hash')
-                RETURNING id
-                """
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Alice")
             connection.execute(
                 """
-                INSERT INTO user_identities(user_id, issuer, subject, created_at)
-                VALUES (%s, %s, %s, '2026-07-21T00:00:00+00:00')
+                UPDATE owner SET oidc_issuer=%s, oidc_subject=%s,
+                    oidc_bound_at='2026-07-21T00:00:00+00:00'
+                WHERE id=1
                 """,
-                (self.user_id, self.provider.issuer, self.subject),
+                (self.provider.issuer, self.subject),
             )
 
         self.test_settings = replace(
@@ -91,14 +87,7 @@ class OidcHttpTests(unittest.TestCase):
 
     def _add_vault(self) -> int:
         with PostgresConnection(str(self.database_path)) as connection:
-            vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('oidc-cache-vault', 'OIDC Cache Vault', '/source', 'bucket',
-                          'oidc-cache')
-                RETURNING id
-                """
-            ).fetchone()["id"]
+            vault_id = insert_vault(connection, name="OIDC Cache Vault")["id"]
         return vault_id
 
     def test_login_endpoint_redirects_to_provider_and_persists_state(self) -> None:
@@ -194,7 +183,8 @@ class OidcHttpTests(unittest.TestCase):
 
         me = self.client.get("/api/me")
         self.assertEqual(me.status_code, 200, me.text)
-        self.assertEqual(me.json()["username"], "alice")
+        self.assertEqual(me.json()["display_name"], "Alice")
+        self.assertEqual(me.json()["auth_method"], "oidc")
 
     def _complete_login(self, subject: str):
         self._use_oidc_client()
@@ -209,30 +199,31 @@ class OidcHttpTests(unittest.TestCase):
 
     def test_first_login_binds_the_owner_identity(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("DELETE FROM user_identities")
+            connection.execute(
+                "UPDATE owner SET oidc_issuer=NULL, oidc_subject=NULL, oidc_bound_at=NULL"
+            )
 
         first = self._complete_login("first-subject")
         self.assertEqual(first.status_code, 303, first.text)
-        self.assertEqual(self.client.get("/api/me").json()["username"], "alice")
+        self.assertEqual(self.client.get("/api/me").json()["auth_method"], "oidc")
         with PostgresConnection(str(self.database_path)) as connection:
-            identities = connection.execute(
-                "SELECT user_id, issuer, subject FROM user_identities"
+            owner = connection.execute(
+                "SELECT oidc_issuer, oidc_subject FROM owner"
             ).fetchall()
         self.assertEqual(
-            identities,
-            [
-                {
-                    "user_id": self.user_id,
-                    "issuer": self.provider.issuer,
-                    "subject": "first-subject",
-                }
-            ],
+            owner,
+            [{"oidc_issuer": self.provider.issuer, "oidc_subject": "first-subject"}],
         )
 
         self.client.cookies.clear()
         other = self._complete_login("second-subject")
         self.assertEqual(other.status_code, 403, other.text)
         self.assertIsNone(self.client.cookies.get(self.cookie_name))
+        with PostgresConnection(str(self.database_path)) as connection:
+            rejected = connection.execute(
+                "SELECT actor FROM audit_events WHERE event='oidc_identity_rejected'"
+            ).fetchall()
+        self.assertEqual(rejected, [{"actor": "system"}])
 
     def test_callback_refuses_another_subject_of_the_bound_issuer(self) -> None:
         self._use_oidc_client()
@@ -283,7 +274,7 @@ class OidcHttpTests(unittest.TestCase):
         )
         self.assertEqual(callback.status_code, 303)
 
-    def _reauth_at(self) -> str | None:
+    def _reauth_at(self) -> datetime | None:
         with PostgresConnection(str(self.database_path)) as connection:
             return connection.execute(
                 "SELECT reauth_at FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -316,7 +307,7 @@ class OidcHttpTests(unittest.TestCase):
 
         self.assertEqual(callback.status_code, 303)
         self.assertGreater(
-            datetime.fromisoformat(self._reauth_at()),
+            self._reauth_at(),
             datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
 
@@ -328,7 +319,7 @@ class OidcHttpTests(unittest.TestCase):
         old_token = self.client.cookies.get(self.cookie_name)
         self.assertNotIn("offline_cache_generation", before.json())
 
-        allowed = self.client.get("/api/files")
+        allowed = self.client.get("/api/me")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
         self._use_oidc_client()
@@ -348,12 +339,12 @@ class OidcHttpTests(unittest.TestCase):
         after = self.client.get("/api/me")
         self.assertEqual(after.status_code, 200, after.text)
         self.assertNotIn("offline_cache_generation", after.json())
-        allowed = self.client.get("/api/files")
+        allowed = self.client.get("/api/me")
         self.assertEqual(allowed.status_code, 200, allowed.text)
         self.assertEqual(allowed.headers["cache-control"], "no-store")
 
         stale = self.client.get(
-            "/api/files", headers={"Cookie": f"{self.cookie_name}={old_token}"},
+            "/api/me", headers={"Cookie": f"{self.cookie_name}={old_token}"},
         )
         self.assertEqual(stale.status_code, 401, stale.text)
 
@@ -374,7 +365,7 @@ class OidcHttpTests(unittest.TestCase):
 
         me_after = self.client.get("/api/me")
         self.assertEqual(me_after.status_code, 200, me_after.text)
-        self.assertEqual(me_after.json()["username"], "alice")
+        self.assertEqual(me_after.json()["auth_method"], "oidc")
         self.assertEqual(self.client.cookies.get(self.cookie_name), owner_cookie)
 
 if __name__ == "__main__":

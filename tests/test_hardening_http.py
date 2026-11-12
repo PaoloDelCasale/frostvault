@@ -15,8 +15,8 @@ from app.config import settings
 
 from app.main import app
 from app.main import _safe_return_to
-from app.security import hash_password
 from app.sessions import is_reauth_recent
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
@@ -33,19 +33,9 @@ class HardeningHttpTestCase(unittest.TestCase):
         migrated = run_alembic(database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        self.username = "alice"
         self.password = "correct horse battery"
         with PostgresConnection(str(database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', %s)
-                """,
-                (self.username, hash_password(self.password)),
-            )
-            self.user_id = connection.execute(
-                "SELECT id FROM users WHERE username=%s", (self.username,)
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Alice", password=self.password)
 
         self.settings = replace(
             settings,
@@ -68,7 +58,7 @@ class HardeningHttpTestCase(unittest.TestCase):
     def _login(self) -> None:
         response = self.client.post(
             "/api/login",
-            json={"username": self.username, "password": self.password},
+            json={"password": self.password},
         )
         self.assertEqual(response.status_code, 200, response.text)
 
@@ -161,19 +151,14 @@ class ReauthTests(HardeningHttpTestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s",
-                ("2000-01-01T00:00:00+00:00",),
+                (datetime(2000, 1, 1, tzinfo=timezone.utc),),
             )
 
     def _delete_from_cloud(self, csrf: str):
         """«Elimina dal cloud» is one of the two re-authenticated actions."""
         with PostgresConnection(str(self.database_path)) as connection:
             if not connection.execute("SELECT id FROM vaults").fetchone():
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs/')
-                    """
-                )
+                insert_vault(connection)
         return self.client.post(
             "/api/cloud-purge",
             headers={"X-CSRF-Token": csrf},
@@ -231,11 +216,11 @@ class ReauthWindowTests(unittest.TestCase):
         self.now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_reauth_within_window_is_recent(self) -> None:
-        recent = (self.now - timedelta(seconds=300)).isoformat()
+        recent = self.now - timedelta(seconds=300)
         self.assertTrue(is_reauth_recent(recent, now=self.now, window_seconds=600))
 
     def test_reauth_older_than_window_is_not_recent(self) -> None:
-        old = (self.now - timedelta(seconds=1200)).isoformat()
+        old = self.now - timedelta(seconds=1200)
         self.assertFalse(is_reauth_recent(old, now=self.now, window_seconds=600))
 
     def test_missing_reauth_is_not_recent(self) -> None:

@@ -1,18 +1,24 @@
 """Append-only log for sensitive or destructive actions (no browsing API).
 
 Framework-agnostic persistence for security and destructive action records.
-Every record is immutable: there is no update or delete API. Sensitive
-payload keys are redacted before the detail JSON is stored and before the
-structured log line is emitted.
+Every record is immutable: there is no update API and the database refuses
+updates; only retention deletes old rows. Sensitive payload keys are redacted
+before the detail is stored and before the structured log line is emitted.
+
+The actor is never a user id: ``owner`` (an OIDC Session), ``emergency``
+(the Emergency Password) or ``system`` (FrostVault itself).
 """
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 REDACTED = "[REDACTED]"
+
+ACTORS = frozenset({"owner", "emergency", "system"})
 
 # Field names (case-insensitive) that must never be persisted or logged in
 # cleartext. Matches issue #16 acceptance: secrets, passwords, OIDC tokens,
@@ -47,10 +53,6 @@ _SENSITIVE_KEYS = frozenset(
 _logger = logging.getLogger("app.audit")
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
 def redact_sensitive(value: Any) -> Any:
     """Recursively redact sensitive keys and leave other values intact."""
     if isinstance(value, dict):
@@ -75,22 +77,16 @@ def emit_audit_log_line(event: str, **fields: Any) -> None:
 
 
 def _row_to_event(row: dict[str, Any]) -> dict[str, Any]:
-    detail_raw = row.get("detail_json") or "{}"
-    try:
-        detail = json.loads(detail_raw)
-    except json.JSONDecodeError:
-        detail = {}
     return {
         "id": row["id"],
         "created_at": row["created_at"],
         "event": row["event"],
+        "actor": row["actor"],
         "outcome": row.get("outcome"),
-        "actor_user_id": row.get("actor_user_id"),
         "vault_id": row.get("vault_id"),
         "job_id": row.get("job_id"),
         "correlation_id": row.get("correlation_id"),
-        "visibility": row.get("visibility") or "vault",
-        "detail": detail,
+        "detail": dict(row.get("detail") or {}),
     }
 
 
@@ -98,61 +94,41 @@ def record_audit_event(
     connection: Any,
     *,
     event: str,
-    actor_user_id: int | None = None,
+    actor: str,
     vault_id: int | None = None,
     job_id: int | None = None,
     outcome: str | None = None,
     correlation_id: str | None = None,
-    visibility: str | None = None,
     emit_log: bool = True,
     **fields: Any,
 ) -> dict[str, Any]:
     """Persist one append-only audit event and optionally emit a log line.
 
-    Extra ``fields`` become the redacted detail payload. When ``visibility``
-    is omitted, vault-scoped events default to ``vault`` and events without a
-    vault default to ``admin``.
+    ``actor`` is ``owner``, ``emergency`` or ``system``. Extra ``fields``
+    become the redacted detail payload.
     """
-    if visibility is None:
-        visibility = "vault" if vault_id is not None else "admin"
-    if visibility not in {"vault", "admin", "owner"}:
-        raise ValueError(f"invalid audit visibility: {visibility}")
-
-    detail = redact_sensitive(fields)
-    created_at = now_iso()
-    detail_json = json.dumps(detail, sort_keys=True, default=str)
-
+    if actor not in ACTORS:
+        raise ValueError(f"invalid audit actor: {actor}")
+    detail = json.loads(json.dumps(redact_sensitive(fields), sort_keys=True, default=str))
     row = connection.execute(
         """
         INSERT INTO audit_events(
-            created_at, event, outcome, actor_user_id, vault_id, job_id,
-            correlation_id, visibility, detail_json
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            event, actor, outcome, vault_id, job_id, correlation_id, detail
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
-        (
-            created_at,
-            event,
-            outcome,
-            actor_user_id,
-            vault_id,
-            job_id,
-            correlation_id,
-            visibility,
-            detail_json,
-        ),
+        (event, actor, outcome, vault_id, job_id, correlation_id, Jsonb(detail)),
     ).fetchone()
     recorded = _row_to_event(row)
 
     if emit_log:
         emit_audit_log_line(
             event,
+            actor=actor,
             outcome=outcome,
-            actor_user_id=actor_user_id,
             vault_id=vault_id,
             job_id=job_id,
             correlation_id=correlation_id,
-            visibility=visibility,
             audit_event_id=recorded["id"],
             **detail,
         )

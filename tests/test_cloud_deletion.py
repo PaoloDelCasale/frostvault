@@ -65,7 +65,7 @@ class CloudDeletionTests(unittest.TestCase):
         return file_id
 
     def schedule(self, connection, **kwargs):
-        values = dict(vault_id=1, paths=["photo.jpg"], is_directory=False, actor_user_id=1,
+        values = dict(vault_id=1, paths=["photo.jpg"], is_directory=False, actor="owner",
                       requested_at=START.isoformat(), confirmation="Photos", reason="Owner deliberately deletes this file")
         values.update(kwargs)
         return deletion.schedule_cloud_purge(connection, **values)
@@ -105,7 +105,7 @@ class CloudDeletionTests(unittest.TestCase):
                 message="deleting", message_key="job.cloud_purge_deleting")
             self.assertEqual(claimed, [])
             deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=scheduled.group_id,
-                actor_user_id=1, cancelled_at=(DUE-timedelta(seconds=1)).isoformat())
+                actor="owner", cancelled_at=(DUE-timedelta(seconds=1)).isoformat())
         with self.connection() as connection:
             self.assertFalse(ArchiveCatalog(connection).claim_purge_group(lead_job_id=scheduled.job_ids[0],
                 claim_token="late", claimed_at=DUE.isoformat(), claim_expires_at=(DUE+timedelta(hours=1)).isoformat(),
@@ -228,7 +228,7 @@ class CloudDeletionTests(unittest.TestCase):
     def test_stop_keep_retains_local_and_cloud_and_releases_only_this_root(self):
         (self.source / "photo.jpg").write_bytes(b"local")
         with self.connection() as connection:
-            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+            result = protection_stop.stop_protection(connection,vault_id=1,actor="owner",
                 cloud_disposition="keep",confirmation="Photos",reason="stop")
             self.assertTrue(result["stopped"])
             self.assertTrue(result["root_released"])
@@ -238,7 +238,7 @@ class CloudDeletionTests(unittest.TestCase):
 
     def test_stop_delete_uses_same_delay_cancellation_keeps_cloud_without_resuming_protection(self):
         with self.connection() as connection:
-            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+            result = protection_stop.stop_protection(connection,vault_id=1,actor="owner",
                 cloud_disposition="delete",confirmation="Photos",reason="stop")
             self.assertTrue(result["cancellable"])
             self.assertFalse(result["root_released"])
@@ -246,7 +246,7 @@ class CloudDeletionTests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 ArchiveCatalog(connection).queue_jobs(vault_id=1,path="photo.jpg",action="upload",requested_by=1,
                     requested_at=START.isoformat(),group_id="watcher",is_directory=False)
-            result = protection_stop.cancel_deletion(connection,vault_id=1,actor_user_id=1)
+            result = protection_stop.cancel_deletion(connection,vault_id=1,actor="owner")
             self.assertTrue(result["stopped"])
             self.assertTrue(result["root_released"])
             self.assertEqual(result["cloud_disposition"], "keep")
@@ -255,7 +255,7 @@ class CloudDeletionTests(unittest.TestCase):
         (self.source / "photo.jpg").write_bytes(b"data")
         with self.connection() as connection:
             with self.assertRaises(deletion.CloudDeletionError):
-                protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+                protection_stop.stop_protection(connection,vault_id=1,actor="owner",
                     cloud_disposition="delete",confirmation="Photos",reason="stop")
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
 
@@ -281,7 +281,7 @@ class CloudDeletionTests(unittest.TestCase):
             connection.execute("UPDATE vaults SET relocation_state='scan_required'")
             with patch("app.services.source_layout.vault_local_access",
                        return_value=SimpleNamespace(local_operations_allowed=False)):
-                status = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+                status = protection_stop.stop_protection(connection, vault_id=1, actor="owner",
                     cloud_disposition="keep", confirmation="Photos", reason="Retire unavailable folder")
             self.assertTrue(status["root_released"])
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"], 0)
@@ -319,7 +319,7 @@ class CloudDeletionTests(unittest.TestCase):
             paths = connection.execute("SELECT path FROM jobs WHERE group_id=%s", (selected.group_id,)).fetchall()
             self.assertEqual([r["path"] for r in paths], ["album_1/photo.jpg"])
             deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=selected.group_id,
-                actor_user_id=1, cancelled_at=START.isoformat())
+                actor="owner", cancelled_at=START.isoformat())
             self.add_file(connection, "album_1/present.jpg")
             (self.source / "album_1").mkdir()
             (self.source / "album_1/present.jpg").write_bytes(b"local")
@@ -342,7 +342,7 @@ class CloudDeletionTests(unittest.TestCase):
 
     def test_stop_delete_completes_after_delay_then_releases_root(self):
         with self.connection() as connection:
-            result = protection_stop.stop_protection(connection, vault_id=1, actor_user_id=1,
+            result = protection_stop.stop_protection(connection, vault_id=1, actor="owner",
                 cloud_disposition="delete", confirmation="Photos", reason="stop")
             job_ids = [r["id"] for r in result["jobs"]]
             scheduled = SimpleNamespace(job_ids=job_ids)
@@ -362,4 +362,4 @@ class CloudDeletionTests(unittest.TestCase):
         with self.connection() as connection:
             with self.assertRaises(deletion.CloudDeletionError):
                 deletion.cancel_cloud_deletion(connection,vault_id=1,group_id=scheduled.group_id,
-                    actor_user_id=1,cancelled_at=DUE.isoformat())
+                    actor="owner",cancelled_at=DUE.isoformat())

@@ -80,7 +80,7 @@ class VaultReconnectTests(unittest.TestCase):
             return connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
 
     def reconnect(self, **overrides):
-        args = dict(vault_id=7, volume_alias="photos", relative_path="new", actor_user_id=1, reason="restored server")
+        args = dict(vault_id=7, volume_alias="photos", relative_path="new", actor="owner", reason="restored server")
         args.update(overrides)
         with PostgresConnection(str(self.db_path)) as connection:
             return vault_relocation.reconnect_vault_root(connection, **args)
@@ -104,7 +104,7 @@ class VaultReconnectTests(unittest.TestCase):
             self.assertEqual(result[field], before[field])
         with PostgresConnection(str(self.db_path)) as connection:
             event = connection.execute("SELECT * FROM audit_events WHERE event='vault_folder_reconnected'").fetchone()
-            self.assertEqual(json.loads(event["detail_json"])["reason"], "restored server")
+            self.assertEqual(event["detail"]["reason"], "restored server")
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"], 0)
 
     def test_new_source_volume_and_missing_old_identity_are_accepted_explicitly(self):

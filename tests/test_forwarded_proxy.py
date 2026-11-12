@@ -98,7 +98,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
         # Real begin_login generated and persisted state/PKCE, not a fake URL.
         sql, parameters = self.connection.execute.call_args.args
         self.assertIn("INSERT INTO oidc_login", sql)
-        self.assertEqual(query["state"], [parameters[1]])
+        self.assertEqual(query["state"], [parameters[0]])
         self.assertEqual(query["code_challenge_method"], ["S256"])
         return response
 
@@ -113,7 +113,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
                          "The emergency password is not accepted from this network")
         self.assertNotIn("set-cookie", response.headers)
         self.audit.assert_called_with(
-            "break_glass_denied", connection=self.connection, ip=resolved, username="owner"
+            "break_glass_denied", connection=self.connection, actor="emergency", ip=resolved
         )
         # Rejection happened before any credential or session SQL.
         self.connection.execute.assert_not_called()

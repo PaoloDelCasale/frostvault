@@ -92,6 +92,8 @@ def catalog_event_sse_frame(
 def _parse_iso(value: Any) -> datetime | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return value
     try:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
@@ -249,7 +251,6 @@ def coalesced_catchup_from_connection(
 def stream_tick_snapshot(
     *,
     session_id: str,
-    user_id: int,
     vault_id: int,
     after_revision: int,
     max_events: int = MAX_CATCHUP_EVENTS,
@@ -263,7 +264,6 @@ def stream_tick_snapshot(
     connection before sleeping or yielding.
     """
     vault_id = int(vault_id)
-    user_id = int(user_id)
     after_revision = max(0, int(after_revision))
     stamp = now or datetime.now(timezone.utc)
     statements = [0]
@@ -277,17 +277,16 @@ def stream_tick_snapshot(
                    s.idle_expires_at AS idle_expires_at,
                    s.absolute_expires_at AS absolute_expires_at,
                    s.session_version AS session_session_version,
-                   u.session_version AS user_session_version,
+                   o.session_version AS owner_session_version,
                    CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END AS vault_available
             FROM sessions s
-            JOIN users u ON u.id = s.user_id
+            JOIN owner o ON o.id = 1
             LEFT JOIN vaults v
               ON v.id = %s
-             AND v.enabled = TRUE
-             AND v.decommission_state = 'active'
-            WHERE s.id = %s AND s.user_id = %s
+             AND v.lifecycle IN ('active', 'reconnect_required')
+            WHERE s.id = %s
             """,
-            (vault_id, session_id, user_id),
+            (vault_id, session_id),
         ).fetchone()
 
         if row is None:
@@ -302,7 +301,7 @@ def stream_tick_snapshot(
                 error="session_revoked",
                 statement_count=statements[0],
             )
-        if row["session_session_version"] != row["user_session_version"]:
+        if row["session_session_version"] != row["owner_session_version"]:
             return StreamTickSnapshot(
                 ok=False,
                 error="session_version_mismatch",
@@ -384,16 +383,16 @@ def session_stream_state(session_id: str) -> dict[str, Any] | None:
                    s.idle_expires_at AS idle_expires_at,
                    s.absolute_expires_at AS absolute_expires_at,
                    s.session_version AS session_session_version,
-                   u.session_version AS user_session_version
+                   o.session_version AS owner_session_version
             FROM sessions s
-            JOIN users u ON u.id = s.user_id
+            JOIN owner o ON o.id = 1
             WHERE s.id=%s
             """,
             (session_id,),
         ).fetchone()
     if row is None or row["revoked_at"]:
         return None
-    if row["session_session_version"] != row["user_session_version"]:
+    if row["session_session_version"] != row["owner_session_version"]:
         return None
     now = datetime.now(timezone.utc)
     absolute = _parse_iso(row["absolute_expires_at"])
@@ -416,7 +415,6 @@ def _error_frame(code: StreamErrorCode, vault_id: int, **extra: Any) -> str:
 async def iter_catalog_event_sse(
     *,
     vault_id: int,
-    user_id: int,
     session_id: str,
     resume_after: int = 0,
     subscribe: bool = True,
@@ -434,7 +432,6 @@ async def iter_catalog_event_sse(
     if shutdown_state.requested:
         return
     vault_id = int(vault_id)
-    user_id = int(user_id)
     subscriber = None
     if subscribe and use_hub:
         subscriber = catalog_event_hub.subscribe(vault_id)
@@ -442,7 +439,6 @@ async def iter_catalog_event_sse(
         initial = await asyncio.to_thread(
             stream_tick_snapshot,
             session_id=session_id,
-            user_id=user_id,
             vault_id=vault_id,
             after_revision=resume_after,
             max_events=max_events,
@@ -519,7 +515,6 @@ async def iter_catalog_event_sse(
             tick = await asyncio.to_thread(
                 stream_tick_snapshot,
                 session_id=session_id,
-                user_id=user_id,
                 vault_id=vault_id,
                 after_revision=last_seen,
                 max_events=max_events,

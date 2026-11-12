@@ -575,6 +575,8 @@ On first startup, the application creates the Owner defined by
 `BOOTSTRAP_ADMIN_*`; create vaults from the UI. The variables are re-applied at
 every start, so they remain the Owner's Emergency Password: changing the
 password revokes existing sessions. Removing them keeps the stored credentials.
+The Owner has no username: `BOOTSTRAP_ADMIN_USERNAME` only marks the
+credentials as configured, and the password alone signs in.
 
 ### Graceful shutdown
 

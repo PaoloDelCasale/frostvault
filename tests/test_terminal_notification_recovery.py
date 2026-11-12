@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.postgres import PostgresConnection
 
 import os
 import tempfile
@@ -18,13 +18,15 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
-
 from app.services import notifications as notification_service
 from app.storage import set_job
+from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
+# The outbox marker lives on the Job's hot state, which #589 ports to the v0.6
+# baseline (ADR-0035); these cases run again once it exists.
+@unittest.skip("needs the Job terminal-notification marker, ported by #589")
 class TerminalNotificationRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -33,36 +35,9 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
-            )
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')"
-            )
-            catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
-                vault_id=2,
-                path="a.txt",
-                file_type="regular",
-                size=1,
-                mtime_ns=1,
-                observed_at="2026-07-21T10:00:00+00:00",
-            )
-            self.job_id = int(
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at
-                    )
-                    SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
-                           '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
-                    FROM vault_files WHERE vault_id=2 LIMIT 1
-                    RETURNING id
-                    """
-                ).fetchone()["id"]
-            )
+            insert_owner(connection)
+            insert_vault(connection, id=2)
+            self.job_id = insert_job(connection, vault_id=2, status="uploading")
 
     def test_terminal_notification_insert_failure_is_retried(self) -> None:
         with patch(

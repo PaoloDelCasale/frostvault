@@ -7,8 +7,9 @@ database. It then freezes and ordinary linear migrations resume.
 It holds the core of the model; later issues of epic #578 refine the File,
 Archive Version and Job tables and add their own:
 
-- ``owner``: the single Owner, one row by construction. There is no users
-  table and nothing references a user.
+- ``owner``: the single Owner, one row by construction, with its Emergency
+  Password credentials and bound OIDC Identity. There is no users table and
+  nothing references a user.
 - ``vault_targets``: immutable S3 targets of the installation.
 - ``vaults``: one external identity (``uuid``, which also names the cloud
   namespace ``vaults/<uuid>/``), one ``lifecycle`` and an orthogonal pause.
@@ -20,6 +21,14 @@ Archive Version and Job tables and add their own:
 - ``directory_aggregate_status`` / ``directory_aggregate_dirty``: aggregate
   invalidations written in the catalog's own transaction.
 - ``jobs``: minimal Job rows (#589 refines them).
+- ``sessions``, ``oidc_login``, ``auth_backoff``: Owner Sessions (revoked as a
+  whole by ``owner.session_version``), transient OIDC login state and the
+  durable sign-in throttle.
+- ``audit_events``: append-only history whose actor is ``owner``,
+  ``emergency`` or ``system``, never a user id.
+- ``notifications``, ``notification_deliveries``: the Owner's inbox and
+  problems, deduplicated by a unique ``dedupe_key``, plus optional email
+  deliveries (#586).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -37,6 +46,8 @@ SCHEMA = r"""
 CREATE TABLE owner (
     id smallint PRIMARY KEY DEFAULT 1,
     display_name text NOT NULL,
+    -- Emergency Password hash, re-applied from BOOTSTRAP_ADMIN_PASSWORD at
+    -- every start. There is no username: the password alone signs in.
     password_hash text,
     session_version bigint NOT NULL DEFAULT 1,
     oidc_issuer text COLLATE "C",
@@ -45,6 +56,7 @@ CREATE TABLE owner (
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT owner_single_row_ck CHECK (id = 1),
     CONSTRAINT owner_session_version_ck CHECK (session_version >= 1),
+    CONSTRAINT owner_password_hash_ck CHECK (password_hash <> ''),
     CONSTRAINT owner_oidc_binding_ck CHECK (
         (oidc_issuer IS NULL AND oidc_subject IS NULL AND oidc_bound_at IS NULL)
         OR (oidc_issuer <> '' AND oidc_subject <> '' AND oidc_bound_at IS NOT NULL)
@@ -432,6 +444,156 @@ CREATE TABLE jobs (
 
 CREATE INDEX jobs_file_idx ON jobs (file_id);
 CREATE INDEX jobs_vault_status_idx ON jobs (vault_id, status);
+
+-- Owner Sessions. A Session is valid only while its session_version equals
+-- owner.session_version: bumping the Owner's version revokes every Session.
+-- auth_method 'local' is the Emergency Password. transition_version is an
+-- internal optimistic lock for Vault selection and token rotation.
+CREATE TABLE sessions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    token_hash bytea NOT NULL,
+    csrf_token text COLLATE "C" NOT NULL,
+    auth_method text COLLATE "C" NOT NULL,
+    session_version bigint NOT NULL,
+    vault_id bigint REFERENCES vaults(id) ON DELETE SET NULL,
+    transition_version bigint NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now(),
+    idle_expires_at timestamptz NOT NULL,
+    absolute_expires_at timestamptz NOT NULL,
+    reauth_at timestamptz,
+    revoked_at timestamptz,
+    ip text,
+    user_agent text,
+    CONSTRAINT sessions_token_hash_uq UNIQUE (token_hash),
+    CONSTRAINT sessions_token_hash_ck CHECK (octet_length(token_hash) = 32),
+    CONSTRAINT sessions_csrf_token_ck CHECK (csrf_token <> ''),
+    CONSTRAINT sessions_auth_method_ck CHECK (auth_method IN ('oidc', 'local')),
+    CONSTRAINT sessions_session_version_ck CHECK (session_version >= 1),
+    CONSTRAINT sessions_transition_version_ck CHECK (transition_version >= 1)
+);
+
+CREATE INDEX sessions_absolute_expires_idx ON sessions (absolute_expires_at);
+
+-- Transient, single-use OIDC Authorization Code + PKCE state.
+CREATE TABLE oidc_login (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    state text COLLATE "C" NOT NULL,
+    nonce text COLLATE "C" NOT NULL,
+    code_verifier text COLLATE "C" NOT NULL,
+    return_to text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    CONSTRAINT oidc_login_state_uq UNIQUE (state)
+);
+
+CREATE INDEX oidc_login_expires_idx ON oidc_login (expires_at);
+
+-- Durable sign-in and Reauthentication throttle (ADR-0004), per client IP
+-- and per account key.
+CREATE TABLE auth_backoff (
+    scope text COLLATE "C" NOT NULL,
+    key text COLLATE "C" NOT NULL,
+    failure_count integer NOT NULL DEFAULT 0,
+    next_allowed_at timestamptz,
+    updated_at timestamptz NOT NULL,
+    CONSTRAINT auth_backoff_pk PRIMARY KEY (scope, key),
+    CONSTRAINT auth_backoff_scope_ck CHECK (scope IN ('ip', 'account')),
+    CONSTRAINT auth_backoff_failure_count_ck CHECK (failure_count >= 0)
+);
+
+-- Append-only audit history. The actor is the Owner (signed in through OIDC),
+-- the Emergency Password, or FrostVault itself. Rows are never updated;
+-- retention deletes them by age. vault_id and job_id are historical
+-- references: audit outlives the Jobs it mentions.
+CREATE TABLE audit_events (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    event text COLLATE "C" NOT NULL,
+    actor text COLLATE "C" NOT NULL,
+    outcome text COLLATE "C",
+    vault_id bigint,
+    job_id bigint,
+    correlation_id text COLLATE "C",
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CONSTRAINT audit_events_event_ck CHECK (event <> ''),
+    CONSTRAINT audit_events_actor_ck CHECK (actor IN ('owner', 'emergency', 'system')),
+    CONSTRAINT audit_events_detail_ck CHECK (jsonb_typeof(detail) = 'object')
+);
+
+CREATE INDEX audit_events_created_idx ON audit_events (created_at);
+
+CREATE FUNCTION audit_events_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'audit events are append-only'
+        USING ERRCODE = 'restrict_violation';
+END
+$$;
+
+CREATE TRIGGER audit_events_append_only
+    BEFORE UPDATE ON audit_events
+    FOR EACH ROW EXECUTE FUNCTION audit_events_append_only();
+
+-- The Owner's inbox. A problem (problem_status set) has one current row per
+-- dedupe_key, resolved or reopened in place; other notifications are plain
+-- messages. in_app_enabled is false for email-only notices.
+CREATE TABLE notifications (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    vault_id bigint REFERENCES vaults(id) ON DELETE RESTRICT,
+    job_id bigint REFERENCES jobs(id) ON DELETE RESTRICT,
+    event text COLLATE "C" NOT NULL,
+    title text NOT NULL,
+    body text NOT NULL DEFAULT '',
+    title_key text COLLATE "C",
+    body_key text COLLATE "C",
+    message_params jsonb NOT NULL DEFAULT '{}'::jsonb,
+    in_app_enabled boolean NOT NULL DEFAULT true,
+    dedupe_key text COLLATE "C",
+    problem_status text COLLATE "C",
+    created_at timestamptz NOT NULL DEFAULT now(),
+    read_at timestamptz,
+    resolved_at timestamptz,
+    CONSTRAINT notifications_dedupe_key_uq UNIQUE (dedupe_key),
+    CONSTRAINT notifications_event_ck CHECK (event <> ''),
+    CONSTRAINT notifications_dedupe_key_ck CHECK (dedupe_key <> ''),
+    CONSTRAINT notifications_message_params_ck CHECK (jsonb_typeof(message_params) = 'object'),
+    CONSTRAINT notifications_problem_status_ck CHECK (problem_status IN ('open', 'resolved')),
+    CONSTRAINT notifications_resolved_ck CHECK (
+        (problem_status IS NOT DISTINCT FROM 'resolved') = (resolved_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX notifications_job_idx ON notifications (job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX notifications_open_problems_idx ON notifications (event, vault_id)
+    WHERE problem_status = 'open';
+CREATE INDEX notifications_unread_idx ON notifications (id)
+    WHERE read_at IS NULL AND in_app_enabled;
+CREATE INDEX notifications_read_idx ON notifications (read_at) WHERE read_at IS NOT NULL;
+CREATE INDEX notifications_resolved_idx ON notifications (resolved_at)
+    WHERE resolved_at IS NOT NULL;
+
+-- Optional outbound email for one notification, retried a bounded number of
+-- times; deleted with its notification.
+CREATE TABLE notification_deliveries (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    notification_id bigint NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    channel text COLLATE "C" NOT NULL,
+    status text COLLATE "C" NOT NULL DEFAULT 'pending',
+    attempt_count integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz,
+    last_error text,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT notification_deliveries_channel_uq UNIQUE (notification_id, channel),
+    CONSTRAINT notification_deliveries_channel_ck CHECK (channel = 'email'),
+    CONSTRAINT notification_deliveries_status_ck CHECK (
+        status IN ('pending', 'delivered', 'failed')
+    ),
+    CONSTRAINT notification_deliveries_attempt_count_ck CHECK (attempt_count >= 0)
+);
+
+CREATE INDEX notification_deliveries_pending_idx ON notification_deliveries (next_attempt_at)
+    WHERE status = 'pending';
 """
 
 

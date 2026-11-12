@@ -9,7 +9,7 @@ from .cost_estimates import estimate_storage_month, list_prices
 from . import notifications, cloud_preflight_gate
 
 
-def overview(connection: Any, *, user_id: int, locale: str | None = None) -> dict[str, Any]:
+def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
     notifications.reconcile_problem_states(connection)
     prices = list_prices()
     rows = connection.execute(
@@ -26,16 +26,18 @@ def overview(connection: Any, *, user_id: int, locale: str | None = None) -> dic
                                       storage_class=row["storage_class"]).estimated_cost_eur
         totals[row["vault_id"]] = totals.get(row["vault_id"], 0) + cost
     problems = connection.execute(
-        "SELECT vault_id, count(*) AS total FROM notifications WHERE user_id=%s "
-        "AND problem_status='open' AND in_app_enabled=TRUE GROUP BY vault_id", (user_id,),
+        "SELECT vault_id, count(*) AS total FROM notifications "
+        "WHERE problem_status='open' AND in_app_enabled GROUP BY vault_id",
     ).fetchall()
     counts = {row["vault_id"]: int(row["total"]) for row in problems}
     now = datetime.now(timezone.utc)
     month = now.strftime("%Y-%m")
-    previous_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    previous_start = (month_start - timedelta(days=1)).replace(day=1)
     previous = connection.execute(
-        "SELECT message_params FROM notifications WHERE user_id=%s AND event='weekly_summary' "
-        "AND substring(created_at,1,7)=%s ORDER BY created_at DESC LIMIT 1", (user_id, previous_month),
+        "SELECT message_params FROM notifications WHERE event='weekly_summary' "
+        "AND created_at >= %s AND created_at < %s ORDER BY created_at DESC LIMIT 1",
+        (previous_start, month_start),
     ).fetchone()
     baseline = None
     if previous:

@@ -41,6 +41,7 @@ from .i18n import (
     translate,
 )
 from .backoff import (
+    OWNER_ACCOUNT_KEY,
     BackoffError,
     guard as backoff_guard,
     reauth_account_key,
@@ -136,6 +137,7 @@ from .sessions import (
     resolve_session,
     revoke_session,
     rotate_session,
+    session_actor,
     set_session_vault,
 )
 from .services.storage_classes import (
@@ -448,7 +450,12 @@ def current_user(request: Request) -> dict[str, Any]:
     if not session:
         raise HTTPException(401, "Invalid session")
     request.state.session = session
-    return session["user"]
+    return session["owner"]
+
+
+def _actor(request: Request) -> str:
+    """The audit actor of this signed-in request: ``owner`` or ``emergency``."""
+    return session_actor(getattr(request.state, "session", None))
 
 
 def _runtime_settings():
@@ -497,7 +504,7 @@ def require_recent_reauth(
     return user
 
 
-_OPERATIONAL_VAULT = "v.enabled=TRUE AND v.decommission_state='active'"
+_OPERATIONAL_VAULT = "v.lifecycle IN ('active', 'reconnect_required')"
 
 
 def current_vault(
@@ -549,7 +556,9 @@ def current_vault(
 
 
 class LoginRequest(BaseModel):
-    username: str
+    # Ignored: the Owner has no username and the Emergency Password alone
+    # signs in (#586). Still accepted while the login form sends it.
+    username: str = ""
     password: str
 
 
@@ -856,14 +865,13 @@ def login_page():
 @app.post("/api/login", response_model=JsonObjectResponse)
 def login(action: LoginRequest, request: Request, response: Response):
     client_ip = _client_ip(request)
-    username = action.username.strip().lower()
     if not is_break_glass_allowed(client_ip):
         with db() as connection:
             audit_log(
                 "break_glass_denied",
                 connection=connection,
+                actor="emergency",
                 ip=client_ip,
-                username=username,
             )
         raise HTTPException(403, "The emergency password is not accepted from this network")
     # Persist throttle counters by letting the transaction commit first, then map
@@ -875,36 +883,34 @@ def login(action: LoginRequest, request: Request, response: Response):
     with db() as connection:
         try:
             backoff_guard(connection, scope="ip", key=client_ip)
-            backoff_guard(connection, scope="account", key=username)
+            backoff_guard(connection, scope="account", key=OWNER_ACCOUNT_KEY)
         except BackoffError as blocked:
             retry_after = blocked.retry_after
         else:
-            user = connection.execute(
-                "SELECT * FROM users WHERE lower(username)=lower(%s)",
-                (username,),
+            owner = connection.execute(
+                "SELECT password_hash FROM owner WHERE id=1"
             ).fetchone()
-            eligible = bool(user and user["password_hash"])
+            eligible = bool(owner and owner["password_hash"])
             password_hash = (
-                user["password_hash"] if eligible else DUMMY_PASSWORD_HASH
+                owner["password_hash"] if eligible else DUMMY_PASSWORD_HASH
             )
             password_valid = verify_password(password_hash, action.password)
             # Always reject the dummy path, even if its hash ever matches the
             # submitted password (or verification is replaced in a test).
             if not eligible or not password_valid:
                 record_failure(connection, scope="ip", key=client_ip)
-                record_failure(connection, scope="account", key=username)
+                record_failure(connection, scope="account", key=OWNER_ACCOUNT_KEY)
                 audit_log(
                     "break_glass_failed",
                     connection=connection,
+                    actor="emergency",
                     ip=client_ip,
-                    username=username,
                 )
             else:
                 record_success(connection, scope="ip", key=client_ip)
-                record_success(connection, scope="account", key=username)
+                record_success(connection, scope="account", key=OWNER_ACCOUNT_KEY)
                 raw_token = create_session(
                     connection,
-                    user_id=user["id"],
                     auth_method="local",
                     ip=client_ip,
                     user_agent=request.headers.get("user-agent"),
@@ -915,9 +921,9 @@ def login(action: LoginRequest, request: Request, response: Response):
             audit_log(
                 "auth_backoff_blocked",
                 connection=connection,
+                actor="emergency",
                 flow="break_glass",
                 ip=client_ip,
-                username=username,
                 retry_after=retry_after,
             )
         raise HTTPException(
@@ -926,7 +932,7 @@ def login(action: LoginRequest, request: Request, response: Response):
             headers={"Retry-After": str(retry_after)},
         )
     if raw_token is None:
-        raise HTTPException(401, "Incorrect username or password")
+        raise HTTPException(401, "Incorrect emergency password")
     _set_session_cookie(response, raw_token)
     if csrf_token:
         _set_csrf_cookie(response, csrf_token)
@@ -964,7 +970,7 @@ def reauth(
 
     backoff_keys = (
         ("ip", reauth_ip_key(client_ip or "unknown")),
-        ("account", reauth_account_key(int(user["id"]))),
+        ("account", reauth_account_key()),
     )
     retry_after: int | None = None
     password_valid = False
@@ -983,7 +989,7 @@ def reauth(
 
         if retry_after is None:
             row = connection.execute(
-                "SELECT password_hash FROM users WHERE id=%s", (user["id"],)
+                "SELECT password_hash FROM owner WHERE id=1"
             ).fetchone()
             password_valid = bool(
                 row
@@ -1005,7 +1011,7 @@ def reauth(
                 audit_log(
                     "reauth_failed",
                     connection=connection,
-                    actor_user_id=user["id"],
+                    actor="emergency",
                     outcome="failure",
                     flow="reauth",
                     ip=client_ip,
@@ -1017,7 +1023,7 @@ def reauth(
                 audit_log(
                     "reauth_succeeded",
                     connection=connection,
-                    actor_user_id=user["id"],
+                    actor="emergency",
                     outcome="success",
                     flow="reauth",
                     ip=client_ip,
@@ -1027,7 +1033,7 @@ def reauth(
             audit_log(
                 "auth_backoff_blocked",
                 connection=connection,
-                actor_user_id=user["id"],
+                actor="emergency",
                 flow="reauth",
                 ip=client_ip,
                 retry_after=retry_after,
@@ -1137,12 +1143,12 @@ def oidc_callback(
         except OidcError as error:
             raise HTTPException(400, f"OIDC login failed: {error.reason}")
         try:
-            user_id = bind_owner_identity(connection, claims)
+            bind_owner_identity(connection, claims)
         except IdentityRejected:
             rejected = True
         if not rejected:
             existing = resolve_session(connection, _read_session_cookie(request))
-            if existing and existing["user"]["id"] == user_id:
+            if existing:
                 # Step-up reauthentication: the owner proved their identity
                 # again, so refresh the reauth window and rotate the token
                 # instead of minting a brand-new Session.
@@ -1160,7 +1166,6 @@ def oidc_callback(
             else:
                 raw_token = create_session(
                     connection,
-                    user_id=user_id,
                     auth_method="oidc",
                     ip=_client_ip(request),
                     user_agent=request.headers.get("user-agent"),
@@ -1170,6 +1175,7 @@ def oidc_callback(
             audit_log(
                 "oidc_identity_rejected",
                 connection=connection,
+                actor="system",
                 ip=_client_ip(request),
                 issuer=claims.issuer,
             )
@@ -1205,11 +1211,11 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             raise
         vault = None
     vault_block = None
-    decommission_vault_block = None
+    stopped_vault_block = None
     if vault is not None:
         vault_block = {
             "id": vault["id"],
-            "slug": vault["slug"],
+            "uuid": str(vault["uuid"]),
             "name": vault["name"],
             "delete_enabled": vault_local_access(vault["source_root"]).local_operations_allowed,
             "cloud_deletion_enabled": True,
@@ -1217,31 +1223,22 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     else:
         selected_id = request.state.session.get("vault_id")
         with db() as connection:
-            decommission_vault = None
-            if selected_id:
-                decommission_vault = connection.execute(
-                    """
-                    SELECT id, slug, name, decommission_state, root_released_at
-                    FROM vaults
-                    WHERE id=%s AND decommission_state<>'active'
-                    """,
-                    (selected_id,),
-                ).fetchone()
-            if decommission_vault is None:
-                decommission_vault = connection.execute(
-                    """
-                    SELECT id, slug, name, decommission_state, root_released_at
-                    FROM vaults
-                    WHERE decommission_state<>'active'
-                    ORDER BY CASE WHEN decommission_state='decommissioning' THEN 0 ELSE 1 END,
-                             decommissioned_at DESC, lower(name)
-                    LIMIT 1
-                    """
-                ).fetchone()
-        if decommission_vault:
-            decommission_vault_block = {
-                **decommission_vault,
-                "root_released": bool(decommission_vault["root_released_at"]),
+            stopped_vault = connection.execute(
+                """
+                SELECT id, uuid, name, lifecycle, root_released_at
+                FROM vaults
+                WHERE lifecycle IN ('stopping', 'tombstone')
+                ORDER BY id IS DISTINCT FROM %s,
+                         lifecycle <> 'stopping', root_released_at DESC, lower(name)
+                LIMIT 1
+                """,
+                (selected_id,),
+            ).fetchone()
+        if stopped_vault:
+            stopped_vault_block = {
+                **stopped_vault,
+                "uuid": str(stopped_vault["uuid"]),
+                "root_released": stopped_vault["root_released_at"] is not None,
             }
     return {
         **user,
@@ -1250,7 +1247,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
         "locale": _request_locale(request),
         "locales": list(available_locales()),
         "vault": vault_block,
-        "stopped_vault": decommission_vault_block,
+        "stopped_vault": stopped_vault_block,
     }
 
 
@@ -1303,7 +1300,7 @@ def _set_vault_pause(vault_id: int, paused: bool, request: Request, user: dict[s
     try:
         with db() as connection:
             return vault_pause.set_paused(connection, vault_id=vault_id, paused=paused,
-                                           user_id=int(user["id"]), locale=_request_locale(request))
+                                           locale=_request_locale(request))
     except vault_pause.VaultNotFound as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -1404,7 +1401,7 @@ def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request
     try:
         with db() as connection:
             return protection_stop_service.stop_protection(
-                connection, vault_id=vault_id, actor_user_id=int(user["id"]),
+                connection, vault_id=vault_id, actor=_actor(request),
                 cloud_disposition=action.cloud_disposition, confirmation=action.confirmation,
                 reason=action.reason)
     except cloud_deletion_service.ConfirmationRequired as exc:
@@ -1416,11 +1413,13 @@ def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request
 
 
 @app.post("/api/vaults/{vault_id}/stop-protection/cancel-deletion", response_model=response_model("StopProtectionStatus"))
-def cancel_stopped_folder_deletion(vault_id: int, user: dict[str, Any] = Depends(current_user)):
+def cancel_stopped_folder_deletion(vault_id: int, request: Request,
+                                   user: dict[str, Any] = Depends(current_user)):
+    del user  # authentication gate only
     try:
         with db() as connection:
             return protection_stop_service.cancel_deletion(connection, vault_id=vault_id,
-                                                            actor_user_id=int(user["id"]))
+                                                            actor=_actor(request))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -1557,7 +1556,7 @@ def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
 def general_overview(request: Request, user: dict[str, Any] = Depends(current_user)):
     from .services.essential_interface import overview
     with db() as connection:
-        return overview(connection, user_id=user["id"], locale=_request_locale(request))
+        return overview(connection, locale=_request_locale(request))
 
 
 @app.get("/api/problems", response_model=response_model("NotificationsResponse"))
@@ -1566,12 +1565,12 @@ def open_problems(request: Request, page: int = Query(1, ge=1),
     with db() as connection:
         notification_service.reconcile_problem_states(connection)
         rows = connection.execute(
-            "SELECT * FROM notifications WHERE user_id=%s AND in_app_enabled=TRUE "
+            "SELECT * FROM notifications WHERE in_app_enabled "
             "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
-            (user["id"], (page - 1) * 100),
+            ((page - 1) * 100,),
         ).fetchall()
         return {"items": [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows],
-                "open_problem_count": notification_service.count_open_problems(connection, user_id=user["id"])}
+                "open_problem_count": notification_service.count_open_problems(connection)}
 
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
@@ -1627,7 +1626,7 @@ def list_notifications(
     status: Literal["all", "unread", "read"] = Query("all"),
     before_id: int | None = Query(default=None, ge=1),
 ):
-    """List in-app notifications for the authenticated user.
+    """List the Owner's in-app notifications.
 
     Supports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)
     and ``before_id`` cursor pagination so older unread items are never hidden
@@ -1639,7 +1638,6 @@ def list_notifications(
         # client can offer bounded "load more" even at limit=200.
         fetched = notification_service.list_in_app_notifications(
             connection,
-            user_id=user["id"],
             limit=limit + 1,
             locale=locale,
             status=status,
@@ -1647,10 +1645,8 @@ def list_notifications(
         )
         has_more = len(fetched) > limit
         items = fetched[:limit]
-        unread_count = notification_service.count_unread_notifications(
-            connection, user_id=user["id"]
-        )
-        open_problem_count = notification_service.count_open_problems(connection, user_id=user["id"])
+        unread_count = notification_service.count_unread_notifications(connection)
+        open_problem_count = notification_service.count_open_problems(connection)
     return {"items": items, "unread_count": unread_count, "has_more": has_more,
             "open_problem_count": open_problem_count,
             "email_configured": notification_service.email_configured()}
@@ -1670,7 +1666,6 @@ def mark_notification_read(
         item = notification_service.mark_notification_read(
             connection,
             notification_id=action.notification_id,
-            user_id=user["id"],
             locale=_request_locale(request),
         )
     if item is None:
@@ -1684,13 +1679,12 @@ def mark_all_notifications_read(
 ):
     """Mark every currently visible unread notification read (issue #225).
 
-    Server-authoritative and idempotent; preserves the same Vault and in-app
+    Server-authoritative and idempotent; preserves the same in-app
     visibility checks as single-item mark-read.
     """
+    del user  # authentication gate only
     with db() as connection:
-        return notification_service.mark_all_notifications_read(
-            connection, user_id=user["id"]
-        )
+        return notification_service.mark_all_notifications_read(connection)
 
 
 class MetadataBackupRunAction(BaseModel):
@@ -1713,6 +1707,7 @@ def recovery_kit_status(_: dict[str, Any] = Depends(current_user)):
     "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
 }})
 def download_recovery_kit(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
@@ -1722,7 +1717,7 @@ def download_recovery_kit(
         raise HTTPException(409, str(exc)) from None
     with db() as connection:
         audit_event_store.record_audit_event(connection, event="recovery_kit_downloaded",
-                           actor_user_id=int(user["id"]), outcome="success", visibility="owner")
+                           actor=_actor(request), outcome="success")
     return Response(payload, media_type="application/octet-stream", headers={
         "Content-Disposition": 'attachment; filename="frostvault-recovery-kit.json"',
         "Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff",
@@ -1732,6 +1727,7 @@ def download_recovery_kit(
 @app.post("/api/recovery-kit/custody", response_model=response_model("RecoveryKitStatus"))
 def acknowledge_recovery_kit(
     action: RecoveryKitCustody,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
@@ -1740,7 +1736,7 @@ def acknowledge_recovery_kit(
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
         audit_event_store.record_audit_event(connection, event="recovery_kit_custody_acknowledged",
-                           actor_user_id=int(user["id"]), outcome="success", visibility="owner",
+                           actor=_actor(request), outcome="success",
                            fingerprint=action.fingerprint)
         return recovery_kit_service.kit_status(connection)
 
@@ -1756,6 +1752,7 @@ def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
 @app.post("/api/general/metadata-backups/run", response_model=JsonObjectResponse)
 def run_metadata_backup(
     action: MetadataBackupRunAction,
+    request: Request,
     admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
@@ -1775,7 +1772,7 @@ def run_metadata_backup(
         audit_event_store.record_audit_event(
             connection,
             event="metadata_backup_created",
-            actor_user_id=admin["id"],
+            actor=_actor(request),
             outcome="success",
             reason=action.reason,
             digest_sha256=result["digest_sha256"],
@@ -1795,6 +1792,7 @@ def run_metadata_backup(
 )
 def download_metadata_backup(
     run_id: int,
+    request: Request,
     admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
@@ -1809,9 +1807,8 @@ def download_metadata_backup(
         audit_event_store.record_audit_event(
             connection,
             event="metadata_backup_downloaded",
-            actor_user_id=admin["id"],
+            actor=_actor(request),
             outcome="success",
-            visibility="admin",
             run_id=run_id,
             digest_sha256=artifact["digest_sha256"],
         )
@@ -2067,7 +2064,6 @@ async def catalog_events_stream(
     it is excluded from the JsonObjectResponse OpenAPI contract suite.
     """
     vault_id = int(vault["id"])
-    user_id = int(user["id"])
     session = request.state.session
     session_id = str(session["id"])
     resume_after = after_revision
@@ -2080,7 +2076,6 @@ async def catalog_events_stream(
     async def event_generator():
         async for chunk in iter_catalog_event_sse(
             vault_id=vault_id,
-            user_id=user_id,
             session_id=session_id,
             resume_after=resume_after,
             subscribe=subscribe,
@@ -2695,7 +2690,7 @@ def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
 
 
 def confirm_cloud_only_replacement(
-    path: str, vault_id: int, user_id: int
+    path: str, vault_id: int, actor: str
 ) -> dict[str, Any]:
     """Release held-back content and queue the upload that replaces the copy.
 
@@ -2709,13 +2704,13 @@ def confirm_cloud_only_replacement(
                 connection,
                 vault_id=vault_id,
                 path=logical_path,
-                actor_user_id=user_id,
+                actor=actor,
             )
         except catalog_incident_service.NoCloudOnlyConflict as exc:
             raise HTTPException(
                 409, "No conflict with a cloud-only file at this path"
             ) from exc
-    return queue_jobs(logical_path, "upload", vault_id, user_id)
+    return queue_jobs(logical_path, "upload", vault_id, None)
 
 
 @app.post(
@@ -2731,7 +2726,7 @@ def replace_cloud_only_copy(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Confirm that new content replaces the only cloud copy at its path."""
-    queued = confirm_cloud_only_replacement(action.path, vault["id"], user["id"])
+    queued = confirm_cloud_only_replacement(action.path, vault["id"], _actor(request))
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
@@ -2739,7 +2734,7 @@ def cancel_job_group(
     group_id: str,
     job_action: str,
     vault: dict[str, Any],
-    actor_user_id: int,
+    actor: str,
 ):
     message_keys = {
         "upload": "job.upload_stopped",
@@ -2761,7 +2756,7 @@ def cancel_job_group(
                     connection,
                     vault_id=vault["id"],
                     group_id=group_id,
-                    actor_user_id=actor_user_id,
+                    actor=actor,
                     cancelled_at=now_iso(),
                 )
             except ValueError as exc:
@@ -2798,7 +2793,7 @@ def cancel_job_group(
         if not job_ids and not stopped_admissions:
             raise HTTPException(409, "The operation is no longer running")
         if job_ids:
-            _cancel_active_jobs(connection, vault, job_action, job_ids, actor_user_id)
+            _cancel_active_jobs(connection, vault, job_action, job_ids, actor)
     return {
         "message": message,
         "cancelled_count": len(job_ids),
@@ -2811,7 +2806,7 @@ def _cancel_active_jobs(
     vault: dict[str, Any],
     job_action: str,
     job_ids: list[int],
-    actor_user_id: int,
+    actor: str,
 ) -> None:
     """Cancel already-selected non-terminal Jobs; the caller holds the Vault lock."""
     message_keys = {
@@ -2861,7 +2856,7 @@ def _cancel_active_jobs(
         audit_event_store.record_audit_event(
             connection,
             event="local_cleanup.cancelled",
-            actor_user_id=actor_user_id,
+            actor=actor,
             vault_id=vault["id"],
             job_id=int(row["id"]),
             outcome="cancelled",
@@ -2902,6 +2897,7 @@ _UNSTARTED_UPLOAD_SQL = """
 )
 def cancel_pending_uploads(
     action: PendingUploadCancelAction,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
@@ -2931,7 +2927,7 @@ def cancel_pending_uploads(
         ).fetchall()
         job_ids = [int(row["id"]) for row in rows]
         if job_ids:
-            _cancel_active_jobs(connection, vault, "upload", job_ids, user["id"])
+            _cancel_active_jobs(connection, vault, "upload", job_ids, _actor(request))
     return {
         "message": translate("job.upload_stopped", locale=DEFAULT_LOCALE),
         "cancelled_count": len(job_ids),
@@ -2942,20 +2938,22 @@ def cancel_pending_uploads(
 @app.post("/api/jobs/cancel", response_model=response_model("JobCancelResponse"))
 def cancel_job(
     action: JobCancelAction,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    return cancel_job_group(action.group_id, action.action, vault, user["id"])
+    return cancel_job_group(action.group_id, action.action, vault, _actor(request))
 
 
 @app.post("/api/upload/cancel", response_model=response_model("JobCancelResponse"))
 def cancel_upload(
     action: GroupCancelAction,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Backward-compatible endpoint for clients using the old upload route."""
-    return cancel_job_group(action.group_id, "upload", vault, user["id"])
+    return cancel_job_group(action.group_id, "upload", vault, _actor(request))
 
 
 @app.post(
@@ -3082,7 +3080,7 @@ def cloud_purge(
                 vault_id=vault["id"],
                 paths=_cloud_deletion_paths(action),
                 is_directory=action.is_directory,
-                actor_user_id=user["id"],
+                actor=_actor(request),
                 requested_at=now_iso(),
                 confirmation=action.confirmation,
                 reason=action.reason,
@@ -3172,6 +3170,7 @@ def reconnect_vault_root(
     vault_id: int,
     action: VaultReconnect,
     background_tasks: BackgroundTasks,
+    request: Request,
     owner: dict[str, Any] = Depends(current_user),
 ):
     """Accept this folder/mount for this Vault only; mandatory cloud/local scan."""
@@ -3192,7 +3191,7 @@ def reconnect_vault_root(
                     vault_id=vault_id,
                     volume_alias=action.volume_alias,
                     relative_path=action.relative_path,
-                    actor_user_id=int(owner["id"]),
+                    actor=_actor(request),
                     reason=action.reason,
                     runtime_busy=busy,
                 )
@@ -3231,6 +3230,7 @@ def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
 @app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
+    request: Request,
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
@@ -3258,9 +3258,8 @@ def update_vault_operation_policy(
             "vault_operation_policy_updated",
             connection=connection,
             vault_id=vault["id"],
-            actor_user_id=user["id"],
+            actor=_actor(request),
             outcome="updated",
-            visibility="vault",
             policy=stored.as_dict(),
         )
     return {**stored.as_dict(), "global_upload_verification": settings.upload_verification,
@@ -3381,6 +3380,7 @@ def own_vault_lifecycle(vault: dict[str, Any] = Depends(current_vault)):
 @app.put("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
 def update_vault_storage_plan(
     action: LifecycleProfileSelection,
+    request: Request,
     vault: dict[str, Any] = Depends(current_vault),
     user: dict[str, Any] = Depends(current_user),
 ):
@@ -3402,7 +3402,7 @@ def update_vault_storage_plan(
             "vault_storage_plan_updated",
             connection=connection,
             vault_id=vault["id"],
-            actor_user_id=user["id"],
+            actor=_actor(request),
             guided_profile=guided_name,
             custom_profile=guided_name is None,
         )

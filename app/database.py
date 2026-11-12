@@ -285,7 +285,9 @@ def _bootstrap_owner(connection: Any) -> None:
     owner = connection.execute(
         "SELECT display_name, password_hash FROM owner WHERE id=1"
     ).fetchone()
-    username = settings.bootstrap_admin_username.strip().lower()
+    # BOOTSTRAP_ADMIN_USERNAME only says the credentials are configured: the
+    # Owner has no username and the Emergency Password alone signs in.
+    username = settings.bootstrap_admin_username.strip()
     password = settings.bootstrap_admin_password
     display_name = settings.bootstrap_admin_display_name.strip()
     if owner is None:

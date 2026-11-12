@@ -1476,9 +1476,6 @@
         "session_version": {
           "type": "number"
         },
-        "username": {
-          "type": "string"
-        },
         "vault": {
           "anyOf": [
             {
@@ -1502,7 +1499,6 @@
       },
       "required": [
         "id",
-        "username",
         "display_name",
         "session_version",
         "csrf_token",
@@ -1528,13 +1524,14 @@
         "name": {
           "type": "string"
         },
-        "slug": {
+        "uuid": {
+          "format": "uuid",
           "type": "string"
         }
       },
       "required": [
         "id",
-        "slug",
+        "uuid",
         "name",
         "delete_enabled",
         "cloud_deletion_enabled"
@@ -2236,15 +2233,15 @@
     "MeStoppedVault": {
       "additionalProperties": true,
       "properties": {
-        "decommission_state": {
-          "enum": [
-            "decommissioning",
-            "decommissioned"
-          ],
-          "type": "string"
-        },
         "id": {
           "type": "number"
+        },
+        "lifecycle": {
+          "enum": [
+            "stopping",
+            "tombstone"
+          ],
+          "type": "string"
         },
         "name": {
           "type": "string"
@@ -2258,15 +2255,16 @@
             "null"
           ]
         },
-        "slug": {
+        "uuid": {
+          "format": "uuid",
           "type": "string"
         }
       },
       "required": [
         "id",
-        "slug",
+        "uuid",
         "name",
-        "decommission_state",
+        "lifecycle",
         "root_released"
       ],
       "type": "object"

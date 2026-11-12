@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.postgres import PostgresConnection
 
 import tempfile
 import unittest
@@ -16,31 +16,15 @@ from app.sessions import (
     resolve_session,
     revoke_session,
     rotate_session,
+    session_actor,
     set_session_vault,
 )
+from tests.owner_fixtures import bump_session_version, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
-def _past_iso() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-
-
-def _insert_user(
-    connection: PostgresConnection,
-    *,
-    username: str = "owner",
-    is_admin: bool = True,
-    active: bool = True,
-) -> int:
-    row = connection.execute(
-        """
-        INSERT INTO users(username, display_name, password_hash)
-        VALUES (%s, %s, %s)
-        RETURNING id
-        """,
-        (username, username.title(), "hash"),
-    ).fetchone()
-    return row["id"]
+def _past() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=1)
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -54,12 +38,11 @@ class SessionStoreTests(unittest.TestCase):
     def _connect(self) -> PostgresConnection:
         return PostgresConnection(str(self.database_path))
 
-    def test_created_session_resolves_to_the_same_user(self) -> None:
+    def test_created_session_resolves_to_the_owner(self) -> None:
         with self._connect() as connection:
-            user_id = _insert_user(connection, username="paola")
+            insert_owner(connection, display_name="Paola")
             token = create_session(
                 connection,
-                user_id=user_id,
                 auth_method="local",
                 ip="10.0.0.1",
                 user_agent="pytest",
@@ -70,10 +53,29 @@ class SessionStoreTests(unittest.TestCase):
             session = resolve_session(connection, token)
 
         self.assertIsNotNone(session)
-        self.assertEqual(session["user"]["id"], user_id)
-        self.assertEqual(session["user"]["username"], "paola")
+        self.assertEqual(session["owner"]["id"], 1)
+        self.assertEqual(session["owner"]["display_name"], "Paola")
+        self.assertEqual(session["auth_method"], "local")
+        self.assertEqual(session_actor(session), "emergency")
 
-    def _set_session_column(self, column: str, value: str) -> None:
+    def test_session_actor_follows_the_sign_in_method(self) -> None:
+        self.assertEqual(session_actor({"auth_method": "oidc"}), "owner")
+        self.assertEqual(session_actor({"auth_method": "local"}), "emergency")
+        with self.assertRaises(ValueError):
+            session_actor(None)
+
+    def test_no_session_exists_before_the_owner(self) -> None:
+        with self._connect() as connection:
+            with self.assertRaises(ValueError):
+                create_session(connection, auth_method="local")
+
+    def test_unknown_auth_method_is_refused(self) -> None:
+        with self._connect() as connection:
+            insert_owner(connection)
+            with self.assertRaises(ValueError):
+                create_session(connection, auth_method="password")
+
+    def _set_session_column(self, column: str, value: Any) -> None:
         with self._connect() as connection:
             connection.execute(
                 f"UPDATE sessions SET {column}=%s", (value,)
@@ -85,28 +87,27 @@ class SessionStoreTests(unittest.TestCase):
                 f"SELECT {column} AS value FROM sessions"
             ).fetchone()["value"]
 
-    def _new_session(self, **user_kwargs: Any) -> str:
+    def _new_session(self, auth_method: str = "local") -> str:
         with self._connect() as connection:
-            user_id = _insert_user(connection, **user_kwargs)
-            return create_session(
-                connection, user_id=user_id, auth_method="local"
-            )
+            if connection.execute("SELECT 1 FROM owner").fetchone() is None:
+                insert_owner(connection)
+            return create_session(connection, auth_method=auth_method)
 
     def test_session_past_absolute_expiry_does_not_resolve(self) -> None:
         token = self._new_session()
-        self._set_session_column("absolute_expires_at", _past_iso())
+        self._set_session_column("absolute_expires_at", _past())
         with self._connect() as connection:
             self.assertIsNone(resolve_session(connection, token))
 
     def test_idle_expired_session_does_not_resolve(self) -> None:
         token = self._new_session()
-        self._set_session_column("idle_expires_at", _past_iso())
+        self._set_session_column("idle_expires_at", _past())
         with self._connect() as connection:
             self.assertIsNone(resolve_session(connection, token))
 
     def test_activity_slides_the_idle_window(self) -> None:
         token = self._new_session()
-        soon = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()
+        soon = datetime.now(timezone.utc) + timedelta(seconds=5)
         self._set_session_column("idle_expires_at", soon)
         with self._connect() as connection:
             self.assertIsNotNone(resolve_session(connection, token))
@@ -126,31 +127,30 @@ class SessionStoreTests(unittest.TestCase):
             self.assertIsNone(resolve_session(connection, token))
 
     def test_bumping_session_version_invalidates_existing_sessions(self) -> None:
-        token = self._new_session()
+        oidc = self._new_session("oidc")
+        emergency = self._new_session("local")
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE users SET session_version=session_version+1"
-            )
+            bump_session_version(connection)
         with self._connect() as connection:
-            self.assertIsNone(resolve_session(connection, token))
+            self.assertIsNone(resolve_session(connection, oidc))
+            self.assertIsNone(resolve_session(connection, emergency))
+        # A Session created after the bump carries the new version.
+        fresh = self._new_session()
+        with self._connect() as connection:
+            self.assertIsNotNone(resolve_session(connection, fresh))
 
     def test_bug_004_csrf_honors_session_version(self) -> None:
         """[BUG-004][Req: REQ-008] force-logout must invalidate CSRF lookup.
 
-        After users.session_version bump, csrf_token_for must return None
+        After an owner.session_version bump, csrf_token_for must return None
         just like resolve_session (parity for CSRF middleware fail-closed).
         """
         with self._connect() as connection:
-            user_id = _insert_user(connection, username="csrf-user", is_admin=False)
-            token = create_session(
-                connection, user_id=user_id, auth_method="local"
-            )
+            insert_owner(connection)
+            token = create_session(connection, auth_method="local")
             self.assertIsNotNone(csrf_token_for(connection, token))
             self.assertIsNotNone(resolve_session(connection, token))
-            connection.execute(
-                "UPDATE users SET session_version=session_version+1 WHERE id=%s",
-                (user_id,),
-            )
+            bump_session_version(connection)
             self.assertIsNone(resolve_session(connection, token))
             self.assertIsNone(
                 csrf_token_for(connection, token),
@@ -159,9 +159,9 @@ class SessionStoreTests(unittest.TestCase):
 
     def test_raw_token_is_never_stored(self) -> None:
         token = self._new_session()
-        stored = self._read_session_column("token_hash")
-        self.assertNotEqual(stored, token)
-        self.assertNotIn(token, stored)
+        stored = bytes(self._read_session_column("token_hash"))
+        self.assertEqual(len(stored), 32)
+        self.assertNotIn(token.encode(), stored)
 
     def test_rotation_invalidates_the_old_token_and_keeps_the_session(self) -> None:
         token = self._new_session()
@@ -214,7 +214,7 @@ class SessionStoreTests(unittest.TestCase):
             session = resolve_session(connection, token)
             connection.execute(
                 "UPDATE sessions SET idle_expires_at=%s WHERE id=%s",
-                (_past_iso(), session["id"]),
+                (_past(), session["id"]),
             )
             self.assertIsNone(set_session_vault(
                 connection, session["id"], None,
@@ -234,26 +234,15 @@ class SessionStoreTests(unittest.TestCase):
 
     def test_selected_vault_persists_across_resolves(self) -> None:
         with self._connect() as connection:
-            user_id = _insert_user(connection)
-            vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/src', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            token = create_session(
-                connection, user_id=user_id, auth_method="local"
-            )
+            insert_owner(connection)
+            vault_id = insert_vault(connection)["id"]
+            token = create_session(connection, auth_method="local")
             session = resolve_session(connection, token)
             set_session_vault(connection, session["id"], vault_id)
 
         with self._connect() as connection:
             resolved = resolve_session(connection, token)
         self.assertEqual(resolved["vault_id"], vault_id)
-
-
-
 
 
 if __name__ == "__main__":

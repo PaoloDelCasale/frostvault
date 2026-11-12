@@ -52,7 +52,7 @@ class CloudDeletionLeaseTests(unittest.TestCase):
                 barrier.wait(timeout=20)
                 try:
                     deletion.cancel_cloud_deletion(connection, vault_id=1, group_id=scheduled.group_id,
-                        actor_user_id=1, cancelled_at=DUE.isoformat())
+                        actor="owner", cancelled_at=DUE.isoformat())
                     return True
                 except deletion.CloudDeletionError:
                     return False
@@ -169,12 +169,12 @@ class CloudDeletionLeaseTests(unittest.TestCase):
 
     def test_failed_stop_deletion_needs_explicit_keep_before_releasing_root(self):
         with self.connection() as connection:
-            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+            result = protection_stop.stop_protection(connection,vault_id=1,actor="owner",
                 cloud_disposition="delete",confirmation="Photos",reason="stop")
             connection.execute("UPDATE jobs SET status='failed' WHERE group_id=%s",(result["group_id"],))
             protection_stop.reconcile_one(connection,1)
             self.assertFalse(protection_stop.status(connection,1)["root_released"])
-            result = protection_stop.stop_protection(connection,vault_id=1,actor_user_id=1,
+            result = protection_stop.stop_protection(connection,vault_id=1,actor="owner",
                 cloud_disposition="keep",confirmation="Photos",reason="keep remaining copies")
             self.assertTrue(result["root_released"])
             self.assertEqual(result["cloud_disposition"],"keep")

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
 
-import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -14,11 +13,11 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import backoff, main
-from app.backoff import reauth_account_key, reauth_ip_key
+from app.backoff import OWNER_ACCOUNT_KEY, reauth_account_key, reauth_ip_key
 from app.config import settings
 
-from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
@@ -26,7 +25,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
     PASSWORD = "correct-horse-battery"
     WRONG_PASSWORD = "not-the-local-password"
     CLIENT_IP = "127.0.0.1"
-    STALE_REAUTH_AT = "2000-01-01T00:00:00+00:00"
+    STALE_REAUTH_AT = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -36,14 +35,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.database_path)) as connection:
-            self.user_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('alice', 'Alice', %s)
-                RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Alice", password=self.PASSWORD)
 
         self.settings = replace(
             settings,
@@ -64,14 +56,11 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             self.raw_token = create_session(
                 connection,
-                user_id=self.user_id,
                 auth_method="local",
                 ip=self.CLIENT_IP,
             )
             self.csrf_token = csrf_token_for(connection, self.raw_token)
-            session = connection.execute(
-                "SELECT id FROM sessions WHERE user_id=%s", (self.user_id,)
-            ).fetchone()
+            session = connection.execute("SELECT id FROM sessions").fetchone()
             self.session_id = session["id"]
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s WHERE id=%s",
@@ -79,7 +68,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             )
 
         self.ip_counter_key = reauth_ip_key(self.CLIENT_IP)
-        self.account_counter_key = reauth_account_key(self.user_id)
+        self.account_counter_key = reauth_account_key()
         self.client = TestClient(main.app, client=(self.CLIENT_IP, 50000))
         self.client.cookies.set(self.settings.session_cookie_name, self.raw_token)
         self.client.cookies.set(self.settings.csrf_cookie_name, self.csrf_token)
@@ -104,8 +93,8 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         scope: str,
         key: str,
         failure_count: int,
-        updated_at: str,
-        next_allowed_at: str | None = None,
+        updated_at: datetime,
+        next_allowed_at: datetime | None = None,
     ) -> None:
         connection.execute(
             """
@@ -149,13 +138,11 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             ).fetchall()
             events = connection.execute(
                 """
-                SELECT event, actor_user_id, detail_json
+                SELECT event, actor, detail
                 FROM audit_events
-                WHERE actor_user_id=%s
-                  AND event IN ('reauth_failed', 'auth_backoff_blocked')
+                WHERE event IN ('reauth_failed', 'auth_backoff_blocked')
                 ORDER BY id
-                """,
-                (self.user_id,),
+                """
             ).fetchall()
 
         self.assertEqual(
@@ -169,15 +156,15 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertIn("reauth_failed", {row["event"] for row in events})
         self.assertIn("auth_backoff_blocked", {row["event"] for row in events})
         for event in events:
-            detail = json.loads(event["detail_json"])
-            self.assertEqual(event["actor_user_id"], self.user_id)
+            detail = event["detail"]
+            self.assertEqual(event["actor"], "emergency")
             self.assertEqual(detail.get("flow"), "reauth")
             self.assertNotIn("password", detail)
             self.assertNotIn("secret", detail)
 
     def test_success_clears_only_reauth_counters(self) -> None:
         """A Local Reauthentication must not reset Local Sign-in counters."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
         with PostgresConnection(str(self.database_path)) as connection:
             # Existing Local Sign-in counters deliberately use the unprefixed
             # keys and must remain untouched by the reauth success below.
@@ -191,7 +178,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             self._insert_counter(
                 connection,
                 scope="account",
-                key="alice",
+                key=OWNER_ACCOUNT_KEY,
                 failure_count=2,
                 updated_at=now,
             )
@@ -220,7 +207,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
                 SELECT scope, key FROM auth_backoff
                 WHERE (scope=%s AND key=%s) OR (scope=%s AND key=%s)
                 """,
-                ("ip", self.CLIENT_IP, "account", "alice"),
+                ("ip", self.CLIENT_IP, "account", OWNER_ACCOUNT_KEY),
             ).fetchall()
             reauth_rows = connection.execute(
                 """
@@ -236,7 +223,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
             ).fetchall()
             success = connection.execute(
                 """
-                SELECT actor_user_id, detail_json
+                SELECT actor, detail
                 FROM audit_events
                 WHERE event='reauth_succeeded'
                 ORDER BY id DESC LIMIT 1
@@ -245,11 +232,11 @@ class ReauthBackoffHttpTests(unittest.TestCase):
 
         self.assertEqual(
             {(row["scope"], row["key"]) for row in retained},
-            {("ip", self.CLIENT_IP), ("account", "alice")},
+            {("ip", self.CLIENT_IP), ("account", OWNER_ACCOUNT_KEY)},
         )
         self.assertEqual(reauth_rows, [])
-        self.assertEqual(success["actor_user_id"], self.user_id)
-        success_detail = json.loads(success["detail_json"])
+        self.assertEqual(success["actor"], "emergency")
+        success_detail = success["detail"]
         self.assertEqual(success_detail.get("flow"), "reauth")
         self.assertNotIn("password", success_detail)
         self.assertNotIn("secret", success_detail)
@@ -263,16 +250,16 @@ class ReauthBackoffHttpTests(unittest.TestCase):
                 scope="ip",
                 key=self.ip_counter_key,
                 failure_count=backoff.THRESHOLD,
-                updated_at=now.isoformat(),
-                next_allowed_at=(now + timedelta(seconds=30)).isoformat(),
+                updated_at=now,
+                next_allowed_at=now + timedelta(seconds=30),
             )
             self._insert_counter(
                 connection,
                 scope="account",
                 key=self.account_counter_key,
                 failure_count=backoff.THRESHOLD + 1,
-                updated_at=now.isoformat(),
-                next_allowed_at=(now + timedelta(seconds=90)).isoformat(),
+                updated_at=now,
+                next_allowed_at=now + timedelta(seconds=90),
             )
 
         with patch("app.backoff._now", return_value=now):
