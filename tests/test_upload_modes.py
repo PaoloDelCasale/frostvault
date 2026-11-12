@@ -70,7 +70,7 @@ class UploadModeTests(unittest.TestCase):
     def rows(self):
         with PostgresConnection(str(self.identity)) as connection:
             job = connection.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 1").fetchone()
-            versions = connection.execute("SELECT * FROM archive_versions ORDER BY version_number").fetchall()
+            versions = connection.execute("SELECT * FROM archive_versions ORDER BY discovered_at,id").fetchall()
             item = ArchiveCatalog(connection).get_file_by_path(2, "a.txt")
         return job, versions, item
 

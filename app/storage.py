@@ -1077,15 +1077,14 @@ def scan_cloud(vault: dict[str, Any], scan_id: str, *, reconnect: bool = False) 
         grouped.setdefault(entry[0], []).append(entry)
 
     with db() as connection:
-        # Decide cleanup authority before discovery changes internal version
-        # numbers. Record all listed copies chronologically, without granting
-        # trust. Legacy/unverified/mismatched or ambiguous keepers fail closed.
+        # Cleanup authority comes only from the explicit Current Snapshot.
+        # Listing chronology is observation, never trust or a keeper election.
         catalog = ArchiveCatalog(connection)
         verified_keepers: dict[str, dict[str, Any]] = {}
         stale_keeper_paths: set[str] = set()
         for path, entries in grouped.items():
             known = catalog.list_versions(vault["id"], path)
-            keeper = next((row for row in known if row["availability"] not in {"missing", "purged"}), None)
+            keeper = next((row for row in known if row["is_current"]), None)
             if keeper is None:
                 continue
             identity = (keeper["object_key"], keeper["provider_version_id"])
@@ -1247,6 +1246,12 @@ def _verify_reconnected_cloud(
         if not _cloud_scan_still_current(vault, scan_id):
             raise RuntimeError("Reconnect scan superseded")
         with db() as connection:
+            current_vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault["id"],)).fetchone()
+            if (not current_vault or current_vault["relocation_state"] != "scan_required"
+                    or not _cloud_scan_still_current(vault, scan_id)
+                    or any(current_vault.get(name) != vault.get(name) for name in (
+                        "source_root", "root_identity", "root_identity_version", "s3_bucket", "s3_prefix") if name in vault)):
+                raise RuntimeError("Reconnect target changed; snapshot not published")
             catalog = ArchiveCatalog(connection)
             catalog.mark_version_verified(row["id"], plaintext_sha256=digest, verified_at=now_iso())
             # Reconnect is the explicit no-delete exception: the complete cloud

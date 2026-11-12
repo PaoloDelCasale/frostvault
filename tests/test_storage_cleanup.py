@@ -407,13 +407,10 @@ class StorageCleanupTests(unittest.TestCase):
                     2, "report.txt"
                 )
 
-            self.assertEqual(
-                [
-                    (version["version_number"], version["provider_version_id"])
-                    for version in versions
-                ],
-                [(2, "newest"), (1, "oldest")],
-            )
+            self.assertCountEqual([version["provider_version_id"] for version in versions],
+                                  ["newest", "oldest"])
+            self.assertTrue(all(not version["recoverable"] for version in versions),
+                            "Discovery alone cannot publish either observed object")
 
     def test_upload_job_targets_a_stable_vault_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

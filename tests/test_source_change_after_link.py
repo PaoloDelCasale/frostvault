@@ -261,7 +261,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                     """
                     SELECT provider_version_id, integrity, plaintext_sha256
                     FROM archive_versions
-                    ORDER BY version_number
+                    ORDER BY provider_version_id
                     """
                 ).fetchall()
                 jobs = connection.execute(

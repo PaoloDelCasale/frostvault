@@ -18,6 +18,11 @@ from .upload_path_rules import inline_eligibility_sql
 # protection: like excluded it never counts against the Vault (#524).
 STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded", "unsupported")
 LOCAL_EXISTS_SQL = "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
+# Unselected observations remain visible, without electing any of them as a
+# recoverable representation. In particular a discovered cloud-only path must
+# not disappear just because no independent verification has admitted a keeper.
+OBSERVED_CLOUD_SQL = """EXISTS (SELECT 1 FROM archive_versions observation
+    WHERE observation.vault_file_id=vf.id AND observation.availability<>'purged')"""
 PROTECTED_SQL = """(
     lc.presence='present' AND lc.file_type='regular'
     AND av.integrity='verified' AND av.availability='available'
@@ -51,6 +56,7 @@ def state_sql(policy: Any = None) -> str:
     """
     return f"""CASE
     WHEN {PROBLEM_SQL} THEN 'problem'
+    WHEN av.id IS NULL AND NOT ({LOCAL_EXISTS_SQL}) AND {OBSERVED_CLOUD_SQL} THEN 'unconfirmed'
     WHEN av.availability='unknown' THEN 'unconfirmed'
     WHEN lc.presence='unsupported' THEN 'unsupported'
     WHEN NOT ({LOCAL_EXISTS_SQL}) AND av.id IS NOT NULL THEN
@@ -63,7 +69,7 @@ END"""
 
 
 # A missing snapshot must remain visible even with no Local Copy.
-VISIBLE_SQL = f"(({LOCAL_EXISTS_SQL}) OR av.id IS NOT NULL)"
+VISIBLE_SQL = f"(({LOCAL_EXISTS_SQL}) OR av.id IS NOT NULL OR {OBSERVED_CLOUD_SQL})"
 LATEST_JOIN_SQL = """
     LEFT JOIN archive_versions av
       ON av.id=COALESCE(vf.replacing_version_id, vf.current_version_id)

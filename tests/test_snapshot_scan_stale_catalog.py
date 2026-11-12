@@ -131,9 +131,10 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
             rows = ArchiveCatalog(connection).list_versions(2, "report.txt")
         return {row["provider_version_id"]: row["availability"] for row in rows}
 
-    def test_newer_version_survives_when_catalog_keeper_is_gone(self) -> None:
+    def test_missing_keeper_is_retained_without_electing_newer_discovery(self) -> None:
         # The (restored) catalog knows only A as the recoverable version.
         self._scan(_ListingS3([_item("s3-a", 10)]), _scan_id())
+        self._verify("s3-a")
         self.assertEqual(self._versions(), {"s3-a": "available"})
 
         # After the backup, B was uploaded and verified, and A was purged.
@@ -143,13 +144,16 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [], "the only cloud copy must never be deleted")
         versions = self._versions()
         self.assertEqual(versions.get("s3-b"), "available")
-        # A is superseded, not a loss: no false missing-copy incident.
-        self.assertEqual(versions.get("s3-a"), "purged")
+        # Listing cannot declare A superseded or grant B trust. Reconnect must
+        # independently read B before changing the explicit recovery reference.
+        self.assertEqual(versions.get("s3-a"), "missing")
         with PostgresConnection(str(self.database_path)) as connection:
-            incidents = connection.execute(
-                "SELECT COUNT(*) AS n FROM catalog_incidents"
-            ).fetchone()
-        self.assertEqual(incidents["n"], 0)
+            rows = ArchiveCatalog(connection).list_versions(2, "report.txt")
+            self.assertEqual([row["provider_version_id"] for row in rows if row["is_current"]], ["s3-a"])
+            self.assertFalse(any(row["recoverable"] for row in rows))
+            self.assertEqual(next(row for row in rows if row["provider_version_id"] == "s3-b")["integrity"], "unverified")
+            incidents = connection.execute("SELECT COUNT(*) AS n FROM catalog_incidents WHERE status='open'").fetchone()
+        self.assertGreater(incidents["n"], 0)
 
     def test_unverified_or_mismatched_legacy_keeper_never_authorizes_purge(self) -> None:
         for integrity in ("unverified", "mismatch"):
@@ -174,7 +178,8 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
 
     def _verify(self, provider: str) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE archive_versions SET integrity='verified', plaintext_sha256=%s WHERE provider_version_id=%s", ("a" * 64, provider))
+            row = connection.execute("SELECT id FROM archive_versions WHERE provider_version_id=%s", (provider,)).fetchone()
+            ArchiveCatalog(connection).mark_version_verified(row["id"], plaintext_sha256="a" * 64, verified_at=_scan_id())
 
     def test_scan_extra_is_retained_without_claimed_exact_duplicate_proof(self) -> None:
         self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
@@ -185,8 +190,8 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.assertEqual(self._versions().get("s3-a"), "available")
         self.assertEqual(self._versions().get("s3-b"), "available")
         with PostgresConnection(str(self.database_path)) as connection:
-            current = ArchiveCatalog(connection).list_versions(2, "report.txt")[0]
-            self.assertEqual(current["provider_version_id"], "s3-a", "Older discovery cannot elect itself by version_number")
+            current = next(row for row in ArchiveCatalog(connection).list_versions(2, "report.txt") if row["is_current"])
+            self.assertEqual(current["provider_version_id"], "s3-a", "Discovery cannot change the explicit Current Snapshot")
             self.assertIsNotNone(connection.execute("SELECT * FROM snapshot_reconciliation_blocks").fetchone())
             self.assertIsNone(connection.execute("SELECT * FROM snapshot_cleanup_proofs").fetchone())
 

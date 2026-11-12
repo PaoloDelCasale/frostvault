@@ -133,8 +133,10 @@ class ProtectionStatePostgresTests(unittest.TestCase):
             file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at='2026-11-03T10:00:00Z')
         version_id = None
         if archive:
-            version_id = self.catalog.record_archive_version(vault_id=9, path=path, object_key=f'files/{path}', provider_version_id=name, size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-            self.connection.execute("UPDATE archive_versions SET integrity=%s, availability=%s, plaintext_sha256=%s, verified_at=%s WHERE id=%s", ('verified' if verified else 'unverified', availability, 'a'*64, '2026-11-03T10:00:00Z' if verified else None, version_id))
+            version_id = self.catalog.record_archive_version(vault_id=9, path=path, object_key=f'files/{path}', provider_version_id=name, size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan', origin='upload')
+            if verified:
+                self.catalog.mark_version_verified(version_id, plaintext_sha256='a'*64, verified_at='2026-11-03T10:00:00Z')
+            self.connection.execute("UPDATE archive_versions SET availability=%s, plaintext_sha256=%s WHERE id=%s", (availability, 'a'*64, version_id))
         if local and archive:
             self.catalog.set_local_fingerprint(vault_id=9, path=path, plaintext_sha256=('a' if match else 'b')*64, matched_archive_version_id=version_id if match else None)
         return file_id, version_id
@@ -231,8 +233,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
 
-    def test_unsupported_migration_roundtrip_only_discards_the_disposable_rollups(self):
-        from tests.postgres import run_alembic
+    def test_current_unsupported_rollups_rebuild_without_touching_copy_evidence(self):
         self.seed('protected', archive=True, verified=True)
         self.seed('link', path='photos/link', file_type='symlink')
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
@@ -240,15 +241,12 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
                   for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
         column = "SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_unsupported'"
-        # Release evidence-read locks before subprocess DDL drops Job triggers
-        # and the bulk admission file_paths index.
-        self.connection.commit()
-        result = run_alembic(self.path, '0067_upload_multipart_journal', 'downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.connection.execute(column).fetchone()['n'], 0)
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # ADR-0035 retires old-schema roundtrips. The actual safety contract is
+        # that only derived rollups are disposable; file/path/cloud evidence is
+        # unchanged when a current-schema projection has to be reconstructed.
         self.assertEqual(self.connection.execute(column).fetchone()['n'], 1)
+        self.connection.execute('DELETE FROM directory_aggregates WHERE vault_id=9')
+        aggregates.request_vault_rebuild(self.connection, 9)
         self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'protected': 1, 'unsupported': 1})
@@ -265,7 +263,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertTrue(row['upload_eligible'])
         # ...and once verified in the cloud it is Protected like any other file.
         version = self.catalog.record_archive_version(vault_id=9, path='._only', object_key='files/._only', provider_version_id='m', size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified', availability='available', plaintext_sha256=%s WHERE id=%s", ('a' * 64, version))
+        self.catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at='2026-11-03T10:00:00Z')
         self.catalog.set_local_fingerprint(vault_id=9, path='._only', plaintext_sha256='a' * 64, matched_archive_version_id=version)
         self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1})
 
@@ -392,8 +390,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
 
-    def test_projection_migration_roundtrip_preserves_all_copy_evidence(self):
-        from tests.postgres import run_alembic
+    def test_projection_loss_and_rebuild_preserve_all_copy_evidence(self):
         self.seed('protected', archive=True, verified=True)
         self.seed('cloud', local=False, archive=True, verified=True)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
@@ -402,31 +399,26 @@ class ProtectionStatePostgresTests(unittest.TestCase):
                     for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
         before = evidence()
         self.connection.commit()
-        result = run_alembic(self.path, '0054_watcher_auto_upload', 'downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.connection.execute('DELETE FROM directory_aggregates WHERE vault_id=9')
+        aggregates.request_vault_rebuild(self.connection, 9)
         self.assertEqual(evidence(), before)
         self.assertEqual(self.connection.execute('SELECT COUNT(*) AS n FROM directory_aggregates').fetchone()['n'], 0)
         self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
         self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 1)
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'protected': 1, 'cloud_only': 1})
+        self.assertEqual(evidence(), before)
 
-    def test_excluded_migration_roundtrip_only_discards_the_disposable_rollups(self):
-        from tests.postgres import run_alembic
+    def test_excluded_rollup_reconstruction_preserves_all_copy_evidence(self):
         self.seed('protected', archive=True, verified=True)
         self.seed('._meta', path='photos/._meta')
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
         before = {table: self.connection.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall()
                   for table in ('vault_files', 'file_paths', 'local_copies', 'archive_versions', 'jobs')}
-        # Release evidence-read locks before subprocess DDL drops Job triggers
-        # and the bulk admission file_paths index.
-        self.connection.commit()
-        result = run_alembic(self.path, '0065_upload_remediation', 'downgrade')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 0)
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.connection.execute('DELETE FROM directory_aggregates WHERE vault_id=9')
+        aggregates.request_vault_rebuild(self.connection, 9)
+        self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='directory_aggregates' AND column_name='state_excluded'").fetchone()['n'], 1)
         self.assertEqual(self.connection.execute('SELECT status FROM directory_aggregate_status WHERE vault_id=9').fetchone()['status'], 'rebuild_required')
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'protected': 1, 'excluded': 1})

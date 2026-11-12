@@ -14,7 +14,8 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    if bind.execute(sa.text("SELECT 1 FROM archive_versions LIMIT 1")).first():
+    if bind.execute(sa.text("""SELECT 1 WHERE EXISTS (SELECT 1 FROM vaults)
+        OR EXISTS (SELECT 1 FROM vault_files) OR EXISTS (SELECT 1 FROM archive_versions)""")).first():
         raise RuntimeError("The new Current Snapshot baseline requires an empty catalog; no version election or adoption is supported")
     op.add_column("vault_files", sa.Column("current_version_id", sa.String(36)))
     op.add_column("vault_files", sa.Column("replacing_version_id", sa.String(36)))
@@ -36,6 +37,8 @@ def upgrade() -> None:
                SELECT 1 FROM archive_versions av WHERE av.id=NEW.current_version_id
                  AND av.vault_file_id=NEW.id AND av.vault_id=NEW.vault_id
                  AND av.integrity='verified' AND av.availability='available'
+                 AND av.provider_version_id IS NOT NULL AND av.provider_version_id NOT IN ('','null')
+                 AND av.object_key IS NOT NULL AND av.object_key<>'' AND av.size>=0
                  AND av.plaintext_sha256 ~ '^[0-9a-f]{64}$' AND av.verified_at IS NOT NULL
           ) THEN
             RAISE EXCEPTION 'Current Snapshot requires a verified available exact Archive Version' USING ERRCODE='23514';
@@ -66,6 +69,10 @@ def upgrade() -> None:
     op.drop_index("archive_versions_file_verification_idx", table_name="archive_versions")
     op.drop_constraint("archive_versions_file_number_uq", "archive_versions", type_="unique")
     op.drop_column("archive_versions", "version_number")
+    op.create_index("archive_versions_file_observation_idx", "archive_versions",
+                    ["vault_file_id", "discovered_at", "id"])
+    op.create_index("archive_versions_live_file_idx", "archive_versions", ["vault_file_id", "id"],
+                    postgresql_where=sa.text("availability<>'purged'"))
 
 
 def downgrade() -> None:

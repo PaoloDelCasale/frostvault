@@ -80,7 +80,7 @@ class CloudDeletionLeaseTests(unittest.TestCase):
             "Key":"vaults/test/photo.jpg","VersionId":"photo.jpg-v1","Code":"AccessDenied"}]}
         self.execute(scheduled,client=client)
         with self.connection() as connection:
-            rows = connection.execute("SELECT provider_version_id,availability FROM archive_versions ORDER BY version_number").fetchall()
+            rows = connection.execute("SELECT provider_version_id,availability FROM archive_versions ORDER BY provider_version_id").fetchall()
             self.assertEqual([(r["provider_version_id"],r["availability"]) for r in rows],
                              [("photo.jpg-v0","purged"),("photo.jpg-v1","available")])
             self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"],"failed")

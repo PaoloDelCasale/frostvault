@@ -548,7 +548,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity FROM archive_versions
-                    ORDER BY version_number
+                    ORDER BY provider_version_id
                     """
                 ).fetchall()
                 local_copy = connection.execute(
@@ -654,7 +654,7 @@ class ChangedContentUploadWorkerTests(unittest.TestCase):
                     """
                     SELECT provider_version_id, integrity
                     FROM archive_versions
-                    ORDER BY version_number
+                    ORDER BY provider_version_id
                     """
                 ).fetchall()
             self.assertEqual(commands, ["upload", "read"])

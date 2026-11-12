@@ -246,8 +246,8 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                         storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
                         observed_at=NOW.isoformat(),scan_id='scan')
                     availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
-                    c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s,availability=%s WHERE id=%s",
-                              ('a'*64,availability,version))
+                    catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at=NOW.isoformat())
+                    c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s", (availability, version))
                     if local:
                         catalog.set_local_fingerprint(vault_id=self.vault_id,path=name,plaintext_sha256='a'*64,
                                                       matched_archive_version_id=version)
@@ -285,7 +285,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             version = catalog.record_archive_version(vault_id=self.vault_id,path='sole.jpg',object_key='docs/sole',
                 provider_version_id='sole',size=2,storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
                 observed_at=NOW.isoformat(),scan_id='scan')
-            c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s WHERE id=%s",('a'*64,version))
+            catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at=NOW.isoformat())
         result = run_alembic(self.path,'0055_protection_states','downgrade')
         self.assertEqual(result.returncode,0,result.stderr)
         with self.connect() as c:

@@ -24,7 +24,7 @@ class DurableDiscoveryQueryTests(unittest.TestCase):
         self.assertIn('i.created_at<=%s', sql)
         self.assertIn('i.send_started AND NOT i.settled', sql)
         self.assertNotIn('created_at::', sql)
-        self.assertEqual(sql.count('LIMIT 1'), 4)  # three sources + exact verified keeper
+        self.assertEqual(sql.count('LIMIT 1'), 3)  # one bound per source, no keeper election
 
     def test_active_and_enrolled_filters_precede_each_bounded_source_limit(self):
         sql, _ = discovery.obligation_query(vault_sql='2', stamp=STAMP, limit=3)
@@ -40,7 +40,10 @@ class DurableDiscoveryQueryTests(unittest.TestCase):
 
     def test_discovery_cannot_elect_an_unknown_or_unverified_keeper(self):
         sql, _ = discovery.obligation_query(vault_sql='2', stamp=STAMP)
-        self.assertIn("keeper.integrity='verified' AND keeper.availability='available'", sql)
+        self.assertIn("av.id=vf.current_version_id", sql)
+        self.assertIn("av.integrity='verified' AND av.availability='available'", sql)
+        self.assertNotIn('version_number', sql)
+        self.assertNotIn('JOIN LATERAL', sql)
         self.assertIn("av.upload_snapshot_json IS NOT NULL", sql)
         self.assertIn("evidence.upload_plaintext_sha256 ~ '^[0-9a-f]{64}$'", sql)
         self.assertNotIn('provider_version_id', sql)

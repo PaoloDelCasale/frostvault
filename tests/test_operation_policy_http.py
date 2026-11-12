@@ -228,11 +228,11 @@ class OperationPolicyHttpTests(unittest.TestCase):
         connection.execute(
             """
             INSERT INTO archive_versions(
-                id, vault_file_id, vault_id, version_number, object_key,
+                id, vault_file_id, vault_id, object_key,
                 provider_version_id, size, storage_class, etag, discovered_at,
                 origin, integrity, availability
             ) VALUES (
-                %s, %s, %s, 1, %s, %s, %s, 'STANDARD', 'etag',
+                %s, %s, %s, %s, %s, %s, 'STANDARD', 'etag',
                 '2026-07-01T00:00:00+00:00', 'upload', 'verified', 'available'
             )
             """,

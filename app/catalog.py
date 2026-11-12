@@ -8,7 +8,7 @@ from typing import Any, Sequence
 from .services.job_admission import TERMINAL_JOB_STATUSES, lock_vault
 from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
-    VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
+    VISIBLE_SQL, LATEST_JOIN_SQL, OBSERVED_CLOUD_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
 )
 from .services.directory_aggregates import (
     count_child_directories,
@@ -865,7 +865,8 @@ class ArchiveCatalog:
               AND integrity='verified'
               AND availability='available'
               AND plaintext_sha256=%s
-              AND id=(SELECT current_version_id FROM vault_files WHERE id=archive_versions.vault_file_id)
+              AND id=(SELECT current_version_id FROM vault_files
+                  WHERE id=archive_versions.vault_file_id AND replacing_version_id IS NULL)
               AND (restore_state IS NULL OR restore_state <> 'restoring')
             LIMIT 1
             """,
@@ -2330,7 +2331,7 @@ class ArchiveCatalog:
                 av.storage_class,
                 av.storage_class_source,
                 av.origin,
-                av.id=vf.current_version_id AS is_current,
+                COALESCE(av.id=vf.current_version_id,FALSE) AS is_current,
                 av.etag,
                 av.plaintext_sha256,
                 av.uploaded_at,
@@ -2595,6 +2596,7 @@ class ArchiveCatalog:
             SELECT
                 {self._state_sql(vault_id)} AS protection_state,
                 {self._path_excluded_sql(vault_id)} AS path_excluded,
+                ({OBSERVED_CLOUD_SQL}) AS has_cloud_observations,
                 CASE WHEN av.availability='unknown'
                      THEN greatest(lc.observed_at, av.verified_at)
                      ELSE greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
@@ -2645,7 +2647,7 @@ class ArchiveCatalog:
         for row in rows:
             local_exists = row["local_presence"] in {"present", "unsupported"}
             cloud_exists = row["archive_version_id"] is not None and row["availability"] not in {"missing", "purged"}
-            if not local_exists and row["archive_version_id"] is None:
+            if not local_exists and row["archive_version_id"] is None and not row.get("has_cloud_observations"):
                 continue
             protection = project_file(row, unconfirmed=self.protection_unconfirmed)
             upload_eligible = local_copy_is_upload_eligible(row)

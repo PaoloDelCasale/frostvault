@@ -268,7 +268,8 @@ class DirectoryScaleTests(unittest.TestCase):
             observed_at="2026-07-21T10:00:00+00:00",
             scan_id="scan-1",
         )
-        self.connection.execute("UPDATE archive_versions SET integrity='verified' WHERE id=%s", (cloud_version,))
+        self.catalog.mark_version_verified(cloud_version, plaintext_sha256='a'*64,
+                                           verified_at='2026-07-21T10:00:00+00:00')
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
         search = self.catalog.list_files_page(

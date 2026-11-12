@@ -148,7 +148,7 @@ class VersionSelectionTests(unittest.TestCase):
             self.assertEqual(eligible, 0)
             self.assertEqual(job_ids, [])
 
-    def test_default_recover_targets_highest_recoverable_version_number(self) -> None:
+    def test_default_recover_targets_the_explicit_current_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = self._fixture(Path(directory))
             with PostgresConnection(str(database_path)) as connection:

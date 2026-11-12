@@ -17,7 +17,7 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         self.connection.execute("UPDATE archive_versions SET storage_class='DEEP_ARCHIVE' WHERE id=%s", (version,))
         self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
         other = self.catalog.record_archive_version(vault_id=10, path='photos/cold.jpg', object_key='second/photos/cold.jpg', provider_version_id='other', size=12, storage_class='STANDARD', etag='e', uploaded_at=stamp, observed_at=stamp, scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified',availability='available' WHERE id=%s", (other,))
+        self.catalog.mark_version_verified(other, plaintext_sha256='a'*64, verified_at=stamp)
         self.connection.commit()
         request = RecoverEstimateRequest(path='photos', is_directory=True, restore_tier='Bulk')
         with patch('app.database.settings', self.cfg), patch('app.main.settings', self.cfg):
@@ -59,7 +59,7 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         _, first_version = self.seed('same', local=False, archive=True, verified=True)
         self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
         second = self.catalog.record_archive_version(vault_id=10, path='photos/same.jpg', object_key='second/photos/same.jpg', provider_version_id='second-copy', size=12, storage_class='DEEP_ARCHIVE', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified',availability='available',plaintext_sha256=%s WHERE id=%s", ('b'*64, second))
+        self.catalog.mark_version_verified(second, plaintext_sha256='b'*64, verified_at='2026-11-03T10:00:00Z')
         vaults = [{'id':9,'name':'Files','unconfirmed':False}, {'id':10,'name':'Second','unconfirmed':False}]
         one = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=1, page_size=1)
         two = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=2, page_size=1)

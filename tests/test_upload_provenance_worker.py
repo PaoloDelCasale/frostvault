@@ -479,17 +479,23 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         with PostgresConnection(self.db_path) as connection:
             discovered = connection.execute("SELECT * FROM archive_versions WHERE provider_version_id<>'legacy-keeper'").fetchone()
         self.assertEqual(discovered["origin"], "discovered")
-        self.assertLess(discovered["version_number"], 0)
+        with PostgresConnection(self.db_path) as connection:
+            state = connection.execute("SELECT current_version_id,replacing_version_id FROM vault_files WHERE id=%s", (discovered["vault_file_id"],)).fetchone()
+        self.assertEqual(state["current_version_id"], keeper)
+        self.assertIsNone(state["replacing_version_id"], "Observation is not admission")
         self.assertEqual(self.provider.deletes, 0)
         resumed = self.resume()
         current = self.assert_keeper(resumed)
         self.assertEqual(current["id"], discovered["id"])
         self.assertEqual(current["origin"], "upload")
-        self.assertGreater(current["version_number"], 1)
+        with PostgresConnection(self.db_path) as connection:
+            state = connection.execute("SELECT current_version_id,replacing_version_id FROM vault_files WHERE id=%s", (discovered["vault_file_id"],)).fetchone()
+        self.assertEqual(state["current_version_id"], current["id"])
+        self.assertIsNone(state["replacing_version_id"])
         self.scan()
         with PostgresConnection(self.db_path) as connection:
             versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
-        self.assertEqual(versions[0]["id"], current["id"])
+        self.assertEqual([row["id"] for row in versions if row["recoverable"]], [current["id"]])
         self.assertEqual(next(row for row in versions if row["id"] == keeper)["availability"], "purged")
         self.assertEqual((self.provider.puts, self.provider.gets, self.provider.deletes), (1, 0, 1))
         self.assertEqual(self.provider.deleted, [("docs/report.txt", "legacy-keeper")])
@@ -722,7 +728,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.scan(); self.scan()
         self.assertEqual(self.provider.deletes, 0)
         with PostgresConnection(self.db_path) as connection:
-            self.assertEqual(ArchiveCatalog(connection).list_versions(2,"report.txt")[0]["id"], keeper)
+            self.assertEqual([row["id"] for row in ArchiveCatalog(connection).list_versions(2,"report.txt") if row["recoverable"]], [keeper])
             self.assertEqual(connection.execute("SELECT integrity FROM archive_versions WHERE provider_version_id='different-discovered'").fetchone()["integrity"], "unverified")
             self.file.write_bytes(b"immutable content C")
             ArchiveCatalog(connection).observe_local_copy(vault_id=2,path="report.txt",file_type="regular",size=self.file.stat().st_size,mtime_ns=self.file.stat().st_mtime_ns,observed_at=storage.now_iso())

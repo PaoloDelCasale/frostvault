@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .operation_policies import get_policy
-from .protection_states import LATEST_JOIN_SQL, aggregate_state, state_sql
+from .protection_states import LATEST_JOIN_SQL, OBSERVED_CLOUD_SQL, aggregate_state, state_sql
 from .database_retry import owned_connection, retry_database_unit
 
 
@@ -1000,6 +1000,7 @@ def _visible_file_select_sql(
     sql = f"""
         SELECT
             {state_sql(policy)} AS protection_state,
+            ({OBSERVED_CLOUD_SQL}) AS has_cloud_observations,
             vf.id AS vault_file_id,
             fp.path,
             lc.presence AS local_presence,
@@ -1098,7 +1099,7 @@ def _iter_visible_file_contributions(
 def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:
     local_exists = row["local_presence"] in {"present", "unsupported"}
     cloud_exists = row["archive_version_id"] is not None
-    if not local_exists and not cloud_exists:
+    if not local_exists and not cloud_exists and not row.get("has_cloud_observations"):
         return None
     state = str(row["protection_state"])
     local_size = int(row["local_size"] or 0) if row["local_size"] is not None else 0
@@ -1169,7 +1170,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
             SUM(CASE WHEN protection_state='cloud_only'
                 THEN 1 ELSE 0 END) AS action_cloud_purge
         FROM ({select_sql}) classified
-        WHERE local_presence IN ('present', 'unsupported') OR archive_version_id IS NOT NULL
+        WHERE local_presence IN ('present', 'unsupported') OR archive_version_id IS NOT NULL OR has_cloud_observations
         GROUP BY protection_state
         """, (int(vault_id), *extra_params),
     ).fetchall()

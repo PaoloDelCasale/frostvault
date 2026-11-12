@@ -758,9 +758,11 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         keeper = self.assert_keeper(job)
         with self.db() as connection:
             newer = dict(connection.execute("SELECT * FROM archive_versions WHERE id=%s", (keeper["id"],)).fetchone())
-            newer.update(id="newer-version", version_number=keeper["version_number"] + 1, provider_version_id="newer-provider-version")
+            newer.update(id="newer-version", provider_version_id="newer-provider-version")
             columns = list(newer)
             connection.execute(f"INSERT INTO archive_versions({','.join(columns)}) VALUES ({','.join(['%s'] * len(columns))})", [newer[c] for c in columns])
+            connection.execute("UPDATE vault_files SET current_version_id=%s WHERE id=%s",
+                               (newer["id"], keeper["vault_file_id"]))
             with self.assertRaises(provenance.UploadBlocked) as raised:
                 snapshot_cleanup._keeper(connection, self.job_with_vault(job), keeper["id"])
         self.assertEqual(raised.exception.reason, "target_superseded")
