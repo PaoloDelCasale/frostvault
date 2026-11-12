@@ -301,7 +301,11 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertNotIn("if", stress)
         self.assertFalse(stress.get("continue-on-error", False))
         self.assertIn("tests.test_aggregate_deadlocks", stress["run"])
-        self.assertIn("tests.test_database", stress["run"])
+        guard = next(step for step in job["steps"]
+                     if step.get("name") == "PostgreSQL schema guard and baseline tests")
+        self.assertEqual(guard["run"], "python -m unittest tests.test_database -v")
+        self.assertNotIn("if", guard)
+        self.assertLess(job["steps"].index(guard), job["steps"].index(stress))
         output = 'echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"'
         self.assertIn(output, stress["run"])
         self.assertLess(stress["run"].index("python -m unittest"), stress["run"].index(output))

@@ -154,11 +154,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y postgresql-client-16
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
-      - name: PostgreSQL schema guard, baseline and concurrency tests
+      - name: PostgreSQL schema guard and baseline tests
+        run: python -m unittest tests.test_database -v
+      - name: PostgreSQL concurrency tests
         id: stress
         run: |
           python -m unittest \
-            tests.test_database \
             tests.test_aggregate_deadlocks \
             -v
           echo "profile=$FROSTVAULT_STRESS_PROFILE" >> "$GITHUB_OUTPUT"
