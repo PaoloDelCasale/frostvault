@@ -256,6 +256,7 @@ class FileBrowserTests(unittest.TestCase):
                     uploaded_at="2026-07-21T10:00:00+00:00",
                     observed_at="2026-07-21T10:00:00+00:00",
                     scan_id="2026-07-21T10:00:00+00:00",
+                    origin="upload",  # An admitted, still-unverified replacement.
                 )
             test_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),

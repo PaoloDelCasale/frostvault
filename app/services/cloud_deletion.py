@@ -167,8 +167,12 @@ def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
 
 def _versions(connection: Any, file_id: str) -> list[dict[str, Any]]:
     return connection.execute("""
-        SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability<>'purged'
-        ORDER BY id
+        SELECT av.* FROM archive_versions av
+        JOIN vault_files vf ON vf.id=av.vault_file_id
+        WHERE av.vault_file_id=%s AND av.availability<>'purged'
+        -- Stable capture order; leave the explicit Current Snapshot last.
+        -- UUID order conveys no chronology or keeper authority.
+        ORDER BY (av.id=vf.current_version_id), av.uploaded_at, av.id
     """, (file_id,)).fetchall()
 
 

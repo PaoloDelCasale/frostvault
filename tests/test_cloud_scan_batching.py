@@ -205,11 +205,12 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 _run_scan(database_path, pages=[], paginate=paginate)
 
             with PostgresConnection(str(database_path)) as connection:
-                kept = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
-            self.assertEqual(kept["latest_version"]["availability"], "available")
-            self.assertEqual(
-                kept["latest_version"]["provider_version_id"], "kept-v1"
-            )
+                catalog = ArchiveCatalog(connection)
+                kept = catalog.list_versions(2, "kept.txt")
+                self.assertEqual(catalog.get_file_by_path(2, "kept.txt")["latest_version"]["id"], version_id)
+            self.assertEqual(kept[0]["availability"], "available")
+            self.assertEqual(kept[0]["provider_version_id"], "kept-v1")
+            self.assertTrue(kept[0]["recoverable"])
 
     def test_complete_listing_marks_unseen_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -250,10 +251,14 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 ],
             )
             with PostgresConnection(str(database_path)) as connection:
-                gone = ArchiveCatalog(connection).get_file_by_path(2, "gone.txt")
-                still = ArchiveCatalog(connection).get_file_by_path(2, "still.txt")
-            self.assertEqual(gone["latest_version"]["availability"], "missing")
-            self.assertEqual(still["latest_version"]["availability"], "available")
+                catalog = ArchiveCatalog(connection)
+                gone = catalog.list_versions(2, "gone.txt")
+                still = catalog.list_versions(2, "still.txt")
+                self.assertIsNone(catalog.get_file_by_path(2, "gone.txt")["latest_version"])
+                self.assertIsNone(catalog.get_file_by_path(2, "still.txt")["latest_version"])
+            self.assertEqual(gone[0]["availability"], "missing")
+            self.assertEqual(still[0]["availability"], "available")
+            self.assertFalse(any(row["recoverable"] for row in gone + still))
 
     def test_superseded_scan_generation_does_not_mark_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -300,8 +305,11 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 pages=[{"Versions": [], "DeleteMarkers": []}],
             )
             with PostgresConnection(str(database_path)) as connection:
-                kept = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
-            self.assertEqual(kept["latest_version"]["availability"], "available")
+                catalog = ArchiveCatalog(connection)
+                kept = catalog.list_versions(2, "kept.txt")
+                self.assertIsNone(catalog.get_file_by_path(2, "kept.txt")["latest_version"])
+            self.assertEqual(kept[0]["availability"], "available")
+            self.assertFalse(kept[0]["recoverable"])
 
     def test_version_batches_commit_after_listing_without_tag_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -238,8 +238,17 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
                 self.assertEqual(s3.deleted, [])
                 self.assertIn("s3-a", s3.versions["docs/report.txt"])
                 with PostgresConnection(str(database_path)) as connection:
-                    prior = next(row for row in ArchiveCatalog(connection).list_versions(2, "report.txt") if row["provider_version_id"] == "s3-a")
-                self.assertTrue(prior["recoverable"])
+                    versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+                    current_id = connection.execute("SELECT vf.current_version_id FROM vault_files vf JOIN archive_versions av ON av.vault_file_id=vf.id WHERE av.id=%s", (versions[0]["id"],)).fetchone()["current_version_id"]
+                prior = next(row for row in versions if row["provider_version_id"] == "s3-a")
+                self.assertEqual((prior["integrity"], prior["availability"]), ("verified", "available"))
+                self.assertEqual(prior["recoverable"], prior["id"] == current_id)
+                # Cleanup failure may follow publication of a verified replacement.
+                # Exactly that explicit snapshot is selectable; history is retained.
+                keepers = [row for row in versions if row["recoverable"]]
+                self.assertEqual(len(keepers), 1)
+                self.assertEqual(keepers[0]["id"], current_id)
+                self.assertIn(keepers[0]["provider_version_id"], s3.versions["docs/report.txt"])
 
     def test_overwrite_purges_previous_archive_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

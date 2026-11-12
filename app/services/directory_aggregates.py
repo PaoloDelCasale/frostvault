@@ -1202,6 +1202,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
           AND vf.status = 'active'
           AND fp.path LIKE %s ESCAPE '\\'
           AND av.storage_class IS NOT NULL
+          AND av.availability NOT IN ('missing', 'purged')
           AND (
                 lc.presence IN ('present', 'unsupported')
              OR av.id IS NOT NULL

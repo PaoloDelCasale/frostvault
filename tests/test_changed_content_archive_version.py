@@ -361,7 +361,7 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         self.assertEqual(second, [])
         self.assertEqual(eligible, 0)
 
-    def test_three_versions_remain_recoverable_on_the_same_vault_file(self) -> None:
+    def test_history_is_preserved_but_only_explicit_current_snapshot_is_recoverable(self) -> None:
         connection = self._open()
         _seed_user_vault(connection, self.source)
         catalog = ArchiveCatalog(connection)
@@ -404,7 +404,8 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         versions = catalog.list_versions(2, "report.txt")
         self.assertEqual(observed["id"], file_id)
         self.assertEqual(len(versions), 3)
-        self.assertTrue(all(row["recoverable"] for row in versions))
+        self.assertTrue(all(row["availability"] == "available" and row["integrity"] == "verified" for row in versions))
+        self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-c"])
         self.assertEqual(
             [row["provider_version_id"] for row in versions],
             ["s3-c", "s3-b", "s3-a"],

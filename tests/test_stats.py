@@ -30,7 +30,7 @@ class StatsTests(unittest.TestCase):
             connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', '/sources/photos', 'bucket', 'files')")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21")
-            catalog.record_archive_version(vault_id=9, path="photo.jpg", object_key="files/photo.jpg", provider_version_id="only-copy", size=44, storage_class="STANDARD", etag="etag", uploaded_at="2026-07-21", observed_at="2026-07-21", scan_id="scan")
+            catalog.record_archive_version(vault_id=9, path="photo.jpg", object_key="files/photo.jpg", provider_version_id="only-copy", size=44, storage_class="STANDARD", etag="etag", uploaded_at="2026-07-21", observed_at="2026-07-21", scan_id="scan", origin="upload")
         self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         runtime_status.pop(9, None)
         self.addCleanup(runtime_status.pop, 9, None)

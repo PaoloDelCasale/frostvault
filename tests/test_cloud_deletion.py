@@ -112,6 +112,16 @@ class CloudDeletionTests(unittest.TestCase):
                 now=DUE.isoformat(), message="deleting", message_key="job.cloud_purge_deleting"))
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()["n"], 2)
 
+    def test_capture_keeps_explicit_current_last_even_when_timestamps_disagree(self):
+        with self.connection() as connection:
+            # Neither provider chronology nor random UUID ordering can elect a
+            # keeper. Capture the explicit reference last, even after restore.
+            connection.execute("UPDATE archive_versions SET uploaded_at='2000-01-01T00:00:00+00:00' WHERE provider_version_id='photo.jpg-v1'")
+            scheduled = self.schedule(connection)
+            items = connection.execute("SELECT provider_version_id FROM cloud_deletion_items ORDER BY id").fetchall()
+            self.assertEqual([row["provider_version_id"] for row in items], ["photo.jpg-v0", "photo.jpg-v1"])
+            self.assertEqual(len(scheduled.job_ids), 1)
+
     def test_metadata_restore_revokes_item_consent_without_starving_later_uploads(self):
         from app.services.recovery_kit import record_metadata_restore
         from app.services.operation_policies import queue_auto_uploads

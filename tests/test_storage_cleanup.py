@@ -340,17 +340,17 @@ class StorageCleanupTests(unittest.TestCase):
                 )
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "reports/annual.txt"
-                )
+                catalog = ArchiveCatalog(connection)
+                observed = catalog.get_file_by_path(2, "reports/annual.txt")
+                versions = catalog.list_versions(2, "reports/annual.txt")
 
             self.assertEqual(count, 1)
-            self.assertEqual(
-                observed["latest_version"]["provider_version_id"],
-                "s3-version-2",
-            )
-            self.assertEqual(observed["latest_version"]["availability"], "available")
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
+            self.assertIsNone(observed["latest_version"], "Discovery must not elect a snapshot")
+            self.assertEqual(len(versions), 1)
+            self.assertEqual(versions[0]["provider_version_id"], "s3-version-2")
+            self.assertEqual(versions[0]["availability"], "available")
+            self.assertEqual(versions[0]["integrity"], "unverified")
+            self.assertFalse(versions[0]["recoverable"])
 
     def test_cloud_versions_have_deterministic_internal_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

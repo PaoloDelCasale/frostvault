@@ -837,14 +837,8 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             observed_at="2026-07-21T10:00:00+00:00",
             scan_id="scan-1",
         )
-        self.connection.execute(
-            """
-            UPDATE archive_versions
-            SET plaintext_sha256=%s, integrity='verified', verified_at=%s
-            WHERE id=%s
-            """,
-            (digest, "2026-07-21T10:00:00+00:00", version_id),
-        )
+        self.catalog.mark_version_verified(version_id, plaintext_sha256=digest,
+                                           verified_at="2026-07-21T10:00:00+00:00")
         self.catalog.set_local_fingerprint(
             vault_id=2,
             path=path,
@@ -1040,14 +1034,8 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
                 observed_at="2026-07-21T10:00:00+00:00",
                 scan_id="scan-rename",
             )
-            self.connection.execute(
-                """
-                UPDATE archive_versions
-                SET plaintext_sha256=%s, integrity='verified', verified_at=%s
-                WHERE id=%s
-                """,
-                (digest, "2026-07-21T10:00:00+00:00", version_id),
-            )
+            self.catalog.mark_version_verified(version_id, plaintext_sha256=digest,
+                                               verified_at="2026-07-21T10:00:00+00:00")
         self.catalog.set_local_fingerprint(
             vault_id=2,
             path=old_path,

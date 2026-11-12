@@ -50,6 +50,10 @@ def prepare_unsent(case, job_id):
 
 class UploadProvenanceWorkerTests(unittest.TestCase):
     def setUp(self):
+        # Every disposable database restarts Job IDs. Process-local signals from
+        # another test/database must not cancel an unrelated Job with that ID.
+        storage.cancelled_jobs.clear()
+        self.addCleanup(storage.cancelled_jobs.clear)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)

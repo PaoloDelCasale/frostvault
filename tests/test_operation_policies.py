@@ -588,6 +588,9 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 plaintext_sha256=digest,
                 matched_archive_version_id=version_id,
             )
+            # Model the recorded outcome of an authorized exact deletion:
+            # a purged representation cannot remain the Current Snapshot.
+            connection.execute("UPDATE vault_files SET current_version_id=NULL WHERE current_version_id=%s", (version_id,))
             connection.execute(
                 "UPDATE archive_versions SET availability='purged' WHERE id=%s",
                 (version_id,),

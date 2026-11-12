@@ -151,6 +151,7 @@ class CatalogIncidentTests(unittest.TestCase):
 
     def test_authorized_purge_does_not_open_incident(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
+            connection.execute("UPDATE vault_files SET current_version_id=NULL WHERE current_version_id=%s", (self.version_id,))
             connection.execute(
                 "UPDATE archive_versions SET availability='purged' WHERE id=%s",
                 (self.version_id,),
