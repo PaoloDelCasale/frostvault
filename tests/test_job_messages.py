@@ -22,10 +22,10 @@ from app.catalog import ArchiveCatalog
 
 from app.i18n import LOCALE_COOKIE_NAME, present_job_message
 from app.main import app
-from app.security import hash_password
 from app.sessions import create_session
 from app.storage import schedule_upload_retry, set_job
 from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import run_alembic
 
 
@@ -160,23 +160,9 @@ class JobMessageHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.database_path)) as connection:
-            password_hash = hash_password(self.PASSWORD)
-            user_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
-                RETURNING id
-                """,
-                (password_hash,),
-            ).fetchone()["id"]
-            vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/source', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
-            ArchiveCatalog(connection).observe_local_copy(
+            insert_owner(connection, password=self.PASSWORD)
+            vault_id = insert_vault(connection, name="Docs", source_root="/source")["id"]
+            file_id = ArchiveCatalog(connection).observe_local_copy(
                 vault_id=vault_id,
                 path="a.txt",
                 file_type="regular",
@@ -187,20 +173,18 @@ class JobMessageHttpTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status, message,
-                    message_key, message_params, requested_by, requested_at, updated_at
+                    vault_id, file_id, action, status, message, message_key,
+                    message_params, requested_at, updated_at
                 ) VALUES (
-                    %s,
-                    (SELECT id FROM vault_files WHERE vault_id=%s LIMIT 1),
-                    'a.txt', 'upload', 'completed', 'Upload verified',
-                    'job.upload_verified', '{}', %s,
+                    %s, %s, 'upload', 'completed', 'Upload verified',
+                    'job.upload_verified', '{}',
                     '2026-07-22T10:00:00+00:00', '2026-07-22T10:00:00+00:00'
                 )
                 """,
-                (vault_id, vault_id, user_id),
+                (vault_id, file_id),
             )
-            self.user_id = user_id
             self.vault_id = vault_id
+            self.file_id = file_id
 
         self.settings = replace(
             settings,
@@ -220,7 +204,6 @@ class JobMessageHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             raw = create_session(
                 connection,
-                user_id=self.user_id,
                 ip="127.0.0.1",
                 user_agent="test",
                 auth_method="oidc",

@@ -204,8 +204,7 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
             SELECT id FROM jobs WHERE action='cloud-purge' AND status<>'completed')
         """, (now_iso(),))
     connection.execute("""
-        UPDATE jobs SET status='cancelled', claim_token=NULL, claimed_at=NULL,
-            claim_expires_at=NULL, updated_at=%s,
+        UPDATE jobs SET status='cancelled', updated_at=%s,
             message='Metadata restored; request this operation again after reconnect',
             message_key=NULL, message_params=NULL
         WHERE status NOT IN ('completed','failed','cancelled')

@@ -24,7 +24,8 @@ Archive Version and Job tables and add their own:
   ``job_uploads`` / ``job_restores`` / ``job_storage_class_changes`` the
   per-action details, ``job_groups`` with ``restore_requests`` and
   ``cloud_purge_requests`` the request; ``scheduler_vault_turns`` the fair
-  scheduler's durable Vault turns (#589).
+  scheduler's durable Vault turns; ``job_terminal_notifications`` the
+  outbox of Job outcomes not yet notified (#589).
 - ``sessions``, ``oidc_login``, ``auth_backoff``: Owner Sessions (revoked as a
   whole by ``owner.session_version``), transient OIDC login state and the
   durable sign-in throttle.
@@ -705,22 +706,37 @@ CREATE TRIGGER scheduler_job_deleted
     AFTER DELETE ON jobs
     FOR EACH ROW EXECUTE FUNCTION scheduler_invalidate_job_turn();
 
--- A terminal Job holds no lease: whoever ends it (worker, cancellation,
--- expiry, revoked consent) releases the claim in the same transaction.
-CREATE FUNCTION jobs_release_terminal_lease() RETURNS trigger
+-- Terminal notification outbox: a row is a completed or failed Job whose
+-- Owner notification is not materialized yet. Entering it is part of ending
+-- the Job (trigger below); materializing the notification deletes the row,
+-- and a later sweep retries what a fault left behind.
+CREATE TABLE job_terminal_notifications (
+    job_id bigint PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    queued_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ending a Job, whoever ends it (worker, cancellation, expiry, revoked
+-- consent), releases its lease and, for an outcome, queues its notification
+-- in the same transaction.
+CREATE FUNCTION jobs_end() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     DELETE FROM job_leases WHERE job_id = NEW.id;
+    IF NEW.status IN ('completed', 'failed') THEN
+        INSERT INTO job_terminal_notifications(job_id, queued_at)
+        VALUES (NEW.id, NEW.finished_at)
+        ON CONFLICT (job_id) DO NOTHING;
+    END IF;
     RETURN NULL;
 END
 $$;
 
-CREATE TRIGGER jobs_release_terminal_lease
+CREATE TRIGGER jobs_end
     AFTER UPDATE OF status ON jobs
     FOR EACH ROW
     WHEN (NEW.status IN ('completed', 'failed', 'cancelled')
           AND OLD.status IS DISTINCT FROM NEW.status)
-    EXECUTE FUNCTION jobs_release_terminal_lease();
+    EXECUTE FUNCTION jobs_end();
 
 -- Owner Sessions. A Session is valid only while its session_version equals
 -- owner.session_version: bumping the Owner's version revokes every Session.

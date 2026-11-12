@@ -75,21 +75,22 @@ class NotificationDeliveryTests(unittest.TestCase):
                 for action, status, event in (
                     ("recover", "completed", "recovery_completed"), ("recover", "failed", "recovery_failed"),
                 ):
-                    connection.execute(
-                        "UPDATE jobs SET action=%s, status=%s WHERE id=%s", (action, status, self.job_id)
+                    # A Job keeps its action for life: one Job per outcome.
+                    job_id = insert_job(
+                        connection, vault_id=self.vault_id, action=action, status=status,
                     )
                     self.assertEqual(
                         notifications.enqueue_job_terminal_notification(
-                            connection, job_id=self.job_id
+                            connection, job_id=job_id
                         ), 1,
                     )
                     row = connection.execute(
                         "SELECT in_app_enabled, dedupe_key FROM notifications "
                         "WHERE job_id=%s AND event=%s",
-                        (self.job_id, event),
+                        (job_id, event),
                     ).fetchone()
                     self.assertTrue(row["in_app_enabled"])
-                    self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:{event}")
+                    self.assertEqual(row["dedupe_key"], f"job:{job_id}:{event}")
                 self.assertEqual(len(notifications.list_in_app_notifications(
                     connection
                 )), 2)
@@ -101,17 +102,18 @@ class NotificationDeliveryTests(unittest.TestCase):
     def test_failed_upload_reaches_the_owner_inbox_as_an_open_problem(self) -> None:
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
             with PostgresConnection(str(self.path)) as connection:
-                connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,))
+                # A terminal Job is final: the failure is a Job of its own.
+                job_id = insert_job(connection, vault_id=self.vault_id, path="b.txt", status="failed")
                 self.assertEqual(notifications.enqueue_job_terminal_notification(
-                    connection, job_id=self.job_id
+                    connection, job_id=job_id
                 ), 1)
                 row = connection.execute(
                     "SELECT in_app_enabled, dedupe_key, problem_status FROM notifications "
                     "WHERE job_id=%s AND event='job_failed'",
-                    (self.job_id,),
+                    (job_id,),
                 ).fetchone()
         self.assertTrue(row["in_app_enabled"])
-        self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:job_failed")
+        self.assertEqual(row["dedupe_key"], f"job:{job_id}:job_failed")
         self.assertEqual(row["problem_status"], "open")
 
     def test_unread_count_ignores_limit_and_historical_email_only_rows(self) -> None:
@@ -142,18 +144,18 @@ class NotificationDeliveryTests(unittest.TestCase):
         )
         with patch.object(notifications, "settings", email_settings):
             with PostgresConnection(str(self.path)) as connection:
-                connection.execute(
-                    "UPDATE jobs SET action='recover', status='failed' WHERE id=%s", (self.job_id,)
+                job_id = insert_job(
+                    connection, vault_id=self.vault_id, action="recover", status="failed",
                 )
                 first = notifications.enqueue_job_terminal_notification(
-                    connection, job_id=self.job_id
+                    connection, job_id=job_id
                 )
                 second = notifications.enqueue_job_terminal_notification(
-                    connection, job_id=self.job_id
+                    connection, job_id=job_id
                 )
                 rows = connection.execute(
                     "SELECT id, dedupe_key FROM notifications WHERE job_id=%s",
-                    (self.job_id,),
+                    (job_id,),
                 ).fetchall()
                 deliveries = connection.execute(
                     "SELECT channel FROM notification_deliveries"
@@ -161,7 +163,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(first, 1)
         self.assertEqual(second, 0)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["dedupe_key"], f"job:{self.job_id}:recovery_failed")
+        self.assertEqual(rows[0]["dedupe_key"], f"job:{job_id}:recovery_failed")
         self.assertEqual([row["channel"] for row in deliveries], ["email"])
 
     def test_removed_channels_are_rejected_before_writing_any_notification(self) -> None:

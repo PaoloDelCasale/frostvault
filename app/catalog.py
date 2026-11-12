@@ -2950,9 +2950,8 @@ class ArchiveCatalog:
         """One union of paths, never a concatenation that duplicates overlaps.
 
         Callers normalize paths first. The surrounding query must bind the
-        Vault. A directory is the byte range ``[path/, path0)`` on the
-        ``COLLATE "C"`` path, so it uses the path index and treats SQL
-        wildcard characters literally (``0`` is the byte after ``/``).
+        Vault. starts_with treats SQL wildcard characters literally; the empty
+        directory is the whole Vault.
         """
         clauses, params = [], []
         for path, is_directory in selection:
@@ -2962,8 +2961,8 @@ class ArchiveCatalog:
             elif not path:
                 clauses.append("TRUE")
             else:
-                clauses.append(f"({column} >= %s AND {column} < %s)")
-                params.extend([path + "/", path + "0"])
+                clauses.append(f"starts_with({column}, %s)")
+                params.append(path + "/")
         return "(" + " OR ".join(clauses) + ")", params
 
     @staticmethod

@@ -205,15 +205,18 @@ class LocalCopyTests(_Fixture):
         first = self.observe("a.txt")
         second = self.observe("b.txt")
         group = uuid.uuid4()
+        self.connection.execute("INSERT INTO job_groups(id, vault_id) VALUES (%s, 2)", (group,))
         for file_id in (first, second):
             self.connection.execute(
-                "INSERT INTO jobs(vault_id, file_id, action, status, origin, group_id) "
-                "VALUES (2, %s, 'cloud-purge', 'pending_delay', 'manual', %s)",
+                "INSERT INTO jobs(vault_id, file_id, action, status, origin, group_id, run_after) "
+                "VALUES (2, %s, 'cloud-purge', 'pending_delay', 'manual', %s, now() + interval '7 days')",
                 (file_id, group),
             )
+        # One active operation per File: other work runs on another File.
+        third = self.observe("c.txt")
         self.connection.execute(
             "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
-            "VALUES (2, %s, 'upload', 'queued', 'automatic')", (second,),
+            "VALUES (2, %s, 'upload', 'queued', 'automatic')", (third,),
         )
         self.catalog.mark_local_copy_missing(first, observed_at=T1)
         self.observe("a.txt", at=T2)

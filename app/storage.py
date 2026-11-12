@@ -2160,8 +2160,7 @@ def _apply_auto_renames(
                 vault_id=vault["id"],
                 path=path,
                 action="rename",
-                requested_by=requested_by,
-                requested_at=now_iso(),
+                    requested_at=now_iso(),
                 group_id=uuid.uuid4().hex,
                 is_directory=False,
             )

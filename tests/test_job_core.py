@@ -356,6 +356,19 @@ class ClaimLeaseTests(JobCoreFixture):
                          ("completed", 10, None))
         self.assertIsNotNone(job["finished_at"])
 
+    def test_an_outcome_enters_the_notification_outbox_and_a_cancellation_does_not(self):
+        [done] = self.queue(path="f0.txt")
+        [stopped] = self.queue(path="f1.txt")
+        lease = token()
+        self.claim(done, claim_token=lease)
+        self.assertTrue(self.transition(done, "completed", claim_token=lease, seconds=5))
+        self.assertEqual(self.cancel(10, [stopped]), [stopped])
+        with self.db() as connection:
+            queued = [row["job_id"] for row in connection.execute(
+                "SELECT job_id FROM job_terminal_notifications ORDER BY job_id"
+            ).fetchall()]
+        self.assertEqual(queued, [done])
+
     def test_restart_settles_only_stale_work(self):
         [job_id] = self.queue()
         lease = token()
@@ -633,9 +646,9 @@ class VaultPauseServiceTests(JobCoreFixture):
         with self.db() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=20")
             with self.assertRaises(ValueError):
-                vault_pause.set_paused(connection, vault_id=20, paused=True, user_id=1)
+                vault_pause.set_paused(connection, vault_id=20, paused=True)
             with self.assertRaises(vault_pause.VaultNotFound):
-                vault_pause.set_paused(connection, vault_id=99, paused=True, user_id=1)
+                vault_pause.set_paused(connection, vault_id=99, paused=True)
 
 
 if __name__ == "__main__":

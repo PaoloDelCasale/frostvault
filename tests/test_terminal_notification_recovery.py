@@ -24,9 +24,17 @@ from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
-# The outbox marker lives on the Job's hot state, which #589 ports to the v0.6
-# baseline (ADR-0035); these cases run again once it exists.
-@unittest.skip("needs the Job terminal-notification marker, ported by #589")
+# Ending a Job queues its outcome in ``job_terminal_notifications`` (#589): a
+# row there is a pending notification, its absence a materialized one.
+JOB_NOTIFICATION_SQL = """
+    SELECT j.status,
+           CASE WHEN o.job_id IS NULL THEN 'done' ELSE 'pending' END
+               AS terminal_notification_status
+    FROM jobs j LEFT JOIN job_terminal_notifications o ON o.job_id = j.id
+    WHERE j.id=%s
+"""
+
+
 class TerminalNotificationRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -38,6 +46,11 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
             insert_owner(connection)
             insert_vault(connection, id=2)
             self.job_id = insert_job(connection, vault_id=2, status="uploading")
+        # Upload Remediation episodes and their closed-failure filter are
+        # ported separately (#592).
+        self.enterContext(patch("app.services.upload_remediation.transition"))
+        self.enterContext(patch(
+            "app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"))
 
     def test_terminal_notification_insert_failure_is_retried(self) -> None:
         with patch(
@@ -51,7 +64,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
 
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT status, terminal_notification_status FROM jobs WHERE id=%s",
+                JOB_NOTIFICATION_SQL,
                 (self.job_id,),
             ).fetchone()
             notifications = connection.execute(
@@ -74,7 +87,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
                 (self.job_id,),
             ).fetchall()
             status = connection.execute(
-                "SELECT terminal_notification_status FROM jobs WHERE id=%s",
+                JOB_NOTIFICATION_SQL,
                 (self.job_id,),
             ).fetchone()["terminal_notification_status"]
         self.assertEqual(recovered, 1)
@@ -102,7 +115,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
             self.assertTrue(set_job(self.job_id, "completed", "ok"))
         with PostgresConnection(str(self.path)) as connection:
             job = connection.execute(
-                "SELECT status, terminal_notification_status FROM jobs WHERE id=%s",
+                JOB_NOTIFICATION_SQL,
                 (self.job_id,),
             ).fetchone()
             rows = connection.execute(

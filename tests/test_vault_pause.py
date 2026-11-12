@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
@@ -27,13 +28,40 @@ class VaultPauseTests(QueueFixture):
         self.assertEqual(self.queue(vault_id), count)
         return self.jobs(vault_id)
 
+    def add_job(self, path, *, action, status, origin="manual", vault_id=2, group_id=None):
+        """Admit a Job of any action: a Job keeps its action and origin for life."""
+        self.write(vault_id, path)
+        with self.db() as c:
+            file_id = c.execute(
+                "SELECT id FROM files WHERE vault_id=%s AND path=%s", (vault_id, path)
+            ).fetchone()["id"]
+            if group_id is not None:
+                c.execute(
+                    "INSERT INTO job_groups(id, vault_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (group_id, vault_id),
+                )
+            return c.execute(
+                """
+                INSERT INTO jobs(vault_id, file_id, action, status, origin, group_id,
+                                 requested_at, updated_at, run_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                """,
+                (vault_id, file_id, action, status, origin, group_id,
+                 self.clock.isoformat(), self.clock.isoformat(),
+                 self.clock.isoformat() if status == "pending_delay" else None),
+            ).fetchone()
+
+    def lease(self, job_id):
+        with self.db() as c:
+            return c.execute("SELECT * FROM job_leases WHERE job_id=%s", (job_id,)).fetchone()
+
     def pause(self, paused=True, vault_id=2):
         with self.db() as c:
-            return vault_pause.set_paused(c, vault_id=vault_id, paused=paused, user_id=1)
+            return vault_pause.set_paused(c, vault_id=vault_id, paused=paused)
 
     def claim(self, c, job_id, *, generation=None):
         return ArchiveCatalog(c).claim_job(
-            job_id=job_id, claim_token=f"claim-{job_id}", claimed_at=self.clock.isoformat(),
+            job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.clock.isoformat(),
             claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
             now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
             scheduler_generation=generation,
@@ -70,8 +98,13 @@ class VaultPauseTests(QueueFixture):
         self.assertEqual(self.queue(2), 1)
         self.assertEqual(len(self.jobs(2)), len(paused_jobs) + 1)
         with self.db() as c:
-            self.assertEqual(c.execute("SELECT count(*) AS n FROM local_copies lc JOIN vault_files vf ON vf.id=lc.vault_file_id WHERE vf.vault_id=2 AND lc.presence='present'").fetchone()["n"], 26)
-        with patch("app.storage.validate_cloud_vault"), patch("app.storage.process_job") as process:
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM files WHERE vault_id=2 AND local_presence='present'").fetchone()["n"], 26)
+        with patch("app.storage.validate_cloud_vault"), patch("app.storage.process_job") as process, \
+                patch("app.storage.observe_failed_job_backlog", return_value=(0, 0.0)), \
+                patch("app.storage.cloud_preflight_gate.snapshot", return_value={"status": "ready"}), \
+                patch("app.storage.cloud_preflight_gate.dispatch_ready", return_value=True), \
+                patch("app.storage.sweep_source_volume_problems", return_value=0), \
+                patch("app.storage._automatic_upload_state", return_value=storage.UPLOAD_READY):
             self.assertEqual(storage.process_jobs_once(wait=True), 1)
         self.assertEqual(process.call_args.args[0]["id"], other["id"])
         self.assertEqual(len(self.jobs(2)), 26)
@@ -87,24 +120,25 @@ class VaultPauseTests(QueueFixture):
             result = storage.scan_vault(self.vaults[2])
         self.assertEqual(result["local"], 1)
         with self.db() as c:
-            row = c.execute("SELECT lc.presence FROM local_copies lc JOIN file_paths fp ON fp.vault_file_id=lc.vault_file_id WHERE fp.vault_id=2 AND fp.path='missed-by-watcher.txt'").fetchone()
-            self.assertEqual(row["presence"], "present")
+            row = c.execute("SELECT local_presence FROM files WHERE vault_id=2 AND path='missed-by-watcher.txt'").fetchone()
+            self.assertEqual(row["local_presence"], "present")
             self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
         self.advance(300)
         self.assertEqual(self.queue(2), 1)
         self.assertEqual(self.candidates(limit=10), [])
 
     def test_all_new_cloud_jobs_wait_including_owner_uploads_but_recoveries_continue(self):
-        jobs = self.seed_jobs(count=9)
         cases = [("upload", "queued", "manual"), ("rename", "queued", "automatic"),
                  ("free-space", "queued", "automatic"), ("storage-class", "queued", "manual"),
                  ("recover", "queued", "manual"), ("recover", "restoring", "manual"),
                  ("storage-class", "restoring", "manual"), ("upload", "retrying", "automatic"),
                  ("recover", "pending_approval", "manual")]
-        with self.db() as c:
-            for job, (action, status, origin) in zip(jobs, cases):
-                c.execute("UPDATE jobs SET action=%s,status=%s,origin=%s,updated_at=%s WHERE id=%s",
-                          (action, status, origin, self.clock.isoformat(), job["id"]))
+        jobs = [
+            self.add_job(f"{index}.txt", action=action, status=status, origin=origin,
+                         group_id=str(uuid.uuid4()) if status == "pending_approval" else None)
+            for index, (action, status, origin) in enumerate(cases)
+        ]
+        self.advance(1)
         self.pause()
         expected = {jobs[index]["id"] for index in (4, 5, 6)}
         self.assertEqual({j["id"] for j in self.candidates(limit=50)}, expected)
@@ -138,7 +172,7 @@ class VaultPauseTests(QueueFixture):
             self.assertTrue(storage.set_job(job["id"], "completed"))
         completed = self.jobs(2)[0]
         self.assertEqual(completed["status"], "completed")
-        self.assertIsNone(completed["claim_token"])
+        self.assertIsNone(self.lease(completed["id"]))
         self.assertTrue(self.pause()["paused"])
 
     def test_pause_wins_stale_candidate_and_contended_vault_does_not_block_other(self):
@@ -147,7 +181,7 @@ class VaultPauseTests(QueueFixture):
         # Candidate was selected before the Owner pause.
         self.assertIn(job["id"], {j["id"] for j in self.candidates(limit=10)})
         with self.db() as holder:
-            vault_pause.set_paused(holder, vault_id=2, paused=True, user_id=1)
+            vault_pause.set_paused(holder, vault_id=2, paused=True)
             with self.db() as worker:
                 self.assertIsNone(self.claim(worker, job["id"]))
                 self.assertIsNotNone(self.claim(worker, other["id"]))
@@ -162,7 +196,7 @@ class VaultPauseTests(QueueFixture):
             with self.db() as c:
                 c.execute("SET LOCAL lock_timeout='5s'")
                 entered.set()
-                vault_pause.set_paused(c, vault_id=2, paused=True, user_id=1)
+                vault_pause.set_paused(c, vault_id=2, paused=True)
         with ThreadPoolExecutor(max_workers=1) as pool:
             with self.db() as claimant:
                 self.assertIsNotNone(self.claim(claimant, jobs[0]["id"]))
@@ -178,17 +212,19 @@ class VaultPauseTests(QueueFixture):
                 self.assertTrue(entered.wait(3))
                 self.assertFalse(future.done())
             future.result(timeout=8)
-        self.assertTrue(self.jobs(2)[0]['claim_token'])
-        self.assertIsNone(self.jobs(2)[1]['claim_token'])
+        self.assertIsNotNone(self.lease(jobs[0]["id"]))
+        self.assertIsNone(self.lease(jobs[1]["id"]))
         self.assertTrue(self.pause()["paused"])
         self.pause(False)
         with self.db() as second:
             self.assertIsNotNone(self.claim(second, jobs[1]['id']))
 
     def test_pending_recovery_approval_still_expires_while_paused(self):
-        job = self.seed_jobs()[0]
+        group_id = str(uuid.uuid4())
+        self.add_job("0.txt", action="recover", status="pending_approval", group_id=group_id)
         with self.db() as c:
-            c.execute("UPDATE jobs SET action='recover',status='pending_approval',pending_until=%s WHERE id=%s", (self.clock.isoformat(), job["id"]))
+            c.execute("INSERT INTO restore_requests(group_id, approval_deadline) VALUES (%s, %s)",
+                      (group_id, self.clock.isoformat()))
         self.pause()
         with self.db() as c:
             self.assertEqual(recovery_approval.sweep_expired(c, now=self.clock.isoformat()), 1)
@@ -197,17 +233,25 @@ class VaultPauseTests(QueueFixture):
         self.assertEqual(expired["message_key"], "job.recovery_approval_expired")
 
     def test_purge_group_is_held_but_explicit_stop_protection_is_not_overloaded(self):
-        job = self.seed_jobs()[0]
+        group_id = str(uuid.uuid4())
+        job = self.add_job("0.txt", action="cloud-purge", status="queued", group_id=group_id)
         with self.db() as c:
-            c.execute("UPDATE jobs SET action='cloud-purge',origin='manual' WHERE id=%s", (job["id"],))
+            c.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'cleanup')",
+                      (group_id,))
         self.pause()
         def claim_group(c):
-            return ArchiveCatalog(c).claim_purge_group(lead_job_id=job["id"], claim_token="purge",
+            return ArchiveCatalog(c).claim_purge_group(lead_job_id=job["id"], claim_token=str(uuid.uuid4()),
                 claimed_at=self.clock.isoformat(), claim_expires_at=(self.clock+timedelta(hours=1)).isoformat(),
                 now=self.clock.isoformat(), message="deleting", message_key="job.cloud_purge_deleting")
         with self.db() as c:
             self.assertEqual(claim_group(c), [])
-            c.execute("UPDATE jobs SET origin='stop-protection' WHERE id=%s", (job["id"],))
+        # Stop Protection is its own consent on a stopping Vault, never a
+        # bypass of the Pause flag: a stopping Vault cannot be paused at all.
+        self.pause(False)
+        with self.db() as c:
+            c.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
+            self.assertEqual(claim_group(c), [])
+            c.execute("UPDATE cloud_purge_requests SET stop_protection=TRUE WHERE group_id=%s", (group_id,))
             self.assertEqual(len(claim_group(c)), 1)
 
     def test_api_requires_owner_session_and_csrf_and_exposes_persistent_status(self):
@@ -218,7 +262,7 @@ class VaultPauseTests(QueueFixture):
             for action in ("pause", "resume"):
                 self.assertIn(client.post(f"/api/vaults/2/{action}").status_code, (401, 403))
             with self.db() as c:
-                token = create_session(c, user_id=1, auth_method="oidc")
+                token = create_session(c, auth_method="oidc")
                 csrf = csrf_token_for(c, token)
                 c.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00'")
             client.cookies.set(configured.session_cookie_name, token)
@@ -231,5 +275,5 @@ class VaultPauseTests(QueueFixture):
                 self.assertEqual(next(v for v in client.get("/api/general/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
             self.assertEqual(client.post("/api/vaults/999/pause", headers={"X-CSRF-Token": csrf}).status_code, 404)
             with self.db() as c:
-                c.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
+                c.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
             self.assertEqual(client.post("/api/vaults/2/pause", headers={"X-CSRF-Token": csrf}).status_code, 409)
