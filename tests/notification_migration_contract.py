@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 
 REMOVED_TABLES = {
     "notification_endpoints",

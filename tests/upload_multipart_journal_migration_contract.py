@@ -1,7 +1,7 @@
 """Populated 0066 -> 0067: metadata-only table; an open multipart obligation refuses downgrade."""
 import psycopg
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 
 
 def assert_upload_multipart_journal_migration(test, run, connect):

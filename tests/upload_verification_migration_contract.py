@@ -1,5 +1,5 @@
 """Populated upgrade/downgrade/reupgrade contract, disposable PostgreSQL only."""
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 
 NEW_FIELDS = {
     "jobs": {"upload_snapshot_json", "upload_verification_requested"},

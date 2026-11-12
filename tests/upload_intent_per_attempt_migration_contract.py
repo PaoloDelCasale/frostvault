@@ -1,7 +1,7 @@
 """Populated 0068 -> 0069: one OPEN intent per Job; a reused Job refuses downgrade (#538)."""
 import psycopg
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 
 INSERT_INTENT = """INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,target_json,snapshot_json,requested,inventory_json,settled,created_at)
     VALUES (%s,%s,2,%s,%s,'{}','{}','read_back','{}',%s,%s)"""

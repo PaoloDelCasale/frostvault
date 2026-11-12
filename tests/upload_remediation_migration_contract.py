@@ -1,5 +1,5 @@
 """Populated metadata-only discovery contracts, without invented proof or I/O."""
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 
 
 def assert_upload_remediation_migration(test, run, connect):
@@ -41,7 +41,6 @@ def assert_upload_remediation_migration(test, run, connect):
 
 
 def assert_obligation_discovery_migration(test, run, connect):
-    from app.services.upload_remediation_discovery import obligation_query
     result = run("0072_upload_lineage_indexes")
     test.assertEqual(result.returncode, 0, result.stderr)
     stamp = "2026-11-06T00:00:00+00:00"
@@ -81,10 +80,10 @@ def assert_obligation_discovery_migration(test, run, connect):
         test.assertIsNone(c.execute("SELECT to_regclass('upload_remediation_facts') absent").fetchone()['absent'])
         test.assertEqual(c.execute("SELECT last_vault_id,last_tick_at FROM upload_remediation_sweep WHERE name='obligations'").fetchone(), {'last_vault_id':42, 'last_tick_at':stamp})
         test.assertEqual({table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}, before)
-        sql, params = obligation_query(vault_sql='2', stamp='2026-11-07T00:00:00+00:00')
-        rows = c.execute(sql, params).fetchall()
-        test.assertEqual({r['intent_id'] for r in rows if r['intent_id']}, {'cancelled-send'})
-        test.assertEqual({r['archive_version_id'] for r in rows if r['archive_version_id']}, set(versions[1:3]))
+        # The current query requires explicit snapshot pointers, absent at 0073.
+        # Its equivalent mixed-source scenario runs on HEAD in
+        # UploadRemediationFrontierTests.test_mixed_obligation_sources_include_cancelled_uncertainty.
+        # This contract verifies DDL preserves every independent source verbatim.
         test.assertEqual(c.execute('SELECT count(*) n FROM upload_remediations').fetchone()['n'], 0, 'DDL grants no proof/admission')
         indexes = {r['indexname'] for r in c.execute("SELECT indexname FROM pg_indexes WHERE schemaname='public'").fetchall()}
         test.assertTrue({'upload_intents_open_send_idx','upload_intents_outstanding_file_idx',

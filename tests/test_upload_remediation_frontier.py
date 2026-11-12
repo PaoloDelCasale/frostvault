@@ -74,6 +74,37 @@ class UploadRemediationFrontierTests(unittest.TestCase):
             self.assertIsNotNone(connection.execute("SELECT completed_at FROM snapshot_cleanup_inventories").fetchone()["completed_at"])
         return original
 
+    def test_mixed_obligation_sources_include_cancelled_uncertainty(self):
+        seeded = {path: self.seed_owned(path=path) for path in
+                  ('cancelled-send', 'unverified', 'cleanup', 'ordinary')}
+        stamp = storage.now_iso()
+        intent_id = uuid.uuid4().hex
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            for path in ('cleanup', 'ordinary'):
+                catalog.mark_version_verified(seeded[path][0], plaintext_sha256=hashlib.sha256(A).hexdigest(),
+                                              verified_at=stamp)
+            cancelled_version, cancelled_file = seeded['cancelled-send']
+            job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
+                VALUES (2,%s,'cancelled-send','upload','cancelled',%s,%s) RETURNING id""",
+                (cancelled_file, stamp, stamp)).fetchone()['id']
+            snapshot = connection.execute('SELECT upload_snapshot_json FROM archive_versions WHERE id=%s',
+                                          (cancelled_version,)).fetchone()['upload_snapshot_json']
+            connection.execute("""INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,
+                target_json,snapshot_json,requested,inventory_json,send_started,created_at)
+                VALUES (%s,%s,2,%s,%s,'{}',%s,'s3_checksum','{}',TRUE,%s)""",
+                (intent_id, uuid.uuid4().hex, cancelled_file, job, snapshot, stamp))
+            connection.execute("INSERT INTO snapshot_reconciliation_blocks VALUES (%s,'inventory_changed',%s)",
+                               (seeded['cleanup'][1], stamp))
+            after_grace = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+            sql, params = discovery.obligation_query(vault_sql='2', stamp=after_grace)
+            rows = connection.execute(sql, params).fetchall()
+            self.assertEqual({row['intent_id'] for row in rows if row['intent_id']}, {intent_id})
+            self.assertEqual({row['archive_version_id'] for row in rows if row['archive_version_id']},
+                             {seeded['unverified'][0], seeded['cleanup'][0]})
+            self.assertEqual(connection.execute('SELECT count(*) AS n FROM upload_remediations').fetchone()['n'], 0,
+                             'Discovery grants no proof or admission')
+
     def test_empty_sweep_table_recovers_all_cursors_and_discovers_durable_version(self):
         av, _ = self.seed_owned()
         with self.db() as connection:

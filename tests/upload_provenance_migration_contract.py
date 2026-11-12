@@ -3,7 +3,7 @@ from unittest.mock import patch
 import hashlib
 from app.services.upload_snapshot import sha256_b64, DEFAULT_PART_SIZE
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 from app.services.upload_provenance import canonical
 from app.services.upload_snapshot import UploadSnapshot
 

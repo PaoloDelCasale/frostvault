@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 from tests.postgres import PostgresConnection
 from tests.test_database import run_alembic
 
@@ -27,7 +27,8 @@ class DelayedDeletionMigrationTests(unittest.TestCase):
                     storage_class="STANDARD", etag="etag", uploaded_at="2026-11-05T00:00:00+00:00",
                     observed_at="2026-11-05T00:00:00+00:00", scan_id="scan", origin="upload")
                 catalog.mark_version_verified(version, plaintext_sha256="a"*64, verified_at="2026-11-05T00:00:00+00:00")
-            result = run_alembic(path)
+            # This contract owns 0059, not populated adoption into today's HEAD.
+            result = run_alembic(path, "0059_delayed_cloud_deletion")
             self.assertEqual(result.returncode,0,result.stderr)
             with PostgresConnection(str(path)) as connection:
                 self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"],"cancelled")
@@ -41,7 +42,7 @@ class DelayedDeletionMigrationTests(unittest.TestCase):
                     WHERE table_schema=current_schema() AND table_name='vaults' AND column_name='cloud_deletion_enabled') AS present""").fetchone()["present"])
             result = run_alembic(path,"0058_reconnect_recovery_kit",command="downgrade")
             self.assertEqual(result.returncode,0,result.stderr)
-            result = run_alembic(path)
+            result = run_alembic(path, "0059_delayed_cloud_deletion")
             self.assertEqual(result.returncode,0,result.stderr)
             with PostgresConnection(str(path)) as connection:
                 self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"],"cancelled")
@@ -65,11 +66,15 @@ class DelayedDeletionMigrationTests(unittest.TestCase):
     def test_stop_protection_refuses_downgrade_instead_of_resurrecting_old_workflow(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.db"
-            self.assertEqual(run_alembic(path).returncode,0)
+            self.assertEqual(run_alembic(path, "0059_delayed_cloud_deletion").returncode,0)
             with PostgresConnection(str(path)) as connection:
                 connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (1,'test','Test','/sources/test','bucket','vaults/test/')")
                 connection.execute("""INSERT INTO protection_stops(vault_id,requested_at,cloud_disposition,reason)
                     VALUES (1,'2026-11-05T00:00:00+00:00','keep','stop')""")
             result = run_alembic(path,"0058_reconnect_recovery_kit",command="downgrade")
             self.assertNotEqual(result.returncode,0)
-            self.assertIn("Cannot downgrade after stopping",result.stderr)
+            self.assertIn("Cannot downgrade after stopping", result.stderr)
+            with PostgresConnection(str(path)) as connection:
+                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"], "0059_delayed_cloud_deletion")
+                stop = connection.execute("SELECT cloud_disposition,reason FROM protection_stops").fetchone()
+                self.assertEqual(stop, {"cloud_disposition": "keep", "reason": "stop"})

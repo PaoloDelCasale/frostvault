@@ -1,7 +1,7 @@
 """Shared PostgreSQL preservation contract for #417."""
 from __future__ import annotations
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 from tests.notification_migration_contract import seed_legacy_notifications, preserved_state
 
 

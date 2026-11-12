@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from app.catalog import ArchiveCatalog
+from tests.historical_catalog_fixture import HistoricalCatalogFixture as ArchiveCatalog
 from tests.postgres import PostgresConnection, run_alembic
 
 STAMP = "2026-11-03T00:00:00+00:00"
