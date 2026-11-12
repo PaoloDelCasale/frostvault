@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import uuid
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -28,54 +28,190 @@ class VaultFileNotFound(LookupError):
     """A Vault File could not be resolved in the expected Vault."""
 
 
+class ReplacementInProgress(RuntimeError):
+    """The Vault File already has its one replacement in progress."""
+
+
+class StaleReplacement(LookupError):
+    """The named Archive Version is no longer this file's replacement in progress."""
+
+
 AUTO_RENAME_WINDOW = timedelta(hours=1)
 
+# A Job holds its File until it ends. A pending Delayed Cloud Deletion is only
+# the Owner's consent: a reappearance or a rename revokes it (#587, #594).
+_OPEN_JOB_SQL = "status NOT IN ('completed', 'failed', 'cancelled')"
+_DELETION_CONSENT_SQL = "action='cloud-purge' AND status='pending_delay'"
 
-def _only_cloud_copy_sql(file_id_sql: str) -> str:
-    """The recoverable Archive Version a reappearing Local Copy must respect.
+# Columns of one Vault File row, in the order ``_file_dict`` reads them.
+_FILE_COLUMNS_SQL = """
+    f.id, f.vault_id, f.path, f.path_since, f.generation,
+    f.local_presence, f.local_file_type, f.local_size, f.local_mtime_ns,
+    f.local_sha256, f.local_seen_at, f.local_observed_at,
+    f.local_content_observed_at, f.local_recovered_at,
+    f.matched_version_id, f.held_version_id, f.pending_since,
+    f.reconciliation_block, f.reconciliation_blocked_at, f.cloud_since,
+    f.current_version_id, f.replacing_version_id, f.created_at,
+    cur.object_key AS cur_object_key,
+    cur.provider_version_id AS cur_provider_version_id,
+    cur.size AS cur_size, cur.storage_class AS cur_storage_class,
+    cur.plaintext_sha256 AS cur_plaintext_sha256, cur.integrity AS cur_integrity,
+    cur.availability AS cur_availability, cur.verified_at AS cur_verified_at,
+    cur.created_at AS cur_created_at,
+    rep.object_key AS rep_object_key,
+    rep.provider_version_id AS rep_provider_version_id,
+    rep.size AS rep_size, rep.storage_class AS rep_storage_class,
+    rep.plaintext_sha256 AS rep_plaintext_sha256, rep.integrity AS rep_integrity,
+    rep.availability AS rep_availability, rep.verified_at AS rep_verified_at,
+    rep.created_at AS rep_created_at
+"""
+_FILE_JOINS_SQL = """
+    LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
+    LEFT JOIN archive_versions rep ON rep.id = f.replacing_version_id
+"""
+
+
+def _only_cloud_copy_sql(file_alias: str) -> str:
+    """The verified, available Current a reappearing Local Copy must respect.
 
     A Local Copy that was absent (freed, deleted via SMB, never restored after
-    a catalog rebuild) leaves this verified version as the only copy. Content
-    that reappears at the path stays held back until it proves identical or
-    the owner confirms the replacement (#411, #363 D7).
+    a catalog rebuild) leaves Current as the only copy. Content that reappears
+    at the path stays held back until it proves identical or the Owner
+    confirms the replacement (#411, #363 D7). Current is the explicit pointer,
+    never the latest version by ordering.
     """
     return f"""(
         SELECT only_copy.id FROM archive_versions only_copy
-        WHERE only_copy.vault_file_id={file_id_sql}
-          AND only_copy.integrity='verified'
-          AND only_copy.availability='available'
-        ORDER BY only_copy.version_number DESC
-        LIMIT 1
+        WHERE only_copy.id = {file_alias}.current_version_id
+          AND only_copy.integrity = 'verified'
+          AND only_copy.availability = 'available'
     )"""
 
 
-def _parse_catalog_timestamp(value: Any) -> datetime | None:
+def _timestamp(value: Any) -> datetime | None:
+    """Convert a boundary timestamp (ISO text or datetime) to an aware datetime."""
     if value is None:
         return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
         parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def _required_timestamp(value: Any) -> datetime:
+    parsed = _timestamp(value)
+    if parsed is None:
+        raise ValueError("A timestamp is required")
+    return parsed
+
+
+def _digest(value: str | bytes) -> bytes:
+    """A SHA-256 digest from hex text or raw bytes, validated once here."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+    else:
+        text = str(value)
+        if len(text) != 64:
+            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
+        raw = bytes.fromhex(text)
+    if len(raw) != 32:
+        raise ValueError("SHA-256 must be 32 bytes")
+    return raw
+
+
+def _hex(value: Any) -> str | None:
+    return None if value is None else bytes(value).hex()
+
+
+def _id(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _within_rename_window(left: Any, right: Any) -> bool:
-    start = _parse_catalog_timestamp(left)
-    end = _parse_catalog_timestamp(right)
+    start = _timestamp(left)
+    end = _timestamp(right)
     if start is None or end is None:
         return False
     return abs(start - end) <= AUTO_RENAME_WINDOW
 
 
+def _version_dict(row: Mapping[str, Any], prefix: str, version_id: Any) -> dict[str, Any] | None:
+    if version_id is None:
+        return None
+    return {
+        "id": str(version_id),
+        "object_key": row[f"{prefix}_object_key"],
+        "provider_version_id": row[f"{prefix}_provider_version_id"],
+        "size": row[f"{prefix}_size"],
+        "storage_class": row[f"{prefix}_storage_class"],
+        "plaintext_sha256": _hex(row[f"{prefix}_plaintext_sha256"]),
+        "integrity": row[f"{prefix}_integrity"],
+        "availability": row[f"{prefix}_availability"],
+        "verified_at": row[f"{prefix}_verified_at"],
+        "created_at": row[f"{prefix}_created_at"],
+    }
+
+
+def _file_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One Vault File with its explicit states, converted once at the boundary."""
+    local_copy = None
+    if row["local_presence"] is not None:
+        local_copy = {
+            "presence": row["local_presence"],
+            "file_type": row["local_file_type"],
+            "size": row["local_size"],
+            "mtime_ns": row["local_mtime_ns"],
+            "plaintext_sha256": _hex(row["local_sha256"]),
+            "seen_at": row["local_seen_at"],
+            "observed_at": row["local_observed_at"],
+            "content_observed_at": row["local_content_observed_at"],
+            "recovered_at": row["local_recovered_at"],
+        }
+    block = None
+    if row["reconciliation_block"] is not None:
+        block = {
+            "reason": row["reconciliation_block"],
+            "blocked_at": row["reconciliation_blocked_at"],
+        }
+    return {
+        "id": str(row["id"]),
+        "vault_id": int(row["vault_id"]),
+        "path": row["path"],
+        "path_since": row["path_since"],
+        "generation": int(row["generation"]),
+        "local_copy": local_copy,
+        "current_version": _version_dict(row, "cur", row["current_version_id"]),
+        "replacing_version": _version_dict(row, "rep", row["replacing_version_id"]),
+        "matched_version_id": _id(row["matched_version_id"]),
+        "held_version_id": _id(row["held_version_id"]),
+        "pending_since": row["pending_since"],
+        "reconciliation_block": block,
+        "cloud_since": row["cloud_since"],
+        "created_at": row["created_at"],
+    }
+
+
 class ArchiveCatalog:
-    """Keep versioned file invariants behind one persistence interface."""
+    """Keep Vault File invariants behind one persistence interface.
+
+    One ``files`` row per Vault File holds its current path, Local Copy and
+    explicit protection state (Current, replacement in progress, matched,
+    held, pending, reconciliation block); ``file_path_history`` keeps only the
+    closed paths (#587, ADR-0035). The methods below that still read the
+    v0.5 tables (``vault_files``, ``local_copies``, ``file_paths``, version
+    numbers) belong to the consumers ported by later issues of epic #578:
+    upload versions and Job targets (#588/#590), listing, search and summary
+    projections (#593), claims and queueing (#589), restore placement (#594)
+    and storage-class copies (#595).
+    """
 
     def __init__(self, connection: Any, *, protection_unconfirmed: bool = False):
         self.connection = connection
@@ -83,22 +219,39 @@ class ArchiveCatalog:
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
 
-    def _cancel_reappeared_deletions(self, vault_id: int, file_ids: list[str], at: str) -> None:
-        """A reappearance permanently revokes pending consent, even if removed again.
+    # -- shared seams -------------------------------------------------------
 
-        Observation already owns the Vault lock. Cancel the entire selection,
-        never leave a partially authorized delayed request behind.
+    def _revoke_deletion_consents(
+        self, vault_id: int, file_ids: Sequence[Any], at: Any, *, reason: str
+    ) -> None:
+        """Permanently revoke pending Delayed Cloud Deletions of these files.
+
+        The whole selection is revoked, never left partially authorized: a
+        reappearance or rename is new evidence the consent never covered.
+        Callers already hold the Vault lock.
         """
-        if not file_ids:
+        ids = [str(file_id) for file_id in file_ids if file_id]
+        if not ids:
             return
-        from .services.cloud_deletion import cancel_cloud_deletion
-        placeholders = ','.join('%s' for _ in file_ids)
-        groups = self.connection.execute(f"""SELECT DISTINCT group_id FROM jobs
-            WHERE vault_id=%s AND vault_file_id IN ({placeholders})
-              AND action='cloud-purge' AND status='pending_delay'""", (vault_id, *file_ids)).fetchall()
-        for row in groups:
-            cancel_cloud_deletion(self.connection, vault_id=vault_id, group_id=row["group_id"],
-                                  actor_user_id=None, cancelled_at=at)
+        stamp = _required_timestamp(at)
+        self.connection.execute(
+            f"""
+            UPDATE jobs
+            SET status='cancelled', message=%s, updated_at=%s, finished_at=%s
+            WHERE vault_id=%s AND {_DELETION_CONSENT_SQL}
+              AND (
+                  file_id = ANY(%s::uuid[])
+                  OR group_id IN (
+                      SELECT consent.group_id FROM jobs consent
+                      WHERE consent.vault_id=%s
+                        AND consent.file_id = ANY(%s::uuid[])
+                        AND consent.action='cloud-purge'
+                        AND consent.status='pending_delay'
+                  )
+              )
+            """,
+            (reason, stamp, stamp, vault_id, ids, vault_id, ids),
+        )
 
     def _mark_path_aggregates_dirty(self, vault_id: int, path: str | None) -> None:
         mark_path_dirty(self.connection, vault_id, path)
@@ -113,79 +266,14 @@ class ArchiveCatalog:
 
     def _vault_lock_touch(self, vault_id: int) -> None:
         # Serialize identity creation per Vault across scanner and worker
-        # transactions.  The row-lock "touch" is a single UPDATE that locks the
-        # Vault row (PostgreSQL FOR UPDATE semantics via the write) so two
-        # concurrent writers cannot mint duplicate identities for the same
-        # path.  It must be taken once per batch, never once per file.
+        # transactions, and keep the repository-wide lock order: Vault row
+        # first, then file rows. Taken once per batch, never once per file.
         self.connection.execute(
             "UPDATE vaults SET name=name WHERE id=%s",
             (vault_id,),
         )
 
-    def _get_or_create_file(self, vault_id: int, path: str, created_at: str) -> str:
-        self._vault_lock_touch(vault_id)
-        current = self.connection.execute(
-            """
-            SELECT vf.id
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if current:
-            return current["id"]
-        file_id = str(uuid.uuid4())
-        self.connection.execute(
-            """
-            INSERT INTO vault_files(id, vault_id, status, created_at)
-            VALUES (%s, %s, 'active', %s)
-            """,
-            (file_id, vault_id, created_at),
-        )
-        self.connection.execute(
-            """
-            INSERT INTO file_paths(
-                vault_file_id, vault_id, path, valid_from, valid_to
-            ) VALUES (%s, %s, %s, %s, NULL)
-            """,
-            (file_id, vault_id, path, created_at),
-        )
-        return file_id
-
-    def _resolve_cloud_path_file(self, vault_id: int, path: str, created_at: str) -> str:
-        """Map a cloud logical path to a Vault File without forking renamed identities.
-
-        Prefers the current path, then an active Vault File that still carries
-        ``path`` in Path History, and only then creates a new identity.
-        """
-        current = self.connection.execute(
-            """
-            SELECT vf.id
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if current:
-            return current["id"]
-        historical = self.connection.execute(
-            """
-            SELECT vf.id
-            FROM vault_files vf
-            JOIN file_paths fp ON fp.vault_file_id=vf.id
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s AND vf.status='active'
-            ORDER BY fp.valid_from DESC
-            LIMIT 1
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if historical:
-            return historical["id"]
-        return self._get_or_create_file(vault_id, path, created_at)
+    # -- Local Copy observation ---------------------------------------------
 
     def observe_local_copy(
         self,
@@ -195,555 +283,919 @@ class ArchiveCatalog:
         file_type: str,
         size: int | None,
         mtime_ns: int | None,
-        observed_at: str,
-        seen_at: str | None = None,
-        recovered_at: str | None = None,
+        observed_at: Any,
+        seen_at: Any | None = None,
+        recovered_at: Any | None = None,
+        invalidate_content: bool = False,
     ) -> str:
-        """Record the observed Local Copy at ``path``.
+        """Record the observed Local Copy at ``path`` and return its file id.
 
+        Every observation increments the file's generation, even with the same
+        stat, so a hash taken on an earlier observation can no longer publish.
+        The fingerprint and match are kept only for a present regular file
+        whose stat is unchanged, unless ``invalidate_content`` (a watcher
+        content event) says the bytes may have changed anyway.
         ``recovered_at`` is set only by a completed recovery; it restarts the
-        automatic cleanup retention window. Other observations keep it.
+        automatic cleanup retention window and holds nothing back.
         """
-        file_id = self._get_or_create_file(vault_id, path, observed_at)
-        presence = "present" if file_type == "regular" else "unsupported"
-        last_seen_at = seen_at or observed_at
-        # A recovery writes back the cloud-only content itself: nothing to hold.
-        hold_from_recovery = recovered_at is None
-        only_cloud_copy = (
-            _only_cloud_copy_sql("%s") if hold_from_recovery else "NULL"
+        ids = self._observe(
+            vault_id,
+            [(path, file_type, size, mtime_ns, observed_at)],
+            seen_at=seen_at,
+            recovered_at=recovered_at,
+            invalidate_paths=[path] if invalidate_content else [],
         )
-        hold_value = (
-            f",\n                CASE WHEN CAST(%s AS TEXT)='present'"
-            f" THEN {only_cloud_copy} END"
-        )
-        hold_update = """
-                cloud_only_version_id=CASE
-                    WHEN excluded.presence='present'
-                     AND local_copies.presence<>'present'
-                    THEN excluded.cloud_only_version_id
-                    ELSE local_copies.cloud_only_version_id
-                END,"""
-        stability_update = """
-                content_observed_at=CASE
-                    WHEN (local_copies.presence, local_copies.file_type,
-                          local_copies.size, local_copies.mtime_ns)
-                         IS DISTINCT FROM
-                         (excluded.presence, excluded.file_type,
-                          excluded.size, excluded.mtime_ns)
-                    THEN excluded.observed_at
-                    ELSE COALESCE(local_copies.content_observed_at,
-                                  local_copies.observed_at, excluded.observed_at)
-                END,"""
-        self.connection.execute(
-            f"""
-            INSERT INTO local_copies(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at, content_observed_at, cloud_only_version_id
-            ) VALUES (
-                %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s{hold_value}
-            )
-            ON CONFLICT(vault_file_id) DO UPDATE SET{hold_update}{stability_update}
-                presence=excluded.presence,
-                file_type=excluded.file_type,
-                size=excluded.size,
-                mtime_ns=excluded.mtime_ns,
-                plaintext_sha256=CASE
-                    WHEN local_copies.file_type=excluded.file_type
-                     AND (
-                         local_copies.size=excluded.size
-                         OR (local_copies.size IS NULL AND excluded.size IS NULL)
-                     )
-                     AND (
-                         local_copies.mtime_ns=excluded.mtime_ns
-                         OR (
-                             local_copies.mtime_ns IS NULL
-                             AND excluded.mtime_ns IS NULL
-                         )
-                     )
-                    THEN local_copies.plaintext_sha256
-                    ELSE NULL
-                END,
-                matched_archive_version_id=CASE
-                    WHEN local_copies.file_type=excluded.file_type
-                     AND (
-                         local_copies.size=excluded.size
-                         OR (local_copies.size IS NULL AND excluded.size IS NULL)
-                     )
-                     AND (
-                         local_copies.mtime_ns=excluded.mtime_ns
-                         OR (
-                             local_copies.mtime_ns IS NULL
-                             AND excluded.mtime_ns IS NULL
-                         )
-                     )
-                    THEN local_copies.matched_archive_version_id
-                    ELSE NULL
-                END,
-                last_seen_at=excluded.last_seen_at,
-                observed_at=excluded.observed_at
-            """,
-            (
-                file_id,
-                presence,
-                file_type,
-                size,
-                mtime_ns,
-                last_seen_at,
-                observed_at,
-                observed_at,
-                presence,
-                *((file_id,) if hold_from_recovery else ()),
-            ),
-        )
-        if recovered_at is not None:
-            self.connection.execute(
-                "UPDATE local_copies SET recovered_at=%s WHERE vault_file_id=%s",
-                (recovered_at, file_id),
-            )
-        self._cancel_reappeared_deletions(vault_id, [file_id], observed_at)
-        self._mark_path_aggregates_dirty(vault_id, path)
-        return file_id
-
-    @staticmethod
-    def _chunked(seq: Sequence[Any], size: int) -> list[list[Any]]:
-        return [list(seq[offset : offset + size]) for offset in range(0, len(seq), size)]
-
-    def _resolve_or_create_files(
-        self,
-        vault_id: int,
-        paths: Sequence[str],
-        created_at: str,
-    ) -> dict[str, str]:
-        """Resolve many logical paths to Vault File ids in a few statements.
-
-        One Vault row-lock touch (``UPDATE vaults SET name=name``) replaces the
-        per-file touch in ``_get_or_create_file``: identity creation is
-        serialized per Vault by that single lock, so a whole scan batch can
-        resolve existing paths with one bulk ``IN (...)`` lookup and mint only
-        the genuinely-new ones with guarded bulk INSERTs.  The ``NOT EXISTS``
-        guard also fails closed against non-cooperating writers.
-
-        Duplicate input paths resolve to the same id, and the caller's
-        last-observation-wins deduplication maps each path to exactly one
-        identity — matching the serialized per-file path.
-        """
-        unique_paths = list(dict.fromkeys(paths))
-        self._vault_lock_touch(vault_id)
-        resolved: dict[str, str] = {}
-        for chunk in self._chunked(unique_paths, 200):
-            if not chunk:
-                continue
-            placeholders = ", ".join(["%s"] * len(chunk))
-            rows = self.connection.execute(
-                f"""
-                SELECT fp.path, vf.id
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=%s AND fp.path IN ({placeholders})
-                """,
-                (vault_id, *chunk),
-            ).fetchall()
-            for row in rows:
-                resolved[str(row["path"])] = str(row["id"])
-            new_paths = [path for path in chunk if path not in resolved]
-            if not new_paths:
-                continue
-            # One portable derived table: (id, path) pairs for this chunk.
-            # Explicit casts keep PostgreSQL's UNION ALL type inference stable
-            id_values = " UNION ALL ".join(
-                ["SELECT CAST(%s AS VARCHAR) AS id, CAST(%s AS TEXT) AS path"]
-                * len(new_paths)
-            )
-            pair_params: list[Any] = []
-            for path in new_paths:
-                pair_params.extend([str(uuid.uuid4()), path])
-            # Mint Vault File identities.  The Vault row lock already
-            # serialized this transaction against concurrent identity writers,
-            # so every guarded row here is the winner; the NOT EXISTS guard is
-            # still applied for non-cooperating direct SQL writers.
-            self.connection.execute(
-                f"""
-                INSERT INTO vault_files(id, vault_id, status, created_at)
-                SELECT s.id, %s, 'active', %s
-                FROM ({id_values}) s
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM file_paths fp
-                    WHERE fp.vault_id=%s
-                      AND fp.path=s.path
-                      AND fp.valid_to IS NULL
-                )
-                """,
-                (vault_id, created_at, *pair_params, vault_id),
-            )
-            # Link each new identity to its path (same guarded pass).
-            self.connection.execute(
-                f"""
-                INSERT INTO file_paths(
-                    vault_file_id, vault_id, path, valid_from, valid_to
-                )
-                SELECT s.id, %s, s.path, %s, NULL
-                FROM ({id_values}) s
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM file_paths fp
-                    WHERE fp.vault_id=%s
-                      AND fp.path=s.path
-                      AND fp.valid_to IS NULL
-                )
-                """,
-                (vault_id, created_at, *pair_params, vault_id),
-            )
-            # A non-cooperating writer may have created a path between the
-            # lookup and the guarded INSERT; re-resolve every new path so the
-            # returned id always names a durable vault_files row (ours when we
-            # minted it, the writer's when the guard skipped us).
-            re_placeholders = ", ".join(["%s"] * len(new_paths))
-            re_rows = self.connection.execute(
-                f"""
-                SELECT fp.path, vf.id
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=%s AND fp.path IN ({re_placeholders})
-                """,
-                (vault_id, *new_paths),
-            ).fetchall()
-            for row in re_rows:
-                resolved[str(row["path"])] = str(row["id"])
-        return {path: resolved[path] for path in paths}
+        return ids[path]
 
     def observe_local_copies_batch(
         self,
         *,
         vault_id: int,
-        entries: Sequence[tuple[str, str, int | None, int | None, str]],
-        seen_at: str | None = None,
+        entries: Sequence[tuple[str, str, int | None, int | None, Any]],
+        seen_at: Any | None = None,
+        invalidate_paths: Sequence[str] = (),
     ) -> dict[str, str]:
-        """Observe many Local Copy rows in a few statements.
+        """Observe many Local Copies in a constant number of statements.
 
-        Semantically equivalent to calling :meth:`observe_local_copy` once per
-        entry (same upsert columns, same digest-preservation rules, same dirty
-        ancestors) but without the per-file identity lock touch, identity
-        lookup, and dirty-marking round-trips.  Directory aggregate ancestors
-        are marked dirty once per unique ancestor via :func:`mark_paths_dirty`.
-        Returns a ``{path: vault_file_id}`` map for the input entries.
+        Semantically identical to :meth:`observe_local_copy` per entry: one
+        Vault lock touch, one bulk upsert, one consent revocation and one
+        dirty-ancestor write. A repeated path keeps its last observation.
+        Returns ``{path: file_id}``.
         """
         if not entries:
             return {}
-        # A repeated path in one batch must behave like the serialized per-file
-        # path: the last observation wins.  Deduplicate to one row per identity
-        # so the guarded INSERT cannot trip the unique vault_file_id constraint.
-        last_by_path: dict[str, tuple[str, str, int | None, int | None, str]] = {}
+        return self._observe(
+            vault_id, entries, seen_at=seen_at, recovered_at=None,
+            invalidate_paths=invalidate_paths,
+        )
+
+    def _observe(
+        self,
+        vault_id: int,
+        entries: Sequence[tuple[str, str, int | None, int | None, Any]],
+        *,
+        seen_at: Any | None,
+        recovered_at: Any | None,
+        invalidate_paths: Sequence[str],
+    ) -> dict[str, str]:
+        last_by_path: dict[str, tuple[str, str, int | None, int | None, Any]] = {}
         for entry in entries:
             last_by_path[entry[0]] = entry
-        ordered_entries = list(last_by_path.values())
-        paths = [entry[0] for entry in ordered_entries]
-        observed_at = ordered_entries[0][4]
-        file_ids = self._resolve_or_create_files(vault_id, paths, observed_at)
-        values = " UNION ALL ".join(
-            [
-                "SELECT CAST(%s AS VARCHAR), CAST(%s AS TEXT), "
-                "CAST(%s AS TEXT), CAST(%s AS BIGINT), CAST(%s AS BIGINT), "
-                "CAST(%s AS TEXT), CAST(%s AS TEXT)"
-            ]
-            * len(ordered_entries)
-        )
-        params: list[Any] = []
-        for path, file_type, size, mtime_ns, entry_observed_at in ordered_entries:
-            presence = "present" if file_type == "regular" else "unsupported"
-            last_seen_at = seen_at or entry_observed_at
-            params.extend(
-                [
-                    file_ids[path],
-                    presence,
-                    file_type,
-                    size,
-                    mtime_ns,
-                    last_seen_at,
-                    entry_observed_at,
-                ]
-            )
-        # Update existing observations before inserting new identities, with
-        # digest/matched-version preserved
-        # exactly when the observation is unchanged, mirroring the per-file
-        # ON CONFLICT semantics), then a guarded INSERT of the new rows.  Both
-        # statements run in the caller's transaction; the Vault row lock
-        # already serialized identity creation, so the NOT EXISTS insert cannot
-        # race a cooperating writer.
-        self.connection.execute(
+        ordered = list(last_by_path.values())
+        paths = [entry[0] for entry in ordered]
+        types = [entry[1] for entry in ordered]
+        presences = ["present" if kind == "regular" else "unsupported" for kind in types]
+        sizes = [entry[2] for entry in ordered]
+        mtimes = [entry[3] for entry in ordered]
+        observed = [_required_timestamp(entry[4]) for entry in ordered]
+        seen = _timestamp(seen_at)
+        seen_values = [seen or stamp for stamp in observed]
+        recovered = _timestamp(recovered_at)
+        same_stat = """
+            f.local_presence = 'present'
+            AND EXCLUDED.local_presence = 'present'
+            AND f.local_size IS NOT DISTINCT FROM EXCLUDED.local_size
+            AND f.local_mtime_ns IS NOT DISTINCT FROM EXCLUDED.local_mtime_ns
+        """
+        self._vault_lock_touch(vault_id)
+        rows = self.connection.execute(
             f"""
-            WITH s(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                last_seen_at, observed_at
-            ) AS ({values})
-            UPDATE local_copies
-            SET
-                content_observed_at=CASE
-                    WHEN (local_copies.presence, local_copies.file_type,
-                          local_copies.size, local_copies.mtime_ns)
+            INSERT INTO files AS f (
+                vault_id, path, path_since, local_presence, local_file_type,
+                local_size, local_mtime_ns, local_seen_at, local_observed_at,
+                local_content_observed_at, local_recovered_at
+            )
+            SELECT %s, s.path, s.observed_at, s.presence, s.file_type,
+                   s.size, s.mtime_ns, s.seen_at, s.observed_at,
+                   s.observed_at, %s::timestamptz
+            FROM unnest(
+                %s::text[], %s::text[], %s::text[], %s::bigint[], %s::bigint[],
+                %s::timestamptz[], %s::timestamptz[]
+            ) AS s(path, presence, file_type, size, mtime_ns, observed_at, seen_at)
+            ON CONFLICT (vault_id, path) DO UPDATE SET
+                generation = f.generation + 1,
+                local_presence = EXCLUDED.local_presence,
+                local_file_type = EXCLUDED.local_file_type,
+                local_size = EXCLUDED.local_size,
+                local_mtime_ns = EXCLUDED.local_mtime_ns,
+                local_sha256 = CASE WHEN {same_stat} THEN f.local_sha256 END,
+                matched_version_id = CASE WHEN {same_stat} THEN f.matched_version_id END,
+                held_version_id = CASE
+                    WHEN EXCLUDED.local_presence = 'present'
+                     AND f.local_presence IS DISTINCT FROM 'present'
+                    THEN CASE
+                        WHEN EXCLUDED.local_recovered_at IS NULL
+                        THEN {_only_cloud_copy_sql("f")}
+                    END
+                    ELSE f.held_version_id
+                END,
+                local_seen_at = EXCLUDED.local_seen_at,
+                local_observed_at = EXCLUDED.local_observed_at,
+                local_content_observed_at = CASE
+                    WHEN (f.local_presence, f.local_file_type, f.local_size, f.local_mtime_ns)
                          IS DISTINCT FROM
-                         (SELECT ROW(s.presence, s.file_type, s.size, s.mtime_ns) FROM s
-                          WHERE s.vault_file_id=local_copies.vault_file_id)
-                    THEN (SELECT s.observed_at FROM s
-                          WHERE s.vault_file_id=local_copies.vault_file_id)
-                    ELSE COALESCE(local_copies.content_observed_at, local_copies.observed_at)
+                         (EXCLUDED.local_presence, EXCLUDED.local_file_type,
+                          EXCLUDED.local_size, EXCLUDED.local_mtime_ns)
+                    THEN EXCLUDED.local_observed_at
+                    ELSE COALESCE(f.local_content_observed_at, EXCLUDED.local_observed_at)
                 END,
-                cloud_only_version_id=CASE
-                    WHEN local_copies.presence<>'present'
-                     AND (
-                        SELECT s.presence FROM s
-                        WHERE s.vault_file_id=local_copies.vault_file_id
-                     )='present'
-                    THEN {_only_cloud_copy_sql("local_copies.vault_file_id")}
-                    ELSE local_copies.cloud_only_version_id
-                END,
-                presence=(
-                    SELECT s.presence FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                ),
-                file_type=(
-                    SELECT s.file_type FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                ),
-                size=(
-                    SELECT s.size FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                ),
-                mtime_ns=(
-                    SELECT s.mtime_ns FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                ),
-                plaintext_sha256=CASE
-                    WHEN local_copies.file_type=(
-                        SELECT s.file_type FROM s
-                        WHERE s.vault_file_id=local_copies.vault_file_id
-                    )
-                     AND (
-                        local_copies.size=(
-                            SELECT s.size FROM s
-                            WHERE s.vault_file_id=local_copies.vault_file_id
-                        )
-                        OR (
-                            local_copies.size IS NULL
-                            AND (
-                                SELECT s.size FROM s
-                                WHERE s.vault_file_id=local_copies.vault_file_id
-                            ) IS NULL
-                        )
-                     )
-                     AND (
-                        local_copies.mtime_ns=(
-                            SELECT s.mtime_ns FROM s
-                            WHERE s.vault_file_id=local_copies.vault_file_id
-                        )
-                        OR (
-                            local_copies.mtime_ns IS NULL
-                            AND (
-                                SELECT s.mtime_ns FROM s
-                                WHERE s.vault_file_id=local_copies.vault_file_id
-                            ) IS NULL
-                        )
-                     )
-                    THEN local_copies.plaintext_sha256
-                    ELSE NULL
-                END,
-                matched_archive_version_id=CASE
-                    WHEN local_copies.file_type=(
-                        SELECT s.file_type FROM s
-                        WHERE s.vault_file_id=local_copies.vault_file_id
-                    )
-                     AND (
-                        local_copies.size=(
-                            SELECT s.size FROM s
-                            WHERE s.vault_file_id=local_copies.vault_file_id
-                        )
-                        OR (
-                            local_copies.size IS NULL
-                            AND (
-                                SELECT s.size FROM s
-                                WHERE s.vault_file_id=local_copies.vault_file_id
-                            ) IS NULL
-                        )
-                     )
-                     AND (
-                        local_copies.mtime_ns=(
-                            SELECT s.mtime_ns FROM s
-                            WHERE s.vault_file_id=local_copies.vault_file_id
-                        )
-                        OR (
-                            local_copies.mtime_ns IS NULL
-                            AND (
-                                SELECT s.mtime_ns FROM s
-                                WHERE s.vault_file_id=local_copies.vault_file_id
-                            ) IS NULL
-                        )
-                     )
-                    THEN local_copies.matched_archive_version_id
-                    ELSE NULL
-                END,
-                last_seen_at=(
-                    SELECT s.last_seen_at FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                ),
-                observed_at=(
-                    SELECT s.observed_at FROM s
-                    WHERE s.vault_file_id=local_copies.vault_file_id
-                )
-            WHERE vault_file_id IN (SELECT vault_file_id FROM s)
+                local_recovered_at = COALESCE(EXCLUDED.local_recovered_at, f.local_recovered_at)
+            RETURNING f.path, f.id
             """,
-            params,
-        )
-        self.connection.execute(
-            f"""
-            WITH s(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                last_seen_at, observed_at
-            ) AS ({values})
-            INSERT INTO local_copies(
-                vault_file_id, presence, file_type, size, mtime_ns,
-                plaintext_sha256, matched_archive_version_id,
-                last_seen_at, observed_at, content_observed_at, cloud_only_version_id
+            (
+                vault_id, recovered,
+                paths, presences, types, sizes, mtimes, observed, seen_values,
+            ),
+        ).fetchall()
+        file_ids = {str(row["path"]): str(row["id"]) for row in rows}
+        invalidated = sorted({path for path in invalidate_paths if path in file_ids})
+        if invalidated:
+            # A content event restarts the stability window and forgets the
+            # fingerprint even when size and mtime were preserved.
+            self.connection.execute(
+                """
+                UPDATE files
+                SET local_sha256=NULL, matched_version_id=NULL,
+                    local_content_observed_at=local_observed_at
+                WHERE vault_id=%s AND path = ANY(%s::text[])
+                  AND local_presence IS NOT NULL
+                """,
+                (vault_id, invalidated),
             )
-            SELECT
-                s.vault_file_id, s.presence, s.file_type, s.size, s.mtime_ns,
-                NULL, NULL,
-                s.last_seen_at, s.observed_at, s.observed_at,
-                CASE
-                    WHEN s.presence='present'
-                    THEN {_only_cloud_copy_sql("s.vault_file_id")}
-                END
-            FROM s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM local_copies lc
-                WHERE lc.vault_file_id=s.vault_file_id
-            )
-            """,
-            params,
+        self._revoke_deletion_consents(
+            vault_id, list(file_ids.values()), max(observed),
+            reason="Cancelled: the Local Copy reappeared",
         )
-        self._cancel_reappeared_deletions(vault_id, list(file_ids.values()), observed_at)
         mark_paths_dirty(self.connection, vault_id, paths)
-        return file_ids
+        return {path: file_ids[path] for path in paths}
 
-    def record_archive_version(
+    def mark_local_copy_missing(self, vault_file_id: str, *, observed_at: Any) -> None:
+        """Record that the observed Local Copy is gone, keeping its fingerprint."""
+        row = self.connection.execute(
+            """
+            UPDATE files
+            SET local_presence='missing', local_observed_at=%s,
+                generation=generation + 1
+            WHERE id=%s AND local_presence IS NOT NULL
+            RETURNING vault_id, path
+            """,
+            (_required_timestamp(observed_at), vault_file_id),
+        ).fetchone()
+        if row is not None:
+            self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+
+    def observe_replaced_local_copy(
+        self,
+        vault_file_id: str,
+        *,
+        file_type: str,
+        size: int | None,
+        mtime_ns: int | None,
+        observed_at: Any,
+    ) -> None:
+        """Record content that replaced a Local Copy just freed or released.
+
+        The previous content was just removed, so Current holds its only copy:
+        a replacement observed in that race is held back like any content
+        reappearing at a cloud-only path.
+        """
+        presence = "present" if file_type == "regular" else "unsupported"
+        stamp = _required_timestamp(observed_at)
+        row = self.connection.execute(
+            f"""
+            UPDATE files f
+            SET generation=f.generation + 1,
+                local_presence=%s, local_file_type=%s, local_size=%s,
+                local_mtime_ns=%s, local_sha256=NULL, matched_version_id=NULL,
+                held_version_id=CASE
+                    WHEN CAST(%s AS text)='present' THEN {_only_cloud_copy_sql("f")}
+                END,
+                local_seen_at=%s, local_observed_at=%s,
+                local_content_observed_at=%s
+            WHERE f.id=%s
+            RETURNING f.vault_id, f.path
+            """,
+            (presence, file_type, size, mtime_ns, presence, stamp, stamp, stamp, vault_file_id),
+        ).fetchone()
+        if row is not None:
+            self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+
+    def local_copies_to_fingerprint(self, vault_id: int) -> list[dict[str, Any]]:
+        """Present regular Local Copies without a fingerprint, with their token.
+
+        Hash each one outside any write transaction and publish it with
+        :meth:`publish_local_fingerprint` using the ``generation`` read here.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT id, path, generation, local_size, local_mtime_ns
+            FROM files
+            WHERE vault_id=%s
+              AND local_presence='present'
+              AND local_file_type='regular'
+              AND local_sha256 IS NULL
+            ORDER BY path
+            """,
+            (vault_id,),
+        ).fetchall()
+        return [
+            {
+                "vault_file_id": str(row["id"]),
+                "path": row["path"],
+                "generation": int(row["generation"]),
+                "size": row["local_size"],
+                "mtime_ns": row["local_mtime_ns"],
+            }
+            for row in rows
+        ]
+
+    def publish_local_fingerprint(
+        self,
+        vault_file_id: str,
+        *,
+        generation: int,
+        plaintext_sha256: str | bytes,
+        size: int | None,
+        mtime_ns: int | None,
+    ) -> bool:
+        """Publish a digest for the observation it was computed from.
+
+        Compare-and-swap on the generation read **before** hashing and on the
+        stat the hash saw: a newer observation, a rename or a different stat
+        wins and the digest is discarded (False). Content that reappeared at a
+        cloud-only path and proves identical to Current becomes matched and
+        is released from its hold; different content stays held.
+        """
+        digest = _digest(plaintext_sha256)
+        settled = """CASE
+            WHEN f.held_version_id IS NOT NULL THEN (
+                SELECT held.id FROM archive_versions held
+                WHERE held.id = f.held_version_id
+                  AND held.integrity = 'verified'
+                  AND held.availability = 'available'
+                  AND held.plaintext_sha256 = %(digest)s
+            )
+            WHEN f.local_sha256 = %(digest)s THEN f.matched_version_id
+        END"""
+        row = self.connection.execute(
+            f"""
+            UPDATE files f
+            SET local_sha256 = %(digest)s,
+                matched_version_id = {settled},
+                held_version_id = CASE
+                    WHEN ({settled}) IS NOT NULL THEN NULL ELSE f.held_version_id
+                END,
+                pending_since = CASE
+                    WHEN ({settled}) IS NOT NULL THEN NULL ELSE f.pending_since
+                END
+            WHERE f.id = %(id)s
+              AND f.generation = %(generation)s
+              AND f.local_presence = 'present'
+              AND f.local_file_type = 'regular'
+              AND f.local_size IS NOT DISTINCT FROM %(size)s::bigint
+              AND f.local_mtime_ns IS NOT DISTINCT FROM %(mtime_ns)s::bigint
+            RETURNING f.vault_id, f.path
+            """,
+            {
+                "digest": digest,
+                "id": vault_file_id,
+                "generation": int(generation),
+                "size": size,
+                "mtime_ns": mtime_ns,
+            },
+        ).fetchone()
+        if row is None:
+            return False
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+        return True
+
+    def mark_unseen_local_copies_missing(
         self,
         *,
         vault_id: int,
-        path: str,
+        seen_at: Any,
+        observed_at: Any,
+        scan_started_at: Any | None = None,
+    ) -> None:
+        """Mark only rows not changed after this scan generation began.
+
+        A watcher or another completed scan may legitimately update a Local
+        Copy while the walk is in progress.  Such a newer observation must not
+        be overwritten by the older scan's final missing transition.
+        """
+        started = _timestamp(scan_started_at)
+        self.connection.execute(
+            """
+            UPDATE files
+            SET local_presence='missing', local_observed_at=%s,
+                generation=generation + 1
+            WHERE vault_id=%s
+              AND local_presence IN ('present', 'unsupported')
+              AND local_seen_at IS DISTINCT FROM %s
+              AND (%s::timestamptz IS NULL OR local_observed_at <= %s::timestamptz)
+            """,
+            (
+                _required_timestamp(observed_at), vault_id,
+                _required_timestamp(seen_at), started, started,
+            ),
+        )
+        self._request_aggregate_rebuild(vault_id)
+
+    def mark_local_path_missing(
+        self, *, vault_id: int, path: str, observed_at: Any
+    ) -> None:
+        """Mark the Local Copy at ``path``, or every one below it, missing."""
+        escaped = (
+            path.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        self.connection.execute(
+            """
+            UPDATE files
+            SET local_presence='missing', local_observed_at=%s,
+                generation=generation + 1
+            WHERE local_presence IS NOT NULL
+              AND id IN (
+                  SELECT id FROM files WHERE vault_id=%s AND path=%s
+                  UNION ALL
+                  SELECT id FROM files
+                  WHERE vault_id=%s AND path LIKE %s ESCAPE '\\'
+              )
+            """,
+            (
+                _required_timestamp(observed_at),
+                vault_id, path, vault_id, f"{escaped}/%",
+            ),
+        )
+        # Path may be a file or a directory prefix of many descendants.
+        self._mark_path_aggregates_dirty(vault_id, path)
+        mark_directory_dirty(self.connection, vault_id, path)
+
+    # -- explicit protection state ------------------------------------------
+
+    def record_pending_files(
+        self, vault_id: int, pending: Mapping[str, Any]
+    ) -> dict[str, datetime]:
+        """Keep one continuous pending timer per pending file of the Vault.
+
+        ``pending`` maps each file that is pending now to the instant its
+        pending state began. Existing timers never reset; files no longer
+        pending lose theirs. Returns the durable ``{file_id: pending_since}``.
+        """
+        ids = list(pending)
+        sinces = [_required_timestamp(pending[file_id]) for file_id in ids]
+        rows = self.connection.execute(
+            """
+            UPDATE files f
+            SET pending_since = COALESCE(f.pending_since, s.since)
+            FROM unnest(%s::uuid[], %s::timestamptz[]) AS s(id, since)
+            WHERE f.id = s.id AND f.vault_id = %s
+            RETURNING f.id, f.pending_since
+            """,
+            (ids, sinces, vault_id),
+        ).fetchall()
+        self.connection.execute(
+            """
+            UPDATE files SET pending_since=NULL
+            WHERE vault_id=%s AND pending_since IS NOT NULL
+              AND NOT (id = ANY(%s::uuid[]))
+            """,
+            (vault_id, ids),
+        )
+        return {str(row["id"]): row["pending_since"] for row in rows}
+
+    def block_reconciliation(self, vault_file_id: str, *, reason: str, at: Any) -> None:
+        """Record why exact upload reconciliation of this file is blocked."""
+        if not reason:
+            raise ValueError("A reconciliation block needs a reason")
+        self.connection.execute(
+            """
+            UPDATE files SET reconciliation_block=%s, reconciliation_blocked_at=%s
+            WHERE id=%s
+            """,
+            (reason, _required_timestamp(at), vault_file_id),
+        )
+
+    def clear_reconciliation_block(self, vault_file_id: str) -> None:
+        self.connection.execute(
+            """
+            UPDATE files SET reconciliation_block=NULL, reconciliation_blocked_at=NULL
+            WHERE id=%s AND reconciliation_block IS NOT NULL
+            """,
+            (vault_file_id,),
+        )
+
+    # -- Current Snapshot and the replacement in progress --------------------
+
+    def begin_replacement(
+        self,
+        vault_file_id: str,
+        *,
         object_key: str,
         provider_version_id: str,
-        size: int | None,
-        storage_class: str | None,
-        etag: str | None,
-        uploaded_at: str,
-        observed_at: str,
-        scan_id: str,
-        origin: str = "discovered",
-        vault_file_id: str | None = None,
+        size: int,
+        storage_class: str | None = None,
+        created_at: Any | None = None,
     ) -> str:
-        # Publication must pin the owner, not re-resolve a reused path.
-        if vault_file_id is not None:
-            owner = self.connection.execute("SELECT 1 FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s AND vf.status='active' AND fp.path=%s", (vault_file_id, vault_id, path)).fetchone()
-            if not owner:
-                raise RuntimeError("Archive Version publication owner/path changed")
-        # Resolve existing Archive Version BEFORE minting a Vault File so a
-        # cloud scan of a renamed file's old key cannot orphan a new identity.
-        existing = self.connection.execute(
+        """Record the uploaded object as this file's one replacement in progress.
+
+        The Archive Version is born unverified and available at its exact
+        provider identity; Current is unchanged until
+        :meth:`promote_replacement`. Raises :class:`ReplacementInProgress` when
+        another replacement is already in progress (nothing is written).
+        """
+        if not provider_version_id:
+            raise ValueError("A provider VersionId is required")
+        stamp = _timestamp(created_at) or datetime.now(timezone.utc)
+        row = self.connection.execute(
             """
-            SELECT id, vault_file_id, storage_class, storage_class_source
-            FROM archive_versions
-            WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
+            WITH target AS (
+                SELECT id FROM files
+                WHERE id=%s AND replacing_version_id IS NULL
+                FOR UPDATE
+            ), version AS (
+                INSERT INTO archive_versions(
+                    file_id, object_key, provider_version_id, size, storage_class,
+                    availability, availability_checked_at, created_at
+                )
+                SELECT target.id, %s, %s, %s, %s, 'available', %s, %s FROM target
+                RETURNING id, file_id
+            )
+            UPDATE files f
+            SET replacing_version_id = version.id,
+                cloud_since = COALESCE(f.cloud_since, %s)
+            FROM version
+            WHERE f.id = version.file_id
+            RETURNING version.id AS version_id, f.vault_id, f.path
             """,
-            (vault_id, object_key, provider_version_id),
+            (
+                vault_file_id, object_key, provider_version_id, size,
+                storage_class, stamp, stamp, stamp,
+            ),
         ).fetchone()
-        if existing:
-            if vault_file_id is not None and str(existing["vault_file_id"]) != str(vault_file_id):
-                raise RuntimeError("Exact provider identity belongs to another Vault File")
-            source = existing["storage_class_source"] or "unknown"
-            if storage_class and storage_class != existing["storage_class"]:
-                if source != "manual":
-                    source = "discovered"
+        if row is None:
+            raise ReplacementInProgress("The Vault File already has a replacement in progress")
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+        return str(row["version_id"])
+
+    def promote_replacement(
+        self,
+        vault_file_id: str,
+        *,
+        archive_version_id: str,
+        plaintext_sha256: str | bytes,
+        verified_at: Any,
+        local_generation: int | None = None,
+    ) -> bool:
+        """Verify the replacement in progress and make it Current, atomically.
+
+        This is the only way Current changes. The superseded version stays
+        unreferenced until its exact cleanup removes it (#591). The Local Copy
+        becomes matched only when it is still the observation
+        ``local_generation`` and its fingerprint equals the verified digest.
+        Returns whether the Local Copy is matched to the new Current.
+        """
+        digest = _digest(plaintext_sha256)
+        stamp = _required_timestamp(verified_at)
+        target = self.connection.execute(
+            "SELECT replacing_version_id FROM files WHERE id=%s FOR UPDATE",
+            (vault_file_id,),
+        ).fetchone()
+        if target is None or _id(target["replacing_version_id"]) != str(archive_version_id):
+            raise StaleReplacement("The Archive Version is not the replacement in progress")
+        verified = self.connection.execute(
+            """
+            UPDATE archive_versions
+            SET integrity='verified', verified_at=%s, plaintext_sha256=%s
+            WHERE id=%s AND file_id=%s AND integrity='unverified'
+              AND (plaintext_sha256 IS NULL OR plaintext_sha256=%s)
+            RETURNING id
+            """,
+            (stamp, digest, archive_version_id, vault_file_id, digest),
+        ).fetchone()
+        if verified is None:
+            raise StaleReplacement("The replacement cannot be verified with this digest")
+        matches = """(
+            %(generation)s::bigint IS NOT NULL
+            AND f.generation = %(generation)s::bigint
+            AND f.local_presence = 'present'
+            AND f.local_sha256 = %(digest)s
+        )"""
+        row = self.connection.execute(
+            f"""
+            UPDATE files f
+            SET current_version_id = f.replacing_version_id,
+                replacing_version_id = NULL,
+                held_version_id = NULL,
+                matched_version_id = CASE WHEN {matches} THEN f.replacing_version_id END,
+                pending_since = CASE WHEN {matches} THEN NULL ELSE f.pending_since END
+            WHERE f.id = %(id)s AND f.replacing_version_id = %(version)s
+            RETURNING f.vault_id, f.path, f.matched_version_id
+            """,
+            {
+                "generation": local_generation,
+                "digest": digest,
+                "id": vault_file_id,
+                "version": archive_version_id,
+            },
+        ).fetchone()
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+        return row["matched_version_id"] is not None
+
+    def abandon_replacement(
+        self,
+        vault_file_id: str,
+        *,
+        archive_version_id: str,
+        mismatch_sha256: str | bytes | None = None,
+        checked_at: Any | None = None,
+    ) -> None:
+        """End the replacement in progress without touching Current.
+
+        With ``mismatch_sha256`` the version is recorded as a proven mismatch.
+        The version stays as superseded until its exact cleanup (#591): a
+        failed upload or verification always preserves the previous copy.
+        """
+        if mismatch_sha256 is not None:
             self.connection.execute(
                 """
                 UPDATE archive_versions
-                SET availability='available',
-                    availability_checked_at=%s,
-                    storage_class=%s,
-                    etag=%s,
-                    storage_class_source=%s
-                WHERE id=%s
+                SET integrity='mismatch', plaintext_sha256=%s, verified_at=%s
+                WHERE id=%s AND file_id=%s AND integrity='unverified'
                 """,
-                (scan_id, storage_class, etag, source, existing["id"]),
+                (
+                    _digest(mismatch_sha256), _required_timestamp(checked_at),
+                    archive_version_id, vault_file_id,
+                ),
             )
-            from .services.catalog_incidents import resolve_archive_version_incidents
-
-            resolve_archive_version_incidents(
-                self.connection,
-                [str(existing["id"])],
-                observed_at=scan_id,
-            )
-            self._mark_path_aggregates_dirty(vault_id, path)
-            return existing["id"]
-        file_id = vault_file_id or self._resolve_cloud_path_file(vault_id, path, observed_at)
-        self.connection.execute(
-            "UPDATE vault_files SET status=status WHERE id=%s",
-            (file_id,),
-        )
-        latest = self.connection.execute(
+        row = self.connection.execute(
             """
-            SELECT COALESCE(MAX(version_number), 0) AS version_number
-            FROM archive_versions WHERE vault_file_id=%s
+            UPDATE files SET replacing_version_id=NULL
+            WHERE id=%s AND replacing_version_id=%s
+            RETURNING vault_id, path
             """,
-            (file_id,),
+            (vault_file_id, archive_version_id),
         ).fetchone()
-        version_id = str(uuid.uuid4())
-        version_number = int(latest["version_number"]) + 1
-        if origin == "discovered":
-            # Observations never elect themselves over a verified keeper. No
-            # timestamp/latest heuristic grants Current Snapshot or delete trust.
-            keeper = self.connection.execute("SELECT id FROM archive_versions WHERE vault_file_id=%s AND integrity='verified' AND availability='available' LIMIT 1", (file_id,)).fetchone()
-            if keeper:
-                oldest = self.connection.execute("SELECT MIN(version_number) AS n FROM archive_versions WHERE vault_file_id=%s", (file_id,)).fetchone()
-                version_number = min(0, int(oldest["n"] or 0)) - 1
-        insert_params = [
-            version_id,
-            file_id,
-            vault_id,
-            version_number,
-            object_key,
-            provider_version_id,
-            size,
-            storage_class,
-            etag,
-            uploaded_at,
-            observed_at,
-            origin,
-            scan_id,
-            "upload"
-            if origin == "upload"
-            else "discovered"
-            if origin == "discovered"
-            else "unknown",
+        if row is None:
+            raise StaleReplacement("The Archive Version is not the replacement in progress")
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+
+    def mark_archive_versions_listed(self, version_ids: Sequence[str], *, scan_id: Any) -> None:
+        """A complete listing saw these exact versions: they are available."""
+        ids = [str(item) for item in version_ids if item]
+        if not ids:
+            return
+        rows = self.connection.execute(
+            """
+            UPDATE archive_versions av
+            SET availability='available', availability_checked_at=%s
+            FROM files f
+            WHERE av.id = ANY(%s::uuid[]) AND f.id = av.file_id
+            RETURNING f.vault_id, f.path
+            """,
+            (_required_timestamp(scan_id), ids),
+        ).fetchall()
+        for row in rows:
+            self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+
+    def mark_unseen_archive_versions_missing(
+        self, *, vault_id: int, scan_id: Any, scan_started_at: Any
+    ) -> list[dict[str, Any]]:
+        """Mark unseen versions missing and return the new transitions.
+
+        Versions with a concurrent upload Job on their file, versions seen in
+        this scan and versions created after it started are left unchanged so
+        they cannot open false loss incidents.
+        """
+        terminal = list(TERMINAL_JOB_STATUSES)
+        rows = self.connection.execute(
+            """
+            UPDATE archive_versions av
+            SET availability='missing', availability_checked_at=%s
+            FROM files f
+            WHERE f.id = av.file_id
+              AND f.vault_id = %s
+              AND av.availability <> 'missing'
+              AND av.availability_checked_at IS DISTINCT FROM %s
+              AND av.created_at <= %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM jobs active_upload
+                  WHERE active_upload.file_id = av.file_id
+                    AND active_upload.action = 'upload'
+                    AND NOT (active_upload.status = ANY(%s::text[]))
+              )
+            RETURNING av.id, f.vault_id, av.file_id, av.object_key,
+                      av.provider_version_id, f.path
+            """,
+            (
+                _required_timestamp(scan_id), vault_id, _required_timestamp(scan_id),
+                _required_timestamp(scan_started_at), terminal,
+            ),
+        ).fetchall()
+        # Bulk reconciliation can touch an unbounded set of paths.
+        self._request_aggregate_rebuild(vault_id)
+        return [
+            {
+                "id": str(row["id"]),
+                "vault_id": int(row["vault_id"]),
+                "vault_file_id": str(row["file_id"]),
+                "object_key": row["object_key"],
+                "provider_version_id": row["provider_version_id"],
+                "path": row["path"],
+            }
+            for row in rows
         ]
+
+    # -- lookups ------------------------------------------------------------
+
+    def get_file(self, vault_file_id: str, *, vault_id: int) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            f"SELECT {_FILE_COLUMNS_SQL} FROM files f {_FILE_JOINS_SQL} "
+            "WHERE f.id=%s AND f.vault_id=%s",
+            (vault_file_id, vault_id),
+        ).fetchone()
+        return None if row is None else _file_dict(row)
+
+    def get_file_by_path(self, vault_id: int, path: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            f"SELECT {_FILE_COLUMNS_SQL} FROM files f {_FILE_JOINS_SQL} "
+            "WHERE f.vault_id=%s AND f.path=%s",
+            (vault_id, path),
+        ).fetchone()
+        return None if row is None else _file_dict(row)
+
+    def list_path_history(
+        self, vault_file_id: str, *, vault_id: int
+    ) -> list[dict[str, Any]]:
+        """Every path of the file in order: closed mappings, then the current one."""
+        rows = self.connection.execute(
+            """
+            SELECT path, valid_from, valid_to, 0 AS rank, id
+            FROM file_path_history
+            WHERE file_id=%s AND vault_id=%s
+            UNION ALL
+            SELECT path, path_since, NULL, 1, NULL
+            FROM files
+            WHERE id=%s AND vault_id=%s
+            ORDER BY rank, valid_from, id
+            """,
+            (vault_file_id, vault_id, vault_file_id, vault_id),
+        ).fetchall()
+        return [
+            {"path": row["path"], "valid_from": row["valid_from"], "valid_to": row["valid_to"]}
+            for row in rows
+        ]
+
+    # -- renames ------------------------------------------------------------
+
+    def rename_file(
+        self,
+        vault_file_id: str,
+        *,
+        new_path: str,
+        changed_at: Any,
+        vault_id: int,
+    ) -> None:
+        """Move one Vault File to ``new_path`` keeping identity and keeper.
+
+        One transaction closes the old path in Path History, moves the row,
+        invalidates the current observation, revokes pending deletion consent
+        and dirties both ancestor chains. An occupied ``new_path`` fails on
+        the unique path constraint and the caller's transaction rolls back.
+        """
+        stamp = _required_timestamp(changed_at)
+        current = self.connection.execute(
+            "SELECT path FROM files WHERE id=%s AND vault_id=%s FOR UPDATE",
+            (vault_file_id, vault_id),
+        ).fetchone()
+        if current is None:
+            raise VaultFileNotFound()
+        if current["path"] == new_path:
+            return
         self.connection.execute(
             """
-            INSERT INTO archive_versions(
-                id, vault_file_id, vault_id, version_number, object_key,
-                provider_version_id, size, storage_class, etag,
-                provider_checksums, plaintext_sha256, uploaded_at,
-                discovered_at, origin, integrity, verified_at,
-                availability, availability_checked_at, restore_state,
-                restore_expiry, restore_checked_at, storage_class_source
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                NULL, NULL, %s, %s, %s, 'unverified', NULL,
-                'available', %s, NULL, NULL, NULL, %s
-            )
+            INSERT INTO file_path_history(file_id, vault_id, path, valid_from, valid_to)
+            SELECT id, vault_id, path, path_since, %s FROM files
+            WHERE id=%s AND vault_id=%s
             """,
-            insert_params,
+            (stamp, vault_file_id, vault_id),
         )
-        self._mark_path_aggregates_dirty(vault_id, path)
-        return version_id
+        self.connection.execute(
+            """
+            UPDATE files
+            SET path=%s, path_since=%s, generation=generation + 1
+            WHERE id=%s AND vault_id=%s
+            """,
+            (new_path, stamp, vault_file_id, vault_id),
+        )
+        self._revoke_deletion_consents(
+            vault_id, [vault_file_id], stamp, reason="Cancelled: the file was renamed",
+        )
+        mark_paths_dirty(self.connection, vault_id, [current["path"], new_path])
+
+    def list_rename_candidates(
+        self, vault_id: int, *, digest: str | bytes | None = None
+    ) -> list[dict[str, Any]]:
+        """Return only unique equal-digest matches within the scan window.
+
+        Ambiguous, stale and changed-content paths remain independent Vault
+        Files. The present side must be a brand-new identity: never one that
+        has had cloud content or any Job. The missing side must have no open
+        Job other than a deletion consent, which the rename revokes. A
+        digest-scoped recheck uses the fingerprint index.
+        """
+        query = f"""
+            SELECT
+                f.id, f.path, f.local_presence, f.local_observed_at, f.local_sha256,
+                (f.cloud_since IS NOT NULL
+                 OR EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = f.id)) AS has_history,
+                EXISTS (
+                    SELECT 1 FROM jobs j
+                    WHERE j.file_id = f.id AND j.{_OPEN_JOB_SQL}
+                      AND NOT (j.action = 'cloud-purge' AND j.status = 'pending_delay')
+                ) AS has_open_job
+            FROM files f
+            WHERE f.vault_id=%s
+              AND f.local_file_type='regular'
+              AND f.local_sha256 IS NOT NULL
+              AND f.local_presence IN ('missing', 'present')
+              AND f.held_version_id IS NULL
+        """
+        params: list[Any] = [vault_id]
+        if digest is not None:
+            query += " AND f.local_sha256=%s"
+            params.append(_digest(digest))
+        query += " ORDER BY f.path"
+        rows = self.connection.execute(query, tuple(params)).fetchall()
+        missing_by_digest: dict[bytes, list[dict[str, Any]]] = {}
+        present_by_digest: dict[bytes, list[dict[str, Any]]] = {}
+        for row in rows:
+            key = bytes(row["local_sha256"])
+            if row["local_presence"] == "missing":
+                missing_by_digest.setdefault(key, []).append(row)
+            else:
+                present_by_digest.setdefault(key, []).append(row)
+        candidates: list[dict[str, Any]] = []
+        for key, digest_missing in missing_by_digest.items():
+            digest_present = present_by_digest.get(key, [])
+            if len(digest_missing) != 1 or len(digest_present) != 1:
+                continue
+            missing, present = digest_missing[0], digest_present[0]
+            if not _within_rename_window(
+                missing["local_observed_at"], present["local_observed_at"]
+            ):
+                continue
+            # A destination that has had cloud content or any Job is already an
+            # independent file: never consume it or merge away its content.
+            if present["has_history"] or missing["has_open_job"]:
+                continue
+            candidates.append(
+                {
+                    "missing_vault_file_id": str(missing["id"]),
+                    "missing_path": missing["path"],
+                    "new_vault_file_id": str(present["id"]),
+                    "new_path": present["path"],
+                    "digest": key.hex(),
+                }
+            )
+        return candidates
+
+    def _reserve_rename_confirmation(self, vault_id: int) -> None:
+        """Serialize a confirmation before its candidate is inspected.
+
+        The Vault row is locked before the two candidate rows, the same order
+        scanner writes use, while the compare-and-swap writes below still fail
+        closed for any writer that does not take it.
+        """
+        query = """
+            SELECT id FROM vaults
+            WHERE id=%s AND lifecycle='active'
+            FOR NO KEY UPDATE
+        """
+        if self.connection.execute(query, (vault_id,)).fetchone() is None:
+            raise VaultFileNotFound()
+
+    def _require_one_rename_mutation(self, result: Any) -> None:
+        """Fail closed when a conditional candidate mutation loses its CAS."""
+        if getattr(result, "rowcount", None) != 1:
+            self.connection.execute("ROLLBACK TO SAVEPOINT rename_confirmation_cas")
+            self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
+            raise VaultFileNotFound()
+
+    def confirm_file_rename(
+        self,
+        *,
+        vault_file_id: str,
+        new_path: str,
+        changed_at: Any,
+        vault_id: int,
+    ) -> str:
+        """Atomically consume one current, Vault-local rename candidate.
+
+        The missing Vault File keeps its identity and keeper (Current) and
+        moves to ``new_path``; the provisional identity observed there, which
+        never had cloud content or Jobs, is consumed. Every write is a
+        compare-and-swap on the generations read under the row locks, so a
+        competing confirmation or observation raises ``VaultFileNotFound`` and
+        rolls back to the savepoint. Pending deletion consent is revoked and
+        aggregates are invalidated in the same transaction.
+        """
+        stamp = _required_timestamp(changed_at)
+        self._reserve_rename_confirmation(vault_id)
+        pair = self.connection.execute(
+            """
+            SELECT
+                missing.id AS missing_id, missing.path AS missing_path,
+                missing.generation AS missing_generation,
+                missing.local_sha256 AS missing_sha256,
+                provisional.id AS provisional_id, provisional.path AS provisional_path,
+                provisional.generation AS provisional_generation,
+                provisional.local_sha256 AS provisional_sha256
+            FROM files missing
+            JOIN files provisional
+              ON provisional.vault_id = missing.vault_id
+             AND provisional.path = %s
+             AND provisional.id <> missing.id
+            WHERE missing.id = %s AND missing.vault_id = %s
+            FOR UPDATE OF missing, provisional
+            """,
+            (new_path, vault_file_id, vault_id),
+        ).fetchone()
+        if (
+            pair is None
+            or pair["missing_sha256"] is None
+            or pair["missing_sha256"] != pair["provisional_sha256"]
+            or not any(
+                candidate["missing_vault_file_id"] == str(vault_file_id)
+                and candidate["new_path"] == new_path
+                for candidate in self.list_rename_candidates(
+                    vault_id, digest=bytes(pair["missing_sha256"])
+                )
+            )
+        ):
+            raise VaultFileNotFound()
+        self.connection.execute("SAVEPOINT rename_confirmation_cas")
+        consumed = self.connection.execute(
+            """
+            DELETE FROM files
+            WHERE id=%s AND vault_id=%s AND generation=%s
+              AND local_presence='present' AND cloud_since IS NULL
+              AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = files.id)
+            RETURNING local_presence, local_file_type, local_size, local_mtime_ns,
+                      local_sha256, local_seen_at, local_observed_at,
+                      local_content_observed_at
+            """,
+            (pair["provisional_id"], vault_id, pair["provisional_generation"]),
+        )
+        local = consumed.fetchone() if consumed.rowcount == 1 else None
+        self._require_one_rename_mutation(consumed)
+        closed = self.connection.execute(
+            """
+            INSERT INTO file_path_history(file_id, vault_id, path, valid_from, valid_to)
+            SELECT id, vault_id, path, path_since, %s FROM files
+            WHERE id=%s AND vault_id=%s AND generation=%s AND path=%s
+              AND local_presence='missing'
+            """,
+            (
+                stamp, vault_file_id, vault_id, pair["missing_generation"],
+                pair["missing_path"],
+            ),
+        )
+        self._require_one_rename_mutation(closed)
+        moved = self.connection.execute(
+            """
+            UPDATE files
+            SET path=%s, path_since=%s, generation=generation + 1,
+                local_presence=%s, local_file_type=%s, local_size=%s,
+                local_mtime_ns=%s, local_sha256=%s, local_seen_at=%s,
+                local_observed_at=%s, local_content_observed_at=%s,
+                matched_version_id=NULL, held_version_id=NULL
+            WHERE id=%s AND vault_id=%s AND generation=%s
+            """,
+            (
+                new_path, stamp,
+                local["local_presence"], local["local_file_type"], local["local_size"],
+                local["local_mtime_ns"], local["local_sha256"], local["local_seen_at"],
+                local["local_observed_at"], local["local_content_observed_at"],
+                vault_file_id, vault_id, pair["missing_generation"],
+            ),
+        )
+        self._require_one_rename_mutation(moved)
+        self._revoke_deletion_consents(
+            vault_id, [vault_file_id], stamp, reason="Cancelled: the file was renamed",
+        )
+        # Mark after CAS succeeds so a failed confirmation never dirties, and
+        # still inside the savepoint so dirty rows share rename rollback.
+        invalidate_for_confirmed_rename(
+            self.connection,
+            vault_id,
+            old_path=pair["missing_path"],
+            provisional_path=pair["provisional_path"],
+            new_path=new_path,
+        )
+        self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
+        return str(vault_file_id)
 
     def find_reusable_upload_version(
         self,
@@ -1037,1193 +1489,6 @@ class ArchiveCatalog:
             (archive_version_id, job_id),
         )
         return archive_version_id
-
-    def mark_local_copy_missing(
-        self, vault_file_id: str, *, observed_at: str
-    ) -> None:
-        owned = self.connection.execute(
-            """
-            SELECT vault_id FROM vault_files WHERE id=%s
-            """,
-            (vault_file_id,),
-        ).fetchone()
-        self.connection.execute(
-            """
-            UPDATE local_copies
-            SET presence='missing', observed_at=%s
-            WHERE vault_file_id=%s
-            """,
-            (observed_at, vault_file_id),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), vault_file_id
-            )
-
-    def observe_replaced_local_copy(
-        self,
-        vault_file_id: str,
-        *,
-        file_type: str,
-        size: int | None,
-        mtime_ns: int | None,
-        observed_at: str,
-    ) -> None:
-        presence = "present" if file_type == "regular" else "unsupported"
-        owned = self.connection.execute(
-            """
-            SELECT vault_id FROM vault_files WHERE id=%s
-            """,
-            (vault_file_id,),
-        ).fetchone()
-        # The previous content was just freed, so the cloud holds its only
-        # copy: a replacement observed in that race is held back like any
-        # content reappearing at a cloud-only path.
-        self.connection.execute(
-            f"""
-            UPDATE local_copies
-            SET presence=%s, file_type=%s, size=%s, mtime_ns=%s,
-                plaintext_sha256=NULL, matched_archive_version_id=NULL,
-                cloud_only_version_id=CASE
-                    WHEN CAST(%s AS TEXT)='present'
-                    THEN {_only_cloud_copy_sql("local_copies.vault_file_id")}
-                END,
-                last_seen_at=%s, observed_at=%s
-            WHERE vault_file_id=%s
-            """,
-            (
-                presence,
-                file_type,
-                size,
-                mtime_ns,
-                presence,
-                observed_at,
-                observed_at,
-                vault_file_id,
-            ),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), vault_file_id
-            )
-
-    def mark_version_verified(
-        self,
-        archive_version_id: str,
-        *,
-        plaintext_sha256: str,
-        verified_at: str,
-    ) -> None:
-        if len(plaintext_sha256) != 64:
-            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
-        int(plaintext_sha256, 16)
-        owned = self.connection.execute(
-            """
-            SELECT vault_id, vault_file_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (archive_version_id,),
-        ).fetchone()
-        self.connection.execute(
-            """
-            UPDATE archive_versions
-            SET plaintext_sha256=%s, integrity='verified', verified_at=%s
-            WHERE id=%s
-            """,
-            (plaintext_sha256.lower(), verified_at, archive_version_id),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), owned["vault_file_id"]
-            )
-
-    def mark_version_mismatch(
-        self,
-        archive_version_id: str,
-        *,
-        plaintext_sha256: str,
-        checked_at: str,
-    ) -> None:
-        if len(plaintext_sha256) != 64:
-            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
-        int(plaintext_sha256, 16)
-        owned = self.connection.execute(
-            """
-            SELECT vault_id, vault_file_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (archive_version_id,),
-        ).fetchone()
-        self.connection.execute(
-            """
-            UPDATE archive_versions
-            SET plaintext_sha256=%s, integrity='mismatch', verified_at=%s
-            WHERE id=%s
-            """,
-            (plaintext_sha256.lower(), checked_at, archive_version_id),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), owned["vault_file_id"]
-            )
-
-    def mark_unlisted_snapshot_versions_superseded(
-        self,
-        *,
-        kept_archive_version_id: str,
-        scan_id: str,
-        scan_started_at: str,
-    ) -> None:
-        """Mark a Current Snapshot file's unlisted older versions purged.
-
-        Used when a complete listing no longer contains the catalogued
-        Archive Version but a newer S3 version of the same file is kept (for
-        example after restoring an older metadata backup). Rows seen in this
-        scan, discovered after it started, or owned by an active upload stay.
-        """
-        placeholders = ",".join(["%s"] * len(TERMINAL_JOB_STATUSES))
-        owner = self.connection.execute(
-            "SELECT vault_id, vault_file_id FROM archive_versions WHERE id=%s",
-            (kept_archive_version_id,),
-        ).fetchone()
-        if owner is None:
-            return
-        self.connection.execute(
-            f"""
-            UPDATE archive_versions
-            SET availability='purged', availability_checked_at=%s
-            WHERE vault_file_id=%s
-              AND id<>%s
-              AND availability NOT IN ('missing', 'purged')
-              AND (
-                  availability_checked_at IS NULL
-                  OR availability_checked_at<>%s
-              )
-              AND discovered_at<=%s
-              AND NOT EXISTS (
-                  SELECT 1 FROM jobs active_upload
-                  WHERE active_upload.vault_file_id=archive_versions.vault_file_id
-                    AND active_upload.action='upload'
-                    AND active_upload.status NOT IN ({placeholders})
-              )
-            """,
-            (
-                scan_id,
-                owner["vault_file_id"],
-                kept_archive_version_id,
-                scan_id,
-                scan_started_at,
-                *TERMINAL_JOB_STATUSES,
-            ),
-        )
-        self._mark_file_aggregates_dirty(
-            int(owner["vault_id"]), owner["vault_file_id"]
-        )
-
-    def mark_versions_purged(
-        self,
-        version_ids: Sequence[str],
-        *,
-        checked_at: str,
-    ) -> None:
-        ids = [str(item) for item in version_ids if item]
-        if not ids:
-            return
-        placeholders = ", ".join(["%s"] * len(ids))
-        owned = self.connection.execute(
-            f"""
-            SELECT DISTINCT vault_id, vault_file_id
-            FROM archive_versions
-            WHERE id IN ({placeholders})
-            """,
-            ids,
-        ).fetchall()
-        self.connection.execute(
-            f"""
-            UPDATE archive_versions
-            SET availability='purged', availability_checked_at=%s
-            WHERE id IN ({placeholders})
-            """,
-            [checked_at, *ids],
-        )
-        for row in owned:
-            self._mark_file_aggregates_dirty(
-                int(row["vault_id"]), row["vault_file_id"]
-            )
-
-    def clear_delete_markers_for_file(self, vault_file_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM delete_markers WHERE vault_file_id=%s",
-            (vault_file_id,),
-        )
-
-    def set_local_fingerprint(
-        self,
-        *,
-        vault_id: int,
-        path: str,
-        plaintext_sha256: str,
-        matched_archive_version_id: str | None,
-    ) -> None:
-        if len(plaintext_sha256) != 64:
-            raise ValueError("SHA-256 must contain 64 hexadecimal characters")
-        int(plaintext_sha256, 16)
-        self.connection.execute(
-            """
-            UPDATE local_copies
-            SET plaintext_sha256=%s, matched_archive_version_id=%s
-            WHERE vault_file_id=(
-                SELECT vf.id
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            )
-            """,
-            (
-                plaintext_sha256.lower(),
-                matched_archive_version_id,
-                vault_id,
-                path,
-            ),
-        )
-        # Settle a reappearance at a cloud-only path as soon as it is hashed.
-        from .services.catalog_incidents import settle_cloud_only_copies
-
-        settle_cloud_only_copies(
-            self.connection, vault_id=vault_id, path=path
-        )
-        self._mark_path_aggregates_dirty(vault_id, path)
-
-    def rename_file(
-        self,
-        vault_file_id: str,
-        *,
-        new_path: str,
-        changed_at: str,
-        vault_id: int,
-    ) -> None:
-        current = self.connection.execute(
-            """
-            SELECT fp.path
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id
-             AND fp.vault_id=vf.vault_id
-             AND fp.valid_to IS NULL
-            WHERE vf.id=%s AND vf.vault_id=%s AND vf.status='active'
-            """,
-            (vault_file_id, vault_id),
-        ).fetchone()
-        if current is None:
-            raise VaultFileNotFound()
-        if current["path"] == new_path:
-            return
-        # Both old and new ancestor chains must rebuild before/after the move.
-        self._mark_path_aggregates_dirty(vault_id, current["path"])
-        self._mark_path_aggregates_dirty(vault_id, new_path)
-        self.connection.execute(
-            """
-            UPDATE file_paths SET valid_to=%s
-            WHERE vault_file_id=%s AND vault_id=%s AND valid_to IS NULL
-            """,
-            (changed_at, vault_file_id, vault_id),
-        )
-        self.connection.execute(
-            """
-            INSERT INTO file_paths(
-                vault_file_id, vault_id, path, valid_from, valid_to
-            ) VALUES (%s, %s, %s, %s, NULL)
-            """,
-            (vault_file_id, vault_id, new_path, changed_at),
-        )
-
-    def list_rename_candidates(
-        self, vault_id: int, *, digest: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Return only unique equal-digest matches within the scan window.
-
-        Ambiguous, stale and changed-content paths remain independent Vault
-        Files. No manual decision can merge them or authorize cloud deletion.
-        A digest-scoped recheck uses the fingerprint index instead of reloading
-        the whole Vault for each file in a large folder move.
-        """
-        query = """
-            SELECT
-                vf.id AS vault_file_id,
-                fp.path,
-                lc.presence,
-                lc.size,
-                lc.observed_at,
-                lc.plaintext_sha256 AS digest,
-                EXISTS (SELECT 1 FROM archive_versions av WHERE av.vault_file_id=vf.id) AS has_archive,
-                EXISTS (
-                    SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
-                    AND j.status NOT IN ('completed', 'failed', 'cancelled')
-                ) AS has_pending_job
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id
-             AND fp.vault_id=vf.vault_id
-             AND fp.valid_to IS NULL
-            JOIN local_copies lc ON lc.vault_file_id=vf.id
-            WHERE vf.vault_id=%s
-              AND vf.status='active'
-              AND lc.file_type='regular'
-              AND lc.plaintext_sha256 IS NOT NULL
-              AND lc.presence IN ('missing', 'present')
-              AND lc.cloud_only_version_id IS NULL
-            """
-        params: list[Any] = [vault_id]
-        if digest is not None:
-            query += " AND lower(lc.plaintext_sha256)=%s"
-            params.append(digest.lower())
-        query += " ORDER BY lower(fp.path)"
-        rows = self.connection.execute(query, tuple(params)).fetchall()
-        missing_by_digest: dict[str, list[dict[str, Any]]] = {}
-        present_by_digest: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            digest = str(row["digest"]).lower()
-            if row["presence"] == "missing":
-                missing_by_digest.setdefault(digest, []).append(row)
-            else:
-                present_by_digest.setdefault(digest, []).append(row)
-        candidates: list[dict[str, Any]] = []
-        for digest, digest_missing in missing_by_digest.items():
-            digest_present = present_by_digest.get(digest, [])
-            if not digest_present:
-                continue
-            if len(digest_missing) != 1 or len(digest_present) != 1:
-                continue
-            if not _within_rename_window(
-                digest_missing[0]["observed_at"],
-                digest_present[0]["observed_at"],
-            ):
-                continue
-            missing, present = digest_missing[0], digest_present[0]
-            # A previously archived destination is already an independent file;
-            # never retire it or merge away its recoverable content. Active jobs
-            # also make the identity pair unsafe to consume.
-            if present["has_archive"] or present["has_pending_job"] or missing["has_pending_job"]:
-                continue
-            candidates.append(
-                {
-                    "missing_vault_file_id": missing["vault_file_id"],
-                    "missing_path": missing["path"],
-                    "new_vault_file_id": present["vault_file_id"],
-                    "new_path": present["path"],
-                    "digest": digest,
-                }
-            )
-        return candidates
-
-    def _reserve_rename_confirmation(self, vault_id: int) -> None:
-        """Serialize a confirmation before its candidate is inspected.
-
-        PostgreSQL locks one deterministic Vault row before locking the two
-        candidate rows.
-        Scanner writes that use the same Vault lock serialize normally, while
-        the conditional writes below still fail closed for any writer that
-        does not take it.
-        """
-        query = """
-            SELECT id FROM vaults
-            WHERE id=%s AND decommission_state='active'
-            FOR UPDATE
-        """
-        if self.connection.execute(query, (vault_id,)).fetchone() is None:
-            raise VaultFileNotFound()
-
-    @staticmethod
-    def _snapshot_value_condition(
-        column: str, value: Any, *, casefold: bool = False
-    ) -> tuple[str, list[Any]]:
-        if value is None:
-            return f"{column} IS NULL", []
-        if casefold:
-            return f"lower({column})=lower(%s)", [value]
-        return f"{column}=%s", [value]
-
-    @classmethod
-    def _local_copy_snapshot_conditions(
-        cls,
-        alias: str,
-        snapshot: dict[str, Any],
-        prefix: str,
-    ) -> tuple[list[str], list[Any]]:
-        conditions: list[str] = []
-        params: list[Any] = []
-        for column in (
-            "presence",
-            "file_type",
-            "size",
-            "mtime_ns",
-            "plaintext_sha256",
-            "matched_archive_version_id",
-            "last_seen_at",
-            "observed_at",
-        ):
-            condition, values = cls._snapshot_value_condition(
-                f"{alias}.{column}",
-                snapshot[f"{prefix}_{column}"],
-                casefold=column == "plaintext_sha256",
-            )
-            conditions.append(condition)
-            params.extend(values)
-        return conditions, params
-
-    @classmethod
-    def _file_snapshot_conditions(
-        cls,
-        alias: str,
-        *,
-        vault_file_id: str,
-        vault_id: int,
-        status: str,
-        retired_at: str | None,
-    ) -> tuple[list[str], list[Any]]:
-        conditions = [f"{alias}.id=%s", f"{alias}.vault_id=%s"]
-        params: list[Any] = [vault_file_id, vault_id]
-        for column, value in (("status", status), ("retired_at", retired_at)):
-            condition, values = cls._snapshot_value_condition(
-                f"{alias}.{column}", value
-            )
-            conditions.append(condition)
-            params.extend(values)
-        return conditions, params
-
-    @classmethod
-    def _path_snapshot_conditions(
-        cls,
-        alias: str,
-        *,
-        vault_file_id: str,
-        vault_id: int,
-        state: tuple[str, str, str | None],
-    ) -> tuple[list[str], list[Any]]:
-        path, valid_from, valid_to = state
-        conditions = [
-            f"{alias}.vault_file_id=%s",
-            f"{alias}.vault_id=%s",
-            f"{alias}.path=%s",
-            f"{alias}.valid_from=%s",
-        ]
-        params: list[Any] = [vault_file_id, vault_id, path, valid_from]
-        valid_to_condition, valid_to_params = cls._snapshot_value_condition(
-            f"{alias}.valid_to", valid_to
-        )
-        conditions.append(valid_to_condition)
-        params.extend(valid_to_params)
-        return conditions, params
-
-    def _rename_pair_predicate(
-        self,
-        snapshot: dict[str, Any],
-        *,
-        missing_path: tuple[str, str, str | None],
-        provisional_status: str,
-        provisional_retired_at: str | None,
-        provisional_path: tuple[str, str, str | None],
-        provisional_copy_present: bool,
-    ) -> tuple[str, list[Any]]:
-        """Describe exactly the candidate state expected by one CAS mutation."""
-        missing_file_conditions, missing_file_params = self._file_snapshot_conditions(
-            "missing",
-            vault_file_id=snapshot["missing_vault_file_id"],
-            vault_id=snapshot["vault_id"],
-            status=snapshot["missing_status"],
-            retired_at=snapshot["missing_retired_at"],
-        )
-        missing_path_conditions, missing_path_params = self._path_snapshot_conditions(
-            "missing_path",
-            vault_file_id=snapshot["missing_vault_file_id"],
-            vault_id=snapshot["vault_id"],
-            state=missing_path,
-        )
-        missing_copy_conditions, missing_copy_params = (
-            self._local_copy_snapshot_conditions("missing_copy", snapshot, "missing")
-        )
-        missing_where = " AND ".join(
-            [
-                *missing_file_conditions,
-                *missing_path_conditions,
-                *missing_copy_conditions,
-            ]
-        )
-        missing_sql = f"""
-            EXISTS (
-                SELECT 1
-                FROM vault_files missing
-                JOIN file_paths missing_path
-                  ON missing_path.vault_file_id=missing.id
-                 AND missing_path.vault_id=missing.vault_id
-                JOIN local_copies missing_copy
-                  ON missing_copy.vault_file_id=missing.id
-                WHERE {missing_where}
-            )
-        """
-
-        provisional_file_conditions, provisional_file_params = (
-            self._file_snapshot_conditions(
-                "provisional",
-                vault_file_id=snapshot["provisional_vault_file_id"],
-                vault_id=snapshot["vault_id"],
-                status=provisional_status,
-                retired_at=provisional_retired_at,
-            )
-        )
-        provisional_path_conditions, provisional_path_params = (
-            self._path_snapshot_conditions(
-                "provisional_path",
-                vault_file_id=snapshot["provisional_vault_file_id"],
-                vault_id=snapshot["vault_id"],
-                state=provisional_path,
-            )
-        )
-        provisional_joins = [
-            "FROM vault_files provisional",
-            "JOIN file_paths provisional_path",
-            "  ON provisional_path.vault_file_id=provisional.id",
-            " AND provisional_path.vault_id=provisional.vault_id",
-        ]
-        provisional_conditions = [
-            *provisional_file_conditions,
-            *provisional_path_conditions,
-            "NOT EXISTS (SELECT 1 FROM archive_versions av WHERE av.vault_file_id=provisional.id)",
-        ]
-        provisional_params = [
-            *provisional_file_params,
-            *provisional_path_params,
-        ]
-        if provisional_copy_present:
-            provisional_copy_conditions, provisional_copy_params = (
-                self._local_copy_snapshot_conditions(
-                    "provisional_copy", snapshot, "provisional"
-                )
-            )
-            provisional_joins.extend(
-                [
-                    "JOIN local_copies provisional_copy",
-                    "  ON provisional_copy.vault_file_id=provisional.id",
-                ]
-            )
-            provisional_conditions.extend(provisional_copy_conditions)
-            provisional_params.extend(provisional_copy_params)
-        else:
-            provisional_conditions.append(
-                "NOT EXISTS ("
-                "SELECT 1 FROM local_copies consumed_copy "
-                "WHERE consumed_copy.vault_file_id=provisional.id"
-                ")"
-            )
-        provisional_sql = f"""
-            EXISTS (
-                SELECT 1
-                {' '.join(provisional_joins)}
-                WHERE {' AND '.join(provisional_conditions)}
-            )
-        """
-        return (
-            f"({missing_sql}) AND ({provisional_sql})",
-            [
-                *missing_file_params,
-                *missing_path_params,
-                *missing_copy_params,
-                *provisional_params,
-            ],
-        )
-
-    def _require_one_rename_mutation(self, result: Any) -> None:
-        """Fail closed when a conditional candidate mutation loses its CAS."""
-        if getattr(result, "rowcount", None) != 1:
-            self.connection.execute("ROLLBACK TO SAVEPOINT rename_confirmation_cas")
-            self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
-            raise VaultFileNotFound()
-
-    def _load_rename_candidate(
-        self,
-        *,
-        vault_file_id: str,
-        new_path: str,
-        vault_id: int,
-    ) -> dict[str, Any] | None:
-        query = """
-            SELECT
-                missing.id AS missing_vault_file_id,
-                missing.status AS missing_status,
-                missing.retired_at AS missing_retired_at,
-                missing_path.path AS missing_path,
-                missing_path.valid_from AS missing_path_valid_from,
-                missing_copy.presence AS missing_presence,
-                missing_copy.file_type AS missing_file_type,
-                missing_copy.size AS missing_size,
-                missing_copy.mtime_ns AS missing_mtime_ns,
-                missing_copy.plaintext_sha256 AS missing_plaintext_sha256,
-                missing_copy.matched_archive_version_id
-                    AS missing_matched_archive_version_id,
-                missing_copy.last_seen_at AS missing_last_seen_at,
-                missing_copy.observed_at AS missing_observed_at,
-                provisional.id AS provisional_vault_file_id,
-                provisional.status AS provisional_status,
-                provisional.retired_at AS provisional_retired_at,
-                provisional_path.path AS provisional_path,
-                provisional_path.valid_from AS provisional_path_valid_from,
-                provisional_copy.presence AS provisional_presence,
-                provisional_copy.file_type AS provisional_file_type,
-                provisional_copy.size AS provisional_size,
-                provisional_copy.mtime_ns AS provisional_mtime_ns,
-                provisional_copy.plaintext_sha256 AS provisional_plaintext_sha256,
-                provisional_copy.matched_archive_version_id
-                    AS provisional_matched_archive_version_id,
-                provisional_copy.last_seen_at AS provisional_last_seen_at,
-                provisional_copy.observed_at AS provisional_observed_at
-            FROM vault_files missing
-            JOIN file_paths missing_path
-              ON missing_path.vault_file_id=missing.id
-             AND missing_path.vault_id=missing.vault_id
-             AND missing_path.valid_to IS NULL
-            JOIN local_copies missing_copy
-              ON missing_copy.vault_file_id=missing.id
-            JOIN vault_files provisional
-              ON provisional.vault_id=missing.vault_id
-             AND provisional.status='active'
-            JOIN file_paths provisional_path
-              ON provisional_path.vault_file_id=provisional.id
-             AND provisional_path.vault_id=provisional.vault_id
-             AND provisional_path.valid_to IS NULL
-            JOIN local_copies provisional_copy
-              ON provisional_copy.vault_file_id=provisional.id
-            WHERE missing.id=%s
-              AND missing.vault_id=%s
-              AND missing.status='active'
-              AND missing_copy.file_type='regular'
-              AND missing_copy.presence='missing'
-              AND missing_copy.plaintext_sha256 IS NOT NULL
-              AND missing_copy.cloud_only_version_id IS NULL
-              AND provisional.id<>missing.id
-              AND provisional.vault_id=%s
-              AND provisional_path.path=%s
-              AND provisional_copy.file_type='regular'
-              AND provisional_copy.presence='present'
-              AND provisional_copy.plaintext_sha256 IS NOT NULL
-              AND provisional_copy.cloud_only_version_id IS NULL
-        """
-        query += """
-              AND lower(provisional_copy.plaintext_sha256)
-                  = lower(missing_copy.plaintext_sha256)
-            """
-        query += """
-            FOR UPDATE OF
-                missing, missing_path, missing_copy,
-                provisional, provisional_path, provisional_copy
-        """
-        snapshot = self.connection.execute(
-            query,
-            (vault_file_id, vault_id, vault_id, new_path),
-        ).fetchone()
-        if snapshot is not None:
-            snapshot["vault_id"] = vault_id
-        return snapshot
-
-    def confirm_file_rename(
-        self,
-        *,
-        vault_file_id: str,
-        new_path: str,
-        changed_at: str,
-        vault_id: int,
-    ) -> str:
-        """Atomically consume one current, Vault-local rename candidate.
-
-        Every state transition is a conditional compare-and-swap against the
-        full candidate snapshot. A competing confirmation or scanner update
-        therefore changes a rowcount to zero and raises ``VaultFileNotFound``;
-        the caller's transaction rolls back all earlier transitions.
-        """
-        self._reserve_rename_confirmation(vault_id)
-        snapshot = self._load_rename_candidate(
-            vault_file_id=vault_file_id,
-            new_path=new_path,
-            vault_id=vault_id,
-        )
-        if snapshot is None or not any(
-            candidate["missing_vault_file_id"] == vault_file_id
-            and candidate["new_path"] == new_path
-            for candidate in self.list_rename_candidates(
-                vault_id, digest=snapshot["missing_plaintext_sha256"]
-            )
-        ):
-            raise VaultFileNotFound()
-        # Keep a scoped rollback so catalog callers cannot accidentally commit
-        # a partial candidate consumption after a failed compare-and-swap.
-        self.connection.execute("SAVEPOINT rename_confirmation_cas")
-
-        missing_current = (
-            snapshot["missing_path"],
-            snapshot["missing_path_valid_from"],
-            None,
-        )
-        missing_closed = (
-            snapshot["missing_path"],
-            snapshot["missing_path_valid_from"],
-            changed_at,
-        )
-        missing_renamed = (new_path, changed_at, None)
-        provisional_current = (
-            snapshot["provisional_path"],
-            snapshot["provisional_path_valid_from"],
-            None,
-        )
-        provisional_closed = (
-            snapshot["provisional_path"],
-            snapshot["provisional_path_valid_from"],
-            changed_at,
-        )
-        provisional_id = snapshot["provisional_vault_file_id"]
-
-        active_pair, active_pair_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_current,
-            provisional_status="active",
-            provisional_retired_at=snapshot["provisional_retired_at"],
-            provisional_path=provisional_current,
-            provisional_copy_present=True,
-        )
-        claimed = self.connection.execute(
-            f"""
-            UPDATE vault_files
-            SET status='retired', retired_at=%s
-            WHERE id=%s
-              AND vault_id=%s
-              AND status='active'
-              AND ({active_pair})
-            """,
-            (changed_at, provisional_id, vault_id, *active_pair_params),
-        )
-        self._require_one_rename_mutation(claimed)
-
-        claimed_current_pair, claimed_current_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_current,
-            provisional_status="retired",
-            provisional_retired_at=changed_at,
-            provisional_path=provisional_current,
-            provisional_copy_present=True,
-        )
-        closed_provisional = self.connection.execute(
-            f"""
-            UPDATE file_paths
-            SET valid_to=%s
-            WHERE vault_file_id=%s
-              AND vault_id=%s
-              AND path=%s
-              AND valid_from=%s
-              AND valid_to IS NULL
-              AND ({claimed_current_pair})
-            """,
-            (
-                changed_at,
-                provisional_id,
-                vault_id,
-                snapshot["provisional_path"],
-                snapshot["provisional_path_valid_from"],
-                *claimed_current_params,
-            ),
-        )
-        self._require_one_rename_mutation(closed_provisional)
-
-        claimed_closed_pair, claimed_closed_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_current,
-            provisional_status="retired",
-            provisional_retired_at=changed_at,
-            provisional_path=provisional_closed,
-            provisional_copy_present=True,
-        )
-        consumed_copy = self.connection.execute(
-            f"""
-            DELETE FROM local_copies
-            WHERE vault_file_id=%s
-              AND ({claimed_closed_pair})
-            """,
-            (provisional_id, *claimed_closed_params),
-        )
-        self._require_one_rename_mutation(consumed_copy)
-
-        consumed_pair, consumed_pair_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_current,
-            provisional_status="retired",
-            provisional_retired_at=changed_at,
-            provisional_path=provisional_closed,
-            provisional_copy_present=False,
-        )
-        closed_missing = self.connection.execute(
-            f"""
-            UPDATE file_paths
-            SET valid_to=%s
-            WHERE vault_file_id=%s
-              AND vault_id=%s
-              AND path=%s
-              AND valid_from=%s
-              AND valid_to IS NULL
-              AND ({consumed_pair})
-            """,
-            (
-                changed_at,
-                vault_file_id,
-                vault_id,
-                snapshot["missing_path"],
-                snapshot["missing_path_valid_from"],
-                *consumed_pair_params,
-            ),
-        )
-        self._require_one_rename_mutation(closed_missing)
-
-        closed_pair, closed_pair_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_closed,
-            provisional_status="retired",
-            provisional_retired_at=changed_at,
-            provisional_path=provisional_closed,
-            provisional_copy_present=False,
-        )
-        inserted_path = self.connection.execute(
-            f"""
-            INSERT INTO file_paths(
-                vault_file_id, vault_id, path, valid_from, valid_to
-            )
-            SELECT %s, %s, %s, %s, NULL
-            WHERE ({closed_pair})
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM file_paths current_path
-                  WHERE current_path.vault_id=%s
-                    AND current_path.path=%s
-                    AND current_path.valid_to IS NULL
-              )
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                vault_file_id,
-                vault_id,
-                new_path,
-                changed_at,
-                *closed_pair_params,
-                vault_id,
-                new_path,
-            ),
-        )
-        self._require_one_rename_mutation(inserted_path)
-
-        renamed_pair, renamed_pair_params = self._rename_pair_predicate(
-            snapshot,
-            missing_path=missing_renamed,
-            provisional_status="retired",
-            provisional_retired_at=changed_at,
-            provisional_path=provisional_closed,
-            provisional_copy_present=False,
-        )
-        restored_copy = self.connection.execute(
-            f"""
-            UPDATE local_copies
-            SET presence=%s,
-                file_type=%s,
-                size=%s,
-                mtime_ns=%s,
-                plaintext_sha256=%s,
-                matched_archive_version_id=%s,
-                last_seen_at=%s,
-                observed_at=%s
-            WHERE vault_file_id=%s
-              AND ({renamed_pair})
-            """,
-            (
-                snapshot["provisional_presence"],
-                snapshot["provisional_file_type"],
-                snapshot["provisional_size"],
-                snapshot["provisional_mtime_ns"],
-                snapshot["provisional_plaintext_sha256"],
-                snapshot["provisional_matched_archive_version_id"],
-                snapshot["provisional_last_seen_at"] or changed_at,
-                snapshot["provisional_observed_at"] or changed_at,
-                vault_file_id,
-                *renamed_pair_params,
-            ),
-        )
-        self._require_one_rename_mutation(restored_copy)
-        # Mark after CAS succeeds so a failed confirmation never dirties, and
-        # still inside the savepoint so dirty rows share rename rollback.
-        invalidate_for_confirmed_rename(
-            self.connection,
-            vault_id,
-            old_path=snapshot["missing_path"],
-            provisional_path=snapshot["provisional_path"],
-            new_path=new_path,
-        )
-        self.connection.execute("RELEASE SAVEPOINT rename_confirmation_cas")
-        return vault_file_id
-
-    def list_path_history(
-        self, vault_file_id: str, *, vault_id: int
-    ) -> list[dict[str, Any]]:
-        return self.connection.execute(
-            """
-            SELECT fp.path, fp.valid_from, fp.valid_to
-            FROM file_paths fp
-            JOIN vault_files vf
-              ON vf.id=fp.vault_file_id AND fp.vault_id=vf.vault_id
-            WHERE fp.vault_file_id=%s AND vf.vault_id=%s
-            ORDER BY fp.valid_from, fp.id
-            """,
-            (vault_file_id, vault_id),
-        ).fetchall()
-
-    def record_delete_marker(
-        self,
-        *,
-        vault_id: int,
-        path: str,
-        object_key: str,
-        provider_version_id: str,
-        created_at: str,
-        observed_at: str,
-    ) -> str:
-        file_id = self._resolve_cloud_path_file(vault_id, path, observed_at)
-        existing = self.connection.execute(
-            """
-            SELECT id FROM delete_markers
-            WHERE vault_id=%s AND object_key=%s AND provider_version_id=%s
-            """,
-            (vault_id, object_key, provider_version_id),
-        ).fetchone()
-        if existing:
-            self.connection.execute(
-                "UPDATE delete_markers SET discovered_at=%s WHERE id=%s",
-                (observed_at, existing["id"]),
-            )
-            return existing["id"]
-        marker_id = str(uuid.uuid4())
-        self.connection.execute(
-            """
-            INSERT INTO delete_markers(
-                id, vault_file_id, vault_id, object_key, provider_version_id,
-                created_at, discovered_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                marker_id,
-                file_id,
-                vault_id,
-                object_key,
-                provider_version_id,
-                created_at,
-                observed_at,
-            ),
-        )
-        return marker_id
-
-    def mark_unseen_archive_versions_missing(
-        self, *, vault_id: int, scan_id: str, scan_started_at: str
-    ) -> list[dict[str, Any]]:
-        """Mark unseen versions missing and return unexpected transitions.
-
-        Concurrent upload Jobs, purged versions, incomplete-scan generations,
-        and versions discovered after the scan started are left unchanged so
-        they cannot open false loss incidents.
-        """
-        placeholders = ",".join(["%s"] * len(TERMINAL_JOB_STATUSES))
-        no_active_upload = f"""
-            NOT EXISTS (
-                SELECT 1 FROM jobs active_upload
-                WHERE active_upload.vault_file_id={{alias}}.vault_file_id
-                  AND active_upload.action='upload'
-                  AND active_upload.status NOT IN ({placeholders})
-            )
-        """
-        newly_missing = self.connection.execute(
-            f"""
-            SELECT av.id, av.vault_id, av.vault_file_id, av.object_key,
-                   av.provider_version_id, fp.path
-            FROM archive_versions av
-            LEFT JOIN file_paths fp
-              ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
-            WHERE av.vault_file_id IN (
-                SELECT id FROM vault_files WHERE vault_id=%s
-            )
-              AND (
-                  av.availability_checked_at IS NULL
-                  OR av.availability_checked_at<>%s
-              )
-              AND av.discovered_at<=%s
-              AND av.availability NOT IN ('missing', 'purged')
-              AND {no_active_upload.format(alias='av')}
-            """,
-            (vault_id, scan_id, scan_started_at, *TERMINAL_JOB_STATUSES),
-        ).fetchall()
-        self.connection.execute(
-            f"""
-            UPDATE archive_versions
-            SET availability='missing', availability_checked_at=%s
-            WHERE vault_file_id IN (
-                SELECT id FROM vault_files WHERE vault_id=%s
-            )
-              AND (
-                  availability_checked_at IS NULL
-                  OR availability_checked_at<>%s
-              )
-              AND discovered_at<=%s
-              AND availability<>'purged'
-              AND {no_active_upload.format(alias='archive_versions')}
-            """,
-            (scan_id, vault_id, scan_id, scan_started_at, *TERMINAL_JOB_STATUSES),
-        )
-        # Bulk reconciliation can touch an unbounded set of paths.
-        self._request_aggregate_rebuild(vault_id)
-        return [dict(row) for row in newly_missing]
-
-    def mark_unseen_local_copies_missing(
-        self,
-        *,
-        vault_id: int,
-        seen_at: str,
-        observed_at: str,
-        scan_started_at: str | None = None,
-    ) -> None:
-        """Mark only rows not changed after this scan generation began.
-
-        A watcher or another completed scan may legitimately update a Local
-        Copy while the walk is in progress.  Such a newer observation must not
-        be overwritten by the older scan's final missing transition.
-        """
-        query = """
-            UPDATE local_copies
-            SET presence='missing', observed_at=%s
-            WHERE vault_file_id IN (
-                SELECT id FROM vault_files WHERE vault_id=%s
-            )
-              AND presence IN ('present', 'unsupported')
-              AND (last_seen_at IS NULL OR last_seen_at<>%s)
-        """
-        params: list[Any] = [observed_at, vault_id, seen_at]
-        if scan_started_at is not None:
-            query += " AND (observed_at IS NULL OR observed_at<=%s)"
-            params.append(scan_started_at)
-        self.connection.execute(query, params)
-        self._request_aggregate_rebuild(vault_id)
-
-    def mark_local_path_missing(
-        self, *, vault_id: int, path: str, observed_at: str
-    ) -> None:
-        escaped = (
-            path.replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
-        self.connection.execute(
-            """
-            UPDATE local_copies
-            SET presence='missing', observed_at=%s
-            WHERE vault_file_id IN (
-                SELECT vf.id
-                FROM vault_files vf
-                JOIN file_paths fp
-                  ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=%s
-                  AND (fp.path=%s OR fp.path LIKE %s ESCAPE '\\')
-            )
-            """,
-            (observed_at, vault_id, path, f"{escaped}/%"),
-        )
-        # Path may be a file or a directory prefix of many descendants.
-        self._mark_path_aggregates_dirty(vault_id, path)
-        mark_directory_dirty(self.connection, vault_id, path)
-
-    def get_file_by_path(
-        self, vault_id: int, path: str
-    ) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            """
-            SELECT
-                vf.id,
-                vf.vault_id,
-                vf.status,
-                fp.path,
-                lc.presence AS local_presence,
-                lc.file_type AS local_file_type,
-                lc.size AS local_size,
-                lc.mtime_ns AS local_mtime_ns,
-                lc.plaintext_sha256 AS local_sha256,
-                av.id AS version_id,
-                av.version_number,
-                av.object_key,
-                av.provider_version_id,
-                av.size AS version_size,
-                av.storage_class,
-                av.etag,
-                av.plaintext_sha256 AS version_sha256,
-                av.integrity,
-                av.availability,
-                av.restore_state,
-                av.restore_expiry,
-                av.upload_verification_requested, av.verification_method,
-                av.verification_fallback_reason, av.verification_egress_bytes
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            LEFT JOIN archive_versions av
-              ON av.vault_file_id=vf.id
-             AND av.version_number=(
-                 SELECT MAX(latest.version_number)
-                 FROM archive_versions latest
-                 WHERE latest.vault_file_id=vf.id
-             )
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            """,
-            (vault_id, path),
-        ).fetchone()
-        if row is None:
-            return None
-        local_copy = None
-        if row["local_presence"] is not None:
-            local_copy = {
-                "presence": row["local_presence"],
-                "file_type": row["local_file_type"],
-                "size": row["local_size"],
-                "mtime_ns": row["local_mtime_ns"],
-                "plaintext_sha256": row["local_sha256"],
-            }
-        latest_version = None
-        if row["version_id"] is not None:
-            latest_version = {
-                "id": row["version_id"],
-                "version_number": row["version_number"],
-                "object_key": row["object_key"],
-                "provider_version_id": row["provider_version_id"],
-                "size": row["version_size"],
-                "storage_class": row["storage_class"],
-                "etag": row["etag"],
-                "plaintext_sha256": row["version_sha256"],
-                "integrity": row["integrity"],
-                "availability": row["availability"],
-                "restore_state": row["restore_state"],
-                "restore_expiry": row["restore_expiry"],
-                "upload_verification_requested": row["upload_verification_requested"],
-                "verification_method": row["verification_method"],
-                "verification_fallback_reason": row["verification_fallback_reason"],
-                "verification_egress_bytes": row["verification_egress_bytes"],
-            }
-        return {
-            "id": row["id"],
-            "vault_id": row["vault_id"],
-            "status": row["status"],
-            "path": row["path"],
-            "local_copy": local_copy,
-            "latest_version": latest_version,
-        }
 
     def list_versions(self, vault_id: int, path: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
