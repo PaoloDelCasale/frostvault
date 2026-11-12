@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
+from app.config import settings
 from app.sessions import (
     SessionTransitionError,
     create_session,
