@@ -171,7 +171,10 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertEqual(queued.status_code, 202, queued.text)
         with PostgresConnection(str(self.database_path)) as connection:
             rows = ArchiveCatalog(connection).list_versions(self.vault_id, "docs/note.txt")
-            self.assertTrue(all(row["recoverable"] for row in rows), "No implicit cloud purge on read/recovery")
+            self.assertTrue(all(row["availability"] == "available" and row["integrity"] == "verified"
+                                for row in rows), "No implicit cloud purge or trust rewrite on read/recovery")
+            self.assertEqual([row["id"] for row in rows if row["recoverable"]], [newest],
+                             "Only the explicit Current Snapshot is selectable, not verified history")
             self.assertEqual(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"], newest)
 
     def test_selection_recovery_preserves_csrf_vault_scope_and_bulk_decision(self) -> None:

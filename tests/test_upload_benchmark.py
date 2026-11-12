@@ -32,6 +32,15 @@ def sample(label, traced, repetition):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_frozen_baselines_keep_their_own_owner_schema_and_requester_cost(self):
+        from scripts.upload_benchmark_worker import uses_legacy_owner_fixture
+        for revision in ("0071_bulk_scheduler_merge", "0072_upload_lineage_indexes"):
+            with self.subTest(revision=revision):
+                self.assertTrue(uses_legacy_owner_fixture(revision))
+        for revision in ("0074_owner_singleton", "0076_operational_retention", "0001_baseline"):
+            with self.subTest(revision=revision):
+                self.assertFalse(uses_legacy_owner_fixture(revision))
+
     def samples(self):
         return [sample(label, traced, repetition) for repetition, traced, label in benchmark.run_order(3)]
 

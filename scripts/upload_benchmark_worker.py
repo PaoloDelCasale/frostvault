@@ -38,6 +38,11 @@ def distribution(values):
             "stdev": statistics.stdev(ordered) if len(ordered) > 1 else 0}
 
 
+def uses_legacy_owner_fixture(revision):
+    """Explicit frozen benchmark fixtures, never a production schema adapter."""
+    return revision in {"0071_bulk_scheduler_merge", "0072_upload_lineage_indexes"}
+
+
 def run_sample(config):
     worker_env()  # Revalidate loopback/configuration even if invoked without the supervisor.
     require(config["mode"] in {"s3_checksum", "read_back"}, "Unknown verification mode")
@@ -58,10 +63,11 @@ def run_sample(config):
     require(storage.settings.bandwidth_limit_kibps in {None, 0}, "Bandwidth limit must be disabled")
     require(storage.settings.upload_verification == config["mode"], "Default verification mode drift")
     count, concurrency = config["files"], config["concurrency"]
-    # The *same* harness runs against fixed v0.5.5 as well as the new
-    # baseline. This is explicit historical fixture setup, never a production
-    # schema adapter; keep the old sample's requester FK cost unchanged.
-    legacy_owner_fixture = database.HEAD_SCHEMA_REVISION == "0072_upload_lineage_indexes"
+    # The *same* harness still runs against fixed v0.5.3 (historical CI)
+    # and v0.5.5 (ADR-0035 comparison) as well as the new baseline. These
+    # explicit fixture revisions preserve the old sample's requester FK cost;
+    # this is not production schema compatibility or an unknown-revision guess.
+    legacy_owner_fixture = uses_legacy_owner_fixture(database.HEAD_SCHEMA_REVISION)
     provider, probe = MemoryS3(), Probe()
     setup_started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="fv-upload-benchmark-") as temporary, ExitStack() as stack:

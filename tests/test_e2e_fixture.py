@@ -1,12 +1,34 @@
 """DB-free boundary regression for the CI-only legacy Worker fixture."""
 import importlib.util
+import os
+from dataclasses import replace
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from starlette.responses import Response
 from starlette.testclient import TestClient
 
 
 class LegacyWorkerFixtureTests(unittest.TestCase):
+    def test_seeded_emergency_credentials_pass_real_startup_validation(self):
+        from app import config
+        path = Path(__file__).resolve().parents[1] / 'frontend/e2e/scripts/seed_and_serve.py'
+        spec = importlib.util.spec_from_file_location('e2e_seed_credentials', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.dict(os.environ):
+            module._apply_env({})
+            configured = replace(config.settings,
+                oidc_enabled=False, break_glass_allowed_cidrs='',
+                bootstrap_admin_username=os.environ['BOOTSTRAP_ADMIN_USERNAME'],
+                bootstrap_admin_password=os.environ['BOOTSTRAP_ADMIN_PASSWORD'],
+                bootstrap_admin_display_name=os.environ['BOOTSTRAP_ADMIN_DISPLAY_NAME'])
+            with patch.object(config, 'settings', configured):
+                config.validate_settings()
+            self.assertEqual(configured.bootstrap_admin_username, module.OWNER_USERNAME)
+            self.assertEqual(configured.bootstrap_admin_password, module.PASSWORD)
+            self.assertEqual(configured.bootstrap_admin_display_name, 'E2E Owner')
+
     def test_only_exact_get_fixture_is_intercepted_not_production_or_lifespan(self):
         path = Path(__file__).resolve().parents[1] / 'frontend/e2e/scripts/seed_and_serve.py'
         spec = importlib.util.spec_from_file_location('e2e_seed_fixture', path)

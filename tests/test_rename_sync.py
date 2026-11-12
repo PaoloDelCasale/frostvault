@@ -1383,7 +1383,10 @@ def _insert_destination_version(
             uploaded_at="2026-07-21T11:10:00+00:00",
             observed_at="2026-07-21T11:10:00+00:00",
             scan_id="2026-07-21T11:10:00+00:00",
-            origin="upload",
+            # This fixture represents a prior destination observation, not an
+            # admitted new replacement. Verification must not displace the
+            # independently pinned source keeper before rename proves reuse.
+            origin="discovered",
         )
         if integrity == "verified":
             catalog.mark_version_verified(
