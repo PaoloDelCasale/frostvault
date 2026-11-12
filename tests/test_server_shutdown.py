@@ -136,7 +136,7 @@ class StreamShutdownBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     "vault_id": 1, "revision": 0, "domains": [], "has_gap": False,
                 })
                 with patch("app.services.catalog_event_stream.stream_tick_snapshot", return_value=snapshot) as tick:
-                    stream = iter_catalog_event_sse(vault_id=1, user_id=1, session_id="test",
+                    stream = iter_catalog_event_sse(vault_id=1, session_id="test",
                         use_hub=use_hub, durable_poll_seconds=3600)
                     self.assertIn("event: hello", await anext(stream))
                     waiting = asyncio.create_task(anext(stream))
@@ -152,7 +152,7 @@ class StreamShutdownBoundaryTests(unittest.IsolatedAsyncioTestCase):
         shutdown_state.reset()
         self.addCleanup(shutdown_state.reset)
         with patch("app.services.catalog_event_stream.stream_tick_snapshot", return_value=StreamTickSnapshot(ok=True)):
-            stream = iter_catalog_event_sse(vault_id=1, user_id=1, session_id="test", durable_poll_seconds=3600)
+            stream = iter_catalog_event_sse(vault_id=1, session_id="test", durable_poll_seconds=3600)
             await anext(stream)
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0.01)
