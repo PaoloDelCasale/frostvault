@@ -11,7 +11,7 @@ import json
 import re
 import unittest
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -196,6 +196,106 @@ class ClaimCheckpointTests(unittest.TestCase):
                     renew.assert_not_called()
                 with PostgresConnection(self.db_path) as connection:
                     connection.execute("UPDATE jobs SET status='cancelled',claim_token=NULL WHERE id=%s", (job["id"],))
+
+
+class SourceIdentityCheckpointTests(unittest.TestCase):
+    queue = fixture.UploadProvenanceWorkerTests.queue
+    claim = ClaimCheckpointTests.claim
+
+    def setUp(self):
+        fixture.UploadProvenanceWorkerTests.setUp(self)
+        self.access = self.enterContext(patch.object(storage.source_layout, 'vault_local_access',
+            return_value=SimpleNamespace(local_operations_allowed=True)))
+        self.validate = self.enterContext(patch.object(storage, '_validate_enrolled_scan_root'))
+
+    def pinned_job(self):
+        claimed = self.claim()
+        with PostgresConnection(self.db_path) as connection:
+            return connection.execute('''SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix
+                FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s''',
+                (claimed['id'],)).fetchone()
+
+    def test_recent_lease_and_source_identity_use_one_durable_read(self):
+        job = self.pinned_job()
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with patch.object(storage, 'db', wraps=storage.db) as db:
+                storage._require_upload_source_identity(job)
+            self.assertEqual(db.call_count, 1, 'Do not open separate lease and source transactions')
+        self.validate.assert_called_once()
+
+    def assert_revoked_claim_stops_before_filesystem_probe(self, change):
+        job = self.pinned_job()
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with PostgresConnection(self.db_path) as connection:
+                connection.execute(change, (job['id'],))
+            with self.assertRaises(storage.JobLeaseLost):
+                storage._require_upload_source_identity(job)
+            self.assertTrue(storage._claim_is_lost(job['id']))
+        self.access.assert_not_called()
+        self.validate.assert_not_called()
+
+    def test_cancel_is_not_hidden_by_recent_renewal(self):
+        self.assert_revoked_claim_stops_before_filesystem_probe("UPDATE jobs SET status='cancelled' WHERE id=%s")
+
+    def test_takeover_is_not_hidden_by_recent_renewal(self):
+        self.assert_revoked_claim_stops_before_filesystem_probe("UPDATE jobs SET claim_token='new-worker' WHERE id=%s")
+
+    def test_expiry_is_not_hidden_by_recent_renewal(self):
+        self.assert_revoked_claim_stops_before_filesystem_probe("UPDATE jobs SET claim_expires_at='2000-01-01' WHERE id=%s")
+
+    def test_due_lease_is_still_renewed_before_source_probe(self):
+        job = self.pinned_job()
+        with storage._job_claim_context(job), patch.object(storage, 'CLAIM_CHECKPOINT_RENEW_SECONDS', 0), \
+                patch.object(storage, '_renew_claim_if_owned', wraps=storage._renew_claim_if_owned) as renew:
+            storage._require_upload_source_identity(job)
+            self.assertEqual(renew.call_count, 1)
+        self.validate.assert_called_once()
+
+    def test_filesystem_identity_probe_runs_after_database_context_closes(self):
+        job = self.pinned_job()
+        active = []
+        original_db = storage.db
+
+        @contextmanager
+        def tracked_db():
+            with original_db() as connection:
+                active.append(connection)
+                try:
+                    yield connection
+                finally:
+                    active.pop()
+
+        def probe(_vault):
+            self.assertEqual(active, [], 'Filesystem I/O must stay outside DB transactions/retries')
+
+        self.validate.side_effect = probe
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with patch.object(storage, 'db', side_effect=tracked_db):
+                storage._require_upload_source_identity(job)
+        self.validate.assert_called_once()
+
+    def test_unavailable_volume_remains_a_wait_not_an_identity_change(self):
+        job = self.pinned_job()
+        self.access.return_value = SimpleNamespace(local_operations_allowed=False)
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with self.assertRaises(storage.SourceVolumeUnavailable):
+                storage._require_upload_source_identity(job)
+        self.validate.assert_not_called()
+
+    def test_changed_root_is_not_hidden_by_live_lease(self):
+        from app.services.upload_provenance import UploadBlocked
+        job = self.pinned_job()
+        with storage._job_claim_context(job):
+            storage.ensure_job_active(job['id'], 'stopped')
+            with PostgresConnection(self.db_path) as connection:
+                connection.execute("UPDATE vaults SET source_root='/not-the-pinned-root' WHERE id=%s", (job['vault_id'],))
+            with self.assertRaisesRegex(UploadBlocked, 'identity_changed'):
+                storage._require_upload_source_identity(job)
+        self.validate.assert_not_called()
 
 
 class UploadStatusCASCheckpointTests(unittest.TestCase):

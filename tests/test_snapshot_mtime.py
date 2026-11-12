@@ -64,6 +64,10 @@ class SnapshotMtimeTests(unittest.TestCase):
             data.pop("mtime_ns", None)
             legacy = json.dumps(data, separators=(",", ":"))
             worker = MagicMock()
+            worker.job_cancelled.return_value = False
+            worker._claim_is_lost.return_value = False
+            worker.set_job.return_value = True
+            worker.OperationCancelled, worker.JobLeaseLost = storage.OperationCancelled, storage.JobLeaseLost
             worker.prepare_upload_snapshot.side_effect = prepare_upload_snapshot
             execution = UploadExecution(worker)
             attempt = SimpleNamespace(job={"id": 1}, pipeline=MagicMock(), source=source,
@@ -71,6 +75,7 @@ class SnapshotMtimeTests(unittest.TestCase):
             with patch.object(execution, "_automatic_gate", return_value=None):
                 execution._snapshot(attempt)
             self.assertEqual(attempt.snapshot.as_json(), legacy)
+            worker.set_job.assert_called_once_with(1, 'uploading', message_key='job.hashing_local_file')
             # New admissions freeze the original timestamp as well as bytes.
             attempt.target = {"job_upload_snapshot_json": snapshot.as_json()}
             os.utime(source, ns=(123, 123))

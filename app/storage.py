@@ -3455,6 +3455,21 @@ class SourceVolumeUnavailable(RuntimeError):
     """The Source Volume cannot be read right now; this is not an identity change."""
 
 
+@retry_database_unit
+def _load_upload_source_vault(job: dict[str, Any], claim_token: str) -> dict[str, Any] | None:
+    """One read snapshot for the live claim and current Vault, no filesystem I/O."""
+    with owned_connection(db()) as connection:
+        return connection.execute(
+            """SELECT v.*, EXISTS (
+                SELECT 1 FROM jobs j WHERE j.id=%s AND j.claim_token=%s
+                  AND j.claim_expires_at IS NOT NULL AND j.claim_expires_at>%s
+                  AND j.status NOT IN ('completed','failed','cancelled')
+            ) AS _upload_claim_live
+            FROM vaults v WHERE v.id=%s""",
+            (job['id'], claim_token, now_iso(), job['vault_id']),
+        ).fetchone()
+
+
 def _require_upload_source_identity(job: dict[str, Any]) -> None:
     """Source Volume/root I/O is outside replayable DB transactions.
 
@@ -3462,9 +3477,32 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
     from the enrolled one. An unreadable/unavailable volume waits (#486).
     """
     from .services.upload_provenance import UploadBlocked
-    ensure_job_active(job["id"], "Upload source claim lost")
-    with db() as connection:
-        vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+    token = _claim_token_for(job['id'])
+    renewed = getattr(_worker_claim, 'renewed', None)
+    recent = (token is not None and renewed is not None
+              and renewed[0] == (int(job['id']), token)
+              and time.monotonic() - renewed[1] < CLAIM_CHECKPOINT_RENEW_SECONDS)
+    if recent:
+        # Amortize the renewal, NEVER the ownership/root observation. Check both
+        # from one fresh DB snapshot, then close it before inspecting the volume.
+        shutdown_state.checkpoint()
+        if job_cancelled(job['id']):
+            raise OperationCancelled('Upload source claim lost')
+        if _claim_is_lost(job['id']):
+            raise JobLeaseLost('Upload source claim lost')
+        vault = _load_upload_source_vault(job, token)
+        if vault is not None and not vault.pop('_upload_claim_live'):
+            _mark_claim_lost(job['id'])
+            raise JobLeaseLost('Upload source claim lost')
+        if vault is None:
+            # Preserve lease-loss precedence when deletion removed both rows.
+            ensure_job_active(job['id'], 'Upload source claim lost')
+    else:
+        # A first/due checkpoint must still renew; never use a stale cached
+        # renewal to read through expiry, or bypass direct unclaimed callers.
+        ensure_job_active(job['id'], 'Upload source claim lost')
+        with db() as connection:
+            vault = connection.execute('SELECT * FROM vaults WHERE id=%s', (job['vault_id'],)).fetchone()
     if not vault or vault["source_root"] != job["source_root"]:
         raise UploadBlocked("identity_changed")
     if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
