@@ -186,6 +186,9 @@ def settle_cloud_only_copies(
     """
     stamp = observed_at or _now_iso()
     path_clause = "AND fp.path=%s" if path is not None else ""
+    # Single-path hashing must not start by scanning the Vault's held copies.
+    # Keep whole-Vault settlement freely plannable, but fence exact lookups.
+    path_fence = "OFFSET 0" if path is not None else ""
     params: list[Any] = [vault_id]
     if path is not None:
         params.append(path)
@@ -195,15 +198,15 @@ def settle_cloud_only_copies(
                lc.file_type, lc.plaintext_sha256, lc.cloud_only_version_id,
                av.plaintext_sha256 AS version_sha256, av.integrity,
                av.availability, av.object_key, av.provider_version_id
-        FROM local_copies lc
-        JOIN vault_files vf ON vf.id=lc.vault_file_id
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
+        FROM (
+            SELECT fp.vault_file_id, fp.vault_id, fp.path FROM file_paths fp
+            WHERE fp.vault_id=%s AND fp.valid_to IS NULL {path_clause}
+            {path_fence}
+        ) fp
+        JOIN vault_files vf ON vf.id=fp.vault_file_id AND vf.vault_id=fp.vault_id
+        JOIN local_copies lc ON lc.vault_file_id=vf.id
         LEFT JOIN archive_versions av ON av.id=lc.cloud_only_version_id
-        WHERE fp.vault_id=%s
-          AND vf.vault_id=fp.vault_id
-          AND lc.cloud_only_version_id IS NOT NULL
-          {path_clause}
+        WHERE lc.cloud_only_version_id IS NOT NULL
         """,
         params,
     ).fetchall()

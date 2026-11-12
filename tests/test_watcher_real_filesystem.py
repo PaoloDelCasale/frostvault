@@ -199,6 +199,10 @@ class Harness(RealTreeCase):
         self.stack.enter_context(patch("app.storage.WATCHER_RECHECK_SECONDS", 0.1))
         self.resolve = self.stack.enter_context(patch("app.storage._resolve_worker_error"))
         self.report = self.stack.enter_context(patch("app.storage._report_worker_error"))
+        # Persistence is outside this real-observer harness. A singleton Owner
+        # now receives path problems without the former recipient lookup; the
+        # fake DB cannot insert/deduplicate that notification.
+        self.problems = self.stack.enter_context(patch("app.storage.report_problem"))
         self.health = self.stack.enter_context(patch("app.storage._record_scan_component_health"))
         self.stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
         self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=lambda vault, changes: self.applied.append(set(changes)) or 1))
@@ -673,6 +677,9 @@ class PermissionRecoveryBoundaryTests(Harness):
                 resume.set()
             else:
                 await self.settle(lambda: scans and (str(root / "sibling"),) in self.ready_registrations)
+                if not polling:
+                    self.assertTrue(any(call.kwargs.get("event") == "file_unreadable"
+                                        for call in self.problems.call_args_list))
                 # Prove the old plan is live, not merely constructed.
                 sibling = root / "sibling" / "still-watched.txt"
                 sibling.write_text("sibling")

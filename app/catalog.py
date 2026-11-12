@@ -2345,11 +2345,16 @@ class ArchiveCatalog:
                 av.restore_expiry,
                 av.upload_verification_requested, av.verification_method,
                 av.verification_fallback_reason, av.verification_egress_bytes
-            FROM archive_versions av
-            JOIN vault_files vf ON vf.id=av.vault_file_id
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
+            FROM (
+                -- Resolve the one path before reading its history. OFFSET 0
+                -- prevents join flattening into a Vault-wide history lookup.
+                SELECT fp.vault_file_id, fp.vault_id FROM file_paths fp
+                WHERE fp.vault_id=%s AND fp.path=%s AND fp.valid_to IS NULL
+                OFFSET 0
+            ) selected_path
+            JOIN vault_files vf ON vf.id=selected_path.vault_file_id
+                AND vf.vault_id=selected_path.vault_id
+            JOIN archive_versions av ON av.vault_file_id=vf.id
             ORDER BY av.discovered_at DESC, av.id
             """,
             (vault_id, path),
