@@ -23,6 +23,17 @@ Single-context: CONTEXT.md at the repo root; ADRs in docs/adr/. See docs/agents/
 Python 3.12 FastAPI app ("FrostVault"). Create `.venv/`, install
 `requirements.txt`, and use `.venv/bin/python`.
 
+### Database rebuild (v0.6, epic #578)
+The database is being rebuilt from scratch ([ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)).
+Until #598 closes, work for this epic lands on `main`; the app and full CI may
+stay broken in between. Each PR keeps its own targeted tests green and leaves
+the full gates to #598.
+- The schema is the single Alembic revision `0001_baseline` (#601): add or change
+  tables by editing it in place and recreate the local database. Migrations,
+  compatibility code and fallbacks to the v0.5.x tables are out of scope.
+- When the Owner recreates the database for real use, `0001_baseline` freezes
+  and ordinary linear Alembic migrations resume.
+
 ### Tests
 - Locally run only targeted modules: `.venv/bin/python -m unittest tests.test_<module> -v`.
   Full Python/migration/S3/frontend/build verification belongs to PR CI (#410).
@@ -78,12 +89,12 @@ that session directory. Do not start/restart a system PostgreSQL service.
   native/test seams). Vaults are created from the UI; empty Vaults
   use `/sources/managed/<uuid>`; custom volumes must be direct mounts under
   `/sources/<alias>` (nested mounts unsupported), and `BOOTSTRAP_ADMIN_PASSWORD` needs >= 12 chars.
-- With `AUTO_MIGRATE=1` (default), schema upgrades run on app start (fresh →
-  `alembic upgrade head`; existing behind HEAD → pre-upgrade backup then
-  alembic). Set `AUTO_MIGRATE=0` for manual control, then:
-  `.venv/bin/python -m app.backup_upgrade` (or `alembic upgrade head` for empty
-  local DBs). The app still refuses to serve on a stale schema
-  (`HEAD_SCHEMA_REVISION`).
+- Schema on start: an empty database is initialized with `alembic upgrade head`;
+  a nonempty database at another revision, or without one, is refused before
+  any write (ADR-0035). After a change to `0001_baseline`, drop and recreate
+  your local database (`dropdb frostvault && createdb frostvault`). Until #601
+  lands, the v0.5.x chain (`AUTO_MIGRATE`, `app.backup_upgrade`) is still in
+  the code; #601 removes it.
 - Start: `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080`
   (serves `frontend/dist`; missing dist returns HTTP 503 with build instructions).
 - Local break-glass admin login is configured through `BOOTSTRAP_ADMIN_*` in the
