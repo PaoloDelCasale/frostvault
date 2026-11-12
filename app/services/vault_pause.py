@@ -15,7 +15,7 @@ class VaultNotFound(ValueError):
     pass
 
 
-def set_paused(connection: Any, *, vault_id: int, paused: bool, user_id: int,
+def set_paused(connection: Any, *, vault_id: int, paused: bool,
                locale: str = DEFAULT_LOCALE) -> dict[str, Any]:
     # FOR UPDATE conflicts with shared worker claims, without making every claim
     # or held progress step exclusive (ADR-0031/0033). Always Vault before Jobs.
@@ -35,7 +35,7 @@ def set_paused(connection: Any, *, vault_id: int, paused: bool, user_id: int,
             with transaction(connection):
                 channels = ("in_app", "email") if notifications._smtp_config() is not None else ("in_app",)
                 notifications.enqueue_notification(
-                    connection, user_id=user_id, vault_id=vault_id,
+                    connection, vault_id=vault_id,
                     event="vault_paused" if paused else "vault_resumed", title="",
                     title_key="vault_pause.paused" if paused else "vault_pause.resumed",
                     body_key=key, message_params={"name": vault["name"]}, channels=channels,

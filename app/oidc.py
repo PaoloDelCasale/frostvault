@@ -2,15 +2,14 @@
 
 The provider (e.g. Pocket ID) is configured only through ``OIDC_*``
 environment variables (#412). The first successful login binds the
-provider Identity to the single owner; later logins must present the
-same Identity.
+provider Identity (issuer and subject) to the single Owner; later logins
+must present the same Identity.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import secrets
-import uuid
 import warnings
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -79,10 +78,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse(value: str) -> datetime:
-    return datetime.fromisoformat(value)
-
-
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -146,23 +141,16 @@ def begin_login(
     connection.execute(
         """
         INSERT INTO oidc_login(
-            id, state, nonce, code_verifier, return_to,
-            created_at, expires_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            state, nonce, code_verifier, return_to, created_at, expires_at
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (
-            str(uuid.uuid4()),
             state,
             nonce,
             code_verifier,
             return_to,
-            now.isoformat(),
-            (
-                now
-                + timedelta(
-                    seconds=configuration.oidc_login_ttl_seconds
-                )
-            ).isoformat(),
+            now,
+            now + timedelta(seconds=configuration.oidc_login_ttl_seconds),
         ),
     )
     query = urlencode(
@@ -281,7 +269,7 @@ def complete_login(
         raise OidcError("unknown_state")
     # Single-use: the transient state is spent whether or not validation passes.
     connection.execute("DELETE FROM oidc_login WHERE id=%s", (row["id"],))
-    if _now() >= _parse(row["expires_at"]):
+    if _now() >= row["expires_at"]:
         raise OidcError("expired")
     with _http(http_client, host_addresses=host_addresses) as client:
         metadata = _discover(client, configuration, host_addresses)
@@ -315,45 +303,38 @@ def complete_login(
 
 
 def sweep_expired_logins(connection: Any) -> int:
-    now = _now().isoformat()
-    expired = connection.execute(
-        "SELECT COUNT(*) AS total FROM oidc_login WHERE expires_at <= %s",
-        (now,),
-    ).fetchone()["total"]
-    connection.execute("DELETE FROM oidc_login WHERE expires_at <= %s", (now,))
-    return int(expired)
+    removed = connection.execute(
+        "DELETE FROM oidc_login WHERE expires_at <= %s", (_now(),)
+    )
+    return int(removed.rowcount or 0)
+
 
 class IdentityRejected(Exception):
-    """The provider Identity is not the one bound to the owner."""
+    """The provider Identity is not the one bound to the Owner."""
 
 
-def bind_owner_identity(connection: Any, claims: OidcClaims) -> int:
-    """Return the owner id for ``claims``, binding it on the first login.
+def bind_owner_identity(connection: Any, claims: OidcClaims) -> None:
+    """Accept ``claims`` as the Owner's Identity, binding it on first login.
 
-    The owner holds at most one Identity per issuer. The first successful
-    login from the configured issuer binds its subject; any other subject
-    from that issuer is rejected afterwards (#412, #366 Q1).
+    The Owner has at most one Identity. The first successful login binds its
+    issuer and subject; afterwards any other subject, or another issuer, is
+    rejected (#412, ADR-0003, ADR-0010). Locking the single Owner row
+    serializes concurrent first logins: exactly one subject is bound and the
+    others see the binding once the lock is released.
     """
-    from .owner import owner_user_id
-
-    owner_id = owner_user_id(connection)
-    if owner_id is None:
-        raise IdentityRejected("no_owner")
-    # Serialize concurrent first logins: only one subject may be bound.
-    connection.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (owner_id,))
-    bound = connection.execute(
-        "SELECT user_id, subject FROM user_identities WHERE issuer=%s",
-        (claims.issuer,),
+    owner = connection.execute(
+        "SELECT oidc_issuer, oidc_subject FROM owner WHERE id=1 FOR UPDATE"
     ).fetchone()
-    if bound is not None:
-        if bound["subject"] != claims.subject or int(bound["user_id"]) != owner_id:
+    if owner is None:
+        raise IdentityRejected("no_owner")
+    if owner["oidc_subject"] is not None:
+        if (owner["oidc_issuer"], owner["oidc_subject"]) != (claims.issuer, claims.subject):
             raise IdentityRejected("identity_mismatch")
-        return owner_id
+        return
     connection.execute(
         """
-        INSERT INTO user_identities(user_id, issuer, subject, created_at)
-        VALUES (%s, %s, %s, %s)
+        UPDATE owner SET oidc_issuer=%s, oidc_subject=%s, oidc_bound_at=%s
+        WHERE id=1
         """,
-        (owner_id, claims.issuer, claims.subject, _now().isoformat()),
+        (claims.issuer, claims.subject, _now()),
     )
-    return owner_id

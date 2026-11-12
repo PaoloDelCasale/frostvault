@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 from app import main
 from app.config import settings
 
-from app.security import DUMMY_PASSWORD_HASH, hash_password
+from app.security import DUMMY_PASSWORD_HASH
+from tests.owner_fixtures import insert_owner
 from tests.spa_fixture import write_spa_dist
 from tests.proxy_stack import uvicorn_proxy_app
 from tests.test_database import run_alembic
@@ -33,15 +34,9 @@ class BreakGlassHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        # FrostVault has a single User: the owner (#412).
+        # FrostVault has a single Owner and no username (#412, #586).
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s)
-                """,
-                (hash_password(ADMIN_PASSWORD),),
-            )
+            insert_owner(connection, display_name="Admin", password=ADMIN_PASSWORD)
 
         self.test_settings = replace(
             settings,
@@ -119,7 +114,7 @@ class BreakGlassHttpTests(unittest.TestCase):
 
         me = client.get("/api/me")
         self.assertEqual(me.status_code, 200, me.text)
-        self.assertEqual(me.json()["username"], "admin")
+        self.assertEqual(me.json()["display_name"], "Admin")
         self.assertEqual(me.json()["auth_method"], "local")
         self.assertNotIn("is_admin", me.json())
 
@@ -152,10 +147,9 @@ class BreakGlassHttpTests(unittest.TestCase):
                 self.assertIsNone(client.cookies.get(self.cookie_name))
         with PostgresConnection(str(self.database_path)) as connection:
             denied = connection.execute(
-                "SELECT COUNT(*) AS total FROM audit_events "
-                "WHERE event='break_glass_denied'"
-            ).fetchone()["total"]
-        self.assertEqual(denied, 2)
+                "SELECT actor FROM audit_events WHERE event='break_glass_denied'"
+            ).fetchall()
+        self.assertEqual([row["actor"] for row in denied], ["emergency", "emergency"])
 
     def test_untrusted_forwarded_for_cannot_claim_a_lan_address(self) -> None:
         client = self._client(OUTSIDE)
@@ -197,7 +191,7 @@ class BreakGlassHttpTests(unittest.TestCase):
                 json={"username": "admin", "password": ADMIN_PASSWORD},
             )
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(client.get("/api/me").json()["username"], "admin")
+            self.assertEqual(client.get("/api/me").json()["auth_method"], "local")
         self.assertIn("Secure", response.headers["set-cookie"])
         with PostgresConnection(str(self.database_path)) as connection:
             session = connection.execute("SELECT ip FROM sessions").fetchone()
@@ -230,7 +224,7 @@ class BreakGlassHttpTests(unittest.TestCase):
                 "SELECT COUNT(*) AS total FROM sessions"
             ).fetchone()["total"], 0)
             events = connection.execute(
-                "SELECT detail_json::jsonb->>'ip' AS ip FROM audit_events "
+                "SELECT detail->>'ip' AS ip FROM audit_events "
                 "WHERE event='break_glass_denied'"
             ).fetchall()
         self.assertCountEqual([row["ip"] for row in events],
@@ -270,33 +264,33 @@ class BreakGlassHttpTests(unittest.TestCase):
                     self.assertEqual(response.json()["detail"],
                                      "Password reauthentication is not allowed here")
 
-    def test_unknown_username_and_wrong_password_are_indistinguishable(
-        self,
-    ) -> None:
-        attempts = (
-            ("unknown", ADMIN_PASSWORD),
-            ("admin", "wrong-password"),
+    def test_the_emergency_password_alone_signs_in(self) -> None:
+        """The Owner has no username: whatever a client submits is ignored."""
+        for body in (
+            {"username": "anyone", "password": ADMIN_PASSWORD},
+            {"password": ADMIN_PASSWORD},
+        ):
+            with self.subTest(body=sorted(body)):
+                response = self._client(LOOPBACK).post("/api/login", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+        wrong = self._client(LOOPBACK).post(
+            "/api/login", json={"username": "admin", "password": "wrong-password"}
         )
-        responses = [
-            self._client(LOOPBACK).post(
-                "/api/login", json={"username": username, "password": password}
-            )
-            for username, password in attempts
-        ]
-
         self.assertEqual(
-            {
-                (response.status_code, response.json().get("detail"))
-                for response in responses
-            },
-            {(401, "Incorrect username or password")},
+            (wrong.status_code, wrong.json().get("detail")),
+            (401, "Incorrect emergency password"),
         )
+        with PostgresConnection(str(self.database_path)) as connection:
+            failed = connection.execute(
+                "SELECT actor, detail FROM audit_events WHERE event='break_glass_failed'"
+            ).fetchall()
+        self.assertEqual([row["actor"] for row in failed], ["emergency"])
+        self.assertNotIn("wrong-password", str(failed))
 
     def test_wrong_password_verifies_once_against_the_real_hash(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             password_hash = connection.execute(
-                "SELECT password_hash FROM users WHERE username=%s",
-                ("admin",),
+                "SELECT password_hash FROM owner WHERE id=1"
             ).fetchone()["password_hash"]
 
         client = self._client(LOOPBACK)
@@ -312,19 +306,21 @@ class BreakGlassHttpTests(unittest.TestCase):
     def test_ineligible_logins_verify_once_against_the_dummy_hash_and_fail(
         self,
     ) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "UPDATE users SET password_hash=NULL WHERE username='admin'"
-            )
-        for username in ("unknown", "admin"):
-            with self.subTest(username=username):
+        # An Owner without an Emergency Password, then no Owner at all.
+        for change in (
+            "UPDATE owner SET password_hash=NULL WHERE id=1",
+            "DELETE FROM owner",
+        ):
+            with self.subTest(change=change):
+                with PostgresConnection(str(self.database_path)) as connection:
+                    connection.execute(change)
                 client = self._client(LOOPBACK)
                 # Returning True here proves that the dummy verification result
                 # is never enough to authenticate an ineligible account.
                 with patch("app.main.verify_password", return_value=True) as verify:
                     response = client.post(
                         "/api/login",
-                        json={"username": username, "password": ADMIN_PASSWORD},
+                        json={"username": "admin", "password": ADMIN_PASSWORD},
                     )
 
                 self.assertEqual(response.status_code, 401, response.text)
@@ -344,6 +340,21 @@ class BreakGlassHttpTests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 429, blocked.text)
         self.assertIn("Retry-After", blocked.headers)
+
+    def test_changing_the_submitted_username_does_not_evade_backoff(self) -> None:
+        """Every sign-in attempt counts against the single Owner account."""
+        lan_settings = replace(self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24")
+        with patch("app.breakglass.settings", lan_settings):
+            for index in range(5):
+                client = self._client((f"192.168.1.{index + 30}", 40000))
+                failed = client.post(
+                    "/api/login", json={"username": f"guess-{index}", "password": "wrong"}
+                )
+                self.assertEqual(failed.status_code, 401, failed.text)
+            blocked = self._client(("192.168.1.99", 40000)).post(
+                "/api/login", json={"username": "fresh", "password": ADMIN_PASSWORD}
+            )
+        self.assertEqual(blocked.status_code, 429, blocked.text)
 
     def test_successful_login_resets_backoff(self) -> None:
         client = self._client(LOOPBACK)

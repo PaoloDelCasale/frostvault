@@ -486,10 +486,6 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                 elif name == "facts":
                     discover_facts(connection, vault, stamp, TARGET_BATCH, deadline=deadline)
                 else:
-                    from ..owner import owner_user_id
-                    owner_id = owner_user_id(connection)
-                    if owner_id is None:
-                        continue
                     rows = connection.execute(f"""SELECT r.* FROM upload_remediations r WHERE vault_id=%s
                         AND ((r.state IN ('pending','suspended') AND NOT {VOID_SQL} AND r.due_at<=%s
                               AND (r.current_job_id IS NULL OR EXISTS (SELECT 1 FROM jobs current
@@ -505,7 +501,7 @@ def sweep(db: Any, stamp: str | None = None) -> int:
                             if current and current["status"] == "cancelled":
                                 transition(connection,row["current_job_id"],"cancelled",stamp)
                                 continue
-                        count += bool(admit(connection,row,vault,user_id=owner_id,stamp=stamp))
+                        count += bool(admit(connection,row,vault,user_id=None,stamp=stamp))
     return count
 
 

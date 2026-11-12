@@ -20,10 +20,13 @@ from fastapi.testclient import TestClient
 from app.config import settings
 
 from app.main import app
-from app.security import hash_password
 from app.services import notifications
 from app.sessions import create_session, csrf_token_for
+from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
+
+# Upload failures close from upload proofs and remediation, ported by #592.
+UPLOAD_FAILURE_PROOFS = "upload failure closure proofs are ported by #592"
 
 
 class _FailingSmtp:
@@ -44,63 +47,14 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
-                """,
-                (hash_password("owner-password-1"),),
-            )
-            self.user_id = connection.execute(
-                "SELECT id FROM users WHERE username='owner'"
-            ).fetchone()["id"]
-            self.outsider_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('outsider', 'Outsider', %s)
-                RETURNING id
-                """,
-                (hash_password("outsider-password-1"),),
-            ).fetchone()["id"]
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/src', 'bucket', 'docs')
-                """
-            )
-            self.vault_id = connection.execute(
-                "SELECT id FROM vaults WHERE slug='docs'"
-            ).fetchone()["id"]
-            vault_file = connection.execute(
-                """
-                INSERT INTO vault_files(id, vault_id, status, created_at)
-                VALUES ('11111111-1111-1111-1111-111111111111', %s, 'active',
-                        '2026-07-22T00:00:00+00:00')
-                RETURNING id
-                """,
-                (self.vault_id,),
-            ).fetchone()
-            connection.execute(
-                """
-                INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status, requested_by,
-                    requested_at, updated_at
-                ) VALUES (
-                    %s, %s, 'a.txt', 'upload', 'completed', %s,
-                    '2026-07-22T00:00:00+00:00', '2026-07-22T00:00:00+00:00'
-                )
-                """,
-                (self.vault_id, vault_file["id"], self.user_id),
-            )
-            self.job_id = connection.execute(
-                "SELECT id FROM jobs ORDER BY id DESC LIMIT 1"
-            ).fetchone()["id"]
+            insert_owner(connection)
+            self.vault_id = insert_vault(connection)["id"]
+            self.job_id = insert_job(connection, vault_id=self.vault_id)
 
     def test_enqueue_creates_retrievable_in_app_notification(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="vault_root_relocated",
                 title="Membership changed",
@@ -108,7 +62,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 job_id=self.job_id,
             )
             listed = notifications.list_in_app_notifications(
-                connection, user_id=self.user_id
+                connection
             )
         self.assertEqual(item["event"], "vault_root_relocated")
         self.assertEqual(len(listed), 1)
@@ -119,7 +73,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
             with PostgresConnection(str(self.path)) as connection:
                 for action, status, event in (
-                    ("recover", "completed", "recovery_completed"), ("upload", "failed", "job_failed"),
+                    ("recover", "completed", "recovery_completed"), ("recover", "failed", "recovery_failed"),
                 ):
                     connection.execute(
                         "UPDATE jobs SET action=%s, status=%s WHERE id=%s", (action, status, self.job_id)
@@ -131,37 +85,51 @@ class NotificationDeliveryTests(unittest.TestCase):
                     )
                     row = connection.execute(
                         "SELECT in_app_enabled, dedupe_key FROM notifications "
-                        "WHERE user_id=%s AND job_id=%s AND event=%s",
-                        (self.user_id, self.job_id, event),
+                        "WHERE job_id=%s AND event=%s",
+                        (self.job_id, event),
                     ).fetchone()
                     self.assertTrue(row["in_app_enabled"])
                     self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:{event}")
                 self.assertEqual(len(notifications.list_in_app_notifications(
-                    connection, user_id=self.user_id
+                    connection
                 )), 2)
-                self.assertEqual(notifications.list_in_app_notifications(
-                    connection, user_id=self.outsider_id
-                ), [])
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) AS total FROM notification_deliveries"
                 ).fetchone()["total"], 0)
+
+    @unittest.skip(UPLOAD_FAILURE_PROOFS)
+    def test_failed_upload_reaches_the_owner_inbox_as_an_open_problem(self) -> None:
+        with patch.object(notifications, "settings", replace(settings, smtp_host="")):
+            with PostgresConnection(str(self.path)) as connection:
+                connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,))
+                self.assertEqual(notifications.enqueue_job_terminal_notification(
+                    connection, job_id=self.job_id
+                ), 1)
+                row = connection.execute(
+                    "SELECT in_app_enabled, dedupe_key, problem_status FROM notifications "
+                    "WHERE job_id=%s AND event='job_failed'",
+                    (self.job_id,),
+                ).fetchone()
+        self.assertTrue(row["in_app_enabled"])
+        self.assertEqual(row["dedupe_key"], f"job:{self.job_id}:job_failed")
+        self.assertEqual(row["problem_status"], "open")
 
     def test_unread_count_ignores_limit_and_historical_email_only_rows(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for index in range(3):
                 notifications.enqueue_notification(
-                    connection, user_id=self.user_id, vault_id=self.vault_id,
+                    connection, vault_id=self.vault_id,
                     event="upload_verified", title=f"Upload {index}",
                 )
             notifications.enqueue_notification(
-                connection, user_id=self.user_id, vault_id=self.vault_id,
+                connection, vault_id=self.vault_id,
                 event="recovery_completed", title="Email only", channels=("email",),
             )
             listed = notifications.list_in_app_notifications(
-                connection, user_id=self.user_id, limit=1
+                connection, limit=1
             )
             unread_count = notifications.count_unread_notifications(
-                connection, user_id=self.user_id
+                connection
             )
         self.assertEqual(len(listed), 1)
         self.assertEqual(unread_count, 3)
@@ -175,7 +143,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         with patch.object(notifications, "settings", email_settings):
             with PostgresConnection(str(self.path)) as connection:
                 connection.execute(
-                    "UPDATE jobs SET status='failed' WHERE id=%s", (self.job_id,)
+                    "UPDATE jobs SET action='recover', status='failed' WHERE id=%s", (self.job_id,)
                 )
                 first = notifications.enqueue_job_terminal_notification(
                     connection, job_id=self.job_id
@@ -193,7 +161,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(first, 1)
         self.assertEqual(second, 0)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["dedupe_key"], f"job:{self.job_id}:job_failed")
+        self.assertEqual(rows[0]["dedupe_key"], f"job:{self.job_id}:recovery_failed")
         self.assertEqual([row["channel"] for row in deliveries], ["email"])
 
     def test_removed_channels_are_rejected_before_writing_any_notification(self) -> None:
@@ -201,7 +169,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             for channel in ("webhook", "push"):
                 with self.subTest(channel=channel), self.assertRaises(ValueError):
                     notifications.enqueue_notification(
-                        connection, user_id=self.user_id, event="recovery_completed",
+                        connection, event="recovery_completed",
                         title="Unsupported", channels=("in_app", channel),
                     )
             self.assertEqual(connection.execute(
@@ -212,7 +180,6 @@ class NotificationDeliveryTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="recovery_completed",
                 title="",
@@ -223,14 +190,13 @@ class NotificationDeliveryTests(unittest.TestCase):
             )
             notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Historical title",
                 body="Historical body",
             )
             listed = notifications.list_in_app_notifications(
-                connection, user_id=self.user_id, locale="it"
+                connection, locale="it"
             )
         keyed = next(item for item in listed if item["event"] == "recovery_completed")
         historical = next(
@@ -245,7 +211,6 @@ class NotificationDeliveryTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Upload verified",
@@ -254,7 +219,6 @@ class NotificationDeliveryTests(unittest.TestCase):
             marked = notifications.mark_notification_read(
                 connection,
                 notification_id=item["id"],
-                user_id=self.user_id,
             )
             stored = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s", (item["id"],)
@@ -264,47 +228,73 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertTrue(marked["read"])
         self.assertIsNotNone(stored["read_at"])
 
-    def test_mark_notification_read_rejects_cross_user_without_mutation(self) -> None:
+    def test_mark_notification_read_rejects_hidden_and_unknown_without_mutation(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
-                event="upload_verified",
-                title="Upload verified",
-                body="ok",
+                event="recovery_completed",
+                title="Email only",
+                channels=("email",),
             )
             marked = notifications.mark_notification_read(
                 connection,
                 notification_id=item["id"],
-                user_id=self.outsider_id,
+            )
+            unknown = notifications.mark_notification_read(
+                connection,
+                notification_id=item["id"] + 100,
             )
             stored = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s", (item["id"],)
             ).fetchone()
 
         self.assertIsNone(marked)
+        self.assertIsNone(unknown)
         self.assertIsNone(stored["read_at"])
+
+    def test_notifications_have_no_user_and_dedupe_by_key(self) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            first = notifications.enqueue_notification(
+                connection, event="weekly_summary", title="Week",
+                message_params={}, dedupe_key="weekly:2026-46",
+            )
+            again = notifications.enqueue_notification(
+                connection, event="weekly_summary", title="Week",
+                message_params={}, dedupe_key="weekly:2026-46",
+                channels=("in_app", "email"),
+            )
+            total = connection.execute(
+                "SELECT count(*) AS total FROM notifications"
+            ).fetchone()["total"]
+            deliveries = connection.execute(
+                "SELECT notification_id, channel FROM notification_deliveries"
+            ).fetchall()
+            columns = {row["column_name"] for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name IN ('notifications', 'notification_deliveries')"
+            ).fetchall()}
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(total, 1)
+        self.assertEqual(deliveries, [{"notification_id": first["id"], "channel": "email"}])
+        self.assertNotIn("user_id", columns)
 
     def test_list_filters_unread_and_read_independently(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             older_unread = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Older unread",
             )
             middle_read = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Middle read",
             )
             newer_unread = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Newer unread",
@@ -312,14 +302,13 @@ class NotificationDeliveryTests(unittest.TestCase):
             notifications.mark_notification_read(
                 connection,
                 notification_id=middle_read["id"],
-                user_id=self.user_id,
             )
 
             unread = notifications.list_in_app_notifications(
-                connection, user_id=self.user_id, status="unread"
+                connection, status="unread"
             )
             read = notifications.list_in_app_notifications(
-                connection, user_id=self.user_id, status="read"
+                connection, status="read"
             )
 
         self.assertEqual([item["title"] for item in unread], ["Newer unread", "Older unread"])
@@ -334,7 +323,6 @@ class NotificationDeliveryTests(unittest.TestCase):
             for index in range(5):
                 item = notifications.enqueue_notification(
                     connection,
-                    user_id=self.user_id,
                     vault_id=self.vault_id,
                     event="upload_verified",
                     title=f"Item {index}",
@@ -342,7 +330,6 @@ class NotificationDeliveryTests(unittest.TestCase):
                 ids.append(item["id"])
             page = notifications.list_in_app_notifications(
                 connection,
-                user_id=self.user_id,
                 status="all",
                 limit=2,
                 before_id=ids[-1],
@@ -356,7 +343,6 @@ class NotificationDeliveryTests(unittest.TestCase):
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
-                    user_id=self.user_id,
                     vault_id=self.vault_id,
                     event="upload_verified",
                     title=f"Bulk {index}",
@@ -365,51 +351,47 @@ class NotificationDeliveryTests(unittest.TestCase):
             # fetch back down to 200 or has_more stays false forever.
             fetched = notifications.list_in_app_notifications(
                 connection,
-                user_id=self.user_id,
                 status="unread",
                 limit=201,
             )
 
         self.assertEqual(len(fetched), 201)
 
-    def test_mark_all_notifications_read_is_idempotent_and_user_scoped(self) -> None:
+    def test_mark_all_notifications_read_is_idempotent_and_skips_email_only(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Owner one",
             )
             second = notifications.enqueue_notification(
                 connection,
-                user_id=self.user_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Owner two",
             )
-            outsider = notifications.enqueue_notification(
+            email_only = notifications.enqueue_notification(
                 connection,
-                user_id=self.outsider_id,
                 vault_id=None,
-                event="upload_verified",
-                title="Outsider personal",
+                event="recovery_completed",
+                title="Email only",
+                channels=("email",),
             )
 
             first_pass = notifications.mark_all_notifications_read(
-                connection, user_id=self.user_id
+                connection
             )
             second_pass = notifications.mark_all_notifications_read(
-                connection, user_id=self.user_id
+                connection
             )
 
             owner_rows = connection.execute(
-                "SELECT id, read_at FROM notifications WHERE user_id=%s ORDER BY id",
-                (self.user_id,),
+                "SELECT id, read_at FROM notifications WHERE in_app_enabled ORDER BY id",
             ).fetchall()
-            outsider_row = connection.execute(
+            email_only_row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
-                (outsider["id"],),
+                (email_only["id"],),
             ).fetchone()
 
         self.assertEqual(first_pass["marked_count"], 2)
@@ -419,15 +401,14 @@ class NotificationDeliveryTests(unittest.TestCase):
         by_id = {row["id"]: row["read_at"] for row in owner_rows}
         self.assertIsNotNone(by_id[first["id"]])
         self.assertIsNotNone(by_id[second["id"]])
-        self.assertIsNone(outsider_row["read_at"])
+        self.assertIsNone(email_only_row["read_at"])
 
     def test_terminal_notification_failure_does_not_rollback_job_transition(self) -> None:
         def fail_after_sql_error(connection, *, job_id):
             del job_id
             connection.execute(
-                "INSERT INTO notifications(user_id, event, title, created_at) "
-                "VALUES (%s, 'recovery_completed', 'Recovery completed', 'now')",
-                (self.user_id,),
+                "INSERT INTO notifications(event, title) "
+                "VALUES ('recovery_completed', 'Recovery completed')"
             )
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
             return 0
@@ -465,7 +446,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         with patch.object(notifications, "settings", email_settings):
             with PostgresConnection(str(self.path)) as connection:
                 notifications.enqueue_notification(
-                    connection, user_id=self.user_id, vault_id=self.vault_id,
+                    connection, vault_id=self.vault_id,
                     event="upload_verified", title="Upload verified",
                     job_id=self.job_id, channels=("in_app", "email"),
                 )
@@ -486,7 +467,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                     "SELECT status, attempt_count FROM notification_deliveries"
                 ).fetchone()
                 self.assertEqual(len(notifications.list_in_app_notifications(
-                    connection, user_id=self.user_id
+                    connection
                 )), 1)
         self.assertEqual(job["status"], "completed")
         self.assertEqual(delivery["status"], "failed")
@@ -505,29 +486,8 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.path)) as connection:
-            self.owner_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s)
-                RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.outsider_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('outsider', 'Outsider', %s)
-                RETURNING id
-                """,
-                (hash_password("outsider-password-1"),),
-            ).fetchone()["id"]
-            self.vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/src', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
+            insert_owner(connection)
+            self.vault_id = insert_vault(connection)["id"]
 
         self.test_settings = replace(
             settings,
@@ -546,14 +506,8 @@ class NotificationReadHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
         with PostgresConnection(str(self.path)) as connection:
-            self.owner_token = create_session(
-                connection, user_id=self.owner_id, auth_method="local"
-            )
+            self.owner_token = create_session(connection, auth_method="local")
             self.owner_csrf = csrf_token_for(connection, self.owner_token) or ""
-            self.outsider_token = create_session(
-                connection, user_id=self.outsider_id, auth_method="local"
-            )
-            self.outsider_csrf = csrf_token_for(connection, self.outsider_token) or ""
 
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
@@ -565,7 +519,6 @@ class NotificationReadHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Upload verified",
@@ -578,14 +531,12 @@ class NotificationReadHttpTests(unittest.TestCase):
             for index in range(3):
                 notifications.enqueue_notification(
                     connection,
-                    user_id=self.owner_id,
                     vault_id=self.vault_id,
                     event="upload_verified",
                     title=f"Upload {index}",
                 )
             notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="recovery_completed",
                 title="Email only",
@@ -604,7 +555,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             item = notifications.set_problem(connection, key='test-blocked', event='protection_blocked',
                                              vault_id=self.vault_id, active=True, params={'component':'cloud'})
-            notifications.mark_notification_read(connection, notification_id=item['id'], user_id=self.owner_id)
+            notifications.mark_notification_read(connection, notification_id=item['id'])
         self._authenticate(self.owner_token, self.owner_csrf)
         with patch.object(notifications, 'settings', replace(settings, smtp_host='')):
             response = self.client.get('/api/notifications?limit=1')
@@ -652,14 +603,14 @@ class NotificationReadHttpTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row["read_at"])
 
-    def test_cross_user_mark_read_returns_404_without_mutation(self) -> None:
+    def test_unknown_notification_mark_read_returns_404_without_mutation(self) -> None:
         notification_id = self._create_notification()
-        self._authenticate(self.outsider_token, self.outsider_csrf)
+        self._authenticate(self.owner_token, self.owner_csrf)
 
         response = self.client.post(
             "/api/notifications/read",
-            headers={"X-CSRF-Token": self.outsider_csrf},
-            json={"notification_id": notification_id},
+            headers={"X-CSRF-Token": self.owner_csrf},
+            json={"notification_id": notification_id + 100},
         )
 
         self.assertEqual(response.status_code, 404, response.text)
@@ -670,12 +621,21 @@ class NotificationReadHttpTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(row["read_at"])
 
+    def test_notifications_require_a_session(self) -> None:
+        for method, path in (
+            ("GET", "/api/notifications"),
+            ("POST", "/api/notifications/read"),
+            ("POST", "/api/notifications/read-all"),
+        ):
+            with self.subTest(path=path):
+                response = self.client.request(method, path, json={"notification_id": 1})
+                self.assertEqual(response.status_code, 401, response.text)
+
     def test_notifications_http_has_more_at_max_limit(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
-                    user_id=self.owner_id,
                     vault_id=self.vault_id,
                     event="upload_verified",
                     title=f"Max page {index}",
@@ -693,21 +653,18 @@ class NotificationReadHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.path)) as connection:
             older = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Older unread",
             )
             middle = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Middle read",
             )
             newer = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Newer unread",
@@ -715,7 +672,6 @@ class NotificationReadHttpTests(unittest.TestCase):
             notifications.mark_notification_read(
                 connection,
                 notification_id=middle["id"],
-                user_id=self.owner_id,
             )
         self._authenticate(self.owner_token, self.owner_csrf)
 
@@ -742,28 +698,26 @@ class NotificationReadHttpTests(unittest.TestCase):
         invalid = self.client.get("/api/notifications?status=snoozed")
         self.assertEqual(invalid.status_code, 422, invalid.text)
 
-    def test_mark_all_read_http_is_idempotent_and_authz_scoped(self) -> None:
+    def test_mark_all_read_http_is_idempotent_and_skips_email_only(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             first = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Owner one",
             )
             second = notifications.enqueue_notification(
                 connection,
-                user_id=self.owner_id,
                 vault_id=self.vault_id,
                 event="upload_verified",
                 title="Owner two",
             )
-            outsider = notifications.enqueue_notification(
+            email_only = notifications.enqueue_notification(
                 connection,
-                user_id=self.outsider_id,
                 vault_id=None,
-                event="upload_verified",
-                title="Outsider",
+                event="recovery_completed",
+                title="Email only",
+                channels=("email",),
             )
 
         self._authenticate(self.owner_token, self.owner_csrf)
@@ -784,35 +738,13 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(second_response.json()["unread_count"], 0)
 
         with PostgresConnection(str(self.path)) as connection:
-            owner_unread = connection.execute(
-                "SELECT COUNT(*) AS total FROM notifications "
-                "WHERE user_id=%s AND read_at IS NULL",
-                (self.owner_id,),
-            ).fetchone()["total"]
-            outsider_row = connection.execute(
-                "SELECT read_at FROM notifications WHERE id=%s",
-                (outsider["id"],),
-            ).fetchone()
-            owner_ids = {
+            rows = {
                 row["id"]: row["read_at"]
-                for row in connection.execute(
-                    "SELECT id, read_at FROM notifications WHERE user_id=%s",
-                    (self.owner_id,),
-                ).fetchall()
+                for row in connection.execute("SELECT id, read_at FROM notifications").fetchall()
             }
-        self.assertEqual(owner_unread, 0)
-        self.assertIsNotNone(owner_ids[first["id"]])
-        self.assertIsNotNone(owner_ids[second["id"]])
-        self.assertIsNone(outsider_row["read_at"])
-
-        self._authenticate(self.outsider_token, self.outsider_csrf)
-        outsider_response = self.client.post(
-            "/api/notifications/read-all",
-            headers={"X-CSRF-Token": self.outsider_csrf},
-        )
-        self.assertEqual(outsider_response.status_code, 200, outsider_response.text)
-        self.assertEqual(outsider_response.json()["marked_count"], 1)
-
+        self.assertIsNotNone(rows[first["id"]])
+        self.assertIsNotNone(rows[second["id"]])
+        self.assertIsNone(rows[email_only["id"]])
 
 if __name__ == "__main__":
     unittest.main()

@@ -250,13 +250,13 @@ class BulkAdmissionPostgresTests(QueueFixture):
         with self.db() as c:
             self.assertTrue(vault_relocation._active_jobs(c, 2))
             with self.assertRaisesRegex(ValueError, "active Jobs"):
-                protection_stop.stop_protection(c, vault_id=2, actor_user_id=1, cloud_disposition="keep", confirmation="Photos", reason="test stop")
+                protection_stop.stop_protection(c, vault_id=2, actor="owner", cloud_disposition="keep", confirmation="Photos", reason="test stop")
             with self.assertRaises(vault_relocation.VaultRelocationError) as error:
-                vault_relocation._reconnect_vault_root(c, vault_id=2, volume_alias="unused", relative_path="", actor_user_id=1, reason="test reconnect")
+                vault_relocation._reconnect_vault_root(c, vault_id=2, volume_alias="unused", relative_path="", actor="owner", reason="test reconnect")
             self.assertEqual(error.exception.reason, "active_jobs")
             bulk.cancel(c, vault_id=2, group_id=group)
             self.assertFalse(vault_relocation._active_jobs(c, 2))
-            result = protection_stop.stop_protection(c, vault_id=2, actor_user_id=1, cloud_disposition="keep", confirmation="Photos", reason="test stop")
+            result = protection_stop.stop_protection(c, vault_id=2, actor="owner", cloud_disposition="keep", confirmation="Photos", reason="test stop")
             self.assertTrue(result["stopped"])
         self.assertFalse(self.step(group))
         self.assertEqual(self.create(request_id=group)["status"], "cancelled")

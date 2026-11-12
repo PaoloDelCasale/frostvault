@@ -184,7 +184,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         source_layout.reconcile_source_volume_identities()
         with PostgresConnection(str(self.database_path)) as connection:
             events = connection.execute(
-                "SELECT detail_json FROM audit_events "
+                "SELECT detail::text AS detail FROM audit_events "
                 "WHERE event='source_volume_identity_transition'"
             ).fetchall()
             local_count = connection.execute(
@@ -192,7 +192,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
             ).fetchone()["total"]
         self.assertEqual(len(events), 1)
         self.assertEqual(local_count, 0)
-        detail = events[0]["detail_json"]
+        detail = events[0]["detail"]
         self.assertNotIn("/host/", detail)
         self.assertNotIn("/dev/", detail)
 

@@ -16,6 +16,7 @@ from app.config import settings
 
 from app.main import app
 from app.sessions import create_session
+from tests.owner_fixtures import insert_owner
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
@@ -69,12 +70,7 @@ class RemovedMultiUserEndpointsTests(unittest.TestCase):
         migrated = run_alembic(db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
-                """
-            )
+            insert_owner(connection)
         configured = replace(
             settings,
             database_dsn=database_dsn(str(db_path)),
@@ -91,7 +87,7 @@ class RemovedMultiUserEndpointsTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50001))
         with PostgresConnection(str(db_path)) as connection:
-            token = create_session(connection, user_id=1, auth_method="oidc")
+            token = create_session(connection, auth_method="oidc")
         self.client.cookies.set(configured.session_cookie_name, token)
         self.csrf = self.client.get("/api/me").json()["csrf_token"]
 

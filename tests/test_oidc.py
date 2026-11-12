@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.postgres import PostgresConnection
 
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from app import oidc, oidc_network
 from app.config import Settings
 
 from tests.oidc_fake import FakeOidcProvider, at_hash_for
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
@@ -123,7 +125,7 @@ class BeginLoginTests(OidcTestBase):
         self.assertTrue(row["code_verifier"])
         self.assertEqual(row["return_to"], "/dashboard")
         self.assertGreater(
-            datetime.fromisoformat(row["expires_at"]),
+            row["expires_at"],
             datetime.now(timezone.utc),
         )
 
@@ -211,7 +213,7 @@ class CompleteLoginTests(OidcTestBase):
         with self.connect() as connection:
             connection.execute(
                 "UPDATE oidc_login SET expires_at=%s",
-                ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+                (datetime.now(timezone.utc) - timedelta(minutes=1),),
             )
         with self.assertRaises(oidc.OidcError) as error:
             self._complete(pending["state"], self._id_token(pending["nonce"]))
@@ -266,7 +268,7 @@ class CompleteLoginTests(OidcTestBase):
             connection.execute(
                 "UPDATE oidc_login SET expires_at=%s WHERE state=%s",
                 (
-                    (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                    datetime.now(timezone.utc) - timedelta(minutes=1),
                     expired["state"],
                 ),
             )
@@ -275,6 +277,87 @@ class CompleteLoginTests(OidcTestBase):
         self.assertEqual(removed, 1)
         remaining = {row["state"] for row in self._rows()}
         self.assertEqual(remaining, {fresh["state"]})
+
+
+def _claims(subject: str, issuer: str = "https://idp.example") -> oidc.OidcClaims:
+    return oidc.OidcClaims(issuer=issuer, subject=subject, return_to=None, raw={})
+
+
+class OwnerIdentityBindingTests(OidcTestBase):
+    """The first OIDC login binds the Owner's Identity (ADR-0003, ADR-0010)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        with self.connect() as connection:
+            insert_owner(connection)
+
+    def _owner(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT oidc_issuer, oidc_subject, oidc_bound_at FROM owner WHERE id=1"
+            ).fetchone()
+
+    def test_first_login_binds_the_identity(self) -> None:
+        with self.connect() as connection:
+            oidc.bind_owner_identity(connection, _claims("alice"))
+        owner = self._owner()
+        self.assertEqual(owner["oidc_issuer"], "https://idp.example")
+        self.assertEqual(owner["oidc_subject"], "alice")
+        self.assertIsNotNone(owner["oidc_bound_at"])
+
+    def test_the_bound_identity_signs_in_again(self) -> None:
+        with self.connect() as connection:
+            oidc.bind_owner_identity(connection, _claims("alice"))
+        bound_at = self._owner()["oidc_bound_at"]
+        with self.connect() as connection:
+            oidc.bind_owner_identity(connection, _claims("alice"))
+        self.assertEqual(self._owner()["oidc_bound_at"], bound_at)
+
+    def test_another_subject_or_issuer_is_rejected(self) -> None:
+        with self.connect() as connection:
+            oidc.bind_owner_identity(connection, _claims("alice"))
+        for claims in (_claims("mallory"), _claims("alice", issuer="https://other.example")):
+            with self.connect() as connection, self.assertRaises(oidc.IdentityRejected):
+                oidc.bind_owner_identity(connection, claims)
+        self.assertEqual(self._owner()["oidc_subject"], "alice")
+
+    def test_no_identity_binds_without_an_owner(self) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM owner")
+        with self.connect() as connection, self.assertRaises(oidc.IdentityRejected):
+            oidc.bind_owner_identity(connection, _claims("alice"))
+
+    def test_concurrent_first_logins_bind_exactly_one_subject(self) -> None:
+        """Both logins race past the unbound read; the row lock serializes them."""
+        subjects = ["alice", "mallory"]
+        both_started = threading.Barrier(len(subjects), timeout=10)
+        outcomes: dict[str, str] = {}
+
+        def login(subject: str) -> None:
+            with self.connect() as connection:
+                both_started.wait()
+                try:
+                    oidc.bind_owner_identity(connection, _claims(subject))
+                    # Hold the lock so the rival really waits on the row.
+                    connection.execute("SELECT pg_sleep(0.2)")
+                    outcomes[subject] = "bound"
+                except oidc.IdentityRejected:
+                    outcomes[subject] = "rejected"
+
+        threads = [threading.Thread(target=login, args=(subject,)) for subject in subjects]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertEqual(sorted(outcomes.values()), ["bound", "rejected"])
+        winner = next(subject for subject, outcome in outcomes.items() if outcome == "bound")
+        self.assertEqual(self._owner()["oidc_subject"], winner)
+
+    def test_the_database_keeps_the_binding_all_or_nothing(self) -> None:
+        import psycopg
+
+        with self.connect() as connection, self.assertRaises(psycopg.errors.CheckViolation):
+            connection.execute("UPDATE owner SET oidc_subject='alice' WHERE id=1")
 
 
 if __name__ == "__main__":

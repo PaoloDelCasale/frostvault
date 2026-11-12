@@ -32,7 +32,6 @@ from .services.upload_snapshot import (
 from watchfiles import Change, awatch
 
 from .config import is_placeholder, settings, settings_snapshot
-from .owner import owner_user_id
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import source_layout
@@ -1995,13 +1994,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                         s3_client(),
                         bucket=vault["s3_bucket"],
                     )
-                    owner_id = owner_user_id(connection)
                     local_access = source_layout.vault_local_access(vault["source_root"])
-                    if owner_id is not None and local_access.local_operations_allowed:
+                    if local_access.local_operations_allowed:
                         result["auto_local_cleanups"] = queue_auto_local_cleanups(
                             connection,
                             vault_id=int(vault["id"]),
-                            requested_by=owner_id,
+                            requested_by=None,
                         )
             except Exception as exc:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
@@ -2019,12 +2017,11 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             # process_upload still requires successful preflight before writes.
             try:
                 with db() as connection:
-                    owner_id = owner_user_id(connection)
                     local_access = source_layout.vault_local_access(vault["source_root"])
-                    if owner_id is not None and local_access.local_operations_allowed:
+                    if local_access.local_operations_allowed:
                         result["auto_uploads"] = queue_auto_uploads(
                             connection, vault_id=vault_id,
-                            source_root=str(vault["source_root"]), requested_by=owner_id,
+                            source_root=str(vault["source_root"]), requested_by=None,
                         )
                 if "auto_uploads" in result:
                     _note_worker_ok("auto_upload_queue", vault_id)
@@ -2082,8 +2079,6 @@ def _apply_auto_renames(
     confirmed_paths: list[str] = []
     catalog = ArchiveCatalog(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
-    if requested_by is None:
-        requested_by = owner_user_id(connection)
     if hash_missing:
         present_rows = connection.execute(
             """
@@ -4383,7 +4378,7 @@ def record_automatic_cleanup_outcome(
             audit_event_store.record_audit_event(
                 connection,
                 event=event,
-                actor_user_id=job.get("requested_by"),
+                actor="system" if job.get("origin") == "automatic" else "owner",
                 vault_id=job["vault_id"],
                 job_id=job["id"],
                 outcome=outcome,
@@ -5163,7 +5158,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 connection,
                 job_id=int(purge_job["id"]),
                 vault_file_id=purge_job["vault_file_id"],
-                actor_user_id=purge_job.get("requested_by"),
+                actor="system" if purge_job.get("origin") == "automatic" else "owner",
                 updated_at=stamp,
             )
         placeholders = ", ".join(["%s"] * len(expected_job_ids))
@@ -6164,17 +6159,14 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                     or current["decommission_state"] != "active"
                     or current["source_root"] != vault["source_root"]):
                 return 0
-            owner_id = owner_user_id(connection)
-            if owner_id is None:
-                return 0
             queued = 0
             if retry_failed_only:
                 from .services import upload_remediation
-                queued += upload_remediation.retry_vault(connection,dict(current),owner_id,
+                queued += upload_remediation.retry_vault(connection,dict(current),None,
                     (now or datetime.now(timezone.utc)).isoformat())
             queued += queue_auto_uploads(
                 connection, vault_id=int(vault["id"]), source_root=str(root),
-                requested_by=owner_id, now=now, retry_failed_only=retry_failed_only,
+                requested_by=None, now=now, retry_failed_only=retry_failed_only,
             )
             if "root_identity" in vault:
                 _current_verified_scan_row(connection, vault)

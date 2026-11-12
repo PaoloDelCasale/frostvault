@@ -281,7 +281,7 @@ def confirm_cloud_only_replacement(
     *,
     vault_id: int,
     path: str,
-    actor_user_id: int | None,
+    actor: str,
     observed_at: str | None = None,
 ) -> dict[str, Any]:
     """Release held-back content so its upload may replace the cloud copy.
@@ -329,7 +329,7 @@ def confirm_cloud_only_replacement(
         "cloud_only_conflict_replacement_confirmed",
         connection=connection,
         vault_id=vault_id,
-        actor_user_id=actor_user_id,
+        actor=actor,
         vault_file_id=incident["vault_file_id"],
         archive_version_id=incident["archive_version_id"],
         path=path,

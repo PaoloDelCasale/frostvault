@@ -30,7 +30,8 @@ __all__ = ["run_alembic"]
 BASELINE_TABLES = {
     "alembic_version", "owner", "vault_targets", "vaults", "files",
     "file_path_history", "archive_versions", "directory_aggregate_status",
-    "directory_aggregate_dirty", "jobs",
+    "directory_aggregate_dirty", "jobs", "sessions", "oidc_login", "auth_backoff",
+    "audit_events", "notifications", "notification_deliveries",
 }
 
 
@@ -330,7 +331,19 @@ class BaselineSchemaTests(unittest.TestCase):
         referenced = {row["referenced"] for row in self.execute(
             "SELECT confrelid::regclass::text AS referenced FROM pg_constraint WHERE contype = 'f'"
         )}
-        self.assertEqual(referenced, {"vault_targets", "vaults", "files", "archive_versions"})
+        self.assertEqual(
+            referenced,
+            {"vault_targets", "vaults", "files", "archive_versions", "jobs", "notifications"},
+        )
+        # No per-user attribution survives anywhere (#586).
+        attribution = {
+            (row["table_name"], row["column_name"]) for row in self.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND column_name = ANY(%s)",
+                (["user_id", "actor_user_id", "requested_by", "approved_by", "username"],),
+            )
+        }
+        self.assertEqual(attribution, set())
 
     def test_native_column_types(self) -> None:
         types = {
@@ -349,6 +362,13 @@ class BaselineSchemaTests(unittest.TestCase):
             ("archive_versions", "plaintext_sha256"): "bytea",
             ("jobs", "group_id"): "uuid",
             ("jobs", "requested_at"): "timestamp with time zone",
+            ("sessions", "id"): "uuid",
+            ("sessions", "token_hash"): "bytea",
+            ("sessions", "absolute_expires_at"): "timestamp with time zone",
+            ("auth_backoff", "next_allowed_at"): "timestamp with time zone",
+            ("audit_events", "detail"): "jsonb",
+            ("notifications", "message_params"): "jsonb",
+            ("notifications", "read_at"): "timestamp with time zone",
         }
         for column, data_type in expected.items():
             self.assertEqual(types[column], data_type, column)
@@ -367,11 +387,45 @@ class BaselineSchemaTests(unittest.TestCase):
         self.execute("INSERT INTO owner(display_name, password_hash) VALUES ('Owner', 'hash')")
         self.rejects("INSERT INTO owner(display_name) VALUES ('Second')")
         self.rejects("INSERT INTO owner(id, display_name) VALUES (2, 'Second')")
+        self.rejects("UPDATE owner SET id = 2")
+        self.rejects("UPDATE owner SET password_hash = ''", error=psycopg.errors.CheckViolation)
         # The OIDC Identity is bound all at once, never half.
         self.rejects("UPDATE owner SET oidc_subject = 'subject'")
         self.execute(
             "UPDATE owner SET oidc_issuer = 'https://id.example', oidc_subject = 'subject', "
             "oidc_bound_at = now()"
+        )
+
+    def test_sessions_hold_only_a_token_digest(self) -> None:
+        self.rejects(
+            "INSERT INTO sessions(token_hash, csrf_token, auth_method, session_version, "
+            "idle_expires_at, absolute_expires_at) "
+            "VALUES ('raw-token', 'csrf', 'local', 1, now(), now())"
+        )
+        self.rejects(
+            "INSERT INTO sessions(token_hash, csrf_token, auth_method, session_version, "
+            "idle_expires_at, absolute_expires_at) "
+            "VALUES (sha256('t'), 'csrf', 'password', 1, now(), now())"
+        )
+
+    def test_notifications_are_deduplicated_without_a_user(self) -> None:
+        self.execute(
+            "INSERT INTO notifications(event, title, dedupe_key, problem_status) "
+            "VALUES ('cloud_preflight_blocked', 'Blocked', 'blocked:installation:preflight', 'open')"
+        )
+        self.rejects(
+            "INSERT INTO notifications(event, title, dedupe_key) "
+            "VALUES ('cloud_preflight_blocked', 'Again', 'blocked:installation:preflight')"
+        )
+        # A resolved problem records when, and only a resolved one does.
+        self.rejects(
+            "UPDATE notifications SET problem_status = 'resolved'",
+            error=psycopg.errors.CheckViolation,
+        )
+        self.execute("UPDATE notifications SET problem_status = 'resolved', resolved_at = now()")
+        self.rejects(
+            "INSERT INTO notifications(event, title, resolved_at) VALUES ('x', 'x', now())",
+            error=psycopg.errors.CheckViolation,
         )
 
     def test_vault_targets_are_immutable(self) -> None:

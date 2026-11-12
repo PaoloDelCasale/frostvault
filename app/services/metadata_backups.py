@@ -683,15 +683,10 @@ def backup_status(connection: Any) -> dict[str, Any]:
 def notify_owner_of_backup_failure(
     connection: Any, *, reason: str, error_message: str
 ) -> None:
-    from ..owner import owner_user_id
     from .notifications import enqueue_notification
 
-    owner_id = owner_user_id(connection)
-    if owner_id is None:
-        return
     enqueue_notification(
         connection,
-        user_id=owner_id,
         event="metadata_backup_failed",
         title="Metadata backup failed",
         body=f"Reason={reason}. {error_message}",

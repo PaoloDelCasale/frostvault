@@ -21,8 +21,8 @@ from fastapi.testclient import TestClient
 from app.config import settings
 
 from app.main import app
-from app.security import hash_password
 from app.sessions import create_session
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
@@ -39,13 +39,7 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.dist_dir = write_spa_dist(Path(self._tmp.name))
 
         with PostgresConnection(str(self.database_path)) as connection:
-            self.owner_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
+            insert_owner(connection, password=self.PASSWORD)
 
         self.test_settings = replace(
             settings,
@@ -63,21 +57,13 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
-    def _create_vault(self) -> int:
+    def _create_vault(self, **values) -> dict:
         with PostgresConnection(str(self.database_path)) as connection:
-            return connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
+            return insert_vault(connection, name="Docs Archive", **values)
 
     def _me(self) -> dict:
         with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(
-                connection, user_id=self.owner_id, auth_method="oidc"
-            )
+            raw_token = create_session(connection, auth_method="oidc")
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
         response = self.client.get("/api/me")
         self.assertEqual(response.status_code, 200, response.text)
@@ -85,11 +71,11 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
 
     def test_owner_me_reports_the_selected_vault(self) -> None:
         """Seam 1: the owner sees its Vault without any role field."""
-        vault_id = self._create_vault()
+        created = self._create_vault()
         vault = self._me()["vault"]
 
-        self.assertEqual(vault["id"], vault_id)
-        self.assertEqual(vault["slug"], "docs")
+        self.assertEqual(vault["id"], created["id"])
+        self.assertEqual(vault["uuid"], str(created["uuid"]))
         self.assertEqual(vault["name"], "Docs Archive")
         self.assertTrue(vault["delete_enabled"])
         for removed in ("role", "can_operate", "is_vault_owner"):
@@ -116,15 +102,27 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         payload = self._me()
 
         self.assertIsNone(payload["vault"])
-        self.assertEqual(payload["username"], "owner")
+        self.assertIsNone(payload["stopped_vault"])
+        self.assertEqual(payload["display_name"], "Owner")
+
+    def test_stopped_vault_is_reported_when_no_vault_is_protected(self) -> None:
+        stopping = self._create_vault(lifecycle="stopping")
+        payload = self._me()
+
+        self.assertIsNone(payload["vault"])
+        stopped = payload["stopped_vault"]
+        self.assertEqual(stopped["id"], stopping["id"])
+        self.assertEqual(stopped["uuid"], str(stopping["uuid"]))
+        self.assertEqual(stopped["lifecycle"], "stopping")
+        self.assertFalse(stopped["root_released"])
 
     def test_me_reports_the_owner_identity(self) -> None:
         """Seam 7: identity and session fields, without multi-user flags."""
         self._create_vault()
         payload = self._me()
 
-        self.assertEqual(payload["id"], self.owner_id)
-        self.assertEqual(payload["username"], "owner")
+        self.assertEqual(payload["id"], 1)
+        self.assertNotIn("username", payload)
         self.assertEqual(payload["display_name"], "Owner")
         self.assertNotIn("is_admin", payload)
         self.assertNotIn("active", payload)

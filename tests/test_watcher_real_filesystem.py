@@ -191,6 +191,8 @@ class Harness(RealTreeCase):
         self.ready_recursive_registrations: list[tuple[str, ...]] = []
         connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
+        # The stand-in database holds no inbox: problems are not this harness's subject.
+        self.stack.enter_context(patch("app.storage.report_problem"))
         self.stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
         self.stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
         self.stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
@@ -650,7 +652,8 @@ class PermissionRecoveryBoundaryTests(Harness):
         self.stack.enter_context(patch("app.storage.validate_cloud_vault"))
         self.stack.enter_context(patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0))
         self.stack.enter_context(patch("app.storage.s3_client"))
-        self.stack.enter_context(patch("app.storage.owner_user_id", return_value=None))
+        self.stack.enter_context(patch("app.storage.queue_auto_local_cleanups", return_value=0))
+        self.stack.enter_context(patch("app.storage.queue_auto_uploads", return_value=0))
         self.stack.enter_context(patch("app.storage.record_catalog_revision"))
         task = self.start(root)
         try:

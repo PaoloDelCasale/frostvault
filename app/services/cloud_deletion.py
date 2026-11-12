@@ -222,7 +222,7 @@ def preview_selection(connection: Any, *, vault_id: int, paths: list[str],
 
 
 def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
-                         is_directory: bool, actor_user_id: int, requested_at: str,
+                         is_directory: bool, actor: str, requested_at: str,
                          confirmation: str, reason: str,
                          whole_vault: bool = False, origin: str = "manual") -> ScheduledDeletion:
     vault = lock_vault(connection, vault_id)
@@ -246,12 +246,12 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
     job_ids = []
     for row in files:
         job_id = int(connection.execute("""
-            INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,
+            INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
                              requested_at,updated_at,group_id,group_path,pending_until,
                              reason,confirmation_phrase,origin,total_bytes,transferred_bytes)
-            VALUES (%s,%s,%s,'cloud-purge','pending_delay',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0)
+            VALUES (%s,%s,%s,'cloud-purge','pending_delay',%s,%s,%s,%s,%s,%s,%s,%s,0,0)
             RETURNING id
-        """, (vault_id, row["vault_file_id"], row["path"], actor_user_id, requested_at,
+        """, (vault_id, row["vault_file_id"], row["path"], requested_at,
               requested_at, group_id, "" if whole_vault else paths[0], pending_until,
               reason.strip(), confirmation, origin)).fetchone()["id"])
         job_ids.append(job_id)
@@ -271,7 +271,7 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
                       version["id"] if kind == "delete_marker" else None,
                       version["object_key"], version["provider_version_id"], size, requested_at))
         connection.execute("UPDATE jobs SET total_bytes=%s WHERE id=%s", (total, job_id))
-        record_audit_event(connection, event="cloud_deletion.requested", actor_user_id=actor_user_id,
+        record_audit_event(connection, event="cloud_deletion.requested", actor=actor,
                            vault_id=vault_id, job_id=job_id, outcome="requested",
                            path=row["path"], reason=reason.strip(), group_id=group_id,
                            pending_until=pending_until, preview=preview.as_dict())
@@ -279,7 +279,7 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
 
 
 def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
-                          actor_user_id: int | None, cancelled_at: str) -> CancelledDeletion:
+                          actor: str, cancelled_at: str) -> CancelledDeletion:
     lock_vault(connection, vault_id)
     rows = connection.execute("""
         SELECT * FROM jobs WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
@@ -287,19 +287,19 @@ def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
     """, (vault_id, group_id)).fetchall()
     if not rows or any(r["status"] != "pending_delay" or r["claim_token"] for r in rows):
         raise CloudDeletionError("Deletion has started or is no longer cancellable")
-    _cancel_rows(connection, rows, at=cancelled_at, actor=actor_user_id,
+    _cancel_rows(connection, rows, at=cancelled_at, actor=actor,
                  reason="Cancelled before deletion started")
     return CancelledDeletion(len(rows), group_id)
 
 
 def _cancel_rows(connection: Any, rows: list[dict[str, Any]], *, at: str,
-                 actor: int | None, reason: str) -> None:
+                 actor: str, reason: str) -> None:
     for row in rows:
         connection.execute("""UPDATE jobs SET status='cancelled', message=%s, updated_at=%s,
             claim_token=NULL,claimed_at=NULL,claim_expires_at=NULL WHERE id=%s""", (reason, at, row["id"]))
         connection.execute("""UPDATE cloud_deletion_items SET status='skipped',updated_at=%s
             WHERE job_id=%s AND status IN ('pending','failed')""", (at, row["id"]))
-        record_audit_event(connection, event="cloud_deletion.cancelled", actor_user_id=actor,
+        record_audit_event(connection, event="cloud_deletion.cancelled", actor=actor,
                            vault_id=int(row["vault_id"]), job_id=int(row["id"]), outcome="cancelled",
                            group_id=row["group_id"], reason=reason)
 
@@ -357,7 +357,7 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
                         or (version["object_key"], version["provider_version_id"]) != (item["object_key"], item["provider_version_id"])):
                     raise CloudDeletionError("Cloud target identity changed")
     except CloudDeletionError as exc:
-        _cancel_rows(connection, active, at=at, actor=None, reason=str(exc))
+        _cancel_rows(connection, active, at=at, actor="system", reason=str(exc))
         return False
     return True
 
@@ -397,7 +397,7 @@ def mark_items_failed(connection: Any, *, failures: list[tuple[int, str]], updat
 
 
 def finalize_purge_job(connection: Any, *, job_id: int, vault_file_id: str,
-                       actor_user_id: int | None, updated_at: str) -> str:
+                       actor: str, updated_at: str) -> str:
     items = connection.execute("SELECT status FROM cloud_deletion_items WHERE job_id=%s", (job_id,)).fetchall()
     completed = bool(items) and all(i["status"] == "deleted" for i in items)
     status = "completed" if completed else "failed"
@@ -411,7 +411,7 @@ def finalize_purge_job(connection: Any, *, job_id: int, vault_file_id: str,
                            (updated_at, vault_file_id))
         invalidate_for_vault_file(connection, int(job["vault_id"]), vault_file_id)
     record_audit_event(connection, event="cloud_deletion.completed" if completed else "cloud_deletion.partial_failure",
-                       actor_user_id=actor_user_id, vault_id=int(job["vault_id"]), job_id=job_id,
+                       actor=actor, vault_id=int(job["vault_id"]), job_id=job_id,
                        outcome="success" if completed else "partial_failure",
                        deleted=sum(i["status"] == "deleted" for i in items))
     return status

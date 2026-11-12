@@ -543,7 +543,7 @@ export interface paths {
         };
         /**
          * List Notifications
-         * @description List in-app notifications for the authenticated user.
+         * @description List the Owner's in-app notifications.
          *
          *     Supports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)
          *     and ``before_id`` cursor pagination so older unread items are never hidden
@@ -588,7 +588,7 @@ export interface paths {
          * Mark All Notifications Read
          * @description Mark every currently visible unread notification read (issue #225).
          *
-         *     Server-authoritative and idempotent; preserves the same Vault and in-app
+         *     Server-authoritative and idempotent; preserves the same in-app
          *     visibility checks as single-item mark-read.
          */
         post: operations["mark_all_notifications_read_api_notifications_read_all_post"];
@@ -1815,7 +1815,10 @@ export interface components {
         LoginRequest: {
             /** Password */
             password: string;
-            /** Username */
+            /**
+             * Username
+             * @default
+             */
             username: string;
         };
         MeResponse: {
@@ -1827,19 +1830,19 @@ export interface components {
             locales: string[];
             session_version: number;
             stopped_vault?: components["schemas"]["MeStoppedVault"] | null;
-            username: string;
             vault: components["schemas"]["MeVault"] | null;
         } & {
             [key: string]: unknown;
         };
         MeStoppedVault: {
-            /** @enum {string} */
-            decommission_state: "decommissioning" | "decommissioned";
             id: number;
+            /** @enum {string} */
+            lifecycle: "stopping" | "tombstone";
             name: string;
             root_released: boolean;
             root_released_at?: string | null;
-            slug: string;
+            /** Format: uuid */
+            uuid: string;
         } & {
             [key: string]: unknown;
         };
@@ -1848,7 +1851,8 @@ export interface components {
             delete_enabled: boolean;
             id: number;
             name: string;
-            slug: string;
+            /** Format: uuid */
+            uuid: string;
         } & {
             [key: string]: unknown;
         };

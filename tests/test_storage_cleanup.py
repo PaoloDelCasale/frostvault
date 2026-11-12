@@ -1025,12 +1025,12 @@ class StorageCleanupTests(unittest.TestCase):
                 "app.main.notification_service.enqueue_notification"
             ) as enqueue_notification,
         ):
-            cancel_job_group("group-123", "free-space", {"id": 2}, 7)
+            cancel_job_group("group-123", "free-space", {"id": 2}, "owner")
 
         record_audit_event.assert_called_once_with(
             connection,
             event="local_cleanup.cancelled",
-            actor_user_id=7,
+            actor="owner",
             vault_id=2,
             job_id=10,
             outcome="cancelled",

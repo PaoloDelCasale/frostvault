@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 
 from app.main import app
-from app.security import hash_password
+from tests.owner_fixtures import bump_session_version, insert_owner
 from tests.test_database import run_alembic
 
 
@@ -25,16 +25,10 @@ class SessionHttpTests(unittest.TestCase):
         migrated = run_alembic(database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        self.username = "alice"
+        self.database_path = database_path
         self.password = "correct horse battery"
         with PostgresConnection(str(database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', %s)
-                """,
-                (self.username, hash_password(self.password)),
-            )
+            insert_owner(connection, display_name="Alice", password=self.password)
 
         self.settings = replace(
             settings,
@@ -56,7 +50,7 @@ class SessionHttpTests(unittest.TestCase):
     def _login(self) -> "TestClient":
         response = self.client.post(
             "/api/login",
-            json={"username": self.username, "password": self.password},
+            json={"username": "anything", "password": self.password},
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response
@@ -78,7 +72,11 @@ class SessionHttpTests(unittest.TestCase):
         response = self.client.get("/api/me")
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["username"], self.username)
+        body = response.json()
+        self.assertEqual(body["id"], 1)
+        self.assertEqual(body["display_name"], "Alice")
+        self.assertEqual(body["auth_method"], "local")
+        self.assertNotIn("username", body)
 
     def test_me_requires_a_session_cookie(self) -> None:
         response = self.client.get("/api/me")
@@ -95,6 +93,17 @@ class SessionHttpTests(unittest.TestCase):
             headers={"X-CSRF-Token": self.client.cookies.get("frostvault_csrf") or ""},
         )
         self.assertEqual(logout.status_code, 200)
+
+        replayed = self.client.get(
+            "/api/me", headers={"Cookie": f"{self.cookie_name}={token}"}
+        )
+        self.assertEqual(replayed.status_code, 401)
+
+    def test_bumped_owner_session_version_revokes_every_session(self) -> None:
+        self._login()
+        token = self.client.cookies.get(self.cookie_name)
+        with PostgresConnection(str(self.database_path)) as connection:
+            bump_session_version(connection)
 
         replayed = self.client.get(
             "/api/me", headers={"Cookie": f"{self.cookie_name}={token}"}

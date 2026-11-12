@@ -70,8 +70,8 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "bucket", "region", "instructions"})
         self.assertTrue(kit["ARCHIVE_MASTER_KEY"] == self.settings.archive_master_key)
         with PostgresConnection(str(self.db_path)) as connection:
-            event = connection.execute("SELECT detail_json FROM audit_events WHERE event='recovery_kit_downloaded'").fetchone()
-        self.assertNotIn(self.settings.archive_master_key, "\n".join(logs.output) + event["detail_json"])
+            event = connection.execute("SELECT detail::text AS detail FROM audit_events WHERE event='recovery_kit_downloaded'").fetchone()
+        self.assertNotIn(self.settings.archive_master_key, "\n".join(logs.output) + event["detail"])
         self.assertIn("s3api restore-object", kit["instructions"])
 
     def test_one_custody_is_fingerprint_bound_and_csrf_protected(self):

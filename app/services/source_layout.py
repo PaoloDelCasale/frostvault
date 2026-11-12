@@ -395,8 +395,8 @@ def reconcile_source_volume_identities() -> None:
                     record_audit_event(
                         connection,
                         event="source_volume_identity_transition",
+                        actor="system",
                         outcome="blocked",
-                        visibility="admin",
                         alias=alias,
                         status=identity_health,
                     )

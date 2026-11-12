@@ -1,8 +1,13 @@
+"""Owner Sessions: expiring, revocable credentials, one per device.
+
+Every Session represents the single Owner. A Session is valid only while its
+``session_version`` equals ``owner.session_version``: bumping the Owner's
+version (for example after a changed Emergency Password) revokes them all.
+"""
 from __future__ import annotations
 
 import hashlib
 import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -10,6 +15,9 @@ from .config import settings
 
 
 TOKEN_BYTES = 32
+
+# The authentication channels of a Session and the audit actor each one acts as.
+AUTH_METHOD_ACTORS = {"oidc": "owner", "local": "emergency"}
 
 
 class SessionTransitionError(RuntimeError):
@@ -20,24 +28,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _hash_token(raw_token: str) -> str:
-    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+def _hash_token(raw_token: str) -> bytes:
+    return hashlib.sha256(raw_token.encode("utf-8")).digest()
 
 
-def _parse(value: str) -> datetime:
-    return datetime.fromisoformat(value)
+def session_actor(session: dict[str, Any] | None) -> str:
+    """The audit actor of a Session: ``owner`` (OIDC) or ``emergency``.
+
+    Only signed-in requests have one; FrostVault's own work audits as
+    ``system`` without a Session.
+    """
+    method = (session or {}).get("auth_method")
+    if method not in AUTH_METHOD_ACTORS:
+        raise ValueError("an audit actor needs a signed-in Session")
+    return AUTH_METHOD_ACTORS[method]
 
 
 def _session_is_expired(row: dict[str, Any], now: datetime) -> bool:
-    return now >= _parse(row["absolute_expires_at"]) or now >= _parse(
-        row["idle_expires_at"]
-    )
+    return now >= row["absolute_expires_at"] or now >= row["idle_expires_at"]
 
 
 def _expire_session_if_needed(
     connection: Any,
     *,
-    session_id: str,
+    session_id: Any,
     now: datetime,
 ) -> bool:
     """Atomically revoke an observed-expired Session once.
@@ -53,56 +67,58 @@ def _expire_session_if_needed(
           AND (absolute_expires_at <= %s OR idle_expires_at <= %s)
         RETURNING id
         """,
-        (
-            now.isoformat(),
-            session_id,
-            now.isoformat(),
-            now.isoformat(),
-        ),
+        (now, session_id, now, now),
     ).fetchone()
     return changed is not None
+
+
+def owner_principal(row: dict[str, Any]) -> dict[str, Any]:
+    """The Owner as exposed to request handlers and ``/api/me``."""
+    return {
+        "id": int(row["id"]),
+        "display_name": row["display_name"],
+        "session_version": int(row["session_version"]),
+    }
 
 
 def create_session(
     connection: Any,
     *,
-    user_id: int,
     auth_method: str,
     ip: str | None = None,
     user_agent: str | None = None,
 ) -> str:
+    """Start a Session for the Owner and return its raw token (never stored)."""
+    if auth_method not in AUTH_METHOD_ACTORS:
+        raise ValueError(f"invalid auth method: {auth_method}")
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     now = _now()
-    user = connection.execute(
-        "SELECT session_version FROM users WHERE id=%s",
-        (user_id,),
-    ).fetchone()
-    if not user:
-        raise ValueError("Cannot create a session for an unknown user")
-    connection.execute(
+    created = connection.execute(
         """
         INSERT INTO sessions(
-            id, user_id, token_hash, auth_method, csrf_token, session_version,
+            token_hash, auth_method, csrf_token, session_version,
             created_at, last_seen_at, idle_expires_at, absolute_expires_at,
             reauth_at, ip, user_agent
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        )
+        SELECT %s, %s, %s, o.session_version, %s, %s, %s, %s, %s, %s, %s
+        FROM owner o WHERE o.id = 1
+        RETURNING id
         """,
         (
-            str(uuid.uuid4()),
-            user_id,
             _hash_token(raw_token),
             auth_method,
             secrets.token_urlsafe(TOKEN_BYTES),
-            user["session_version"],
-            now.isoformat(),
-            now.isoformat(),
-            (now + timedelta(seconds=settings.session_idle_seconds)).isoformat(),
-            (now + timedelta(seconds=settings.session_absolute_seconds)).isoformat(),
-            now.isoformat(),
+            now,
+            now,
+            now + timedelta(seconds=settings.session_idle_seconds),
+            now + timedelta(seconds=settings.session_absolute_seconds),
+            now,
             ip,
             user_agent,
         ),
-    )
+    ).fetchone()
+    if created is None:
+        raise ValueError("Cannot create a session before the Owner exists")
     return raw_token
 
 
@@ -110,7 +126,12 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
     if not raw_token:
         return None
     row = connection.execute(
-        "SELECT * FROM sessions WHERE token_hash=%s",
+        """
+        SELECT s.*, o.id AS owner_id, o.display_name AS owner_display_name,
+               o.session_version AS owner_session_version
+        FROM sessions s JOIN owner o ON o.id = 1
+        WHERE s.token_hash=%s
+        """,
         (_hash_token(raw_token),),
     ).fetchone()
     if not row:
@@ -121,16 +142,7 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
     if _session_is_expired(row, now):
         _expire_session_if_needed(connection, session_id=row["id"], now=now)
         return None
-    user = connection.execute(
-        """
-        SELECT id, username, display_name, session_version
-        FROM users WHERE id=%s
-        """,
-        (row["user_id"],),
-    ).fetchone()
-    if not user:
-        return None
-    if row["session_version"] != user["session_version"]:
+    if row["session_version"] != row["owner_session_version"]:
         return None
     # Repeat liveness predicates when sliding the deadline.  A logout or expiry
     # committed by another process between the SELECT and this UPDATE must win.
@@ -143,18 +155,23 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
         RETURNING id
         """,
         (
-            now.isoformat(),
-            (now + timedelta(seconds=settings.session_idle_seconds)).isoformat(),
+            now,
+            now + timedelta(seconds=settings.session_idle_seconds),
             row["id"],
-            now.isoformat(),
-            now.isoformat(),
+            now,
+            now,
         ),
     ).fetchone()
     if not touched:
         return None
+    owner = owner_principal({
+        "id": row["owner_id"],
+        "display_name": row["owner_display_name"],
+        "session_version": row["owner_session_version"],
+    })
     return {
         "id": row["id"],
-        "user": user,
+        "owner": owner,
         "vault_id": row["vault_id"],
         "csrf_token": row["csrf_token"],
         "auth_method": row["auth_method"],
@@ -173,47 +190,35 @@ def csrf_token_for(connection: Any, raw_token: str | None) -> str | None:
         return None
     row = connection.execute(
         """
-        SELECT s.csrf_token AS csrf_token,
-               s.revoked_at AS revoked_at,
-               s.idle_expires_at AS idle_expires_at,
-               s.absolute_expires_at AS absolute_expires_at,
-               s.session_version AS session_session_version,
-               u.session_version AS user_session_version
+        SELECT s.csrf_token AS csrf_token
         FROM sessions s
-        JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash=%s
+        JOIN owner o ON o.id = 1
+        WHERE s.token_hash=%s AND s.revoked_at IS NULL
+          AND s.session_version = o.session_version
+          AND s.absolute_expires_at > %s AND s.idle_expires_at > %s
         """,
-        (_hash_token(raw_token),),
+        (_hash_token(raw_token), _now(), _now()),
     ).fetchone()
-    if not row or row["revoked_at"]:
-        return None
-    if row["session_session_version"] != row["user_session_version"]:
-        return None
-    now = _now()
-    if now >= _parse(row["absolute_expires_at"]) or now >= _parse(
-        row["idle_expires_at"]
-    ):
-        return None
-    return row["csrf_token"]
+    return row["csrf_token"] if row else None
 
 
-def mark_reauthenticated(connection: Any, session_id: str) -> None:
+def mark_reauthenticated(connection: Any, session_id: Any) -> None:
     connection.execute(
         "UPDATE sessions SET reauth_at=%s WHERE id=%s",
-        (_now().isoformat(), session_id),
+        (_now(), session_id),
     )
 
 
 def is_reauth_recent(
-    reauth_at: str | None, *, now: datetime, window_seconds: int
+    reauth_at: datetime | None, *, now: datetime, window_seconds: int
 ) -> bool:
     """Whether the last Reauthentication is within the sensitive-action window."""
     if not reauth_at:
         return False
-    return now - _parse(reauth_at) <= timedelta(seconds=window_seconds)
+    return now - reauth_at <= timedelta(seconds=window_seconds)
 
 
-def revoke_session(connection: Any, session_id: str) -> bool:
+def revoke_session(connection: Any, session_id: Any) -> bool:
     """Revoke a Session atomically."""
     changed = connection.execute(
         """
@@ -222,43 +227,42 @@ def revoke_session(connection: Any, session_id: str) -> bool:
         WHERE id=%s AND revoked_at IS NULL
         RETURNING id
         """,
-        (_now().isoformat(), session_id),
+        (_now(), session_id),
     ).fetchone()
-    if not changed:
-        return False
-    return True
+    return changed is not None
 
 
 def rotate_session(
     connection: Any,
-    session_id: str,
+    session_id: Any,
     *,
     reauthenticated: bool = False,
 ) -> str:
     """Rotate a live Session token and optional Reauthentication atomically."""
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     now = _now()
-    reauth_assignment = ", reauth_at=%s" if reauthenticated else ""
-    params: list[Any] = [
-        _hash_token(raw_token),
-        now.isoformat(),
-        (now + timedelta(seconds=settings.session_idle_seconds)).isoformat(),
-    ]
-    if reauthenticated:
-        params.append(now.isoformat())
-    params.extend((session_id, now.isoformat(), now.isoformat()))
     changed = connection.execute(
-        f"""
+        """
         UPDATE sessions
         SET token_hash=%s,
             last_seen_at=%s,
             idle_expires_at=%s,
-            transition_version=transition_version+1{reauth_assignment}
+            reauth_at=CASE WHEN %s THEN %s ELSE reauth_at END,
+            transition_version=transition_version+1
         WHERE id=%s AND revoked_at IS NULL
           AND absolute_expires_at > %s AND idle_expires_at > %s
         RETURNING id
         """,
-        tuple(params),
+        (
+            _hash_token(raw_token),
+            now,
+            now + timedelta(seconds=settings.session_idle_seconds),
+            reauthenticated,
+            now,
+            session_id,
+            now,
+            now,
+        ),
     ).fetchone()
     if not changed:
         raise SessionTransitionError("Cannot rotate an inactive Session")
@@ -267,7 +271,7 @@ def rotate_session(
 
 def set_session_vault(
     connection: Any,
-    session_id: str,
+    session_id: Any,
     vault_id: int | None,
     *,
     expected_version: int | None = None,
@@ -284,15 +288,9 @@ def set_session_vault(
         WHERE id=%s AND revoked_at IS NULL
           AND absolute_expires_at > %s AND idle_expires_at > %s
     """
-    params: list[Any] = [
-        vault_id,
-        session_id,
-        now.isoformat(),
-        now.isoformat(),
-    ]
+    params: list[Any] = [vault_id, session_id, now, now]
     if expected_version is not None:
         query += " AND transition_version=%s"
         params.append(expected_version)
     query += " RETURNING id, vault_id, transition_version"
     return connection.execute(query, tuple(params)).fetchone()
-

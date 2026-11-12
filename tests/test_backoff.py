@@ -175,10 +175,7 @@ class BackoffTests(BackoffTestBase):
         expected = [
             (
                 count,
-                (
-                    now
-                    + timedelta(seconds=backoff._backoff_seconds(count))
-                ).isoformat()
+                now + timedelta(seconds=backoff._backoff_seconds(count))
                 if backoff._backoff_seconds(count)
                 else None,
             )

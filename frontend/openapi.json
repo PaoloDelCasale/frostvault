@@ -1717,12 +1717,12 @@
             "type": "string"
           },
           "username": {
+            "default": "",
             "title": "Username",
             "type": "string"
           }
         },
         "required": [
-          "username",
           "password"
         ],
         "title": "LoginRequest",
@@ -1765,9 +1765,6 @@
               }
             ]
           },
-          "username": {
-            "type": "string"
-          },
           "vault": {
             "anyOf": [
               {
@@ -1781,7 +1778,6 @@
         },
         "required": [
           "id",
-          "username",
           "display_name",
           "session_version",
           "csrf_token",
@@ -1795,15 +1791,15 @@
       "MeStoppedVault": {
         "additionalProperties": true,
         "properties": {
-          "decommission_state": {
-            "enum": [
-              "decommissioning",
-              "decommissioned"
-            ],
-            "type": "string"
-          },
           "id": {
             "type": "number"
+          },
+          "lifecycle": {
+            "enum": [
+              "stopping",
+              "tombstone"
+            ],
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -1817,15 +1813,16 @@
               "null"
             ]
           },
-          "slug": {
+          "uuid": {
+            "format": "uuid",
             "type": "string"
           }
         },
         "required": [
           "id",
-          "slug",
+          "uuid",
           "name",
-          "decommission_state",
+          "lifecycle",
           "root_released"
         ],
         "type": "object"
@@ -1845,13 +1842,14 @@
           "name": {
             "type": "string"
           },
-          "slug": {
+          "uuid": {
+            "format": "uuid",
             "type": "string"
           }
         },
         "required": [
           "id",
-          "slug",
+          "uuid",
           "name",
           "delete_enabled",
           "cloud_deletion_enabled"
@@ -5338,7 +5336,7 @@
     },
     "/api/notifications": {
       "get": {
-        "description": "List in-app notifications for the authenticated user.\n\nSupports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)\nand ``before_id`` cursor pagination so older unread items are never hidden\nbehind a mixed newest page (issue #225).",
+        "description": "List the Owner's in-app notifications.\n\nSupports server-side ``status`` filtering (``unread`` / ``read`` / ``all``)\nand ``before_id`` cursor pagination so older unread items are never hidden\nbehind a mixed newest page (issue #225).",
         "operationId": "list_notifications_api_notifications_get",
         "parameters": [
           {
@@ -5451,7 +5449,7 @@
     },
     "/api/notifications/read-all": {
       "post": {
-        "description": "Mark every currently visible unread notification read (issue #225).\n\nServer-authoritative and idempotent; preserves the same Vault and in-app\nvisibility checks as single-item mark-read.",
+        "description": "Mark every currently visible unread notification read (issue #225).\n\nServer-authoritative and idempotent; preserves the same in-app\nvisibility checks as single-item mark-read.",
         "operationId": "mark_all_notifications_read_api_notifications_read_all_post",
         "responses": {
           "200": {

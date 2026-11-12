@@ -278,7 +278,7 @@ class VaultMoveTests(unittest.TestCase):
             with self.assertRaises(moves.MoveBlocked):
                 moves.schedule(c,vault_id=1,target="DEEP_ARCHIVE",acknowledged=True,user_id=1,timestamp=storage.now_iso())
             with self.assertRaisesRegex(ValueError,"active Jobs"):
-                protection_stop.stop_protection(c,vault_id=1,actor_user_id=1,cloud_disposition="keep",confirmation="Docs",reason="stop")
+                protection_stop.stop_protection(c,vault_id=1,actor="owner",cloud_disposition="keep",confirmation="Docs",reason="stop")
         self.assertEqual(len(result["job_ids"]),1)
 
     def test_concurrent_admissions_do_not_duplicate_file_job(self):
@@ -363,17 +363,17 @@ class VaultMoveTests(unittest.TestCase):
             self.assertEqual(ids,[])
             with self.assertRaises(vault_relocation.VaultRelocationError) as blocked:
                 vault_relocation.reconnect_vault_root(c,vault_id=1,volume_alias='new-volume',
-                    relative_path='photos',actor_user_id=1,reason='reconnect deliberately')
+                    relative_path='photos',actor="owner",reason='reconnect deliberately')
             self.assertEqual(blocked.exception.reason,'active_jobs')
             with self.assertRaisesRegex(ValueError,"active Jobs"):
-                protection_stop.stop_protection(c,vault_id=1,actor_user_id=1,cloud_disposition='keep',confirmation='Docs',reason='stop')
+                protection_stop.stop_protection(c,vault_id=1,actor="owner",cloud_disposition='keep',confirmation='Docs',reason='stop')
             # Even a Cloud-only observation cannot bypass the pending move.
             ArchiveCatalog(c).mark_local_copy_missing(self.vault_file_id,observed_at=storage.now_iso())
             with patch('app.services.cloud_deletion.observation_is_unconfirmed',return_value=False), \
                  patch('app.services.cloud_deletion.require_local_absence'), \
                  self.assertRaisesRegex(cloud_deletion.CloudDeletionError,'pending work'):
                 cloud_deletion.schedule_cloud_purge(c,vault_id=1,paths=['report.txt'],is_directory=False,
-                    actor_user_id=1,requested_at=storage.now_iso(),confirmation='Docs',reason='delete')
+                    actor="owner",requested_at=storage.now_iso(),confirmation='Docs',reason='delete')
 
     def test_worker_cannot_publish_after_claim_takeover(self):
         self.schedule()

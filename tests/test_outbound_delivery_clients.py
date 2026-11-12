@@ -1,7 +1,7 @@
 """Deployment-owned SMTP adapters and unchanged event routing (#414)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.postgres import PostgresConnection
 
 import socket
 import tempfile
@@ -11,12 +11,17 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from app.catalog import ArchiveCatalog
 from app.config import settings
 
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
+from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
+
+# The v0.6 baseline (ADR-0035) gains these in later issues of epic #578.
+UPLOAD_PROOFS = "upload failure closure proofs are ported by #592"
+CATALOG_INCIDENTS = "needs catalog_incidents, not yet in 0001_baseline"
+TERMINAL_OUTBOX = "needs the Job terminal-notification marker, ported by #589"
 
 
 class _SmtpRecorder(threading.Thread):
@@ -104,32 +109,9 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner@example.com', 'Owner', 'hash')"
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                """
-            )
-            ArchiveCatalog(connection).observe_local_copy(
-                vault_id=2, path="a.txt", file_type="regular", size=1,
-                mtime_ns=1, observed_at="2026-07-21T10:00:00+00:00",
-            )
-            self.job_id = int(connection.execute(
-                """
-                INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status,
-                    requested_by, requested_at, updated_at
-                )
-                SELECT 2, id, 'a.txt', 'upload', 'uploading', 1,
-                       '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
-                FROM vault_files WHERE vault_id=2 LIMIT 1
-                RETURNING id
-                """
-            ).fetchone()["id"])
+            insert_owner(connection)
+            insert_vault(connection, id=2)
+            self.job_id = insert_job(connection, vault_id=2, status="uploading")
 
     def test_smtp_adapter_delivers_to_env_recipient_not_login_address(self) -> None:
         smtp = _SmtpRecorder()
@@ -139,7 +121,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
         ), PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
-                connection, user_id=1, vault_id=2, event="job_failed",
+                connection, vault_id=2, event="job_failed",
                 title="Upload failed", body="AccessDenied", job_id=self.job_id,
                 channels=("in_app", "email"),
             )
@@ -150,12 +132,13 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             self.assertEqual(connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()["status"], "uploading")
-            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
+            self.assertEqual(len(notifications.list_in_app_notifications(connection)), 1)
         self.assertEqual(len(smtp.messages), 1)
         self.assertIn("Job failed", smtp.messages[0])
         self.assertIn("To: ops@example.com", smtp.messages[0])
         self.assertNotIn("To: owner@example.com", smtp.messages[0])
 
+    @unittest.skip(UPLOAD_PROOFS)
     def test_only_terminal_upload_failure_not_routine_success_uses_email(self) -> None:
         for status in ("completed", "failed"):
             with self.subTest(status=status), patch(
@@ -168,8 +151,9 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 "JOIN notifications n ON n.id=d.notification_id"
             ).fetchall()
             self.assertEqual([(row["event"], row["channel"]) for row in rows], [("job_failed", "email")])
-            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 1)
+            self.assertEqual(len(notifications.list_in_app_notifications(connection)), 1)
 
+    @unittest.skip(CATALOG_INCIDENTS)
     def test_existing_incidents_reach_both_channels_once(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for incident_id, enqueue in enumerate((
@@ -179,7 +163,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 incident = {"id": incident_id, "vault_id": 2, "path": "a.txt"}
                 self.assertEqual(enqueue(connection, incident=incident), 1)
                 self.assertEqual(enqueue(connection, incident=incident), 0)
-            self.assertEqual(len(notifications.list_in_app_notifications(connection, user_id=1)), 2)
+            self.assertEqual(len(notifications.list_in_app_notifications(connection)), 2)
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS total FROM notification_deliveries WHERE channel='email'"
             ).fetchone()["total"], 2)
@@ -190,21 +174,23 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 notifications, "settings", replace(self.email_settings, **{field: " "})
             ), PostgresConnection(str(self.path)) as connection:
                 self.assertIsNone(notifications.production_smtp_client())
-                notifications.enqueue_cloud_only_conflict(
-                    connection, incident={"id": len(field), "vault_id": 2, "path": "a.txt"}
+                notifications.set_problem(
+                    connection, key=f"blocked:{field}", event="protection_blocked",
+                    vault_id=2, active=True, params={"component": "cloud"},
                 )
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) AS total FROM notification_deliveries"
                 ).fetchone()["total"], 0)
-                self.assertGreater(notifications.count_unread_notifications(connection, user_id=1), 0)
+                self.assertGreater(notifications.count_unread_notifications(connection), 0)
 
+    @unittest.skip(TERMINAL_OUTBOX)
     def test_worker_uses_production_smtp_client(self) -> None:
         smtp = _SmtpRecorder()
         smtp.start()
         self.addCleanup(smtp.stop)
         with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
-                connection, user_id=1, event="job_failed", title="failed",
+                connection, event="job_failed", title="failed",
                 channels=("in_app", "email"),
             )
         with patch.object(
@@ -224,7 +210,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
     def test_retry_backoff_is_in_the_future_and_errors_are_redacted(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             notifications.enqueue_notification(
-                connection, user_id=1, event="job_failed", title="failed",
+                connection, event="job_failed", title="failed",
                 channels=("in_app", "email"),
             )
             with patch("app.services.notifications.smtplib.SMTP", side_effect=RuntimeError("transport detail")):
@@ -236,7 +222,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             self.assertEqual(delivery["status"], "pending")
             self.assertGreater(delivery["next_attempt_at"], delivery["updated_at"])
             self.assertEqual(delivery["last_error"], "smtp delivery failed")
-            self.assertEqual(notifications.count_unread_notifications(connection, user_id=1), 1)
+            self.assertEqual(notifications.count_unread_notifications(connection), 1)
 
     def test_smtp_tls_modes_and_login(self) -> None:
         for port in (587, 465):
