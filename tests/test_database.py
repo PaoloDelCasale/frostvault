@@ -160,8 +160,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded_again = run_alembic(path)
             self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
 
-    def test_current_catalog_migrates_without_losing_file_state(self) -> None:
-        from app.catalog import ArchiveCatalog
+    def test_unversioned_populated_catalog_is_rejected_without_losing_file_state(self) -> None:
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "current.db"
@@ -210,19 +209,20 @@ class DatabaseMigrationTests(unittest.TestCase):
                 connection.execute("DROP TABLE alembic_version")
 
             migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            self.assertNotEqual(migrated.returncode, 0)
+            self.assertIn("Unversioned nonempty catalog", migrated.stderr)
 
             with PostgresConnection(str(path)) as connection:
-                file = ArchiveCatalog(connection).get_file_by_path(
-                    2, "docs/report.txt"
-                )
-
-            self.assertEqual(file["local_copy"]["presence"], "present")
-            self.assertEqual(file["local_copy"]["size"], 12)
-            self.assertEqual(file["latest_version"]["size"], 44)
-            self.assertEqual(file["latest_version"]["integrity"], "unverified")
-            self.assertEqual(file["latest_version"]["availability"], "unknown")
-            self.assertIsNone(file["latest_version"]["provider_version_id"])
+                file = connection.execute(
+                    "SELECT path,local_exists,local_size,cloud_size,cloud_key,etag "
+                    "FROM files WHERE vault_id=2"
+                ).fetchone()
+                self.assertIsNone(connection.execute("SELECT to_regclass('alembic_version') AS relation").fetchone()["relation"])
+            self.assertEqual(file, {
+                "path": "docs/report.txt", "local_exists": 1, "local_size": 12,
+                "cloud_size": 44, "cloud_key": "vaults/photos/docs/report.txt.bin",
+                "etag": "legacy-etag",
+            })
 
     def test_adoption_rejects_schema_missing_a_required_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -236,7 +236,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             migrated = run_alembic(path)
 
             self.assertNotEqual(migrated.returncode, 0)
-            self.assertIn("missing required index", migrated.stderr)
+            self.assertIn("Unversioned nonempty catalog", migrated.stderr)
+            with PostgresConnection(str(path)) as connection:
+                self.assertIsNone(connection.execute("SELECT to_regclass('alembic_version') AS relation").fetchone()["relation"])
+                self.assertIsNone(connection.execute("SELECT to_regclass('jobs_one_active_action_uq') AS relation").fetchone()["relation"])
 
     def test_catalog_observes_a_new_local_file_through_one_interface(self) -> None:
         from app.catalog import ArchiveCatalog
@@ -1004,7 +1007,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                         """,
                         (job_id, action),
                     )
-                connection.execute("DROP TABLE alembic_version")
+                # This historical migration contract has a known revision.
+                # Unversioned catalogs are separately required to fail preflight.
 
             migrated = run_alembic(path)
 
@@ -1063,7 +1067,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                     )
                     """
                 )
-                connection.execute("DROP TABLE alembic_version")
+                # Keep the known revision to exercise the cleanup migration,
+                # not the now-forbidden implicit adoption of an unknown catalog.
 
             migrated = run_alembic(path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)

@@ -378,7 +378,8 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                     """
                 )
             )
-            connection.execute(sa.text("DROP TABLE alembic_version"))
+            # Historical migration fidelity is tested from its explicit revision.
+            # Adoption of an unversioned nonempty catalog is separately forbidden.
 
         migrated = self.run_alembic()
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
