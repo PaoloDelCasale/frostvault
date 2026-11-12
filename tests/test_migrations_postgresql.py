@@ -212,7 +212,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         assert_administration_migration(self, self.run_alembic, self._connection)
         self.assertTrue({"system_settings", "worker_errors"}.isdisjoint(sa.inspect(self.engine).get_table_names()))
 
-    def test_fresh_database_upgrades_and_rolls_back_losslessly(self) -> None:
+    def test_fresh_database_initializes_and_refuses_incompatible_rollback(self) -> None:
         upgraded = self.run_alembic()
         self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
         policy_columns = {
@@ -277,11 +277,18 @@ class PostgreSQLMigrationTests(unittest.TestCase):
         self.assertNotIn("filesystem_health_snapshots", inspector.get_table_names())
         self.assertNotIn("filesystem_health_findings", inspector.get_table_names())
 
+        tables_before = sorted(inspector.get_table_names())
         downgraded = self.run_alembic("0001_current_schema", command="downgrade")
-        self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+        self.assertNotEqual(downgraded.returncode, 0)
+        self.assertIn('incompatible Current Snapshot baseline cannot be downgraded', downgraded.stderr)
+        self.assertEqual(sorted(sa.inspect(self.engine).get_table_names()), tables_before)
+        from app.database import HEAD_SCHEMA_REVISION
+        with self._connection() as connection:
+            self.assertEqual(connection.execute('SELECT version_num FROM alembic_version').fetchone()['version_num'], HEAD_SCHEMA_REVISION)
 
         upgraded_again = self.run_alembic()
         self.assertEqual(upgraded_again.returncode, 0, upgraded_again.stderr)
+        self.assertEqual(sorted(sa.inspect(self.engine).get_table_names()), tables_before)
 
     def test_catalog_state_helpers_commit_and_roll_back_on_postgresql(self) -> None:
         upgraded = self.run_alembic()
@@ -319,7 +326,7 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                 1,
             )
 
-    def test_current_release_data_migrates_without_loss(self) -> None:
+    def test_legacy_release_upgrade_is_refused_without_adopting_or_losing_data(self) -> None:
         baseline = self.run_alembic("0001_current_schema")
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         with self.engine.begin() as connection:
@@ -378,35 +385,23 @@ class PostgreSQLMigrationTests(unittest.TestCase):
                     """
                 )
             )
-            # Historical migration fidelity is tested from its explicit revision.
-            # Adoption of an unversioned nonempty catalog is separately forbidden.
-
-        migrated = self.run_alembic()
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        tables = ('users', 'vaults', 'vault_members', 'files', 'jobs')
         with self.engine.connect() as connection:
-            preserved = connection.execute(
-                sa.text(
-                    """
-                    SELECT
-                        (SELECT COUNT(*) FROM owner WHERE id=1) AS owner,
-                        (SELECT COUNT(*) FROM vaults WHERE id=2) AS vaults,
-                        (SELECT COUNT(*) FROM vault_files WHERE vault_id=2) AS files,
-                        (SELECT COUNT(*) FROM jobs WHERE id=9) AS jobs,
-                        (
-                            SELECT COUNT(*) FROM archive_versions
-                            WHERE origin='legacy' AND integrity='unverified'
-                        ) AS legacy_versions
-                    """
-                )
-            ).mappings().one()
-
-        self.assertEqual(dict(preserved), {
-            "owner": 1,
-            "vaults": 1,
-            "files": 1,
-            "jobs": 1,
-            "legacy_versions": 1,
-        })
+            before = {table: [dict(row) for row in connection.execute(
+                sa.text(f'SELECT * FROM {table} ORDER BY 1')).mappings().all()] for table in tables}
+        tables_before = sorted(sa.inspect(self.engine).get_table_names())
+        migrated = self.run_alembic()
+        self.assertNotEqual(migrated.returncode, 0)
+        self.assertIn('requires an empty catalog', migrated.stderr)
+        with self.engine.connect() as connection:
+            after = {table: [dict(row) for row in connection.execute(
+                sa.text(f'SELECT * FROM {table} ORDER BY 1')).mappings().all()] for table in tables}
+            revision = connection.execute(sa.text('SELECT version_num FROM alembic_version')).scalar_one()
+        self.assertEqual(after, before)
+        self.assertEqual(revision, '0001_current_schema')
+        self.assertEqual(sorted(sa.inspect(self.engine).get_table_names()), tables_before)
+        self.assertNotIn('owner', tables_before)
+        self.assertNotIn('archive_versions', tables_before)
 
     def test_vault_ownership_migration_preserves_normal_and_narrows_multi_owner_data(self) -> None:
         baseline = self.run_alembic("0006_auth_backoff")

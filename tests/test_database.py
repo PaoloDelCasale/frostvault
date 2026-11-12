@@ -700,7 +700,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "VALUES ('custom', '2026-07-01', '2026-07-01', TRUE)"
                 )
 
-            migrated = run_alembic(path)
+            # Historical preservation stops before the incompatible baseline.
+            migrated = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(path)) as connection:
                 policy = connection.execute(
@@ -1081,7 +1082,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 # Keep the known revision to exercise the cleanup migration,
                 # not the now-forbidden implicit adoption of an unknown catalog.
 
-            migrated = run_alembic(path)
+            migrated = run_alembic(path, "0072_upload_lineage_indexes")
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(path)) as connection:
                 preserved = connection.execute(

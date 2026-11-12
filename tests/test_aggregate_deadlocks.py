@@ -1116,7 +1116,7 @@ class DirtyJournalMigrationTests(unittest.TestCase):
             with PostgresConnection(path) as connection:
                 connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (2,'v','V','/source','bucket','v')")
                 connection.execute("INSERT INTO directory_aggregate_dirty VALUES (2,'a',%s),(2,'b',%s)", (STAMP, STAMP))
-            result = run_alembic(path)
+            result = run_alembic(path, "0061_aggregate_dirty_journal")
             self.assertEqual(result.returncode, 0, result.stderr)
             for _ in range(2):
                 with PostgresConnection(path) as connection:
@@ -1128,7 +1128,7 @@ class DirtyJournalMigrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             with PostgresConnection(path) as connection:
                 self.assertEqual(connection.execute("SELECT path FROM directory_aggregate_dirty ORDER BY path").fetchall(), [{"path": "a"}, {"path": "b"}])
-            result = run_alembic(path)
+            result = run_alembic(path, "0061_aggregate_dirty_journal")
             self.assertEqual(result.returncode, 0, result.stderr)
 
 

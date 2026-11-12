@@ -357,21 +357,56 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.finish(first)
         self.assertEqual(len(self.jobs()), 2)
 
-    def test_progress_is_distinct_from_transfers_and_migration_refuses_pending_downgrade(self):
+    def test_progress_is_distinct_from_transfers_and_baseline_refusal_preserves_admissions(self):
+        from app.database import HEAD_SCHEMA_REVISION
         self.seed(["a.jpg", "b.jpg", "c.jpg"])
         group = self.create()["group_id"]
         with self.db() as c:
             activity = upload_activity(c)["global"]
             self.assertEqual(activity["bulk_admission"], {"requests": 1, "selected_files": 3, "processed_files": 0, "admitted_files": 0})
             self.assertEqual(activity["uploading"]["transferred_bytes"], 0)
-        result = run_alembic(self.database, "0070_vault_pause", "downgrade")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("pending bulk upload", result.stderr)
-        self.finish(group)
-        self.assertEqual(run_alembic(self.database, "0070_vault_pause", "downgrade").returncode, 0)
-        result = run_alembic(self.database)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        tables = ('bulk_upload_admissions', 'bulk_upload_exclusions', 'jobs')
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                if completed:
+                    self.finish(group)
+                with self.db() as c:
+                    before = {table: c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
+                result = run_alembic(self.database, '0070_vault_pause', 'downgrade')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('incompatible Current Snapshot baseline cannot be downgraded', result.stderr)
+                with self.db() as c:
+                    self.assertEqual({table: c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}, before)
+                    self.assertEqual(c.execute('SELECT version_num FROM alembic_version').fetchone()['version_num'], HEAD_SCHEMA_REVISION)
+                result = run_alembic(self.database)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with self.db() as c:
+                    self.assertEqual({table: c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}, before)
         self.assertEqual(len(self.jobs()), 3)
+
+    def test_historical_bulk_guard_refuses_pending_and_allows_settled_downgrade(self):
+        path = self.database.with_name('historical-bulk')
+        result = run_alembic(path, 'bulk_upload_admission_550')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with PostgresConnection(path) as c:
+            c.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (2,'v','V','/source','fixture-bucket','v')")
+            c.execute("""INSERT INTO bulk_upload_admissions(group_id,vault_id,requested_by,requested_at,updated_at,
+                path,verification_mode,vault_identity_json,watermark,selected_count)
+                VALUES ('historical',2,1,'2026-11-06','2026-11-06','','s3_checksum','{}',0,3)""")
+            before = c.execute('SELECT * FROM bulk_upload_admissions').fetchall()
+        result = run_alembic(path, '0070_vault_pause', 'downgrade')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('pending bulk upload', result.stderr)
+        with PostgresConnection(path) as c:
+            self.assertEqual(c.execute('SELECT * FROM bulk_upload_admissions').fetchall(), before)
+            self.assertEqual(c.execute('SELECT version_num FROM alembic_version').fetchone()['version_num'], 'bulk_upload_admission_550')
+            c.execute("UPDATE bulk_upload_admissions SET status='completed',processed_count=3")
+        result = run_alembic(path, '0070_vault_pause', 'downgrade')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = run_alembic(path, 'bulk_upload_admission_550')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with PostgresConnection(path) as c:
+            self.assertEqual(c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'], 0)
 
     def test_ten_thousand_paths_return_without_per_file_work_and_each_transaction_is_bounded(self):
         with self.db() as c:

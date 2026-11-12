@@ -276,37 +276,52 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                                  {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)})
 
     def test_migration_removes_only_routine_history_preserving_recovery_and_copy_evidence(self):
-        from tests.postgres import run_alembic
-        from app.catalog import ArchiveCatalog
-        with self.connect() as c:
-            catalog = ArchiveCatalog(c)
-            catalog.observe_local_copy(vault_id=self.vault_id,path='sole.jpg',file_type='regular',size=2,
-                                       mtime_ns=1,observed_at=NOW.isoformat())
-            version = catalog.record_archive_version(vault_id=self.vault_id,path='sole.jpg',object_key='docs/sole',
-                provider_version_id='sole',size=2,storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
-                observed_at=NOW.isoformat(),scan_id='scan')
-            catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at=NOW.isoformat())
-        result = run_alembic(self.path,'0055_protection_states','downgrade')
-        self.assertEqual(result.returncode,0,result.stderr)
-        with self.connect() as c:
-            recover = c.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) "
-                                "VALUES (%s,(SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path='sole.jpg' "
-                                "AND valid_to IS NULL),'sole.jpg','recover','completed',%s,%s) RETURNING id",
-                                (self.vault_id,self.vault_id,NOW.isoformat(),NOW.isoformat())).fetchone()['id']
-            for event, job in (('job_completed',self.job_id),('local_cleanup.completed',self.job_id),('job_completed',recover)):
-                inbox.enqueue_notification(c,user_id=self.user_id,vault_id=self.vault_id,job_id=job,event=event,
-                                           title='Historical',message_params={'path':'sole.jpg'},channels=('in_app','email'))
+        from psycopg.errors import UniqueViolation
+        from tests.postgres import PostgresConnection, run_alembic
+        from tests.historical_catalog_fixture import HistoricalCatalogFixture
+        path = self.path.with_name('historical-routine-history')
+        result = run_alembic(path, '0055_protection_states')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stamp = NOW.isoformat()
+        with PostgresConnection(path) as c:
+            c.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','fixture-hash')")
+            c.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (2,'docs','Docs','/source','fixture-bucket','docs')")
+            seed = HistoricalCatalogFixture(c)
+            file_id = seed.observe_local_copy(vault_id=2, path='sole.jpg', file_type='regular',
+                                              size=2, mtime_ns=1, observed_at=stamp)
+            version = seed.record_archive_version(vault_id=2,path='sole.jpg',object_key='docs/sole',
+                provider_version_id='sole',size=2,storage_class='STANDARD',etag='not-proof',uploaded_at=stamp,
+                observed_at=stamp,scan_id='fixture')
+            seed.mark_version_verified(version, plaintext_sha256='a'*64, verified_at=stamp)
+            jobs = {}
+            for action in ('upload', 'recover'):
+                jobs[action] = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,
+                    requested_at,updated_at) VALUES (2,%s,'sole.jpg',%s,'completed',1,%s,%s) RETURNING id""",
+                    (file_id, action, stamp, stamp)).fetchone()['id']
+            for event, job in (('job_completed',jobs['upload']),('local_cleanup.completed',jobs['upload']),
+                               ('job_completed',jobs['recover'])):
+                notification = c.execute("""INSERT INTO notifications(user_id,vault_id,job_id,event,title,body,
+                    created_at,message_params,dedupe_key,in_app_enabled)
+                    VALUES (1,2,%s,%s,'Historical','Historical',%s,'{}',%s,TRUE) RETURNING id""",
+                    (job, event, stamp, f'legacy:{job}:{event}')).fetchone()['id']
+                c.execute("""INSERT INTO notification_deliveries(notification_id,channel,status,attempt_count,
+                    next_attempt_at,updated_at) VALUES (%s,'email','pending',0,%s,%s)""", (notification, stamp, stamp))
             tables = ('vault_files','file_paths','local_copies','archive_versions','jobs')
             before = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode,0,result.stderr)
-        with self.connect() as c:
-            after = {table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}
-            from tests.upload_verification_migration_contract import without_upload_verification_fields
-            self.assertEqual({table: without_upload_verification_fields(rows, table) for table, rows in after.items()}, before)
-            self.assertEqual([row['event'] for row in c.execute('SELECT event FROM notifications').fetchall()],['recovery_completed'])
-            self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
-            self.assertEqual(inbox.enqueue_job_terminal_notification(c,job_id=recover),0)
+        result = run_alembic(path, '0056_notification_problems')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with PostgresConnection(path) as c:
+            self.assertEqual({table:c.execute(f'SELECT * FROM {table} ORDER BY 1').fetchall() for table in tables}, before)
+            rows = c.execute('SELECT event,dedupe_key FROM notifications').fetchall()
+            self.assertEqual(rows, [{'event': 'recovery_completed',
+                                    'dedupe_key': f"job:{jobs['recover']}:recovery_completed"}])
+            self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'], 1)
+            # Preserve the migrated dedupe guarantee without invoking today's
+            # Owner/runtime API against a historical schema.
+            with self.assertRaises(UniqueViolation), c.transaction():
+                c.execute("""INSERT INTO notifications(user_id,vault_id,job_id,event,title,body,created_at,
+                    dedupe_key,in_app_enabled) SELECT user_id,vault_id,job_id,event,title,body,created_at,
+                    dedupe_key,in_app_enabled FROM notifications""")
 
     def test_cloud_preflight_failure_and_recovery_only_persist_safe_context(self):
         from app import storage
