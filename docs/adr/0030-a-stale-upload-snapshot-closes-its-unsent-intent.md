@@ -1,5 +1,10 @@
 # A stale Upload Snapshot closes its unsent intent
 
+> **Amended in part by [ADR-0036](0036-one-upload-snapshot-many-send-attempts.md)**
+> (#588): the intent is now an Upload Attempt of a snapshot stored once; the stale
+> snapshot is closed, its unsent attempt settled `unsent`, and the Job forgets it.
+> Migration names below are historical (ADR-0035).
+
 Issue #538. A file changed while it was being sent. The upload stopped correctly
 and left nothing on S3, but every later attempt compared the now stable file with
 the Upload Snapshot taken before the change, failed with "Local file changed since
