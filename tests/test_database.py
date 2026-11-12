@@ -29,7 +29,8 @@ __all__ = ["run_alembic"]
 
 BASELINE_TABLES = {
     "alembic_version", "owner", "vault_targets", "vaults", "files",
-    "archive_versions", "jobs",
+    "file_path_history", "archive_versions", "directory_aggregate_status",
+    "directory_aggregate_dirty", "jobs",
 }
 
 
@@ -428,7 +429,14 @@ class BaselineSchemaTests(unittest.TestCase):
             "plaintext_sha256) VALUES (%s, 'vaults/x/a.txt', 'v1', 1, %s) RETURNING id",
             (first, digest),
         )[0]["id"]
-        self.execute("UPDATE files SET current_version_id = %s WHERE id = %s", (version, first))
+        self.rejects("UPDATE files SET replacing_version_id = %s WHERE id = %s", (version, second))
+        # Current is reached only by promoting the verified replacement (#587).
+        self.execute("UPDATE files SET replacing_version_id = %s, cloud_since = now() WHERE id = %s",
+                     (version, first))
+        self.execute("UPDATE archive_versions SET integrity = 'verified', verified_at = now() "
+                     "WHERE id = %s", (version,))
+        self.execute("UPDATE files SET current_version_id = replacing_version_id, "
+                     "replacing_version_id = NULL WHERE id = %s", (first,))
         self.rejects("UPDATE files SET current_version_id = %s WHERE id = %s", (version, second))
         self.rejects("UPDATE files SET replacing_version_id = %s WHERE id = %s", (version, first))
         self.rejects("DELETE FROM archive_versions WHERE id = %s", (version,))

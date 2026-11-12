@@ -172,23 +172,34 @@ class _DirectoryAggregateTracker:
         self.dirty_file_marks = 0
 
 
-def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
-    tracker = _tracker(connection)
-    key = (int(vault_id), directory)
-    # The PK includes the server's transaction identity. Coalesce only within
-    # that transaction, never UPDATE another writer's mark. Do not rely on the
-    # connection tracker here: psycopg handles may be reused after commit or
-    # rollback (including savepoint rollback).
-    marked_at = _now()
+def _persist_dirty_directories(
+    connection: Any, vault_id: int, directories: Iterable[str]
+) -> None:
+    """Journal dirty directories in one statement, in the caller's transaction.
+
+    The mark identity includes the server's transaction: coalesce only within
+    that transaction, never UPDATE another writer's mark. Do not rely on the
+    connection tracker here: psycopg handles may be reused after commit or
+    rollback (including savepoint rollback).
+    """
+    ordered = sorted(set(directories))
+    if not ordered:
+        return
     connection.execute(
         """
-        INSERT INTO directory_aggregate_dirty(vault_id, path, marked_at)
-        VALUES (%s, %s, %s)
+        INSERT INTO directory_aggregate_dirty(vault_id, path)
+        SELECT %s, unnest(%s::text[])
         ON CONFLICT DO NOTHING
         """,
-        (int(vault_id), directory, marked_at),
+        (int(vault_id), ordered),
     )
-    tracker.dirty_directories.add(key)
+    _tracker(connection).dirty_directories.update(
+        (int(vault_id), directory) for directory in ordered
+    )
+
+
+def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
+    _persist_dirty_directories(connection, vault_id, [directory])
 
 
 def mark_path_dirty(connection: Any, vault_id: int, path: str | None) -> None:
@@ -197,8 +208,7 @@ def mark_path_dirty(connection: Any, vault_id: int, path: str | None) -> None:
         return
     tracker = _tracker(connection)
     tracker.dirty_file_marks += 1
-    for directory in ancestor_directories(str(path)):
-        _persist_dirty_directory(connection, int(vault_id), directory)
+    _persist_dirty_directories(connection, int(vault_id), ancestor_directories(str(path)))
 
 
 def mark_directory_dirty(connection: Any, vault_id: int, directory: str | None) -> None:
@@ -210,9 +220,10 @@ def mark_directory_dirty(connection: Any, vault_id: int, directory: str | None) 
         return
     tracker = _tracker(connection)
     tracker.dirty_file_marks += 1
-    _persist_dirty_directory(connection, int(vault_id), normalized)
-    for ancestor in ancestor_directories(f"{normalized}/_"):
-        _persist_dirty_directory(connection, int(vault_id), ancestor)
+    _persist_dirty_directories(
+        connection, int(vault_id),
+        [normalized, *ancestor_directories(f"{normalized}/_")],
+    )
 
 
 def mark_file_id_dirty(connection: Any, vault_id: int, vault_file_id: str | None) -> None:
@@ -220,13 +231,7 @@ def mark_file_id_dirty(connection: Any, vault_id: int, vault_file_id: str | None
     if not vault_file_id:
         return
     row = connection.execute(
-        """
-        SELECT fp.path
-        FROM vault_files vf
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        WHERE vf.id=%s AND vf.vault_id=%s
-        """,
+        "SELECT path FROM files WHERE id=%s AND vault_id=%s",
         (vault_file_id, vault_id),
     ).fetchone()
     if row is not None:
@@ -237,16 +242,15 @@ def mark_paths_dirty(connection: Any, vault_id: int, paths: Iterable[str]) -> No
     if vault_id is None:
         return
     # Coalesce within this call, not by connection lifetime: bulk observation
-    # must keep O(unique directories) round-trips without suppressing a later
-    # transaction's durable signal after commit/rollback on a reused handle.
+    # must keep one round-trip without suppressing a later transaction's
+    # durable signal after commit/rollback on a reused handle.
     tracker = _tracker(connection)
     directories: set[str] = set()
     for path in paths:
         if path:
             tracker.dirty_file_marks += 1
             directories.update(ancestor_directories(str(path)))
-    for directory in sorted(directories):
-        _persist_dirty_directory(connection, int(vault_id), directory)
+    _persist_dirty_directories(connection, int(vault_id), directories)
 
 
 def invalidate_for_vault_file(
@@ -268,9 +272,9 @@ def invalidate_for_confirmed_rename(
 ) -> None:
     """Central seam: rename confirmation dirties old + provisional/new chains.
 
-    Paths come from the confirmation snapshot, not a post-mutation file_paths
-    lookup. After CAS moves Path History, the surviving Vault File only has
-    ``new_path`` current and the provisional identity is retired — so both the
+    Paths come from the confirmation snapshot, not a post-mutation lookup.
+    After the CAS moves the file row, the surviving Vault File only has
+    ``new_path`` and the provisional identity is consumed — so both the
     pre-rename missing location and the consumed provisional location must be
     marked explicitly for ancestor convergence.
     """
@@ -313,10 +317,9 @@ def invalidate_for_archive_version_ids(
         placeholders = ", ".join(["%s"] * len(batch))
         rows = connection.execute(
             f"""
-            SELECT DISTINCT av.vault_id, fp.path
+            SELECT DISTINCT f.vault_id, f.path
             FROM archive_versions av
-            JOIN file_paths fp
-              ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
+            JOIN files f ON f.id = av.file_id
             WHERE av.id IN ({placeholders})
             """,
             batch,

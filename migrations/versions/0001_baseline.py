@@ -12,8 +12,14 @@ Archive Version and Job tables and add their own:
 - ``vault_targets``: immutable S3 targets of the installation.
 - ``vaults``: one external identity (``uuid``, which also names the cloud
   namespace ``vaults/<uuid>/``), one ``lifecycle`` and an orthogonal pause.
-- ``files``, ``archive_versions``, ``jobs``: minimal Vault File, Archive Version
-  and Job rows with explicit Current Snapshot / replacement pointers.
+- ``files``: one row per Vault File with its current path, Local Copy and
+  explicit protection state; ``file_path_history`` keeps only closed paths
+  (#587).
+- ``archive_versions``: Current, the replacement in progress and superseded
+  versions awaiting cleanup, referenced explicitly from the file.
+- ``directory_aggregate_status`` / ``directory_aggregate_dirty``: aggregate
+  invalidations written in the catalog's own transaction.
+- ``jobs``: minimal Job rows (#589 refines them).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -131,16 +137,50 @@ CREATE TRIGGER vaults_identity_immutable
     BEFORE UPDATE OF uuid, target_id, lifecycle ON vaults
     FOR EACH ROW EXECUTE FUNCTION vaults_identity_immutable();
 
--- One row per Vault File (#587 refines the Local Copy and protection state).
+-- One row per Vault File (#587): stable identity, current path, Local Copy and
+-- the explicit protection state. Replaces the v0.5 vault_files, local_copies,
+-- current file_paths row, protection_pending and snapshot_reconciliation_blocks.
+--
+-- Local Copy: local_presence NULL means no Local Copy was ever observed (for
+-- example a file known only from an upload in progress); 'missing' means one
+-- was observed and is now gone, keeping its last known content fingerprint.
+-- generation is the observation token: every new observation (even with the
+-- same stat), every missing transition and every rename increments it. A
+-- digest is published only with a compare-and-swap on the generation read
+-- before hashing, never on a token read afterwards.
+--
+-- Explicit states, never derived with ORDER BY ... LIMIT 1:
+--   current_version_id    the Current Snapshot (always verified when set)
+--   replacing_version_id  the one replacement in progress
+--   matched_version_id    the Local Copy's digest equals Current's
+--   held_version_id       content reappeared at the path of a cloud-only
+--                         file and is held back (Cloud-only Conflict)
+--   pending_since         continuous pending timer, never reset by writes
+--   reconciliation_block  why exact upload reconciliation is blocked
+-- cloud_since records that the identity has (possibly) had cloud content: it
+-- is set with the first replacement and never cleared, and an identity with it
+-- is never consumed by a rename.
 CREATE TABLE files (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     vault_id bigint NOT NULL REFERENCES vaults(id) ON DELETE RESTRICT,
     path text COLLATE "C" NOT NULL,
     path_since timestamptz NOT NULL,
     generation bigint NOT NULL DEFAULT 0,
+    local_presence text COLLATE "C",
+    local_file_type text COLLATE "C",
     local_size bigint,
     local_mtime_ns bigint,
     local_sha256 bytea,
+    local_seen_at timestamptz,
+    local_observed_at timestamptz,
+    local_content_observed_at timestamptz,
+    local_recovered_at timestamptz,
+    matched_version_id uuid,
+    held_version_id uuid,
+    pending_since timestamptz,
+    reconciliation_block text COLLATE "C",
+    reconciliation_blocked_at timestamptz,
+    cloud_since timestamptz,
     current_version_id uuid,
     replacing_version_id uuid,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -148,14 +188,96 @@ CREATE TABLE files (
     CONSTRAINT files_vault_scope_uq UNIQUE (id, vault_id),
     CONSTRAINT files_path_ck CHECK (path <> ''),
     CONSTRAINT files_generation_ck CHECK (generation >= 0),
+    CONSTRAINT files_local_presence_ck CHECK (
+        local_presence IN ('present', 'missing', 'unsupported')
+    ),
+    CONSTRAINT files_local_file_type_ck CHECK (
+        local_file_type IN ('regular', 'symlink', 'other')
+    ),
+    -- No Local Copy observed: no local field at all.
+    CONSTRAINT files_local_copy_ck CHECK (
+        (local_presence IS NULL) = (local_file_type IS NULL)
+        AND (local_presence IS NULL) = (local_observed_at IS NULL)
+        AND (local_presence IS NOT NULL OR (
+            local_size IS NULL AND local_mtime_ns IS NULL AND local_sha256 IS NULL
+            AND local_seen_at IS NULL AND local_content_observed_at IS NULL
+            AND local_recovered_at IS NULL
+        ))
+    ),
+    -- Present means a regular file; anything else present is unsupported.
+    CONSTRAINT files_local_type_presence_ck CHECK (
+        (local_presence <> 'present' OR local_file_type = 'regular')
+        AND (local_presence <> 'unsupported' OR local_file_type <> 'regular')
+    ),
     CONSTRAINT files_local_size_ck CHECK (local_size >= 0),
-    CONSTRAINT files_local_sha256_ck CHECK (octet_length(local_sha256) = 32),
+    CONSTRAINT files_local_sha256_ck CHECK (
+        local_sha256 IS NULL
+        OR (octet_length(local_sha256) = 32 AND local_file_type = 'regular')
+    ),
+    -- Only Current can be matched, and only by a fingerprinted Local Copy.
+    CONSTRAINT files_matched_ck CHECK (
+        matched_version_id IS NULL OR (
+            matched_version_id IS NOT DISTINCT FROM current_version_id
+            AND local_sha256 IS NOT NULL
+        )
+    ),
+    -- A hold protects Current, the only copy; held content is never matched.
+    CONSTRAINT files_held_ck CHECK (
+        held_version_id IS NULL OR (
+            held_version_id IS NOT DISTINCT FROM current_version_id
+            AND matched_version_id IS NULL
+        )
+    ),
+    CONSTRAINT files_reconciliation_block_ck CHECK (
+        (reconciliation_block IS NULL) = (reconciliation_blocked_at IS NULL)
+        AND reconciliation_block <> ''
+    ),
+    CONSTRAINT files_cloud_since_ck CHECK (
+        cloud_since IS NOT NULL
+        OR (current_version_id IS NULL AND replacing_version_id IS NULL)
+    ),
     CONSTRAINT files_replacement_ck CHECK (replacing_version_id <> current_version_id)
 );
 
+-- Unique, unambiguous rename matches look files up by digest.
+CREATE INDEX files_rename_digest_idx ON files (vault_id, local_sha256)
+    WHERE local_sha256 IS NOT NULL;
+
+-- Path History: only the closed mappings. A rename closes the current path
+-- here and moves the file row in the same transaction (ADR-0001); the
+-- current path lives only in files. Rows are never rewritten.
+CREATE TABLE file_path_history (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    file_id uuid NOT NULL,
+    vault_id bigint NOT NULL,
+    path text COLLATE "C" NOT NULL,
+    valid_from timestamptz NOT NULL,
+    valid_to timestamptz NOT NULL,
+    CONSTRAINT file_path_history_file_fk FOREIGN KEY (file_id, vault_id)
+        REFERENCES files (id, vault_id) ON DELETE CASCADE,
+    CONSTRAINT file_path_history_path_ck CHECK (path <> ''),
+    CONSTRAINT file_path_history_interval_ck CHECK (valid_to >= valid_from)
+);
+
+CREATE INDEX file_path_history_file_idx ON file_path_history (file_id, valid_from);
+CREATE INDEX file_path_history_path_idx ON file_path_history (vault_id, path);
+
+CREATE FUNCTION file_path_history_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'Path History rows are immutable'
+        USING ERRCODE = 'restrict_violation';
+END
+$$;
+
+CREATE TRIGGER file_path_history_immutable
+    BEFORE UPDATE ON file_path_history
+    FOR EACH ROW EXECUTE FUNCTION file_path_history_immutable();
+
 -- An Archive Version exists only while it is Current, a replacement in
 -- progress, or superseded with open cleanup: no version numbering, no purged
--- history. The row is deleted with its completed cleanup proof.
+-- history. The row is deleted with its completed cleanup proof. Its cloud
+-- identity (file, key, provider VersionId) never changes once known.
 CREATE TABLE archive_versions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     file_id uuid NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
@@ -166,6 +288,7 @@ CREATE TABLE archive_versions (
     storage_class text COLLATE "C",
     integrity text COLLATE "C" NOT NULL DEFAULT 'unverified',
     availability text COLLATE "C" NOT NULL DEFAULT 'unknown',
+    availability_checked_at timestamptz,
     verified_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT archive_versions_file_scope_uq UNIQUE (id, file_id),
@@ -181,11 +304,32 @@ CREATE TABLE archive_versions (
         availability IN ('unknown', 'available', 'missing')
     ),
     CONSTRAINT archive_versions_verified_ck CHECK (
-        integrity <> 'verified' OR verified_at IS NOT NULL
+        integrity <> 'verified' OR (
+            verified_at IS NOT NULL AND plaintext_sha256 IS NOT NULL
+            AND provider_version_id IS NOT NULL
+        )
     )
 );
 
 CREATE INDEX archive_versions_file_idx ON archive_versions (file_id);
+
+CREATE FUNCTION archive_versions_identity_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.file_id IS DISTINCT FROM OLD.file_id
+       OR NEW.object_key IS DISTINCT FROM OLD.object_key
+       OR (OLD.provider_version_id IS NOT NULL
+           AND NEW.provider_version_id IS DISTINCT FROM OLD.provider_version_id) THEN
+        RAISE EXCEPTION 'an Archive Version keeps its file and exact cloud identity'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER archive_versions_identity_immutable
+    BEFORE UPDATE OF file_id, object_key, provider_version_id ON archive_versions
+    FOR EACH ROW EXECUTE FUNCTION archive_versions_identity_immutable();
 
 -- The pointers name versions of this very file only.
 ALTER TABLE files
@@ -195,6 +339,69 @@ ALTER TABLE files
     ADD CONSTRAINT files_replacing_version_fk
         FOREIGN KEY (replacing_version_id, id)
         REFERENCES archive_versions (id, file_id) ON DELETE RESTRICT;
+
+-- Current changes only in the transaction that verifies the replacement:
+-- the new Current is the replacement in progress, now verified. Clearing
+-- Current (deliberate cloud deletion) is allowed. A file never changes Vault
+-- and never forgets that it had cloud content.
+CREATE FUNCTION files_identity_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.vault_id IS DISTINCT FROM OLD.vault_id THEN
+        RAISE EXCEPTION 'a Vault File never changes Vault'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF OLD.cloud_since IS NOT NULL
+       AND NEW.cloud_since IS DISTINCT FROM OLD.cloud_since THEN
+        RAISE EXCEPTION 'cloud_since is permanent'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NEW.current_version_id IS NOT NULL
+       AND NEW.current_version_id IS DISTINCT FROM OLD.current_version_id THEN
+        IF NEW.current_version_id IS DISTINCT FROM OLD.replacing_version_id
+           OR NEW.replacing_version_id IS NOT NULL THEN
+            RAISE EXCEPTION 'Current changes only by promoting the replacement in progress'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM archive_versions
+            WHERE id = NEW.current_version_id AND integrity = 'verified'
+        ) THEN
+            RAISE EXCEPTION 'Current must be a verified Archive Version'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER files_identity_guard
+    BEFORE UPDATE OF vault_id, cloud_since, current_version_id, replacing_version_id ON files
+    FOR EACH ROW EXECUTE FUNCTION files_identity_guard();
+
+-- Directory aggregate invalidations written by catalog mutations in their own
+-- transaction (the projection itself is rebuilt from them, #593). The journal
+-- is append-only per transaction: the mark identity includes the writer's
+-- transaction, so a writer never updates another transaction's mark.
+CREATE TABLE directory_aggregate_status (
+    vault_id bigint PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,
+    status text COLLATE "C" NOT NULL DEFAULT 'rebuild_required',
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT directory_aggregate_status_ck CHECK (
+        status IN ('ready', 'rebuild_required')
+    )
+);
+
+CREATE TABLE directory_aggregate_dirty (
+    vault_id bigint NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+    path text COLLATE "C" NOT NULL,
+    mark_id text COLLATE "C" NOT NULL DEFAULT (
+        pg_current_xact_id()::text || '@'
+        || extract(epoch FROM pg_postmaster_start_time())::text
+    ),
+    marked_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT directory_aggregate_dirty_pkey PRIMARY KEY (vault_id, path, mark_id)
+);
 
 -- Common narrow Job core (#589 adds lease, hot state and per-action details).
 CREATE TABLE jobs (
