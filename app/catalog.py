@@ -697,6 +697,7 @@ class ArchiveCatalog:
         size: int,
         storage_class: str | None = None,
         created_at: Any | None = None,
+        upload_attempt_id: str | None = None,
     ) -> str:
         """Record the uploaded object as this file's one replacement in progress.
 
@@ -704,6 +705,9 @@ class ArchiveCatalog:
         provider identity; Current is unchanged until
         :meth:`promote_replacement`. Raises :class:`ReplacementInProgress` when
         another replacement is already in progress (nothing is written).
+        ``upload_attempt_id`` names the landed upload attempt that produced it:
+        its snapshot is the version's expected proof (#588), and the database
+        refuses any key, size or VersionId other than the attempt's.
         """
         if not provider_version_id:
             raise ValueError("A provider VersionId is required")
@@ -717,9 +721,9 @@ class ArchiveCatalog:
             ), version AS (
                 INSERT INTO archive_versions(
                     file_id, object_key, provider_version_id, size, storage_class,
-                    availability, availability_checked_at, created_at
+                    availability, availability_checked_at, created_at, upload_attempt_id
                 )
-                SELECT target.id, %s, %s, %s, %s, 'available', %s, %s FROM target
+                SELECT target.id, %s, %s, %s, %s, 'available', %s, %s, %s FROM target
                 RETURNING id, file_id
             )
             UPDATE files f
@@ -731,7 +735,7 @@ class ArchiveCatalog:
             """,
             (
                 vault_file_id, object_key, provider_version_id, size,
-                storage_class, stamp, stamp, stamp,
+                storage_class, stamp, stamp, upload_attempt_id, stamp,
             ),
         ).fetchone()
         if row is None:

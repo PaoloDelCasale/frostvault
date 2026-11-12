@@ -71,9 +71,37 @@ class UploadSnapshot:
         data = json.loads(raw)
         if data.get("format") != 1 or data.get("algorithm") != "SHA256":
             raise ValueError("Unsupported Upload Snapshot evidence")
-        snapshot = cls(data["size"], data["plaintext_sha256"], data["checksum_type"],
-                       data["checksum_sha256"], data["part_size"], tuple(data["part_checksums"]),
-                       validate_mtime_ns(data["mtime_ns"]) if "mtime_ns" in data else None)
+        return cls(data["size"], data["plaintext_sha256"], data["checksum_type"],
+                   data["checksum_sha256"], data["part_size"], tuple(data["part_checksums"]),
+                   validate_mtime_ns(data["mtime_ns"]) if "mtime_ns" in data else None)._validated()
+
+    @classmethod
+    def from_record(cls, *, size: int, plaintext_sha256: bytes, part_size: int,
+                    part_sha256: list[bytes], mtime_ns: int) -> UploadSnapshot:
+        """Rebuild the snapshot stored once in ``upload_snapshots`` (#588).
+
+        The stored row keeps raw digests only; the checksum type and the
+        expected S3 checksum follow from the size and the part digests.
+        """
+        digest = bytes(plaintext_sha256)
+        parts = tuple(base64.b64encode(bytes(part)).decode("ascii") for part in part_sha256)
+        multipart = size >= MULTIPART_THRESHOLD
+        checksum = composite_checksum(parts) if multipart else base64.b64encode(digest).decode("ascii")
+        return cls(size, digest.hex(), "COMPOSITE" if multipart else "FULL_OBJECT", checksum,
+                   part_size, parts, validate_mtime_ns(mtime_ns))._validated()
+
+    def record(self) -> dict[str, Any]:
+        """The ``upload_snapshots`` columns of this snapshot; mtime is required (#573)."""
+        self._validated()
+        return {"size": self.size, "plaintext_sha256": bytes.fromhex(self.plaintext_sha256),
+                "part_size": self.part_size,
+                "part_sha256": [base64.b64decode(part, validate=True) for part in self.part_checksums],
+                "mtime_ns": validate_mtime_ns(self.mtime_ns)}
+
+    def _validated(self) -> UploadSnapshot:
+        snapshot = self
+        if self.mtime_ns is not None:
+            validate_mtime_ns(self.mtime_ns)
         if not 0 <= snapshot.size <= MAX_OBJECT_SIZE or not DEFAULT_PART_SIZE <= snapshot.part_size <= MAX_PART_SIZE:
             raise ValueError("Invalid Upload Snapshot layout")
         digest = bytes.fromhex(snapshot.plaintext_sha256)

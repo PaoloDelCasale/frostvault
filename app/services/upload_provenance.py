@@ -1,9 +1,11 @@
 """Pre-write upload facts. Receipts are NOT publication or deletion authority.
 
-No provider I/O in replayable DB units. An uncertain send can only reconcile;
-zero token matches prove absence only together with the complete S3 reads of
-ADR-0025 (never by themselves), and a fresh lease cannot quiesce old I/O.
-#459 consumes load_for_job/bind_for_resume; this module has no sweep/history timer.
+The Upload Snapshot and its target are stored once; every send is an Upload
+Attempt of it with its own token; receipts are journaled per attempt,
+independently of any Job (#588, ADR-0036). No provider I/O in replayable DB
+units. An uncertain send can only reconcile; zero token matches prove absence
+only together with the complete S3 reads of ADR-0025 (never by themselves), and
+a fresh lease cannot quiesce old I/O. This module has no sweep/history timer.
 """
 from __future__ import annotations
 
@@ -13,12 +15,14 @@ import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .database_retry import owned_connection, retry_database_unit
-from .upload_snapshot import UploadSnapshot
+from .upload_snapshot import MODES, UploadSnapshot
 from .s3_copy import _object_version_entries
+from .vault_paths import expected_cloud_key
 
 TOKEN_KEY = "frostvault-upload"
 ABSENT_OPERATION = 'ProvenAbsent'
@@ -209,41 +213,51 @@ def _is_provider_unreachable(error: BaseException) -> bool:
 
 def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
            shared: bool = False) -> dict[str, Any]:
-    # Exclusive by default. Opt in only after auditing the COMPLETE DB unit:
-    # no Vault touch, aggregate/event/rebuild writer or terminal Job transition.
-    # SHARE (not KEY SHARE) fences lifecycle/identity and admission's NO KEY
-    # UPDATE writers. Nested target checks must retain the mode: two SHARE
-    # holders upgrading to NO KEY UPDATE would deadlock (ADR-0031, #551).
+    """Read and fence the live upload target of ``job``; return it as a pin.
+
+    The pin is what an Upload Snapshot freezes once (``upload_snapshots``):
+    Vault, file, cloud target, path epoch, Source Volume root and provider
+    endpoint. ``key`` is the object key the caller is about to use; it must be
+    the Vault namespace key of the current path (``vaults/<uuid>/<path>``).
+
+    Exclusive by default. Opt in to ``shared`` only after auditing the COMPLETE
+    DB unit: no Vault touch, aggregate/event/rebuild writer or terminal Job
+    transition. SHARE (not KEY SHARE) fences lifecycle/identity and admission's
+    NO KEY UPDATE writers. Nested target checks must retain the mode: two SHARE
+    holders upgrading to NO KEY UPDATE would deadlock (ADR-0031, #551).
+    """
     lock = "SHARE" if shared else "NO KEY UPDATE"
     vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
-    from .upload_remediation import require_job
-    require_job(connection, job)
-    row = connection.execute("SELECT vf.status,fp.path,fp.valid_from FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.id=%s AND vf.vault_id=%s", (job["vault_file_id"], job["vault_id"])).fetchone()
-    current = connection.execute("SELECT status,vault_file_id,path,claim_token FROM jobs WHERE id=%s", (job["id"],)).fetchone()
-    if current and current["status"] == "cancelled":
+    row = connection.execute(
+        """SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region,
+                  j.status AS job_status, j.file_id AS job_file_id, j.vault_id AS job_vault_id,
+                  j.action AS job_action,
+                  EXISTS (SELECT 1 FROM jobs other WHERE other.file_id=f.id AND other.id<>%(job)s
+                          AND other.status NOT IN ('failed','cancelled','completed')) AS busy
+           FROM files f
+           JOIN vaults v ON v.id=f.vault_id
+           JOIN vault_targets t ON t.id=v.target_id
+           LEFT JOIN jobs j ON j.id=%(job)s
+           WHERE f.id=%(file)s AND f.vault_id=%(vault)s""",
+        {"job": job["id"], "file": job["file_id"], "vault": job["vault_id"]}).fetchone()
+    if row and row["job_status"] == "cancelled":
         raise UploadBlocked("owner_cancelled")
-    if current and current["status"] in {"failed", "completed"}:
+    if row and row["job_status"] in {"failed", "completed"}:
         raise UploadBlocked("already_resolved")
-    if (not vault or not row or row["status"] != "active" or not current
-            or current["vault_file_id"] != job["vault_file_id"] or current["path"] != job["path"]
-            or row["path"] != job["path"] or vault["source_root"] != job["source_root"]
-            or vault["s3_bucket"] != job["s3_bucket"] or vault["s3_prefix"] != job["s3_prefix"]
-            ):
+    if (not vault or not row or row["job_status"] is None or row["job_action"] != "upload"
+            or str(row["job_file_id"]) != str(job["file_id"]) or row["job_vault_id"] != job["vault_id"]
+            or key != expected_cloud_key(row["path"], f"vaults/{vault['uuid']}")):
         raise UploadBlocked("identity_changed")
-    if (not vault["enabled"] or vault["decommission_state"] != "active"
-            or vault["relocation_state"] != "ready" or vault.get("root_released_at")):
+    if vault["lifecycle"] != "active":
         raise UploadBlocked("vault_suspended")
-    incompatible = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND id<>%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (job["vault_file_id"], job["id"])).fetchone()
-    conflict = connection.execute("SELECT cloud_only_version_id FROM local_copies WHERE vault_file_id=%s", (job["vault_file_id"],)).fetchone()
-    if incompatible:
+    if row["busy"]:
         raise UploadBlocked("active_operation")
-    if conflict and conflict["cloud_only_version_id"]:
+    if row["held_version_id"]:
         raise UploadBlocked("cloud_only_conflict")
-    return {"vault_id": job["vault_id"], "vault_file_id": job["vault_file_id"],
-            "bucket": vault["s3_bucket"], "prefix": vault["s3_prefix"], "key": key,
-            "provider": provider, "path": row["path"], "path_since": row["valid_from"],
-            "source_root": vault["source_root"], "root_identity": vault.get("root_identity"),
-            "root_identity_version": vault.get("root_identity_version")}
+    return {"vault_id": vault["id"], "file_id": str(job["file_id"]),
+            "bucket": row["bucket"], "region": row["region"], "key": key,
+            "provider": provider, "path": row["path"], "path_since": row["path_since"],
+            "source_root": vault["source_root"], "root_identity": vault["root_identity"]}
 
 
 class _ValidatedTarget:
@@ -251,7 +265,7 @@ class _ValidatedTarget:
 
     Only _validated_target can install one. It captures the actual locked row
     validation, one connection and one immutable Job identity. A nested check
-    still compares the complete pin, including path generation/root identity.
+    still compares the complete pin, including path epoch/root identity.
     No capability is stored on pooled connections or survives commit/rollback.
     """
 
@@ -267,7 +281,7 @@ class _ValidatedTarget:
     def require(self, pinned: dict[str, Any], shared: bool) -> None:
         if self.shared and not shared:
             raise RuntimeError("An audited SHARE upload unit cannot upgrade its Vault lock")
-        # provider/key are supplied namespace labels, not values read by target.
+        # provider/key are the caller's namespace labels, checked by target.
         # Identity/lifecycle/ownership checks remain the actual locked facts.
         current = {**self.pinned, "key": pinned["key"], "provider": pinned["provider"]}
         if current != pinned:
@@ -297,119 +311,308 @@ def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any],
         raise UploadBlocked("identity_changed")
 
 
-def load_for_job(connection: Any, job_id: int) -> dict[str, Any] | None:
-    return connection.execute("SELECT i.* FROM upload_intents i JOIN upload_intent_jobs j ON j.intent_id=i.id WHERE j.job_id=%s", (job_id,)).fetchone()
+# --- Upload proofs (#588): the snapshot and its target once, attempts and
+# receipts independent of the Job. Every function below is DB-only; the caller
+# owns the claim-fenced unit, except the journal writers, which commit on
+# their own connection immediately.
+
+@dataclass(frozen=True)
+class AdmittedSnapshot:
+    """One admitted Upload Snapshot with the target it was frozen for."""
+
+    id: str
+    vault_id: int
+    file_id: str
+    target: dict[str, Any]
+    snapshot: UploadSnapshot
+    verification: str
+    local_generation: int
+    closed: bool
 
 
-def outstanding(connection: Any, file_id: str) -> dict[str, Any] | None:
-    # An intent whose send never started (prepared only, or closed by a proven
-    # absence) has no provider obligation: it never blocks or binds another Job.
-    rows = connection.execute("SELECT * FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at,id LIMIT 2", (file_id,)).fetchall()
-    if len(rows) > 1:
-        raise UploadBlocked("ambiguous_send")
-    return rows[0] if rows else None
+@dataclass(frozen=True)
+class UploadAttempt:
+    """One send attempt of an admitted snapshot, with its own token."""
+
+    id: str
+    token: str
+    job_id: int | None
+    admitted: AdmittedSnapshot
+    inventory: dict[str, list[str]]
+    send_started: bool
+    outcome: str | None
+    no_write_operation: str | None
+    landed_version_id: str | None
+
+    @property
+    def target(self) -> dict[str, Any]:
+        return self.admitted.target
+
+    @property
+    def snapshot(self) -> UploadSnapshot:
+        return self.admitted.snapshot
+
+    @property
+    def settled(self) -> bool:
+        return self.outcome is not None
+
+    @property
+    def may_send(self) -> bool:
+        """Only a never-started, unsettled attempt of an open snapshot may send.
+
+        A committed send-start is no authority by itself: once it is set, the
+        attempt can only be reconciled, never sent again.
+        """
+        return not self.send_started and not self.settled and not self.admitted.closed
 
 
-def _settle_unstarted(connection: Any, file_id: str, *, keep_intent_id: str | None = None) -> None:
-    """Close intents that never sent: nothing was written, nothing to reconcile.
+_SNAPSHOT_COLUMNS = """s.id AS snapshot_id, s.vault_id, s.file_id, s.path, s.path_since, s.source_root,
+    s.root_identity, s.provider, s.local_generation, s.size, s.mtime_ns, s.plaintext_sha256,
+    s.part_size, s.part_sha256, s.verification, s.closed_at, v.uuid AS vault_uuid,
+    t.bucket, t.region"""
+_SNAPSHOT_FROM = """upload_snapshots s JOIN vaults v ON v.id=s.vault_id
+    JOIN vault_targets t ON t.id=v.target_id"""
+_ATTEMPT_COLUMNS = _SNAPSHOT_COLUMNS + """, a.id AS attempt_id, a.token, a.job_id,
+    a.inventory_versions, a.inventory_markers, a.send_started_at, a.outcome,
+    a.no_write_operation, a.landed_version_id"""
+_ATTEMPT_FROM = "upload_attempts a JOIN " + _SNAPSHOT_FROM + " ON s.id=a.snapshot_id"
 
-    ``send_started`` is committed before any request and is cleared only by a
-    journaled definitive no-write outcome, so an unsettled, unlinked intent with
-    it unset cannot have produced an object. Receipts are never ignored.
+
+def _admitted(row: dict[str, Any]) -> AdmittedSnapshot:
+    snapshot = UploadSnapshot.from_record(
+        size=row["size"], plaintext_sha256=row["plaintext_sha256"], part_size=row["part_size"],
+        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"])
+    pinned = {"vault_id": row["vault_id"], "file_id": str(row["file_id"]),
+              "bucket": row["bucket"], "region": row["region"],
+              "key": expected_cloud_key(row["path"], f"vaults/{row['vault_uuid']}"),
+              "provider": row["provider"], "path": row["path"], "path_since": row["path_since"],
+              "source_root": row["source_root"], "root_identity": row["root_identity"]}
+    return AdmittedSnapshot(str(row["snapshot_id"]), row["vault_id"], str(row["file_id"]), pinned,
+                            snapshot, row["verification"], row["local_generation"],
+                            row["closed_at"] is not None)
+
+
+def _attempt(row: dict[str, Any]) -> UploadAttempt:
+    return UploadAttempt(
+        str(row["attempt_id"]), str(row["token"]), row["job_id"], _admitted(row),
+        {"versions": list(row["inventory_versions"]), "markers": list(row["inventory_markers"])},
+        row["send_started_at"] is not None, row["outcome"], row["no_write_operation"],
+        row["landed_version_id"])
+
+
+def _bound(connection: Any, job_id: int) -> tuple[AdmittedSnapshot, bool] | None:
+    row = connection.execute(
+        f"SELECT {_SNAPSHOT_COLUMNS}, b.reconcile_only FROM upload_snapshot_jobs b "
+        f"JOIN {_SNAPSHOT_FROM} ON s.id=b.snapshot_id WHERE b.job_id=%s", (job_id,)).fetchone()
+    return (_admitted(row), row["reconcile_only"]) if row else None
+
+
+def bound_snapshot(connection: Any, job_id: int) -> AdmittedSnapshot | None:
+    """The snapshot a Job uploads or reconciles: its only source of expected proof."""
+    bound = _bound(connection, job_id)
+    return bound[0] if bound else None
+
+
+def load_for_job(connection: Any, job_id: int) -> UploadAttempt | None:
+    """The attempt of the Job's snapshot that still matters: unsettled or landed.
+
+    There is at most one: one unsettled attempt per file, and landing closes
+    the snapshot. A no-write or unsent attempt is history; the next send of the
+    snapshot needs a new attempt and token.
     """
-    rows = connection.execute("SELECT id FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND NOT send_started AND archive_version_id IS NULL AND id IS DISTINCT FROM %s", (file_id, keep_intent_id)).fetchall()
-    for row in rows:
-        if receipt(connection, row["id"]) is not None:
-            raise UploadBlocked("ambiguous_receipt")
-        connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started", (row["id"],))
-        from datetime import datetime, timezone
-        close_multiparts(connection, row["id"], datetime.now(timezone.utc).isoformat())
+    row = connection.execute(
+        f"SELECT {_ATTEMPT_COLUMNS} FROM upload_snapshot_jobs b JOIN {_ATTEMPT_FROM} "
+        "ON a.snapshot_id=b.snapshot_id WHERE b.job_id=%s "
+        "AND (a.settled_at IS NULL OR a.outcome='landed')", (job_id,)).fetchone()
+    return _attempt(row) if row else None
 
 
-def close_unsent_for_job(connection: Any, job: dict[str, Any], timestamp: str) -> bool:
-    """Close a Job's stale, never-sent Upload Snapshot after a source change (#538).
+def load_attempt(connection: Any, attempt_id: str) -> UploadAttempt | None:
+    row = connection.execute(f"SELECT {_ATTEMPT_COLUMNS} FROM {_ATTEMPT_FROM} WHERE a.id=%s",
+                             (attempt_id,)).fetchone()
+    return _attempt(row) if row else None
 
-    The Upload Snapshot stays immutable for an admitted intent; it is never
-    re-pinned here. An intent whose send never started (or was closed by a proven
-    absence) owes the provider nothing, so it is settled with its snapshot intact
-    and unbound from the Job, and the Job forgets snapshot A. The next attempt then
-    fingerprints the current Local Copy and admits a new intent with a new token,
-    instead of comparing the file with A until the retry budget runs out.
 
-    Never touched: a linked Archive Version, a started send (reconciliation decides
-    it, ADR-0025/0029), a receipt, or a reconcile-only attempt (it can never send a
-    new snapshot). Caller owns the claim-fenced DB unit. Returns True if closed.
+_CONTRADICTED = """EXISTS (
+    SELECT 1 FROM upload_attempts settled JOIN upload_receipts r ON r.attempt_id=settled.id
+    WHERE settled.file_id=%(file)s AND settled.settled_at IS NOT NULL
+      AND (settled.outcome<>'landed'
+           OR (r.response->>'VersionId') IS DISTINCT FROM settled.landed_version_id))"""
+
+
+def outstanding(connection: Any, file_id: str) -> UploadAttempt | None:
+    """The file's started, unsettled attempt: its provider outcome is unknown.
+
+    A receipt that contradicts a settled attempt of the file (a late receipt of
+    a no-write or unsent attempt, or another VersionId than the landed one)
+    blocks too, even long after the settlement.
     """
-    row = connection.execute("SELECT archive_version_id,upload_snapshot_json,upload_reconcile_only FROM jobs WHERE id=%s FOR UPDATE", (job["id"],)).fetchone()
-    if not row or row["archive_version_id"] or row["upload_reconcile_only"]:
-        return False
-    intent = load_for_job(connection, job["id"])
-    if intent is not None:
-        if intent["send_started"] or intent["archive_version_id"] or receipt(connection, intent["id"]) is not None:
-            return False
-        if not intent["settled"]:
-            closed = connection.execute("UPDATE upload_intents SET settled=TRUE,blocked_reason=NULL WHERE id=%s AND NOT send_started AND archive_version_id IS NULL RETURNING id", (intent["id"],)).fetchone()
-            if not closed:
-                return False
-            close_multiparts(connection, intent["id"], timestamp)
-        connection.execute("DELETE FROM upload_intent_jobs WHERE job_id=%s AND intent_id=%s", (job["id"], intent["id"]))
-    elif row["upload_snapshot_json"] is None:
-        return False
-    connection.execute("UPDATE jobs SET upload_snapshot_json=NULL,upload_plaintext_sha256=NULL WHERE id=%s", (job["id"],))
+    row = connection.execute(
+        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+            FROM (SELECT 1) one LEFT JOIN (
+                SELECT {_ATTEMPT_COLUMNS} FROM {_ATTEMPT_FROM}
+                WHERE a.file_id=%(file)s AND a.settled_at IS NULL
+                  AND a.send_started_at IS NOT NULL
+            ) att ON true""", {"file": file_id}).fetchone()
+    if row["contradicted"]:
+        raise UploadBlocked("ambiguous_receipt")
+    return _attempt(row) if row["attempt_id"] is not None else None
+
+
+def _settle_unsent(connection: Any, attempt_id: Any, timestamp: Any) -> bool:
+    """Close a never-started attempt: nothing was sent, nothing to reconcile.
+
+    A receipt of an attempt that never started contradicts it: it is never
+    ignored, and the attempt stays open (ambiguous_receipt).
+    """
+    closed = connection.execute(
+        """UPDATE upload_attempts a SET settled_at=%s, outcome='unsent'
+           WHERE a.id=%s AND a.settled_at IS NULL AND a.send_started_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM upload_receipts r WHERE r.attempt_id=a.id)
+           RETURNING a.id""", (timestamp, attempt_id)).fetchone()
+    if not closed:
+        raise UploadBlocked("ambiguous_receipt")
+    close_multiparts(connection, attempt_id, timestamp)
     return True
 
 
-def bind_for_resume(connection: Any, job_id: int, intent: dict[str, Any]) -> None:
-    original = connection.execute("SELECT status FROM jobs WHERE id=%s", (intent["original_job_id"],)).fetchone()
-    cancelled = connection.execute("SELECT 1 FROM upload_intent_jobs b JOIN jobs j ON j.id=b.job_id WHERE b.intent_id=%s AND j.status='cancelled' LIMIT 1", (intent["id"],)).fetchone()
-    if not original or original["status"] == "cancelled" or cancelled:
-        raise UploadBlocked("identity_changed")
-    connection.execute("INSERT INTO upload_intent_jobs(job_id,intent_id) VALUES (%s,%s) ON CONFLICT (job_id) DO NOTHING", (job_id, intent["id"]))
+def _close_abandoned(connection: Any, file_id: str, timestamp: Any) -> None:
+    """Close the file's open snapshot left by an attempt that never sent.
+
+    Its Jobs forget it (their next attempt takes a new snapshot). A started,
+    unsettled send, a receipt or a late contradiction keeps it: the caller
+    must reconcile before hashing a different content.
+    """
+    row = connection.execute(
+        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+            FROM (SELECT 1) one LEFT JOIN (
+                SELECT s.id AS snapshot_id,
+                       (SELECT a.id FROM upload_attempts a
+                        WHERE a.snapshot_id=s.id AND a.settled_at IS NULL) AS open_attempt,
+                       EXISTS (SELECT 1 FROM upload_attempts a WHERE a.snapshot_id=s.id
+                               AND a.settled_at IS NULL AND a.send_started_at IS NOT NULL) AS sending,
+                       EXISTS (SELECT 1 FROM upload_attempts a JOIN upload_receipts r
+                               ON r.attempt_id=a.id WHERE a.snapshot_id=s.id) AS received
+                FROM upload_snapshots s WHERE s.file_id=%(file)s AND s.closed_at IS NULL
+            ) att ON true""", {"file": file_id}).fetchone()
+    if row["contradicted"]:
+        raise UploadBlocked("ambiguous_receipt")
+    if row["snapshot_id"] is None:
+        return
+    if row["sending"]:
+        raise UploadBlocked("ambiguous_send")
+    if row["received"]:
+        raise UploadBlocked("ambiguous_receipt")
+    if row["open_attempt"] is not None:
+        _settle_unsent(connection, row["open_attempt"], timestamp)
+    _close_snapshot(connection, row["snapshot_id"], timestamp, forget=True)
+
+
+def _close_snapshot(connection: Any, snapshot_id: Any, timestamp: Any, *, forget: bool) -> None:
+    connection.execute("UPDATE upload_snapshots SET closed_at=%s WHERE id=%s AND closed_at IS NULL",
+                       (timestamp, snapshot_id))
+    if forget:
+        connection.execute("DELETE FROM upload_snapshot_jobs WHERE snapshot_id=%s AND NOT reconcile_only",
+                           (snapshot_id,))
+
+
+def _admit(connection: Any, job: dict[str, Any], pinned: dict[str, Any], snapshot: UploadSnapshot,
+           requested: str, local_generation: int, timestamp: Any) -> AdmittedSnapshot:
+    if requested not in MODES:
+        raise ValueError("Unknown Upload Verification Mode")
+    _close_abandoned(connection, job["file_id"], timestamp)
+    record = snapshot.record()
+    row = connection.execute(
+        """INSERT INTO upload_snapshots(vault_id, file_id, path, path_since, source_root,
+               root_identity, provider, local_generation, size, mtime_ns, plaintext_sha256,
+               part_size, part_sha256, verification, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+        (pinned["vault_id"], pinned["file_id"], pinned["path"], pinned["path_since"],
+         pinned["source_root"], pinned["root_identity"], pinned["provider"], local_generation,
+         record["size"], record["mtime_ns"], record["plaintext_sha256"], record["part_size"],
+         record["part_sha256"], requested, timestamp)).fetchone()
+    connection.execute("INSERT INTO upload_snapshot_jobs(job_id, snapshot_id) VALUES (%s,%s)",
+                       (job["id"], row["id"]))
+    return AdmittedSnapshot(str(row["id"]), pinned["vault_id"], pinned["file_id"], dict(pinned),
+                            snapshot, requested, local_generation, False)
+
+
+def _open_attempt(connection: Any, job: dict[str, Any], admitted: AdmittedSnapshot,
+                  before: dict[str, Any], timestamp: Any) -> UploadAttempt:
+    versions, markers = sorted(before["versions"]), sorted(before["markers"])
+    current = connection.execute(
+        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+            FROM (SELECT 1) one LEFT JOIN (
+                SELECT {_ATTEMPT_COLUMNS} FROM {_ATTEMPT_FROM}
+                WHERE a.file_id=%(file)s AND a.settled_at IS NULL
+            ) att ON true""", {"file": admitted.file_id}).fetchone()
+    if current["contradicted"]:
+        raise UploadBlocked("ambiguous_receipt")
+    if current["attempt_id"] is not None:
+        existing = _attempt(current)
+        if existing.send_started:
+            raise UploadBlocked("ambiguous_send")
+        if (existing.admitted.id == admitted.id and existing.job_id == job["id"]
+                and existing.inventory == {"versions": versions, "markers": markers}):
+            return existing
+        # A fresh namespace observation is a new attempt with a new token; the
+        # unsent one is closed, never re-pinned in place.
+        _settle_unsent(connection, existing.id, timestamp)
+    row = connection.execute(
+        """INSERT INTO upload_attempts(snapshot_id, file_id, job_id, inventory_versions,
+               inventory_markers, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s) RETURNING id, token""",
+        (admitted.id, admitted.file_id, job["id"], versions, markers, timestamp)).fetchone()
+    return UploadAttempt(str(row["id"]), str(row["token"]), job["id"], admitted,
+                         {"versions": versions, "markers": markers}, False, None, None, None)
 
 
 def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], snapshot: UploadSnapshot,
-            requested: str, before: dict[str, Any], timestamp: str,
-            shared: bool = False) -> dict[str, Any]:
+            requested: str, local_generation: int, before: dict[str, Any], timestamp: Any,
+            shared: bool = False) -> UploadAttempt:
+    """Admit the Job's snapshot once and open one send attempt on it.
+
+    The snapshot and its target are written once and bound to the Job; a DB
+    retry, or a new send after a proven no-write, reuses them. Every attempt
+    has its own token and pinned inventory. A different content for the same
+    Job needs ``close_unsent_for_job`` first (ADR-0030). Nothing here sends:
+    only ``mark_send_started``, committed, admits one send.
+    """
     require_target(connection, job, pinned, shared=shared)
-    existing = load_for_job(connection, job["id"])
-    if existing:
-        current = (canonical(pinned), snapshot.as_json(), requested, canonical(before))
-        if (existing["send_started"] or existing["settled"] or existing["archive_version_id"]
-                or current == (existing["target_json"], existing["snapshot_json"], existing["requested"], existing["inventory_json"])):
-            return existing
-        # A prepared/absence-rearmed intent may refresh its namespace, not its
-        # admitted content or requested proof. ADR-0030 closes stale snapshots
-        # as separate immutable attempts; prepare must not rewrite history.
-        if (existing["snapshot_json"], existing["requested"]) != (snapshot.as_json(), requested):
+    bound = _bound(connection, job["id"])
+    if bound is None:
+        admitted = _admit(connection, job, pinned, snapshot, requested, local_generation, timestamp)
+    else:
+        admitted, _ = bound
+        if admitted.closed:
+            raise UploadBlocked("already_resolved")
+        if (admitted.snapshot, admitted.verification) != (snapshot, requested):
             raise RuntimeError("Local file changed since fingerprinting")
-        if receipt(connection, existing["id"]) is not None:
-            raise UploadBlocked("ambiguous_receipt")
-        refreshed = connection.execute("UPDATE upload_intents SET token=%s,target_json=%s,inventory_json=%s,created_at=%s,blocked_reason=NULL WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING *", (str(uuid.uuid4()), current[0], current[3], timestamp, existing["id"])).fetchone()
-        if not refreshed:
-            raise UploadBlocked("ambiguous_send")
-        _settle_unstarted(connection, job["vault_file_id"], keep_intent_id=refreshed["id"])
-        return refreshed
-    _settle_unstarted(connection, job["vault_file_id"])
-    previous = outstanding(connection, job["vault_file_id"])
-    if previous:
-        # Caller MUST reconcile before hashing a different generation.
-        raise UploadBlocked("ambiguous_send")
-    row = connection.execute("INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,target_json,snapshot_json,requested,inventory_json,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *", (str(uuid.uuid4()), str(uuid.uuid4()), job["vault_id"], job["vault_file_id"], job["id"], canonical(pinned), snapshot.as_json(), requested, canonical(before), timestamp)).fetchone()
-    connection.execute("INSERT INTO upload_intent_jobs(job_id,intent_id) VALUES (%s,%s)", (job["id"], row["id"]))
-    return row
+        if admitted.target != pinned:
+            raise UploadBlocked("identity_changed")
+    return _open_attempt(connection, job, admitted, before, timestamp)
 
 
-def mark_send_started(connection: Any, job: dict[str, Any], intent: dict[str, Any], *,
-                      shared: bool = False) -> None:
-    require_target(connection, job, json.loads(intent["target_json"]), shared=shared)
-    if receipt(connection, intent['id']) is not None:
-        raise UploadBlocked('ambiguous_receipt')
-    changed = connection.execute("UPDATE upload_intents SET send_started=TRUE WHERE id=%s AND NOT send_started AND NOT settled AND archive_version_id IS NULL RETURNING id", (intent["id"],)).fetchone()
+def mark_send_started(connection: Any, job: dict[str, Any], attempt: UploadAttempt, *,
+                      shared: bool = False) -> UploadAttempt:
+    """Commit, before any provider request, that this attempt is sending.
+
+    Succeeds once per attempt: a second call, a settled attempt, a closed
+    snapshot or any receipt refuses. The caller sends only after committing.
+    """
+    require_target(connection, job, attempt.target, shared=shared)
+    changed = connection.execute(
+        """UPDATE upload_attempts a SET send_started_at=now()
+           WHERE a.id=%s AND a.send_started_at IS NULL AND a.settled_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM upload_receipts r WHERE r.attempt_id=a.id)
+             AND EXISTS (SELECT 1 FROM upload_snapshots s WHERE s.id=a.snapshot_id
+                         AND s.closed_at IS NULL)
+           RETURNING a.id""", (attempt.id,)).fetchone()
     if not changed:
+        if receipt(connection, attempt.id) is not None:
+            raise UploadBlocked("ambiguous_receipt")
         raise UploadBlocked("ambiguous_send")
-    from datetime import datetime, timezone
-    from .upload_remediation_discovery import capture
-    capture(connection, datetime.now(timezone.utc).isoformat(), intent_id=intent["id"])
+    return replace(attempt, send_started=True)
 
 
 def _receipt_fact(response: dict[str, Any]) -> dict[str, Any]:
@@ -432,8 +635,8 @@ class ReceiptJournal:
     Holds one committed fact hash, not a receiver batch or pending receipt queue.
     """
 
-    def __init__(self, db: Any, intent_id: str, clock: Any):
-        self._db, self._intent_id, self._clock = db, intent_id, clock
+    def __init__(self, db: Any, attempt_id: str, clock: Any):
+        self._db, self._attempt_id, self._clock = db, attempt_id, clock
         self._committed: str | None = None
         self._lock = threading.Lock()
 
@@ -443,15 +646,24 @@ class ReceiptJournal:
         with self._lock:
             if fingerprint == self._committed:
                 return
-            append_receipt(self._db, self._intent_id, fact, self._clock())
+            append_receipt(self._db, self._attempt_id, fact, self._clock())
             self._committed = fingerprint
 
 
 @retry_database_unit
-def append_receipt(db: Any, intent_id: str, response: dict[str, Any], timestamp: str) -> None:
+def append_receipt(db: Any, attempt_id: str, response: dict[str, Any], timestamp: Any) -> None:
+    """Journal a raw receipt on its own connection, committed on return.
+
+    Accepted whatever the attempt's state (cancelled Job, rolled back worker
+    unit, settled attempt, collected Job): a late receipt is a fact that may
+    contradict the settlement, never one to drop. Idempotent by content.
+    """
     text, fingerprint = receipt_identity(response)
     with owned_connection(db()) as connection:
-        connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, fingerprint, text, timestamp))
+        connection.execute(
+            "INSERT INTO upload_receipts(attempt_id, receipt_sha256, response, received_at) "
+            "VALUES (%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING",
+            (attempt_id, bytes.fromhex(fingerprint), text, timestamp))
 
 
 def probe_receipt_journal(connection: Any) -> None:
@@ -461,111 +673,226 @@ def probe_receipt_journal(connection: Any) -> None:
     insufficient (read-only/failing writes); no fake response or no-write proof
     may be manufactured merely to test availability.
     """
-    connection.execute("""INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at)
-        SELECT intent_id,receipt_hash,response_json,received_at FROM upload_receipts WHERE false""")
+    connection.execute("""INSERT INTO upload_receipts(attempt_id, receipt_sha256, response, received_at)
+        SELECT attempt_id, receipt_sha256, response, received_at FROM upload_receipts WHERE false""")
 
 
 @retry_database_unit
-def journal_multipart(db: Any, intent_id: str, upload_id: str, timestamp: str) -> None:
-    """Record an UploadId this intent created, BEFORE its first part is sent (#491).
+def journal_multipart(db: Any, attempt_id: str, upload_id: str, timestamp: Any) -> None:
+    """Record an UploadId this attempt created, BEFORE its first part is sent (#491).
 
     This row is the only authority to abort a multipart upload later: the provider
     listing alone cannot say whose it is. Own connection, committed on return.
     """
     with owned_connection(db()) as connection:
-        connection.execute("INSERT INTO upload_multiparts(intent_id,upload_id,created_at) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (intent_id, upload_id, timestamp))
+        connection.execute("INSERT INTO upload_multiparts(attempt_id, upload_id, created_at) "
+                           "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (attempt_id, upload_id, timestamp))
 
 
 @retry_database_unit
-def close_multipart(db: Any, intent_id: str, upload_id: str, timestamp: str) -> None:
+def close_multipart(db: Any, attempt_id: str, upload_id: str, timestamp: Any) -> None:
     """The provider no longer holds this UploadId (completed or aborted)."""
     with owned_connection(db()) as connection:
-        connection.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s WHERE intent_id=%s AND upload_id=%s AND state='open'", (timestamp, intent_id, upload_id))
+        connection.execute("UPDATE upload_multiparts SET closed_at=%s WHERE attempt_id=%s "
+                           "AND upload_id=%s AND closed_at IS NULL", (timestamp, attempt_id, upload_id))
 
 
-def close_multiparts(connection: Any, intent_id: str, timestamp: str) -> None:
-    """DB-only: the intent no longer owes the provider an abort.
+def close_multiparts(connection: Any, attempt_id: Any, timestamp: Any) -> None:
+    """DB-only: the attempt no longer owes the provider an abort.
 
     Called when complete reads proved absence, when reconciliation published the
-    version it found (a Complete whose response was lost), and when the intent is
+    version it found (a Complete whose response was lost), and when the attempt is
     settled. A closed row means "no live obligation", not "the provider is clean":
     an orphan the abort never reached is reaped by the bucket lifecycle.
     """
-    connection.execute("UPDATE upload_multiparts SET state='closed',closed_at=%s WHERE intent_id=%s AND state='open'", (timestamp, intent_id))
+    connection.execute("UPDATE upload_multiparts SET closed_at=%s WHERE attempt_id=%s AND closed_at IS NULL",
+                       (timestamp, attempt_id))
 
 
-def open_multiparts(connection: Any, intent_id: str) -> list[str]:
-    return [r["upload_id"] for r in connection.execute("SELECT upload_id FROM upload_multiparts WHERE intent_id=%s AND state='open' ORDER BY created_at,upload_id", (intent_id,)).fetchall()]
+def open_multiparts(connection: Any, attempt_id: str) -> list[str]:
+    return [r["upload_id"] for r in connection.execute(
+        "SELECT upload_id FROM upload_multiparts WHERE attempt_id=%s AND closed_at IS NULL "
+        "ORDER BY created_at, upload_id", (attempt_id,)).fetchall()]
 
 
-def record_no_write(connection: Any, job: dict[str, Any], intent: dict[str, Any],
-                    operation: str, timestamp: str) -> None:
-    """Claim-fenced definitive refusal; retain the immutable outcome as a fact.
+def record_no_write(connection: Any, job: dict[str, Any], attempt: UploadAttempt,
+                    operation: str, timestamp: Any) -> UploadAttempt:
+    """Claim-fenced definitive no-write outcome of a started send.
 
     Called after the transfer manager joined all I/O and reported an auth
     refusal without a final receipt, or after complete S3 reads proved absence
-    (ADR-0025). Zero listing matches alone never reach this seam.
-    Caller owns/retries its entire DB-only publication transaction.
+    (ADR-0025). Zero listing matches alone never reach this seam. The outcome
+    settles the attempt: its send-start stays as history and nothing is
+    written to the receipt journal. Sending again needs a new attempt (new
+    token) on the same snapshot. Caller owns/retries its DB-only unit.
     """
     if operation not in NO_WRITE_OPERATIONS:
-        raise UploadBlocked('ambiguous_send')
-    require_target(connection,job,json.loads(intent['target_json']))
-    if receipt(connection,intent['id']) is not None:
-        raise UploadBlocked('ambiguous_receipt')
-    changed = connection.execute("UPDATE upload_intents SET send_started=FALSE WHERE id=%s AND send_started AND NOT settled AND archive_version_id IS NULL RETURNING id",(intent['id'],)).fetchone()
+        raise UploadBlocked("ambiguous_send")
+    require_target(connection, job, attempt.target)
+    if receipt(connection, attempt.id) is not None:
+        raise UploadBlocked("ambiguous_receipt")
+    changed = connection.execute(
+        """UPDATE upload_attempts a SET settled_at=%s, outcome='no_write', no_write_operation=%s
+           WHERE a.id=%s AND a.send_started_at IS NOT NULL AND a.settled_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM upload_receipts r WHERE r.attempt_id=a.id)
+           RETURNING a.id""", (timestamp, operation, attempt.id)).fetchone()
     if not changed:
-        raise UploadBlocked('ambiguous_receipt')
-    text = canonical({'NoWriteOperation':operation})
-    connection.execute("INSERT INTO upload_receipts(intent_id,receipt_hash,response_json,received_at) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-        (intent['id'],hashlib.sha256(text.encode()).hexdigest(),text,timestamp))
+        raise UploadBlocked("ambiguous_receipt")
+    close_multiparts(connection, attempt.id, timestamp)
+    return replace(attempt, outcome="no_write", no_write_operation=operation)
 
 
-def proven_absent(connection: Any, intent_id: str | None) -> bool:
-    """True when this intent was closed by a journaled positive proof of absence."""
-    if not intent_id:
+def record_landed(connection: Any, job: dict[str, Any], attempt: UploadAttempt, version_id: str,
+                  timestamp: Any, *, shared: bool = False) -> UploadAttempt:
+    """Settle a started send at the exact VersionId it produced and close its snapshot.
+
+    ``version_id`` comes from the journaled receipt or from exact
+    reconciliation; every receipt of the attempt must agree with it. The
+    Archive Version is then created with ``upload_attempt_id`` in the same
+    unit (``ArchiveCatalog.begin_replacement``); the database refuses any
+    other key, size or VersionId for it.
+    """
+    if not version_id or version_id == "null":
+        raise UploadBlocked("ambiguous_receipt")
+    require_target(connection, job, attempt.target, shared=shared)
+    saved = receipt(connection, attempt.id)
+    if saved is not None and str(saved["VersionId"]) != version_id:
+        raise UploadBlocked("ambiguous_receipt")
+    changed = connection.execute(
+        """UPDATE upload_attempts SET settled_at=%s, outcome='landed', landed_version_id=%s
+           WHERE id=%s AND send_started_at IS NOT NULL AND settled_at IS NULL RETURNING id""",
+        (timestamp, version_id, attempt.id)).fetchone()
+    if not changed:
+        current = load_attempt(connection, attempt.id)
+        if current is None or current.landed_version_id != version_id:
+            raise UploadBlocked("ambiguous_receipt")
+        return current
+    close_multiparts(connection, attempt.id, timestamp)
+    _close_snapshot(connection, attempt.admitted.id, timestamp, forget=False)
+    return replace(attempt, outcome="landed", landed_version_id=version_id,
+                   admitted=replace(attempt.admitted, closed=True))
+
+
+def close_unsent_for_job(connection: Any, job: dict[str, Any], timestamp: Any) -> bool:
+    """Close a Job's stale, never-sent Upload Snapshot after a source change (ADR-0030).
+
+    The snapshot stays immutable; it is closed, never re-pinned. Closable only
+    when no attempt of it is sending, landed or has a receipt, and the Job is
+    not reconcile-only: its open unsent attempt is settled, its multipart rows
+    are closed, and the Job forgets the snapshot. The next attempt
+    fingerprints the current Local Copy and admits a new snapshot and token.
+    A snapshot whose sends were all proven absent is closable too. Caller owns
+    the claim-fenced DB unit. Returns True if closed.
+    """
+    row = connection.execute(
+        """SELECT b.snapshot_id, b.reconcile_only, s.closed_at,
+                  (SELECT a.id FROM upload_attempts a
+                   WHERE a.snapshot_id=s.id AND a.settled_at IS NULL) AS open_attempt,
+                  EXISTS (SELECT 1 FROM upload_attempts a WHERE a.snapshot_id=s.id
+                          AND ((a.settled_at IS NULL AND a.send_started_at IS NOT NULL)
+                               OR a.outcome='landed')) AS committed,
+                  EXISTS (SELECT 1 FROM upload_attempts a JOIN upload_receipts r
+                          ON r.attempt_id=a.id WHERE a.snapshot_id=s.id) AS received
+           FROM upload_snapshot_jobs b JOIN upload_snapshots s ON s.id=b.snapshot_id
+           WHERE b.job_id=%s FOR UPDATE OF b""", (job["id"],)).fetchone()
+    if not row or row["reconcile_only"] or row["committed"] or row["received"]:
         return False
-    return connection.execute("SELECT 1 FROM upload_receipts WHERE intent_id=%s AND response_json=%s LIMIT 1",
-                              (intent_id, canonical({'NoWriteOperation': ABSENT_OPERATION}))).fetchone() is not None
+    if row["open_attempt"] is not None:
+        _settle_unsent(connection, row["open_attempt"], timestamp)
+    if row["closed_at"] is None:
+        _close_snapshot(connection, row["snapshot_id"], timestamp, forget=True)
+    else:
+        connection.execute("DELETE FROM upload_snapshot_jobs WHERE job_id=%s", (job["id"],))
+    return True
 
 
-def unsent(connection: Any, intent_id: str | None) -> bool:
-    """The intent carries no provider obligation: its send never (or no longer) started."""
-    if not intent_id:
+def bind_for_resume(connection: Any, job_id: int, attempt: UploadAttempt) -> None:
+    """Bind a reconcile-only Job to the snapshot of an uncertain attempt.
+
+    A cancelled original or bound Job is never resurrected.
+    """
+    cancelled = connection.execute(
+        """SELECT 1 FROM jobs j WHERE j.status='cancelled' AND (j.id=%s OR j.id IN (
+               SELECT b.job_id FROM upload_snapshot_jobs b WHERE b.snapshot_id=%s)) LIMIT 1""",
+        (attempt.job_id, attempt.admitted.id)).fetchone()
+    if cancelled:
+        raise UploadBlocked("identity_changed")
+    connection.execute("INSERT INTO upload_snapshot_jobs(job_id, snapshot_id, reconcile_only) "
+                       "VALUES (%s,%s,TRUE) ON CONFLICT (job_id) DO NOTHING",
+                       (job_id, attempt.admitted.id))
+
+
+def proven_absent(connection: Any, attempt_id: str | None) -> bool:
+    """True when this attempt was settled by S3's positive proof of absence."""
+    if not attempt_id:
         return False
-    return connection.execute("SELECT 1 FROM upload_intents WHERE id=%s AND NOT send_started AND archive_version_id IS NULL",
-                              (intent_id,)).fetchone() is not None
+    return connection.execute("SELECT 1 FROM upload_attempts WHERE id=%s AND outcome='no_write' "
+                              "AND no_write_operation=%s", (attempt_id, ABSENT_OPERATION)).fetchone() is not None
 
 
-def receipt(connection: Any, intent_id: str) -> dict[str, Any] | None:
-    rows = connection.execute("SELECT response_json FROM upload_receipts WHERE intent_id=%s", (intent_id,)).fetchall()
+def unsent(connection: Any, attempt_id: str | None) -> bool:
+    """The attempt carries no provider obligation: never sent, or a settled no-write without receipts."""
+    if not attempt_id:
+        return False
+    return connection.execute(
+        """SELECT 1 FROM upload_attempts a WHERE a.id=%s
+             AND (a.send_started_at IS NULL OR a.outcome='no_write')
+             AND NOT EXISTS (SELECT 1 FROM upload_receipts r WHERE r.attempt_id=a.id)""",
+        (attempt_id,)).fetchone() is not None
+
+
+def receipt(connection: Any, attempt_id: str) -> dict[str, Any] | None:
+    """The attempt's journaled receipts combined, or None when there is none.
+
+    Contradictions never resolve by choice: differing facts, a missing or
+    ``null`` VersionId, any receipt of an unsent or no-write attempt, or a
+    VersionId other than the landed one raise ``ambiguous_receipt``.
+    """
+    rows = connection.execute(
+        "SELECT r.response, a.outcome, a.landed_version_id FROM upload_attempts a "
+        "JOIN upload_receipts r ON r.attempt_id=a.id WHERE a.id=%s", (attempt_id,)).fetchall()
     if not rows:
         return None
-    responses = [json.loads(r["response_json"]) for r in rows]
-    # Explicit, allowlisted no-write facts are history, never a VersionId/proof.
-    # Do not ignore malformed responses or arbitrary dictionaries without IDs.
-    responses = [r for r in responses if not (set(r) == {'NoWriteOperation'}
-        and r['NoWriteOperation'] in NO_WRITE_OPERATIONS)]
-    if not responses:
-        return None
+    if rows[0]["outcome"] in {"unsent", "no_write"}:
+        raise UploadBlocked("ambiguous_receipt")
     # Discovery may add fields, but incompatible proofs/identities never overwrite.
     combined: dict[str, Any] = {}
-    for response in responses:
+    for row in rows:
+        response = row["response"]
+        if not isinstance(response, dict):
+            raise UploadBlocked("ambiguous_receipt")
         for key, value in response.items():
             if key in combined and combined[key] != value:
                 raise UploadBlocked("ambiguous_receipt")
             combined[key] = value
     if not combined.get("VersionId") or combined["VersionId"] == "null":
         raise UploadBlocked("ambiguous_receipt")
+    if rows[0]["outcome"] == "landed" and combined["VersionId"] != rows[0]["landed_version_id"]:
+        raise UploadBlocked("ambiguous_receipt")
     return combined
 
 
-def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
+def expected_for_version(connection: Any, archive_version_id: str) -> AdmittedSnapshot | None:
+    """The frozen expected proof of an uploaded Archive Version, via its attempt."""
+    row = connection.execute(
+        f"SELECT {_SNAPSHOT_COLUMNS} FROM archive_versions av "
+        f"JOIN upload_attempts a ON a.id=av.upload_attempt_id AND a.file_id=av.file_id "
+        f"JOIN {_SNAPSHOT_FROM} ON s.id=a.snapshot_id WHERE av.id=%s", (archive_version_id,)).fetchone()
+    return _admitted(row) if row else None
+
+
+def reconcile(client: Any, attempt: UploadAttempt, saved: dict[str, Any] | None,
               check_active: Any, *, owned_multiparts: Any = (),
               on_multipart_aborted: Any = None) -> dict[str, Any]:
-    pinned = json.loads(intent["target_json"])
+    """Decide a started send of ``attempt`` from exact S3 reads only.
+
+    The attempt's own token, its pinned pre-send inventory and the frozen
+    snapshot are the whole evidence; earlier attempts' tokens are not its own.
+    """
+    pinned = attempt.target
     if provider_identity(client) != pinned["provider"]:
         raise UploadBlocked("identity_changed")
-    before = json.loads(intent["inventory_json"])
+    before = attempt.inventory
     # A crashed worker's request can complete between the two complete reads.
     # Re-observe ONCE only for that exact, independently proven app write. Never
     # rebase the pinned inventory, adopt unknown deltas or retry external churn.
@@ -577,12 +904,12 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
             head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version)
             if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):
                 raise UploadBlocked('ambiguous_receipt')
-            if (head.get('Metadata') or {}).get(TOKEN_KEY) == intent['token']:
+            if (head.get('Metadata') or {}).get(TOKEN_KEY) == attempt.token:
                 matches.append((version, head))
         second = inventory(client, pinned['bucket'], pinned['key'])
         if first == second:
             break
-        if observation or not _own_write_arrived(client, intent, saved, before, first, second, check_active):
+        if observation or not _own_write_arrived(client, attempt, saved, before, first, second, check_active):
             raise UploadBlocked('inventory_changed')
     if len(matches) > 1:
         raise UploadBlocked("ambiguous_receipt")
@@ -598,7 +925,7 @@ def reconcile(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
         raise UploadBlocked("ambiguous_receipt")
     from .upload_snapshot import validated_s3_proof, UploadProofMismatch
     try:
-        expected = UploadSnapshot.from_json(intent["snapshot_json"])
+        expected = attempt.snapshot
         validated_s3_proof(head, version_id=version, snapshot=expected, source="exact_head")
         if saved:
             validated_s3_proof(saved, version_id=version, snapshot=expected, source="upload_response", completion=True)
@@ -685,7 +1012,7 @@ def _prove_absent(client: Any, pinned: dict[str, Any], before: dict[str, Any],
     raise ProvenAbsent()
 
 
-def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any] | None,
+def _own_write_arrived(client: Any, attempt: UploadAttempt, saved: dict[str, Any] | None,
                        before: dict[str, Any], first: dict[str, Any], second: dict[str, Any],
                        check_active: Any) -> bool:
     added = set(second['versions']) - set(first['versions'])
@@ -695,7 +1022,7 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
     version = next(iter(added))
     if saved and saved['VersionId'] != version:
         raise UploadBlocked('ambiguous_receipt')
-    pinned = json.loads(intent['target_json'])
+    pinned = attempt.target
     check_active()
     from .upload_snapshot import validated_s3_proof, UploadProofMismatch, unsupported_checksum_api
     try:
@@ -706,10 +1033,10 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
         raise
     if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):
         raise UploadBlocked('ambiguous_receipt')
-    if (head.get('Metadata') or {}).get(TOKEN_KEY) != intent['token']:
+    if (head.get('Metadata') or {}).get(TOKEN_KEY) != attempt.token:
         return False
     try:
-        expected = UploadSnapshot.from_json(intent['snapshot_json'])
+        expected = attempt.snapshot
         proof = validated_s3_proof(head, version_id=version, snapshot=expected, source='exact_head')
         if saved:
             validated_s3_proof(saved, version_id=version, snapshot=expected, source='upload_response', completion=True)
@@ -719,6 +1046,8 @@ def _own_write_arrived(client: Any, intent: dict[str, Any], saved: dict[str, Any
     return proof is not None
 
 
+# Resume/Retry projections below still read the v0.5 remediation tables; the
+# remediation (#592) and catalog/API (#593) issues port them onto the proofs above.
 def _only_void_episodes(connection: Any, file_id: str) -> bool:
     rows = connection.execute("SELECT intent_id FROM upload_remediations WHERE vault_file_id=%s AND state NOT IN ('resolved','cancelled') LIMIT 8", (file_id,)).fetchall()
     return bool(rows) and all(proven_absent(connection, r["intent_id"]) and unsent(connection, r["intent_id"]) for r in rows)

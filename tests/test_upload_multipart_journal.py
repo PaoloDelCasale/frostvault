@@ -4,7 +4,6 @@ Database-free: the facade journals the UploadId before any part can be sent, and
 proof of absence aborts exactly the journaled ids and nothing else. The database-backed
 flow is covered in ``test_upload_multipart_abort``.
 """
-import json
 import unittest
 from unittest.mock import MagicMock
 
@@ -12,15 +11,14 @@ from botocore.exceptions import ClientError
 
 from app.services import upload_provenance as provenance
 from app.services.s3_upload import _UploadClient
-from tests.upload_provenance_provider import VersionedProvider
+from tests.upload_provenance_provider import VersionedProvider, provider_attempt
 
 BUCKET, KEY = "bucket", "docs/report.txt"
 
 
 def intent(inventory=None):
-    pinned = {"bucket": BUCKET, "key": KEY, "provider": provenance.provider_identity(VersionedProvider())}
-    return {"target_json": json.dumps(pinned), "inventory_json": provenance.canonical(inventory or {"versions": [], "markers": []}),
-            "token": "token", "snapshot_json": "{}"}
+    return provider_attempt(None, token="token", bucket=BUCKET, key=KEY, inventory=inventory,
+                            provider=provenance.provider_identity(VersionedProvider()))
 
 
 class MultipartFacadeJournalTests(unittest.TestCase):
