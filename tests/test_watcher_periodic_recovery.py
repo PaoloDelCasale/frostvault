@@ -54,6 +54,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             runtime = SimpleNamespace(
                 operation_concurrency=1, queue_poll_interval=2, scan_interval=37,
                 audit_interval=10**9, metadata_backup_interval_seconds=0,
+                operational_retention_interval_seconds=0,
                 metadata_backup_verify_interval_seconds=0,
             )
             now = 1000.0

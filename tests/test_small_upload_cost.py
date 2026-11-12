@@ -205,6 +205,7 @@ class BacklogObservationTests(unittest.TestCase):
         runtime = SimpleNamespace(
             operation_concurrency=4, queue_poll_interval=2, scan_interval=10**9,
             audit_interval=10**9, metadata_backup_interval_seconds=0,
+            operational_retention_interval_seconds=0,
             metadata_backup_verify_interval_seconds=0)
         seen = 0
 

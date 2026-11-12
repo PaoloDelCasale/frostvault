@@ -33,6 +33,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
             operation_concurrency=1, bandwidth_limit_kibps=None,
             restore_poll_interval=0, queue_poll_interval=60,
             scan_interval=3600, audit_interval=3600,
+            operational_retention_interval_seconds=0,
             metadata_backup_interval_seconds=0,
             metadata_backup_verify_interval_seconds=0,
         )

@@ -6936,6 +6936,21 @@ def _deliver_notifications_once() -> None:
             pass
 
 
+def _run_operational_retention_once() -> None:
+    from .services.operational_retention import maintain_operational_history
+    runtime = _runtime_settings()
+    try:
+        maintain_operational_history(
+            db, operational_days=runtime.operational_history_retention_days,
+            audit_days=runtime.audit_retention_days,
+            batch_size=runtime.operational_retention_batch_size,
+        )
+    except Exception:
+        # Never log SQL parameters/DSNs. A failed page rolls back and the next
+        # scheduled tick resumes its cursor; no provider work can be replayed.
+        logging.getLogger(__name__).warning("Operational retention deferred; database page rolled back")
+
+
 def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
     try:
@@ -7151,6 +7166,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_audit = marks["audit"]
     last_backup = marks["backup"]
     last_backup_verify = marks["backup_verify"]
+    last_operational_retention = float("-inf")
     backlog_observed_at: float | None = None
     backlog_runnable = 0
     try:
@@ -7213,6 +7229,13 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 else:
                     runnable_count = backlog_runnable
                 current = loop.time()
+                if (
+                    runtime.operational_retention_interval_seconds > 0
+                    and current - last_operational_retention
+                    >= runtime.operational_retention_interval_seconds
+                ):
+                    _submit_maintenance("operational_retention", _run_operational_retention_once)
+                    last_operational_retention = current
                 if current - last_scan >= runtime.scan_interval:
                     _submit_maintenance("scan", scan_all_vaults)
                     last_scan = current

@@ -53,6 +53,17 @@ class Settings:
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "eu-south-1")
     scan_interval: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "21600"))
     audit_interval: int = int(os.getenv("AUDIT_INTERVAL_SECONDS", str(7 * 24 * 60 * 60)))
+    # DB-only operational history; never local/cloud content or backup artifacts.
+    operational_history_retention_days: int = max(
+        1, int(os.getenv("OPERATIONAL_HISTORY_RETENTION_DAYS", "30"))
+    )
+    audit_retention_days: int = max(1, int(os.getenv("AUDIT_RETENTION_DAYS", "90")))
+    operational_retention_interval_seconds: int = max(
+        0, int(os.getenv("OPERATIONAL_RETENTION_INTERVAL_SECONDS", "60"))
+    )
+    operational_retention_batch_size: int = max(
+        1, min(1000, int(os.getenv("OPERATIONAL_RETENTION_BATCH_SIZE", "100")))
+    )
     filesystem_watch_enabled: bool = as_bool("FILESYSTEM_WATCH_ENABLED", True)
     filesystem_watch_force_polling: bool = as_bool(
         "FILESYSTEM_WATCH_FORCE_POLLING", False
