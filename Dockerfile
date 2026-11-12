@@ -7,7 +7,7 @@ RUN npm run build:ci
 
 # Keep the runtime on the Python 3.12 line exercised by every Python CI job.
 # Pin the official multi-platform index; Dependabot maintains tag + digest.
-FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM python:3.15.0-slim-trixie@sha256:f5b92f2a669a4c347044f29367f31983280b648250ca94dea66f98c53bc87e58
 
 LABEL org.opencontainers.image.title="FrostVault" \
       org.opencontainers.image.description="Self-hosted S3 archival and recovery" \
