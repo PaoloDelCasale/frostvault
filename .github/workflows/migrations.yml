@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   python-unit-tests:
-    name: Python unit tests (PostgreSQL shard ${{ matrix.shard }}/11)
+    name: Python unit tests (PostgreSQL shard ${{ matrix.shard }}/7)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -53,20 +53,14 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Use PostgreSQL 16 client tools
+        # The ubuntu-latest image ships PostgreSQL 16; fail if that changes.
         run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
-          sudo apt-get update -qq
-          sudo apt-get install -y postgresql-client-16
+          /usr/lib/postgresql/16/bin/pg_dump --version | grep -E ' 16\.[0-9]+'
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: Run PostgreSQL unit-test shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          SHARD_COUNT: "12"
+          SHARD_COUNT: "8"
           FROSTVAULT_SKIP_DOCKER_SMOKE: "1"
         run: |
           mapfile -t TEST_MODULES < <(
@@ -81,22 +75,28 @@ jobs:
                if path.stem not in {"test_database", "test_aggregate_deadlocks"}),
               key=lambda path: (-path.stat().st_size, path.name),
           )
-          loads = [0] * shard_count
-          assigned = [[] for _ in range(shard_count)]
-          for path in paths:
-              target = min(range(shard_count), key=lambda index: (loads[index], index))
+          # The slowest module (~1 min of real-filesystem waits) gets the
+          # last shard alone; the rest are packed by size, largest first.
+          isolated = "test_watcher_real_filesystem"
+          loads = [0] * (shard_count - 1)
+          assigned = [[] for _ in range(shard_count - 1)]
+          assigned.append([path for path in paths if path.stem == isolated])
+          for path in (path for path in paths if path.stem != isolated):
+              target = min(range(shard_count - 1), key=lambda index: (loads[index], index))
               assigned[target].append(path)
               loads[target] += path.stat().st_size
           for path in assigned[shard_index]:
               print(f"tests.{path.stem}")
           PY
           )
+          # An empty list would make unittest discover and run every module.
+          test "${#TEST_MODULES[@]}" -gt 0
           printf 'Shard %s/%s modules:\n%s\n' \
             "${SHARD_INDEX}" "${SHARD_COUNT}" "${TEST_MODULES[*]}"
           python -m unittest "${TEST_MODULES[@]}" -v
 
   # Keep this aggregate check name stable for branch protection. It fails when
-  # any matrix shard fails, while allowing all twelve shards to run concurrently.
+  # any matrix shard fails, while allowing all eight shards to run concurrently.
   unit-and-migration-tests:
     name: Unit and migration tests
     needs: [python-unit-tests, postgresql-tests]
@@ -144,15 +144,9 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Use PostgreSQL 16 client tools for backup guard tests
+        # The ubuntu-latest image ships PostgreSQL 16; fail if that changes.
         run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
-          sudo apt-get update -qq
-          sudo apt-get install -y postgresql-client-16
+          /usr/lib/postgresql/16/bin/pg_dump --version | grep -E ' 16\.[0-9]+'
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: PostgreSQL schema guard and baseline tests
         run: python -m unittest tests.test_database -v
@@ -179,65 +173,6 @@ jobs:
           RESULT: ${{ needs.postgresql-tests.result }}
           PROFILE: ${{ needs.postgresql-tests.outputs.profile }}
         run: test "$RESULT" = success && test "$PROFILE" = full
-
-  # Descriptive #562 evidence, isolated from existing stress/floor/release gates.
-  upload-execution-benchmark:
-    name: Upload execution baseline comparison (${{ matrix.concurrency }} workers)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        concurrency: [1, 4, 16]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: upload_benchmark_test
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d upload_benchmark_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/upload_benchmark_test
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: 628d065fe54a5c13364d5da7c58cb563d0bd80b7
-          path: benchmark-baseline
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install -r requirements.txt
-      - name: Validate benchmark Job, SDK/provider and catalog Seams on real PostgreSQL
-        run: python -m unittest tests.test_upload_benchmark tests.upload_benchmark_postgres_contract -v
-      - name: Compare both SHAs using the candidate's identical external harness
-        run: |
-          python scripts/upload_benchmark.py \
-            --baseline "$GITHUB_WORKSPACE/benchmark-baseline" \
-            --candidate "$GITHUB_WORKSPACE" \
-            --output "$RUNNER_TEMP/upload-execution-comparison" \
-            --disposable-postgres \
-            --mode s3_checksum --files 128 --concurrency ${{ matrix.concurrency }} --warmup 32 --repetitions 5
-          cat "$RUNNER_TEMP/upload-execution-comparison/summary.md" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload raw benchmark samples, manifest and summary
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: upload-execution-comparison-${{ matrix.concurrency }}
-          path: ${{ runner.temp }}/upload-execution-comparison/
-          if-no-files-found: warn
-          retention-days: 7
 
   frontend-typecheck:
     name: Frontend generate and typecheck
@@ -624,7 +559,7 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
       - name: Install Playwright Chromium
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run Playwright e2e
         working-directory: frontend
         env:
