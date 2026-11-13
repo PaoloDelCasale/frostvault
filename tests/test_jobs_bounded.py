@@ -177,25 +177,44 @@ class BoundedJobsHttpTests(unittest.TestCase):
 
 class RemediatedGroupSqlTests(unittest.TestCase):
     def test_resolved_failures_are_counted_in_sql_without_rewriting_history(self):
+        import uuid
         from app import storage
+        from app.services.job_queries import list_jobs
         from tests import test_upload_remediation as remediation_fixtures
-        case = remediation_fixtures.UploadRemediationTests("test_post_ack_original_preserved_resolution_requires_completed_cleanup")
+        case = remediation_fixtures.UploadRemediationTests("test_owner_cancel_is_durable")
         case.setUp()
         self.addCleanup(case.doCleanups)
-        original = case.fail_after_ack()
-        resumed = case.admit()
+        group = str(uuid.uuid4())
+
+        def grouped(mode="s3_checksum"):
+            with case.db() as connection:
+                connection.execute("INSERT INTO job_groups(id, vault_id, path) VALUES (%s, 2, 'folder') "
+                                   "ON CONFLICT DO NOTHING", (group,))
+                job_id = connection.execute(
+                    "INSERT INTO jobs(vault_id, file_id, action, status, origin, total_bytes, group_id) "
+                    "VALUES (2, %s, 'upload', 'queued', 'manual', %s, %s) RETURNING id",
+                    (case.file_id, len(remediation_fixtures.A), group)).fetchone()["id"]
+                connection.execute("INSERT INTO job_uploads(job_id, verification_mode) VALUES (%s, %s)",
+                                   (job_id, mode))
+            return job_id
+        case.queue = grouped
+        original = case.fail_original("accepted")
+        case.make_due()
+        case.sweep()
+        resumed = case.admitted()
         case.run_job(resumed)
-        case.assert_keeper(resumed)
+        case.assert_current(resumed, remediation_fixtures.A)
         with case.db() as connection:
-            connection.execute("UPDATE jobs SET group_id='resolved-bulk',group_path='folder'")
-            connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                requested_at,updated_at,group_id,group_path)
-                VALUES (2,%s,'report.txt','upload','failed',%s,%s,'resolved-bulk','folder')""",
-                (case.file_id,storage.now_iso(),storage.now_iso()))
-        with patch("app.main._allowed_hosts",return_value=[]):
-            response = case.http_client().get("/api/jobs?vault_id=2")
-        self.assertEqual(response.status_code,200,response.text)
-        group = response.json()["groups"][0]
-        self.assertEqual((group["status"],group["failed_count"],group["resolved_failed_count"],
-                          group["unresolved_failed_count"],group["completed_count"]),("failed",2,1,1,1))
-        self.assertEqual(case.row(original)["status"],"failed")
+            # A later failure in the same request, with no cloud work left.
+            connection.execute("""INSERT INTO jobs(vault_id, file_id, action, status, group_id,
+                requested_at, updated_at, finished_at)
+                VALUES (2, %s, 'upload', 'failed', %s, %s, %s, %s)""",
+                (case.file_id, group, storage.now_iso(), storage.now_iso(), storage.now_iso()))
+            body = list_jobs(connection, vault_id=2, locale="en")
+        summary = next(row for row in body["groups"] if row["id"] == group)
+        self.assertEqual((summary["status"], summary["failed_count"], summary["resolved_failed_count"],
+                          summary["unresolved_failed_count"]), ("failed", 2, 1, 1))
+        self.assertEqual(case.job(original)["status"], "failed")
+        projected = {row["id"]: row for row in body["items"]}
+        self.assertEqual(projected[original]["remediation"]["state"], "resolved")
+        self.assertEqual(projected[resumed]["remediation"]["resolved_by_job_id"], resumed)

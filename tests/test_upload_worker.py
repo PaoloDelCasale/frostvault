@@ -3,8 +3,8 @@
 Real admission, claim and ``storage.process_job`` on a disposable PostgreSQL 16
 database; the S3 transport is the synthetic ``VersionedProvider``, which keeps
 version bytes and metadata across worker runs and counts every PUT/GET/HEAD.
-Out of scope and patched: Upload Remediation (#592). The exact cleanup of
-superseded versions (#591) runs for real; its own cases live in
+Upload Remediation (#592) and the exact cleanup of superseded versions (#591)
+run for real; their own cases live in ``tests.test_upload_remediation`` and
 ``tests.test_upload_cleanup``.
 """
 from __future__ import annotations
@@ -94,12 +94,6 @@ class UploadWorkerTests(unittest.TestCase):
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
-        # Upload Remediation episodes are ported by #592.
-        self.enterContext(patch("app.services.upload_remediation.intercept_upload",
-                                return_value=(False, None)))
-        self.enterContext(patch("app.services.upload_remediation.transition"))
-        self.enterContext(patch("app.services.upload_remediation_discovery.capture"))
-        self.enterContext(patch("app.storage._held_transition_may_share_vault", return_value=False))
         self.addCleanup(storage.shutdown_state.reset)
 
     # -- helpers -------------------------------------------------------------
