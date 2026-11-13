@@ -5299,7 +5299,9 @@ def reprobe_cloud_readiness_once() -> None:
         if state['status'] == 'blocked' and not cloud_preflight_gate.probe_due(state, now):
             return
         was_blocked = state['status'] == 'blocked'
-        vault = connection.execute("SELECT * FROM vaults ORDER BY id LIMIT 1").fetchone()
+        # The bucket belongs to the Vault Target (#593): only the projection
+        # carries ``s3_bucket``, a bare Vault row would block the gate for good.
+        vault = connection.execute(f"{VAULT_ROW_SQL} ORDER BY v.id LIMIT 1").fetchone()
     if vault:
         try:
             validate_cloud_vault(dict(vault))

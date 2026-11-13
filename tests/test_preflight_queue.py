@@ -231,6 +231,32 @@ class PreflightQueueTests(unittest.TestCase):
         with self.db() as c:
             self.assertEqual(gate.snapshot(c)['status'], 'ready')
 
+    def test_automatic_probe_reads_the_bucket_from_the_vault_target(self):
+        # #616: the bucket belongs to the Vault Target, not to the Vault row.
+        # Only the S3 client is simulated, so the real readiness check sees the
+        # Vault record the probe loop actually reads from the database.
+        with self.db() as c:
+            c.execute(
+                "INSERT INTO cloud_preflight_state(id, status, remediation, failure_count, next_probe_at) "
+                "VALUES (1, 'blocked', 'S3 access was refused', 3, '2000-01-01T00:00:00+00:00')"
+            )
+        flags = ('BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets')
+        client = SimpleNamespace(
+            head_bucket=Mock(),
+            get_bucket_location=Mock(return_value={'LocationConstraint': settings.aws_region}),
+            get_bucket_versioning=Mock(return_value={'Status': 'Enabled'}),
+            get_public_access_block=Mock(return_value={
+                'PublicAccessBlockConfiguration': dict.fromkeys(flags, True)}),
+        )
+        with patch('app.storage.s3_client', return_value=client), patch('app.storage._submit_maintenance') as recovery:
+            storage.reprobe_cloud_readiness_once()
+        client.head_bucket.assert_called_once_with(Bucket='bucket')
+        recovery.assert_called_once()
+        with self.db() as c:
+            state = gate.snapshot(c)
+            self.assertEqual(state['status'], 'ready', state.get('remediation'))
+            self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='cloud_preflight_blocked' AND problem_status='open'").fetchone()['n'], 0)
+
     def test_scans_and_audits_share_one_warning_without_suppressing_local_catalog(self):
         with patch('app.storage.runtime_status', {}), patch('app.storage._verified_local_scan', return_value=(2, {}, None, True)), patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Grant s3:GetBucketPublicAccessBlock')):
             for vault in self.vaults:
