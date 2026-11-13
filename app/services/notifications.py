@@ -757,6 +757,19 @@ _CATALOG_AUDIT_FAILED_RESOLUTION = """
     )
 """
 
+# A reconciliation Problem names one blocked file (#628): it closes when no
+# file under its key is blocked any more, whichever successful Job cleared the
+# block (publication, an unchanged match, a proof of absence) and even when the
+# Job that cleared it stopped before it could close the Problem itself.
+_UPLOAD_RECONCILIATION_RESOLUTION = """
+    n.event='upload_reconciliation' AND starts_with(n.dedupe_key, 'upload_reconciliation:')
+    AND NOT EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.reconciliation_block IS NOT NULL
+          AND 'upload_reconciliation:' || f.id::text = n.dedupe_key
+    )
+"""
+
 
 def _problem_resolutions() -> dict[frozenset[str], str]:
     from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as resolution
@@ -766,6 +779,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"archive_version_missing", "cloud_only_conflict"}): _INCIDENT_RESOLUTION,
         frozenset({"file_unreadable"}): _FILE_UNREADABLE_RESOLUTION,
         frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
+        frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
     }
 
 

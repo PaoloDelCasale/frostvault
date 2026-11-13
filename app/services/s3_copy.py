@@ -41,6 +41,14 @@ S3_COPY_CHECKSUM_TYPE = "FULL_OBJECT"
 S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
 
 
+class ProviderResponseError(RuntimeError):
+    """The provider answered, but incompletely or not in the documented shape.
+
+    A fault of the answer, never of FrostVault's own code: callers that turn a
+    provider failure into a per-file outcome may name it (#628).
+    """
+
+
 def _object_version_entries(
     client: Any,
     *,
@@ -58,25 +66,28 @@ def _object_version_entries(
     continuations: set[tuple[str, str]] = set()
     while True:
         page = client.list_object_versions(**kwargs)
-        if page.get("IsTruncated") not in (True, False) or "IsTruncated" not in page:
-            raise RuntimeError("S3 version listing did not confirm complete pagination")
+        if not isinstance(page, dict) or page.get("IsTruncated") not in (True, False):
+            raise ProviderResponseError("S3 version listing did not confirm complete pagination")
         for field, entries, other in (("Versions", versions, markers), ("DeleteMarkers", markers, versions)):
-            for item in page.get(field) or []:
+            items = page.get(field) or []
+            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                raise ProviderResponseError("S3 version listing is malformed")
+            for item in items:
                 if item.get("Key") != object_key:
                     continue
                 version = str(item.get("VersionId") or "")
                 if not version or version == "null" or version in entries or version in other:
-                    raise RuntimeError("S3 version listing has ambiguous exact identities")
+                    raise ProviderResponseError("S3 version listing has ambiguous exact identities")
                 entries[version] = item
         if not page.get("IsTruncated"):
             break
         next_key = page.get("NextKeyMarker")
         next_version = page.get("NextVersionIdMarker")
         if not next_key:
-            raise RuntimeError("S3 version listing omitted its continuation marker")
+            raise ProviderResponseError("S3 version listing omitted its continuation marker")
         continuation = (str(next_key), str(next_version or ""))
         if continuation in continuations:
-            raise RuntimeError("S3 version listing repeated its continuation marker")
+            raise ProviderResponseError("S3 version listing repeated its continuation marker")
         continuations.add(continuation)
         kwargs["KeyMarker"] = next_key
         if next_version:

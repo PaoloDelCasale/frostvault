@@ -158,10 +158,22 @@ class ProvenanceProviderTests(unittest.TestCase):
         with patch.object(self.provider, "list_object_versions", side_effect=error):
             with self.assertRaises(EndpointConnectionError):
                 inventory(self.provider, "bucket", "key")
-        with patch.object(self.provider, "list_object_versions", side_effect=ValueError("garbled")):
-            with self.assertRaises(UploadBlocked) as blocked:
-                inventory(self.provider, "bucket", "key")
-        self.assertEqual(blocked.exception.reason, "inventory_changed")
+        # An incomplete or malformed answer is an unconfirmed inventory.
+        for page in ({"Versions": []}, {"IsTruncated": False, "Versions": "garbled"}, ["garbled"]):
+            with self.subTest(page=page), patch.object(self.provider, "list_object_versions", return_value=page):
+                with self.assertRaises(UploadBlocked) as blocked:
+                    inventory(self.provider, "bucket", "key")
+                self.assertEqual(blocked.exception.reason, "inventory_changed")
+
+    def test_a_programming_error_reading_the_inventory_is_a_worker_error_not_a_block(self):
+        # #628: no S3 client at all is FrostVault's bug, never a changed inventory.
+        with self.assertRaises(AttributeError):
+            inventory(None, "bucket", "key")
+        for error in (TypeError("bad call"), ValueError("bad value"), KeyError("Versions")):
+            with self.subTest(error=repr(error)), \
+                    patch.object(self.provider, "list_object_versions", side_effect=error):
+                with self.assertRaises(type(error)):
+                    inventory(self.provider, "bucket", "key")
 
     def test_inflight_own_write_between_complete_listings_reconciles_automatically(self):
         listing = self.provider.list_object_versions

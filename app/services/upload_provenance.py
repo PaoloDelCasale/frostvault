@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
-from .s3_copy import _object_version_entries
+from .s3_copy import ProviderResponseError, _object_version_entries
 from .vault_paths import expected_cloud_key
 
 TOKEN_KEY = "frostvault-upload"
@@ -152,9 +152,10 @@ _OPERATION_REASONS = {
 def _guarded_listing(call: Any, bucket: str) -> Any:
     """Run a provider LIST and name why it failed.
 
-    Anything that is neither a permission refusal nor a transient provider fault is
-    an unconfirmed inventory (``inventory_changed``). See ``guarded`` for the
-    permission and transient handling shared with every other S3 action.
+    A provider failure that is neither a permission refusal nor a transient fault is
+    an unconfirmed inventory (``inventory_changed``); a programming error
+    propagates. See ``guarded`` for the permission and transient handling shared
+    with every other S3 action.
     """
     return guarded(call, bucket, default="list_permission_denied", unconfirmed="inventory_changed")
 
@@ -171,8 +172,12 @@ def guarded(call: Any, bucket: str, *, default: str, unconfirmed: str | None = N
     stays queued); probe passes -> a per-file ``*_permission_denied`` block that
     never touches the gate. Credential, network, throttling and 5xx failures say
     nothing about the file and propagate to be suspended/retried. ``unconfirmed``
-    (listings only) names any other failure. The block is raised outside the
-    ``except`` so it carries no chained provider error that would be read as readiness.
+    (listings only) names any other provider failure: an S3/botocore error or an
+    incomplete or malformed answer (``ProviderResponseError``). Any other
+    exception is a fault of FrostVault itself (``AttributeError``,
+    ``TypeError``...) and propagates as a worker error, never as a per-file
+    block (#628). The block is raised outside the ``except`` so it carries no
+    chained provider error that would be read as readiness.
     """
     reason: str | None
     try:
@@ -181,12 +186,22 @@ def guarded(call: Any, bucket: str, *, default: str, unconfirmed: str | None = N
         raise
     except Exception as exc:
         reason = permission_denied_reason(exc, bucket, default=default)
-        if reason is None and unconfirmed is not None and not _is_provider_unreachable(exc) \
-                and not _refusals(exc):
+        if reason is None and unconfirmed is not None and _is_provider_failure(exc) \
+                and not _is_provider_unreachable(exc) and not _refusals(exc):
             reason = unconfirmed
         if reason is None:
             raise
     raise UploadBlocked(reason)
+
+
+def _is_provider_failure(error: BaseException) -> bool:
+    """The provider's own failure: a botocore error or an unusable answer.
+
+    Only the exception itself counts, never its chain: a programming error
+    raised while handling a provider error is still a programming error.
+    """
+    from botocore.exceptions import BotoCoreError, ClientError
+    return isinstance(error, (ClientError, BotoCoreError, ProviderResponseError))
 
 
 def _bucket_still_ready(bucket: str) -> bool:
