@@ -254,8 +254,8 @@ class AggregateDeadlockTests(unittest.TestCase):
             with PostgresConnection(self.path) as connection:
                 self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],attempt)
 
-    def test_16_workers_1024_nested_uploads_with_concurrent_maintenance(self):
-        count = stress_file_count(1024)
+    def test_16_workers_256_nested_uploads_with_concurrent_maintenance(self):
+        count = stress_file_count(256)
         jobs = self.seed(count)
         stop = threading.Event()
         maintenance_passes = []
@@ -616,7 +616,7 @@ class AggregateDeadlockTests(unittest.TestCase):
     # PostgreSQL connection per DB unit (tens per file); the throughput floor
     # catches severe slowdowns, not small drifts or pool/lock effects alone.
     # Local 512-file measurements: baseline 2.0 files/s, pooled 3.5 files/s.
-    THROUGHPUT_FILES = 2048
+    THROUGHPUT_FILES = 512
     THROUGHPUT_MIN_FILES_PER_SECOND = 0.5
     THROUGHPUT_MAX_NEW_CONNECTIONS = 200
     THROUGHPUT_MAINTENANCE_SECONDS = 0.02

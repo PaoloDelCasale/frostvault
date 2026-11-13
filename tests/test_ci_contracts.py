@@ -261,7 +261,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         postgres_job = jobs["postgresql-tests"]
         self.assertEqual(
             python_job["strategy"]["matrix"]["shard"],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            [0, 1, 2, 3, 4, 5, 6, 7],
         )
         self.assertEqual(postgresql_job["needs"], ["python-unit-tests", "postgresql-tests"])
         self.assertEqual(postgresql_job["if"], "${{ always() }}")
@@ -272,7 +272,7 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("assigned[target].append(path)", python_runs)
         self.assertEqual(
             python_job["steps"][-1].get("env", {}).get("SHARD_COUNT"),
-            "12",
+            "8",
         )
         self.assertIn("postgres", python_job.get("services") or {})
         self.assertIn("TEST_POSTGRES_URL", python_job.get("env") or {})
@@ -348,11 +348,17 @@ class PullRequestCiContractTests(unittest.TestCase):
         run = job["steps"][-1]["run"]
         selector = run.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
         selected = []
+        shards = []
         for shard in job["strategy"]["matrix"]["shard"]:
             out = io.StringIO()
-            with patch.dict(os.environ, {"SHARD_INDEX": str(shard), "SHARD_COUNT": "12"}), contextlib.redirect_stdout(out):
+            with patch.dict(os.environ, {"SHARD_INDEX": str(shard), "SHARD_COUNT": "8"}), contextlib.redirect_stdout(out):
                 exec(compile(selector, "workflow-selector", "exec"), {})
-            selected.extend(out.getvalue().splitlines())
+            shards.append(out.getvalue().splitlines())
+            selected.extend(shards[-1])
+        self.assertTrue(all(shards), "an empty shard would run unittest discovery")
+        # The slowest module owns the last shard, so it never sets the pace of another.
+        self.assertEqual(shards[-1], ["tests.test_watcher_real_filesystem"])
+        self.assertIn('test "${#TEST_MODULES[@]}" -gt 0', run)
         dedicated = {"tests.test_database", "tests.test_aggregate_deadlocks"}
         expected = {f"tests.{path.stem}" for path in (ROOT / "tests").glob("test_*.py")} - dedicated
         self.assertEqual(Counter(selected), Counter({module: 1 for module in expected}))
