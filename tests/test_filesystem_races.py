@@ -1,4 +1,4 @@
-"""Catalog integration for #472/#476/#477; deterministic interleavings, no S3 network."""
+"""Catalog integration for #472/#476/#477 on the rebuilt `files` model (ADR-0035); deterministic interleavings, no S3 network."""
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +11,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import uuid
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -20,6 +21,8 @@ from watchfiles import Change, awatch
 from app import storage
 from app.catalog import ArchiveCatalog
 from tests import test_auto_upload_watcher as fixtures
+from tests.catalog_support import fingerprint, protect
+from tests.upload_support import job_row
 
 
 class FilesystemCatalogTests(unittest.TestCase):
@@ -31,26 +34,27 @@ class FilesystemCatalogTests(unittest.TestCase):
     jobs = fixtures.WatcherAutomaticUploadTests.jobs
 
     def entries(self):
+        """Observed Local Copies (``files.local_*``), named as the shared helpers expect."""
         with self.db() as connection:
-            return connection.execute("""
-                SELECT fp.path, lc.* FROM vault_files vf
-                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                JOIN local_copies lc ON lc.vault_file_id=vf.id
-                WHERE vf.vault_id=2 AND vf.status='active' ORDER BY fp.path
-            """).fetchall()
+            return [dict(row, matched_archive_version_id=row["matched_archive_version_id"] and str(row["matched_archive_version_id"]),
+                         cloud_only_version_id=row["cloud_only_version_id"] and str(row["cloud_only_version_id"]))
+                    for row in connection.execute("""
+                SELECT f.path, f.local_presence AS presence, f.local_file_type AS file_type,
+                       f.local_size AS size, f.local_mtime_ns AS mtime_ns,
+                       encode(f.local_sha256, 'hex') AS plaintext_sha256,
+                       f.matched_version_id AS matched_archive_version_id,
+                       f.held_version_id AS cloud_only_version_id
+                FROM files f WHERE f.vault_id=2 AND f.local_presence IS NOT NULL ORDER BY f.path
+            """).fetchall()]
 
     def archive(self, name="photo.jpg", content=b"photo", *, missing=False):
         target = self.write(name, content)
         digest = hashlib.sha256(content).hexdigest()
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
-            version = catalog.record_archive_version(
-                vault_id=2, path=name, object_key=f"photos/{name}", provider_version_id="exact",
-                size=len(content), storage_class="STANDARD", etag="etag",
-                uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="first",
-            )
-            catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.clock.isoformat())
-            catalog.set_local_fingerprint(vault_id=2, path=name, plaintext_sha256=digest, matched_archive_version_id=version)
+            fingerprint(catalog, 2, name, digest)
+            version = str(protect(catalog, 2, name, digest, provider_version_id="exact",
+                                  created_at=self.clock.isoformat(), verified_at=self.clock.isoformat()))
         if missing:
             target.unlink()
             storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
@@ -59,10 +63,10 @@ class FilesystemCatalogTests(unittest.TestCase):
     def job(self, action, path="photo.jpg"):
         with self.db() as connection:
             ids, _, _ = ArchiveCatalog(connection).queue_jobs(
-                vault_id=2, path=path, action=action, requested_by=1,
-                requested_at=self.clock.isoformat(), group_id="filesystem-regression", is_directory=False,
+                vault_id=2, path=path, action=action,
+                requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
-            return dict(connection.execute("SELECT j.*, v.source_root, v.s3_bucket, v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (ids[0],)).fetchone())
+            return dict(job_row(connection, ids[0]))
 
     def test_directory_move_in_rename_and_move_out_are_catalogued_without_scan(self):
         incoming = self.base / "incoming"
@@ -312,13 +316,14 @@ class FilesystemCatalogTests(unittest.TestCase):
     def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
         target, version, _ = self.archive()
         with self.db() as connection:
-            connection.execute("""INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
-                requested_at, updated_at, group_id, archive_version_id) SELECT 2, vf.id, 'photo.jpg', 'recover', 'completed', 1,
-                %s, %s, 'old-recovery', %s FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id
-                WHERE fp.path='photo.jpg'""", (self.clock.isoformat(), self.clock.isoformat(), version))
             catalog = ArchiveCatalog(connection)
             for name in (f".photo.jpg.restore-{'a' * 32}.tmp.f8Fc29bA", "photo.jpg.tmp.f8Fc29bA", "user.tmp.f8Fc29bA"):
                 catalog.observe_local_copy(vault_id=2, path=name, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+            # The completed Recover whose window covers the legacy residue.
+            connection.execute("""INSERT INTO jobs(vault_id, file_id, action, status, origin, requested_at,
+                updated_at, archive_version_id) SELECT 2, f.id, 'recover', 'completed', 'manual',
+                now() - interval '1 hour', now() + interval '1 hour', %s FROM files f
+                WHERE f.vault_id=2 AND f.path='photo.jpg'""", (version,))
         # Repair is part of ordinary local reconciliation, not a destructive
         # schema migration and never a broad *.tmp.* filename filter.
         storage.scan_tree(self.vault, self.clock.isoformat())
@@ -333,8 +338,10 @@ class FilesystemCatalogTests(unittest.TestCase):
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(vault_id=2, path=on_disk, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
-            catalog.record_archive_version(vault_id=2, path=cloud_backed, object_key=f"photos/{cloud_backed}", provider_version_id="keep", size=5, storage_class="STANDARD", etag="etag", uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="legacy")
             catalog.observe_local_copy(vault_id=2, path=cloud_backed, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+            digest = hashlib.sha256(b"photo").hexdigest()
+            fingerprint(catalog, 2, cloud_backed, digest)
+            protect(catalog, 2, cloud_backed, digest, provider_version_id="keep")
         storage.scan_tree(self.vault, self.clock.isoformat())
         self.assertEqual({row["path"] for row in self.entries()}, {on_disk, cloud_backed})
         self.assertEqual((self.root / on_disk).read_bytes(), b"photo")
@@ -378,10 +385,8 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                 path.write_bytes(b"first")
                 real_apply(self.vault, {(Change.added, str(path))})
             with self.db() as connection:
-                ArchiveCatalog(connection).set_local_fingerprint(
-                    vault_id=2, path=f"{sibling_dir.name}/existing.jpg",
-                    plaintext_sha256=hashlib.sha256(b"first").hexdigest(), matched_archive_version_id=None,
-                )
+                fingerprint(ArchiveCatalog(connection), 2, f"{sibling_dir.name}/existing.jpg",
+                            hashlib.sha256(b"first").hexdigest())
 
         injected = False
         def inject_changes():

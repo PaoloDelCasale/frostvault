@@ -679,6 +679,10 @@ class UploadExecution:
         assert version is not None
 
         def mark(catalog: Any) -> None:
+            if run.verification is not None:
+                # A consumed read-back stays visible: written while unverified,
+                # in the same unit that records the mismatch.
+                catalog.record_verification_evidence(version.id, **run.verification)
             row = catalog.connection.execute(
                 "SELECT replacing_version_id FROM files WHERE id=%s FOR UPDATE",
                 (job["file_id"],)).fetchone()

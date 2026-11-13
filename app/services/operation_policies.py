@@ -168,15 +168,19 @@ def set_policy(
         """
         INSERT INTO vault_operation_policies(
             vault_id, auto_upload, local_release_after_days, stability_seconds,
-            include_globs_json, exclude_globs_json, upload_verification
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            include_globs_json, exclude_globs_json, upload_verification, suspended_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE %s::timestamptz END)
         ON CONFLICT(vault_id) DO UPDATE SET
             auto_upload=excluded.auto_upload,
             local_release_after_days=excluded.local_release_after_days,
             stability_seconds=excluded.stability_seconds,
             include_globs_json=excluded.include_globs_json,
             exclude_globs_json=excluded.exclude_globs_json,
-            upload_verification=excluded.upload_verification
+            upload_verification=excluded.upload_verification,
+            -- In the same statement: the suspension CHECK holds per row. Keep
+            -- the start of one continuous suspension, including across restart.
+            suspended_at=CASE WHEN excluded.auto_upload THEN NULL
+                ELSE COALESCE(vault_operation_policies.suspended_at, excluded.suspended_at) END
         """,
         (
             vault_id,
@@ -186,13 +190,9 @@ def set_policy(
             json.dumps(list(canonical.include_globs)),
             json.dumps(list(canonical.exclude_globs)),
             canonical.upload_verification,
+            canonical.auto_upload,
+            datetime.now(timezone.utc).isoformat(),
         ),
-    )
-    # Keep the start of one continuous suspension, including across restart.
-    connection.execute(
-        "UPDATE vault_operation_policies SET suspended_at=CASE WHEN auto_upload THEN NULL "
-        "ELSE COALESCE(suspended_at,%s) END WHERE vault_id=%s",
-        (datetime.now(timezone.utc).isoformat(), vault_id),
     )
     return canonical
 
@@ -316,7 +316,6 @@ def queue_auto_uploads(
     *,
     vault_id: int,
     source_root: str,
-    requested_by: int,
     now: datetime | None = None,
     retry_failed_only: bool = False,
 ) -> int:
@@ -456,7 +455,6 @@ def queue_auto_local_cleanups(
     connection: Any,
     *,
     vault_id: int,
-    requested_by: int,
     now: datetime | None = None,
 ) -> int:
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""

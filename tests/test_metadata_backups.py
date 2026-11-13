@@ -37,6 +37,7 @@ from app import storage
 
 from app.services import metadata_backups
 from tests.test_database import run_alembic
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import database_state, restore_database
 
 
@@ -54,18 +55,8 @@ class CreateMetadataBackupTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', '/src', 'bucket', 'vaults/abc/')
-                """
-            )
+            insert_owner(connection, display_name="Admin")
+            insert_vault(connection, name="Docs", source_root="/src")
 
         self.master_key = Fernet.generate_key().decode("ascii")
         self.settings = replace(
@@ -110,10 +101,10 @@ class CreateMetadataBackupTests(unittest.TestCase):
         restored_db = self.root / "restored"
         restore_database(restored_db, payload["database"])
         with PostgresConnection(str(restored_db)) as connection:
-            users = connection.execute("SELECT username FROM users").fetchall()
-            vaults = connection.execute("SELECT slug FROM vaults").fetchall()
-        self.assertEqual([row["username"] for row in users], ["admin"])
-        self.assertEqual([row["slug"] for row in vaults], ["docs"])
+            owners = connection.execute("SELECT display_name FROM owner").fetchall()
+            vaults = connection.execute("SELECT name FROM vaults").fetchall()
+        self.assertEqual([row["display_name"] for row in owners], ["Admin"])
+        self.assertEqual([row["name"] for row in vaults], ["Docs"])
 
 
 class LocalRetentionRotationTests(unittest.TestCase):
@@ -226,12 +217,7 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
-                """
-            )
+            insert_owner(connection, display_name="Admin")
         self.master_key = Fernet.generate_key().decode("ascii")
         self.store = RecordingObjectStore()
 
@@ -276,12 +262,7 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
-                """
-            )
+            insert_owner(connection, display_name="Admin")
         self.master_key = Fernet.generate_key().decode("ascii")
         self.settings = replace(
             __import__("app.config", fromlist=["settings"]).settings,
@@ -403,15 +384,7 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         migrated = run_alembic(self.db_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', 'hash')
-                """
-            )
-            self.admin_id = connection.execute(
-                "SELECT id FROM users WHERE username='admin'"
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Admin")
         self.master_key = Fernet.generate_key().decode("ascii")
         self.store = RecordingObjectStore()
 
@@ -430,8 +403,7 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
                 )
             status = metadata_backups.backup_status(connection)
             notes = connection.execute(
-                "SELECT event, title FROM notifications WHERE user_id=%s",
-                (self.admin_id,),
+                "SELECT event, title FROM notifications"
             ).fetchall()
 
         self.assertEqual(status["last_status"], "failed")

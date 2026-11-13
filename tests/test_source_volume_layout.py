@@ -12,6 +12,7 @@ Seams under test (confirmed):
 """
 from __future__ import annotations
 
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
@@ -41,10 +42,7 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
         self.sources_root.mkdir()
 
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
-            )
+            insert_owner(connection)
 
         self.settings = replace(
             Settings(),
@@ -388,13 +386,7 @@ class SourceVolumeInventoryTests(unittest.TestCase):
         vault_root = self.photos / "family"
         vault_root.mkdir()
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('family', 'Family', %s, 'b', 'p/')
-                """,
-                (str(vault_root),),
-            )
+            insert_vault(connection, name="Family", source_root=str(vault_root), bucket="b")
 
         def is_mount(path: Path | str) -> bool:
             return Path(path) in {self.sources, self.photos}
@@ -470,18 +462,9 @@ class LocalOpsGateTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
-            )
-            self.vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('family', 'Family', %s, 'b', 'p/')
-                RETURNING id
-                """,
-                (str(self.vault_root),),
-            ).fetchone()["id"]
+            insert_owner(connection)
+            self.vault_id = insert_vault(connection, name="Family", source_root=str(self.vault_root),
+                                         bucket="b")["id"]
         self.settings = replace(
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
@@ -534,10 +517,10 @@ class LocalOpsGateTests(unittest.TestCase):
 
         with PostgresConnection(str(self.database_path)) as connection:
             missing = connection.execute(
-                "SELECT COUNT(*) AS total FROM local_copies WHERE presence='missing'"
+                "SELECT COUNT(*) AS total FROM files WHERE local_presence='missing'"
             ).fetchone()["total"]
             present = connection.execute(
-                "SELECT COUNT(*) AS total FROM local_copies WHERE presence='present'"
+                "SELECT COUNT(*) AS total FROM files WHERE local_presence='present'"
             ).fetchone()["total"]
         # The scan is blocked before touching data or mass-marking catalog rows.
         self.assertEqual(missing, 0)
@@ -568,13 +551,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.database_path)) as connection:
-            self.admin_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s) RETURNING id
-                """,
-                (hash_password("admin-password-1"),),
-            ).fetchone()["id"]
+            insert_owner(connection, password="admin-password-1")
         self.settings = replace(
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
@@ -600,9 +577,7 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         source_layout.prepare_sources_layout()
         self.client = TestClient(app, client=("127.0.0.1", 50000))
         with PostgresConnection(str(self.database_path)) as connection:
-            token = create_session(
-                connection, user_id=self.admin_id, auth_method="oidc"
-            )
+            token = create_session(connection, auth_method="oidc")
         self.client.cookies.set(self.settings.session_cookie_name, token)
 
     def test_admin_can_list_source_volumes(self) -> None:

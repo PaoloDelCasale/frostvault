@@ -6,22 +6,35 @@ from app.services.upload_remediation import project_jobs
 from tests.postgres import PostgresConnection
 from tests import test_job_messages as fixtures
 
+# Job groups are uuids scoped to one Vault (``job_groups``); fixed ids keep the
+# assertions readable.
+BULK = "00000000-0000-0000-0000-0000000b01c0"
+OLD_DELETION = "00000000-0000-0000-0000-0000000de1e7"
+LONG = "00000000-0000-0000-0000-00000000107e"
+
+
+def add_group(connection, group_id, vault_id, path="folder"):
+    connection.execute("INSERT INTO job_groups(id, vault_id, path) VALUES (%s, %s, %s) "
+                       "ON CONFLICT (id) DO NOTHING", (group_id, vault_id, path))
+
 
 class BoundedJobsHttpTests(unittest.TestCase):
     setUp = fixtures.JobMessageHttpTests.setUp
     PASSWORD = fixtures.JobMessageHttpTests.PASSWORD
 
-    def seed_group(self, count=301):
+    def seed_group(self, count=301, *, active=True):
+        """``count`` uploads of a.txt in group BULK; the last one queued when ``active``."""
         with PostgresConnection(self.database_path) as connection:
+            add_group(connection, BULK, self.vault_id)
             connection.execute("""
-                INSERT INTO jobs(vault_id,vault_file_id,path,action,status,message,
-                    message_key,message_params,requested_at,updated_at,group_id,group_path,
+                INSERT INTO jobs(vault_id,file_id,action,status,message,
+                    message_key,message_params,requested_at,updated_at,group_id,
                     total_bytes,transferred_bytes)
-                SELECT vault_id,vault_file_id,'a.txt','upload',
-                    CASE WHEN n=%s THEN 'queued' ELSE 'completed' END,
-                    '', 'job.upload_verified','{}',requested_at,updated_at,'bulk','folder',100,0
+                SELECT vault_id,file_id,'upload',
+                    CASE WHEN n=%s AND %s THEN 'queued' ELSE 'completed' END,
+                    '', 'job.upload_verified','{}',requested_at,updated_at,%s,100,0
                 FROM jobs CROSS JOIN generate_series(1,%s) n WHERE id=(SELECT min(id) FROM jobs)
-                """, (count,count))
+                """, (count, active, BULK, count))
 
     def test_active_group_does_not_expand_poll_items_or_projection_work(self):
         self.seed_group()
@@ -32,7 +45,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertLessEqual(len(body["items"]),50,"active group leaked into bounded recent items")
         self.assertLessEqual(sum(len(call.args[1]) for call in projection.call_args_list),50,
                              "polling must not project every member of an active group")
-        group = next(group for group in body["groups"] if group["id"] == "bulk")
+        group = next(group for group in body["groups"] if group["id"] == BULK)
         self.assertEqual((group["item_count"],group["completed_count"],group["total_bytes"],
                           group["transferred_bytes"],group["status"]),(301,300,30100,30000,"queued"))
         self.assertLess(len(response.content),100_000)
@@ -42,7 +55,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(len(response.json()["items"]),50)
-        group = next(group for group in response.json()["groups"] if group["id"] == "bulk")
+        group = next(group for group in response.json()["groups"] if group["id"] == BULK)
         self.assertEqual((group["item_count"],group["completed_count"],group["percent"]),(30_001,30_000,100))
         self.assertLess(len(response.content),100_000)
 
@@ -51,7 +64,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         ids = []
         cursor = None
         while True:
-            response = self.client.get(f"/api/job-groups/bulk/jobs?vault_id={self.vault_id}&limit=17" +
+            response = self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}&limit=17" +
                                        (f"&before_id={cursor}" if cursor else ""))
             self.assertEqual(response.status_code,200,response.text)
             body = response.json()
@@ -63,51 +76,61 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertEqual(len(ids),121)
         self.assertEqual(len(set(ids)),121)
         self.assertEqual(ids,sorted(ids,reverse=True))
-        self.assertEqual(self.client.get(f"/api/job-groups/bulk/jobs?vault_id={self.vault_id}&limit=51").status_code,422)
-        self.assertEqual(self.client.get("/api/job-groups/bulk/jobs?vault_id=999999").status_code,404)
+        self.assertEqual(self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}&limit=51").status_code,422)
+        self.assertEqual(self.client.get("/api/job-groups/{BULK}/jobs?vault_id=999999").status_code,404)
         self.client.cookies.clear()
-        self.assertEqual(self.client.get(f"/api/job-groups/bulk/jobs?vault_id={self.vault_id}").status_code,401)
+        self.assertEqual(self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}").status_code,401)
 
     def test_filters_precede_summary_window_and_old_file_deletion_is_not_hidden(self):
-        self.seed_group()
+        self.seed_group(active=False)
         with PostgresConnection(self.database_path) as connection:
-            connection.execute("UPDATE jobs SET status='completed'")
-            connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                requested_at,updated_at,group_id,group_path,pending_until)
-                SELECT vault_id,vault_file_id,path,'cloud-purge','pending_delay',
-                    '2000-01-01','2000-01-01','old-deletion','parent-folder','2099-01-01'
-                FROM jobs ORDER BY id LIMIT 1""")
+            add_group(connection, OLD_DELETION, self.vault_id, "parent-folder")
+            connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
+                requested_at,updated_at,group_id,run_after)
+                SELECT vault_id,file_id,'cloud-purge','pending_delay',
+                    '2000-01-01','2000-01-01',%s,'2099-01-01T00:00:00+00:00'
+                FROM jobs ORDER BY id LIMIT 1""", (OLD_DELETION,))
         body = self.client.get(f"/api/jobs?vault_id={self.vault_id}&action=cloud-purge&active_only=true&path=a.txt").json()
-        self.assertEqual([row["id"] for row in body["groups"]],["old-deletion"])
-        self.assertEqual(body["groups"][0]["pending_until"],"2099-01-01")
+        self.assertEqual([row["id"] for row in body["groups"]],[OLD_DELETION])
+        self.assertTrue(str(body["groups"][0]["pending_until"]).startswith("2099-01-01"))
         self.assertEqual(len(body["items"]),1)
         self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}&path=other.txt").json()["groups"],[])
         self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}&path=../private").status_code,422)
 
     def test_matching_group_identity_in_another_vault_never_leaks_members_or_totals(self):
         from app.catalog import ArchiveCatalog
+        import psycopg
+        from tests.owner_fixtures import insert_vault
         self.seed_group(3)
         with PostgresConnection(self.database_path) as connection:
-            other = connection.execute("""INSERT INTO vaults(slug,name,source_root,s3_bucket,s3_prefix)
-                VALUES ('other','Other','/other-source','bucket','other') RETURNING id""").fetchone()["id"]
-            ArchiveCatalog(connection).observe_local_copy(vault_id=other,path="secret.txt",file_type="regular",
-                                                         size=999,mtime_ns=1,observed_at="2026-11-11")
-            connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
+            other = insert_vault(connection, name="Other", source_root="/other-source")["id"]
+            secret = ArchiveCatalog(connection).observe_local_copy(vault_id=other,path="secret.txt",file_type="regular",
+                                                                  size=999,mtime_ns=1,observed_at="2026-11-11")
+        # The schema itself scopes a group to its Vault: another Vault's Job
+        # can never join it.
+        with PostgresConnection(self.database_path) as connection, \
+                self.assertRaises(psycopg.errors.ForeignKeyViolation):
+            connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
                 requested_at,updated_at,group_id,total_bytes)
-                SELECT %s,id,'secret.txt','upload','queued','2026-11-11','2026-11-11','bulk',999
-                FROM vault_files WHERE vault_id=%s""",(other,other))
+                VALUES (%s,%s,'upload','queued','2026-11-11','2026-11-11',%s,999)""",(other,secret,BULK))
         response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
         self.assertEqual(response.status_code,200,response.text)
-        group = next(group for group in response.json()["groups"] if group["id"] == "bulk")
+        group = next(group for group in response.json()["groups"] if group["id"] == BULK)
         self.assertEqual((group["item_count"],group["total_bytes"]),(3,300))
-        detail = self.client.get(f"/api/job-groups/bulk/jobs?vault_id={self.vault_id}").json()
+        detail = self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}").json()
         self.assertEqual(len(detail["items"]),3)
         self.assertNotIn("secret.txt",[row["path"] for row in detail["items"]])
 
     def test_summary_pages_include_complete_terminal_groups_not_just_recent_members(self):
-        self.seed_group(101)
         with PostgresConnection(self.database_path) as connection:
-            connection.execute("UPDATE jobs SET status='completed',group_id='group-' || id::text")
+            # 101 complete terminal groups of one Job each, beside the
+            # fixture's ungrouped Job.
+            for _ in range(101):
+                group = connection.execute("INSERT INTO job_groups(vault_id, path) VALUES (%s, 'folder') RETURNING id",
+                                           (self.vault_id,)).fetchone()["id"]
+                connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,group_id,total_bytes)
+                    SELECT vault_id,file_id,'upload','completed',%s,100 FROM jobs
+                    WHERE id=(SELECT min(id) FROM jobs)""", (group,))
         ids = []
         cursor = None
         while True:
@@ -124,25 +147,27 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertEqual(len(set(ids)),102)
 
     def test_active_group_cursor_does_not_move_when_newest_member_completes(self):
-        self.seed_group(52)
         from app.catalog import ArchiveCatalog
         with PostgresConnection(self.database_path) as connection:
-            connection.execute("UPDATE jobs SET status='completed'")
+            # 53 active Jobs, one file each: 51 single-Job groups plus LONG,
+            # which holds the oldest and the newest Job.
             catalog = ArchiveCatalog(connection)
-            for row in connection.execute("SELECT id FROM jobs ORDER BY id").fetchall():
-                path = f"cursor-{row['id']}.txt"
+            add_group(connection, LONG, self.vault_id)
+            for n in range(53):
+                path = f"cursor-{n}.txt"
                 file_id = catalog.observe_local_copy(
                     vault_id=self.vault_id,path=path,file_type="regular",
                     size=100,mtime_ns=1,observed_at="2026-11-11")
-                connection.execute("""UPDATE jobs SET status='queued',group_id='single-' || id::text,
-                    path=%s,vault_file_id=%s WHERE id=%s""",(path,file_id,row["id"]))
-            connection.execute("""UPDATE jobs SET group_id='long'
-                WHERE id IN ((SELECT min(id) FROM jobs),(SELECT max(id) FROM jobs))""")
+                group = LONG if n in (0, 52) else connection.execute(
+                    "INSERT INTO job_groups(vault_id, path) VALUES (%s, '') RETURNING id",
+                    (self.vault_id,)).fetchone()["id"]
+                connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,group_id,total_bytes)
+                    VALUES (%s,%s,'upload','queued',%s,100)""",(self.vault_id,file_id,group))
         first = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true")
         self.assertEqual(first.status_code,200,first.text)
         first = first.json()
         first_ids = {row["id"] for row in first["groups"]}
-        self.assertIn("long",first_ids)
+        self.assertIn(LONG,first_ids)
         cursor = first["next_groups_before_id"]
         self.assertIsNotNone(cursor)
         with PostgresConnection(self.database_path) as connection:
@@ -157,12 +182,17 @@ class BoundedJobsHttpTests(unittest.TestCase):
     def test_sql_weighted_progress_and_terminal_precedence_match_reference_reducer(self):
         from app.main import build_job_groups
         from app.services.upload_remediation import project_jobs
-        self.seed_group(5)
+        self.seed_group(4)
         with PostgresConnection(self.database_path) as connection:
-            connection.execute("UPDATE jobs SET group_id='bulk',group_path='folder',total_bytes=100")
-            connection.execute("UPDATE jobs SET status='failed',transferred_bytes=150 WHERE id=(SELECT min(id) FROM jobs)")
-            connection.execute("UPDATE jobs SET status='cancelled',transferred_bytes=30 WHERE id=(SELECT min(id)+1 FROM jobs)")
-            rows = connection.execute("SELECT * FROM jobs ORDER BY requested_at DESC,id DESC").fetchall()
+            # Terminal Jobs are written once: the failed and cancelled members
+            # join the group as their own rows.
+            for status, moved in (("failed", 150), ("cancelled", 30)):
+                connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,group_id,total_bytes,transferred_bytes,
+                    requested_at,updated_at) SELECT vault_id,file_id,'upload',%s,%s,100,%s,requested_at,updated_at
+                    FROM jobs WHERE id=(SELECT min(id) FROM jobs)""", (status, BULK, moved))
+            from app.services.job_queries import JOB_COLUMNS, JOB_ROWS
+            rows = connection.execute(f"WITH {JOB_ROWS} SELECT {JOB_COLUMNS} FROM job_rows "
+                                      "ORDER BY requested_at DESC,id DESC").fetchall()
             expected = build_job_groups(project_jobs(connection,rows))[0]
         response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
         self.assertEqual(response.status_code,200,response.text)

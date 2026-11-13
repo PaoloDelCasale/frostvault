@@ -97,6 +97,8 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
     ages = ArchiveCatalog(connection).record_pending_files(
         vault_id, {str(row["id"]): row["observed_at"] for row in candidates},
     )
+    # A candidate protected since it was read has no timer: it is not pending.
+    candidates = [row for row in candidates if str(row["id"]) in ages]
     for row in candidates:
         row["pending_since"] = ages[str(row["id"])]
     progress = connection.execute(

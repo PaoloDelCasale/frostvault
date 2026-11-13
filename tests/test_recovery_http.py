@@ -17,9 +17,10 @@ from app import main
 from app.catalog import ArchiveCatalog
 from app.config import settings
 
-from app.security import hash_password
 from app.sessions import create_session, csrf_token_for
 from app.storage import process_jobs_once
+from tests.catalog_support import fingerprint, protect
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
@@ -40,24 +41,12 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.database_path)) as connection:
-            self.owner_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs', %s, 'bucket', 'docs')
-                RETURNING id
-                """,
-                (str(self.source),),
-            ).fetchone()["id"]
+            insert_owner(connection, password=self.PASSWORD)
+            self.owner_id = 1
+            self.vault_id = insert_vault(connection, source_root=str(self.source))["id"]
             catalog = ArchiveCatalog(connection)
             payload = b"http-recover"
-            catalog.observe_local_copy(
+            self.file_id = catalog.observe_local_copy(
                 vault_id=self.vault_id,
                 path="docs/note.txt",
                 file_type="regular",
@@ -65,26 +54,12 @@ class RecoveryHttpTests(unittest.TestCase):
                 mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            file_row = catalog.get_file_by_path(self.vault_id, "docs/note.txt")
+            fingerprint(catalog, self.vault_id, "docs/note.txt", _sha(payload))
+            self.version_id = protect(catalog, self.vault_id, "docs/note.txt", _sha(payload))
+            connection.execute("UPDATE archive_versions SET storage_class='GLACIER' WHERE id=%s",
+                               (self.version_id,))
             catalog.mark_local_copy_missing(
-                file_row["id"], observed_at="2026-07-21T11:00:00+00:00"
-            )
-            self.version_id = catalog.record_archive_version(
-                vault_id=self.vault_id,
-                path="docs/note.txt",
-                object_key="docs/docs/note.txt",
-                provider_version_id="v1",
-                size=len(payload),
-                storage_class="GLACIER",
-                etag="etag",
-                uploaded_at="2026-07-21T10:00:00+00:00",
-                observed_at="2026-07-21T10:00:00+00:00",
-                scan_id="s1",
-            )
-            catalog.mark_version_verified(
-                self.version_id,
-                plaintext_sha256=_sha(payload),
-                verified_at="2026-07-21T10:01:00+00:00",
+                self.file_id, observed_at="2026-07-21T11:00:00+00:00"
             )
 
         self.test_settings = replace(
@@ -113,7 +88,7 @@ class RecoveryHttpTests(unittest.TestCase):
 
     def _authenticate(self, user_id: int) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
+            raw_token = create_session(connection, auth_method="oidc")
             csrf_token = csrf_token_for(connection, raw_token)
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
         self.client.cookies.set("frostvault_csrf", csrf_token)
@@ -150,15 +125,16 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertNotIn("price_book_id", payload["estimate"])
         self.assertEqual(payload["estimate"]["region"], payload["estimate"]["assumptions"]["region"])
 
-    def test_legacy_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
+    def test_superseded_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
-            newest = catalog.record_archive_version(
-                vault_id=self.vault_id, path="docs/note.txt", object_key="docs/docs/note.txt",
-                provider_version_id="v2", size=5, storage_class="STANDARD", etag="v2",
-                uploaded_at="2026-11-03", observed_at="2026-11-03", scan_id="s2", origin="upload",
-            )
-            catalog.mark_version_verified(newest, plaintext_sha256=_sha(b"newer"), verified_at="2026-11-03")
+            generation = catalog.get_file_by_path(self.vault_id, "docs/note.txt")["generation"]
+            newest = catalog.begin_replacement(
+                self.file_id, object_key="vaults/x/docs/note.txt", provider_version_id="v2", size=5,
+                storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00")
+            catalog.promote_replacement(
+                self.file_id, archive_version_id=newest, plaintext_sha256=_sha(b"newer"),
+                verified_at="2026-11-03T00:00:00+00:00", local_generation=generation)
         self._authenticate(self.owner_id)
         response = self.client.get("/api/files/versions", params={"path": "docs/note.txt"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -171,9 +147,11 @@ class RecoveryHttpTests(unittest.TestCase):
         queued = self.client.post("/api/recover", headers=self._csrf(), json={"path": "docs/note.txt"})
         self.assertEqual(queued.status_code, 202, queued.text)
         with PostgresConnection(str(self.database_path)) as connection:
-            rows = ArchiveCatalog(connection).list_versions(self.vault_id, "docs/note.txt")
-            self.assertTrue(all(row["recoverable"] for row in rows), "No implicit cloud purge on read/recovery")
-            self.assertEqual(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"], newest)
+            # No implicit cloud purge on read/recovery: the superseded copy waits
+            # for its exact cleanup.
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM archive_versions WHERE id=%s", (self.version_id,)).fetchone())
+            self.assertEqual(str(connection.execute("SELECT archive_version_id FROM jobs").fetchone()["archive_version_id"]), newest)
 
     def test_selection_recovery_preserves_csrf_vault_scope_and_bulk_decision(self) -> None:
         selection = {"selection": [{"path": "docs", "is_directory": True}, {"path": "docs/note.txt"}]}

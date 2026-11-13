@@ -272,6 +272,37 @@ class RecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.gets, 1)
         self.assert_recovered(self.file_row(), current)
 
+    def test_restart_removes_sdk_partial_restore_residue_too(self) -> None:
+        # Ported from test_storage_cleanup (mocked SQL): the SDK's
+        # ``.tmp.<random>.partial`` sibling of an owned restore temporary is
+        # residue as well; the absent destination is requeued.
+        self.protected()
+        self.lose_local_copy()
+        job_id = self.admit("recover")
+        token = uuid.uuid4().hex
+        residue = self.source / f".report.txt.restore-{token}.tmp"
+        partial = self.source / f".report.txt.restore-{token}.tmp.random.partial"
+        residue.write_bytes(A[:3])
+        partial.write_bytes(A[:2])
+        self.expire(job_id, "downloading")
+        self.assertEqual(storage.reconcile_interrupted_jobs(),
+                         {"completed": 0, "requeued": 1, "failed": 0})
+        self.assertEqual(self.job(job_id)["status"], "queued")
+        self.assertFalse(residue.exists())
+        self.assertFalse(partial.exists())
+
+    def test_restart_requeues_an_interrupted_upload_without_a_send(self) -> None:
+        # Ported from test_storage_cleanup (mocked SQL): an upload that died
+        # before any send is resumed, not failed.
+        self.write(A)
+        job_id = self.queue()
+        self.expire(job_id, "uploading")
+        self.assertEqual(storage.reconcile_interrupted_jobs(),
+                         {"completed": 0, "requeued": 1, "failed": 0})
+        self.assertEqual(self.job(job_id)["status"], "queued")
+        self.run_job(job_id)
+        self.assert_current(job_id, A)
+
     def test_restart_does_not_adopt_a_version_that_is_no_longer_current(self) -> None:
         self.protected(A)
         self.lose_local_copy()

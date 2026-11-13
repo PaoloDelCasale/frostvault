@@ -1,5 +1,14 @@
-"""Regressions for concurrent protection monitoring and superseded failures (#549/#554)."""
+"""Regressions for concurrent protection monitoring and superseded failures (#549/#554).
+
+Rebuilt model (ADR-0035): the failed upload is a Job on its ``files`` row,
+protection is the explicit Current/matched pair on that row, cloud work is an
+``upload_attempts`` row (with receipts), and the pending timer is
+``files.pending_since``.
+"""
 from contextlib import contextmanager
+from pathlib import Path
+import tempfile
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 import json
@@ -11,7 +20,9 @@ from app.catalog import ArchiveCatalog
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.cost_estimates import estimate_restore_cost, list_prices
-from tests.postgres import PostgresConnection
+from tests.catalog_support import fingerprint, protect as protect_current, sha256_hex
+from tests.owner_fixtures import insert_owner, insert_vault
+from tests.postgres import PostgresConnection, run_alembic
 from tests.test_protection_notifications import NOW, ONLINE
 
 
@@ -69,16 +80,22 @@ class RecoveryApprovalCostTests(unittest.TestCase):
 
 
 class ProtectionProblemClosureTests(unittest.TestCase):
+    DIGEST = sha256_hex(b"a")
+
     def setUp(self):
-        from tests.test_notifications import NotificationDeliveryTests
-        NotificationDeliveryTests.setUp(self)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = Path(self._tmp.name) / "closure.db"
+        migrated = run_alembic(self.path)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with self.connect() as c:
-            c.execute("UPDATE jobs SET status='failed',message_key='job.source_changed_stalled' WHERE id=%s", (self.job_id,))
-            self.file_id = c.execute("SELECT vault_file_id FROM jobs WHERE id=%s", (self.job_id,)).fetchone()["vault_file_id"]
-            c.execute("INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from) VALUES (%s,%s,'a.txt',%s)",
-                      (self.file_id,self.vault_id,(NOW-timedelta(days=1)).isoformat()))
+            insert_owner(c)
+            self.vault_id = insert_vault(c)["id"]
             ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="a.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=(NOW-timedelta(hours=25)).isoformat())
+            self.file_id = str(self.file_of(c, "a.txt"))
+            self.job_id = self.failed_job(c, self.file_id, at=NOW-timedelta(hours=1),
+                                          message_key="job.source_changed_stalled")
             inbox.enqueue_job_terminal_notification(c, job_id=self.job_id)
 
     def connect(self):
@@ -89,23 +106,41 @@ class ProtectionProblemClosureTests(unittest.TestCase):
         with self.connect() as c:
             yield c
 
-    def protect(self, c, *, path="a.txt", completed=True):
+    def file_of(self, c, path):
+        return c.execute("SELECT id FROM files WHERE vault_id=%s AND path=%s",
+                         (self.vault_id, path)).fetchone()["id"]
+
+    def failed_job(self, c, file_id, *, at=NOW, message_key=None):
+        return c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,updated_at)
+            VALUES (%s,%s,'upload','failed','manual',%s,%s,%s) RETURNING id""",
+            (self.vault_id, file_id, message_key, at.isoformat(), at.isoformat())).fetchone()["id"]
+
+    def protect(self, c, *, path="a.txt", completed=True, action="upload"):
         catalog = ArchiveCatalog(c)
         if path != "a.txt":
             catalog.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular", size=1,
                                        mtime_ns=1, observed_at=NOW.isoformat())
-        version = catalog.record_archive_version(vault_id=self.vault_id, path=path,
-            object_key="docs/"+path, provider_version_id="provider-"+path, size=1,
-            storage_class="STANDARD", etag="e", uploaded_at=NOW.isoformat(),
-            observed_at=NOW.isoformat(), scan_id="test")
-        catalog.mark_version_verified(version, plaintext_sha256="a"*64, verified_at=NOW.isoformat())
-        catalog.set_local_fingerprint(vault_id=self.vault_id, path=path, plaintext_sha256="a"*64,
-                                      matched_archive_version_id=version)
-        file_id = c.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (version,)).fetchone()["vault_file_id"]
-        job_id = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,archive_version_id)
-            VALUES (%s,%s,%s,'upload',%s,%s,%s,%s) RETURNING id""",
-            (self.vault_id,file_id,path,"completed" if completed else "failed",NOW.isoformat(),NOW.isoformat(),version)).fetchone()["id"]
+        fingerprint(catalog, self.vault_id, path, self.DIGEST)
+        version = protect_current(catalog, self.vault_id, path, self.DIGEST,
+                                  provider_version_id="provider-"+path)
+        job_id = c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,archive_version_id)
+            VALUES (%s,%s,%s,%s,'manual',%s,%s,%s) RETURNING id""",
+            (self.vault_id, self.file_of(c, path), action, "completed" if completed else "failed",
+             NOW.isoformat(), NOW.isoformat(), version)).fetchone()["id"]
         return job_id, version
+
+    def attempt(self, c, *, sent):
+        """A send attempt the failed Job opened (cloud work when it was sent)."""
+        snapshot = c.execute("""INSERT INTO upload_snapshots(vault_id,file_id,path,path_since,source_root,provider,
+                local_generation,size,mtime_ns,plaintext_sha256,part_size,part_sha256,verification,closed_at)
+            SELECT vault_id,id,path,path_since,'/sources/managed/docs','s3',0,1,1,%s,8388608,ARRAY[%s::bytea],'read_back',NULL
+            FROM files WHERE id=%s RETURNING id""",
+            (bytes.fromhex(self.DIGEST), bytes.fromhex(self.DIGEST), self.file_id)).fetchone()["id"]
+        attempt = c.execute("""INSERT INTO upload_attempts(snapshot_id,file_id,job_id,inventory_versions,inventory_markers)
+            VALUES (%s,%s,%s,'{}','{}') RETURNING id""", (snapshot, self.file_id, self.job_id)).fetchone()["id"]
+        if sent:
+            c.execute("UPDATE upload_attempts SET send_started_at=%s WHERE id=%s", (NOW.isoformat(), attempt))
+        return attempt
 
     def state(self, c):
         inbox.reconcile_problem_states(c)
@@ -117,7 +152,7 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             self.assertEqual(self.state(c), "resolved")
             self.assertIsNotNone(c.execute("SELECT read_at FROM notifications WHERE job_id=%s", (self.job_id,)).fetchone()["read_at"])
             self.assertEqual(c.execute("SELECT status FROM jobs WHERE id=%s", (self.job_id,)).fetchone()["status"], "failed")
-            self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 0)
+            self.assertEqual(inbox.count_open_problems(c), 0)
         with patch.object(storage, "db", self.db):
             self.assertEqual(storage.observe_failed_job_backlog(), (0, 0.0))
 
@@ -129,10 +164,11 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             self.assertEqual(self.state(c), "open")
 
     def test_current_unprotected_content_or_unavailable_version_never_closes_problem(self):
-        for mutation in ("UPDATE local_copies SET plaintext_sha256=NULL",
-                         "UPDATE local_copies SET matched_archive_version_id=NULL",
-                         "UPDATE local_copies SET plaintext_sha256=repeat('b',64)",
-                         "UPDATE local_copies SET cloud_only_version_id=matched_archive_version_id",
+        other = sha256_hex(b"b")
+        for mutation in ("UPDATE files SET matched_version_id=NULL, local_sha256=NULL",
+                         "UPDATE files SET matched_version_id=NULL",
+                         f"UPDATE files SET matched_version_id=NULL, local_sha256='\\x{other}'",
+                         "UPDATE files SET matched_version_id=NULL, held_version_id=current_version_id",
                          "UPDATE archive_versions SET availability='missing'",
                          "UPDATE archive_versions SET integrity='unverified'"):
             with self.subTest(mutation=mutation), self.connect() as c:
@@ -158,77 +194,69 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             c.execute("UPDATE jobs SET archive_version_id=%s WHERE id=%s", (version,self.job_id))
             self.assertEqual(self.state(c), "open")
 
-    def test_send_started_or_receipt_even_on_unbound_intent_requires_remediation(self):
+    def test_send_started_or_receipt_requires_remediation(self):
         for sent, receipt in ((True, False), (False, True)):
             with self.subTest(sent=sent, receipt=receipt), self.connect() as c:
                 c.execute("SAVEPOINT scenario")
                 self.protect(c)
-                # No upload_intent_jobs binding: old per-attempt intents remain
-                # historical cloud facts, not permission to hide the failure.
-                c.execute("""INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,
-                    target_json,snapshot_json,requested,inventory_json,send_started,created_at)
-                    VALUES ('intent','token',%s,%s,%s,'{}','{}','read_back','{}',%s,%s)""",
-                    (self.vault_id,self.file_id,self.job_id,sent,NOW.isoformat()))
+                # Not bound to a remediation episode: a started send or a
+                # receipt is a cloud fact, not permission to hide the failure.
+                attempt = self.attempt(c, sent=sent)
                 if receipt:
-                    c.execute("INSERT INTO upload_receipts VALUES ('intent','hash','{}',%s)", (NOW.isoformat(),))
+                    c.execute("INSERT INTO upload_receipts(attempt_id,receipt_sha256,response) VALUES (%s,%s,'{}')",
+                              (attempt, bytes.fromhex(self.DIGEST)))
                 self.assertEqual(self.state(c), "open")
                 c.execute("ROLLBACK TO SAVEPOINT scenario")
 
-    def test_unsent_intent_can_be_superseded_but_reconcile_only_or_discovery_cannot(self):
+    def test_unsent_attempt_can_be_superseded_but_reconcile_only_or_remediation_cannot(self):
         with self.connect() as c:
             self.protect(c)
-            c.execute("""INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,
-                target_json,snapshot_json,requested,inventory_json,send_started,created_at)
-                VALUES ('intent','token',%s,%s,%s,'{}','{}','read_back','{}',FALSE,%s)""",
-                (self.vault_id,self.file_id,self.job_id,NOW.isoformat()))
-            c.execute("UPDATE jobs SET upload_reconcile_only=TRUE WHERE id=%s", (self.job_id,))
+            self.attempt(c, sent=False)
+            c.execute("INSERT INTO job_uploads(job_id,verification_mode,reconcile_only) VALUES (%s,'read_back',TRUE)",
+                      (self.job_id,))
             self.assertEqual(self.state(c), "open")
-            c.execute("UPDATE jobs SET upload_reconcile_only=FALSE WHERE id=%s", (self.job_id,))
-            c.execute("INSERT INTO upload_remediation_discovery(job_id,vault_id,discovered_at) VALUES (%s,%s,%s)",
-                      (self.job_id,self.vault_id,NOW.isoformat()))
+            c.execute("UPDATE job_uploads SET reconcile_only=FALSE WHERE job_id=%s", (self.job_id,))
+            remediation = c.execute("""INSERT INTO upload_remediations(vault_id,file_id,due_at)
+                VALUES (%s,%s,%s) RETURNING id""", (self.vault_id,self.file_id,NOW.isoformat())).fetchone()["id"]
+            c.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id) VALUES (%s,%s)",
+                      (self.job_id,remediation))
             self.assertEqual(self.state(c), "open")
-            c.execute("DELETE FROM upload_remediation_discovery WHERE job_id=%s", (self.job_id,))
+            c.execute("DELETE FROM upload_remediation_jobs WHERE job_id=%s", (self.job_id,))
             self.assertEqual(self.state(c), "resolved")
 
     def test_later_local_edit_does_not_resurrect_closed_historical_backlog(self):
         with self.connect() as c:
             self.protect(c)
             self.assertEqual(self.state(c), "resolved")
-            c.execute("UPDATE local_copies SET matched_archive_version_id=NULL,plaintext_sha256=NULL")
+            c.execute("UPDATE files SET matched_version_id=NULL,local_sha256=NULL")
             self.assertEqual(self.state(c), "resolved")
         with patch.object(storage, "db", self.db):
             self.assertEqual(storage.observe_failed_job_backlog(), (0, 0.0))
 
     def test_successful_recovery_is_not_successful_upload_protection(self):
         with self.connect() as c:
-            successor, _ = self.protect(c)
-            c.execute("UPDATE jobs SET action='recover' WHERE id=%s", (successor,))
+            self.protect(c, action="recover")
             self.assertEqual(self.state(c), "open")
 
     def test_group_closes_only_when_all_its_failed_files_are_superseded(self):
         with self.connect() as c, patch.object(inbox, "now_iso", return_value=NOW.isoformat()):
             c.execute("UPDATE jobs SET updated_at=%s WHERE id=%s", (NOW.isoformat(),self.job_id))
             for _ in range(inbox.GROUP_THRESHOLD + 2):
-                failed = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
-                    VALUES (%s,%s,'a.txt','upload','failed',%s,%s) RETURNING id""",
-                    (self.vault_id,self.file_id,NOW.isoformat(),NOW.isoformat())).fetchone()["id"]
+                failed = self.failed_job(c, self.file_id)
                 inbox.enqueue_job_terminal_notification(c, job_id=failed)
             ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="b.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=NOW.isoformat())
-            failed = c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
-                SELECT %s,vault_file_id,'b.txt','upload','failed',%s,%s FROM file_paths
-                WHERE vault_id=%s AND path='b.txt' AND valid_to IS NULL RETURNING id""",
-                (self.vault_id,NOW.isoformat(),NOW.isoformat(),self.vault_id)).fetchone()["id"]
+            failed = self.failed_job(c, self.file_of(c, "b.txt"))
             inbox.enqueue_job_terminal_notification(c, job_id=failed)
             group = c.execute("SELECT id FROM notifications WHERE event='job_failed_group'").fetchone()
             self.assertIsNotNone(group)
             self.assertEqual(self.state(c), "open")
             self.protect(c)
             self.assertEqual(self.state(c), "resolved")
-            self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 1)
+            self.assertEqual(inbox.count_open_problems(c), 1)
             self.protect(c, path="b.txt")
-            self.assertEqual(inbox.count_open_problems(c, user_id=self.user_id), 0)
-            c.execute("UPDATE local_copies SET matched_archive_version_id=NULL")
+            self.assertEqual(inbox.count_open_problems(c), 0)
+            c.execute("UPDATE files SET matched_version_id=NULL")
             # A delayed outbox replay for a formerly folded failure must keep
             # its durable group closure even when it gains its own history row.
             inbox.enqueue_job_terminal_notification(c, job_id=failed)
@@ -247,38 +275,48 @@ class ProtectionProblemClosureTests(unittest.TestCase):
 
     def test_approval_persists_unrounded_cost_and_english_fallback(self):
         with self.connect() as c:
-            c.execute("UPDATE jobs SET status='pending_approval',action='recover',group_id='approval',estimated_cost_eur=%s WHERE id=%s",
-                      (Decimal("0.000000001"),self.job_id))
-            inbox.enqueue_recovery_approval_best_effort(c, job_ids=[self.job_id])
+            ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="r.txt", file_type="regular",
+                                                  size=1, mtime_ns=1, observed_at=NOW.isoformat())
+            group = str(uuid.uuid4())
+            c.execute("INSERT INTO job_groups(id,vault_id) VALUES (%s,%s)", (group,self.vault_id))
+            c.execute("INSERT INTO restore_requests(group_id,estimated_cost_eur,estimated_hours) VALUES (%s,%s,1)",
+                      (group,Decimal("0.000000001")))
+            recover = c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,group_id)
+                VALUES (%s,%s,'recover','pending_approval','manual',%s) RETURNING id""",
+                (self.vault_id,self.file_of(c, "r.txt"),group)).fetchone()["id"]
+            inbox.enqueue_recovery_approval_best_effort(c, job_ids=[recover])
             note = c.execute("SELECT * FROM notifications WHERE event='recovery_approval'").fetchone()
-            self.assertGreater(Decimal(json.loads(note["message_params"])["cost"]), 0)
-            self.assertIn("< €0.01", note["body"])
+            params = note["message_params"]
+            params = params if isinstance(params, dict) else json.loads(params)
+            self.assertGreater(Decimal(params["cost"]), 0)
+            self.assertIn("< €0.01", inbox._row_notification(note)["body"])
             self.assertIn("< 0,01 €", inbox._row_notification(note, locale="it")["body"])
 
-    def test_upload_deletes_pending_between_candidate_and_age_reads(self):
-        # Seed the durable timer so monitor's ON CONFLICT path takes no write lock
-        # on it. A second committed transaction then performs the successful
-        # protection publication + timer DELETE between the two READ COMMITTED reads.
+    def test_upload_clears_pending_between_candidate_and_timer_writes(self):
+        # Seed the durable timer. A second committed transaction then performs
+        # the successful protection publication between the monitor's
+        # candidate read and its timer write (READ COMMITTED statements).
         with self.connect() as c:
-            c.execute("INSERT INTO protection_pending VALUES (%s,%s)", (self.file_id,(NOW-timedelta(hours=25)).isoformat()))
+            c.execute("UPDATE files SET pending_since=%s WHERE id=%s",
+                      ((NOW-timedelta(hours=25)).isoformat(), self.file_id))
         reached = []
         fixture = self
         class Interleaved:
             def __init__(self, c):
                 self.c = c
             def execute(self, query, params=None):
-                if "SELECT p.* FROM protection_pending" in query:
+                if "SET pending_since = COALESCE" in query:
                     with fixture.connect() as upload:
                         fixture.protect(upload)
-                        upload.execute("DELETE FROM protection_pending WHERE vault_file_id=%s", (fixture.file_id,))
+                        upload.execute("UPDATE files SET pending_since=NULL WHERE id=%s", (fixture.file_id,))
                     reached.append(True)
                 return self.c.execute(query, params)
         with self.connect() as c, patch("app.services.source_layout.vault_local_access", return_value=ONLINE):
             vault = c.execute("SELECT * FROM vaults WHERE id=%s", (self.vault_id,)).fetchone()
             monitor.monitor_vault(Interleaved(c), vault, now=NOW)
             self.assertEqual(reached, [True])
-            self.assertEqual(c.execute("SELECT count(*) n FROM protection_pending").fetchone()["n"], 0)
+            self.assertEqual(c.execute("SELECT count(*) n FROM files WHERE pending_since IS NOT NULL").fetchone()["n"], 0)
             self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='protection_delayed' AND problem_status='open'").fetchone()["n"], 0)
             # The next cycle must run, not reopen the obsolete timer or a delay.
             monitor.monitor_vault(c, vault, now=NOW+timedelta(minutes=1))
-            self.assertEqual(c.execute("SELECT count(*) n FROM protection_pending").fetchone()["n"], 0)
+            self.assertEqual(c.execute("SELECT count(*) n FROM files WHERE pending_since IS NOT NULL").fetchone()["n"], 0)

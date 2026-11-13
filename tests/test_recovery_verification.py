@@ -247,11 +247,16 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
-                    UPDATE jobs
-                    SET status='verifying', claim_token='dead-worker',
-                        claimed_at='2026-07-21T12:00:00+00:00',
-                        claim_expires_at='2000-01-01T00:00:00+00:00'
-                    WHERE id=%s
+                    UPDATE jobs SET status='verifying' WHERE id=%s
+                    """,
+                    (queued["job_ids"][0],),
+                )
+                # A dead worker's expired lease.
+                connection.execute(
+                    """
+                    INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+                    VALUES (%s, gen_random_uuid(), '1999-12-31T23:00:00+00:00',
+                            '2000-01-01T00:00:00+00:00')
                     """,
                     (queued["job_ids"][0],),
                 )
@@ -289,9 +294,9 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 )
                 local = connection.execute(
                     """
-                    SELECT presence, plaintext_sha256,
-                           matched_archive_version_id
-                    FROM local_copies WHERE vault_file_id=%s
+                    SELECT local_presence AS presence, local_sha256 AS plaintext_sha256,
+                           matched_version_id AS matched_archive_version_id
+                    FROM files WHERE id=%s
                     """,
                     (observed["id"],),
                 ).fetchone()
@@ -299,8 +304,8 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                     "SELECT status, message FROM jobs WHERE id=%s", (job_id,)
                 ).fetchone()
             self.assertEqual(local["presence"], "present")
-            self.assertEqual(local["plaintext_sha256"], _sha256_hex(payload))
-            self.assertEqual(local["matched_archive_version_id"], version_id)
+            self.assertEqual(bytes(local["plaintext_sha256"]).hex(), _sha256_hex(payload))
+            self.assertEqual(str(local["matched_archive_version_id"]), str(version_id))
             self.assertEqual(job["status"], "completed")
             self.assertIn("adopted", (job["message"] or "").lower())
 
@@ -445,7 +450,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 observed = catalog.get_file_by_path(2, "report.txt")
                 listed = catalog.list_file_rows(2)
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("report.txt",),
                 ).fetchone()
 
@@ -495,6 +500,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(target.stat().st_mtime, original_mtime)
 
             with PostgresConnection(str(database_path)) as connection:
+                connection.execute("DELETE FROM notifications WHERE job_id IS NOT NULL")
                 connection.execute("DELETE FROM jobs")
                 set_policy(
                     connection,
@@ -506,13 +512,11 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 next_pass = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=before_recovery + timedelta(days=1),
                 )
                 after_retention = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=before_recovery + timedelta(days=91),
                 )
 
@@ -549,7 +553,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                     2, "report.txt"
                 )
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("report.txt",),
                 ).fetchone()
 
@@ -635,7 +639,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                     2, "report.txt"
                 )
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("report.txt",),
                 ).fetchone()
 
@@ -679,7 +683,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("cold.txt",),
                 ).fetchone()
                 version = connection.execute(
@@ -756,7 +760,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 ).fetchone()
                 version = connection.execute(
                     """
-                    SELECT restore_state, restore_expiry
+                    SELECT restore_state, restore_expiry, restore_checked_at
                     FROM archive_versions WHERE id=%s
                     """,
                     (version_id,),
@@ -768,10 +772,14 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 "restoring",
                 "cancel must retain non-cancellable RestoreObject restore_state",
             )
+            # The expiry exists only once the temporary copy is available
+            # (schema: restore_expiry implies restore_state='available'); the
+            # polling context a later recover needs is the observed check.
+            self.assertIsNone(version["restore_expiry"])
             self.assertEqual(
-                version["restore_expiry"],
-                restore_expiry,
-                "cancel must retain restore_expiry for subsequent polling",
+                version["restore_checked_at"],
+                datetime.fromisoformat("2026-07-24T10:00:00+00:00"),
+                "cancel must retain the restore polling context",
             )
 
     def test_restored_glacier_version_downloads_after_restore_available(self) -> None:
@@ -831,7 +839,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             self.assertEqual((source / "cold.txt").read_bytes(), payload)
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s", ("cold.txt",)
+                    "SELECT j.status FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s", ("cold.txt",)
                 ).fetchone()
                 version = connection.execute(
                     "SELECT restore_state FROM archive_versions WHERE id=%s",

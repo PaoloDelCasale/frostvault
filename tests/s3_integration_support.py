@@ -63,8 +63,12 @@ def ensure_versioned_bucket(bucket: str) -> None:
 
 def prepare_plain_vault(
     root: Path, *, relative_path: str, payload: bytes, bucket: str,
-    prefix: str,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, str]:
+    """A migrated catalog with the Owner, one Vault (id 2) and its Local Copy.
+
+    Returns the source root, the database identity and the Vault namespace
+    ``vaults/<uuid>`` its objects live under (ADR-0035: no custom prefixes).
+    """
     source = root / "source"
     source.mkdir()
     target = source / relative_path
@@ -74,18 +78,23 @@ def prepare_plain_vault(
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
     with PostgresConnection(str(database_path)) as connection:
-        connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
-        connection.execute("""
-            INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix)
-            VALUES (2, 'ci', 'CI', %s, %s, %s)
-        """, (str(source), bucket, prefix.strip("/"),))
+        connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
+        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        target_id = connection.execute(
+            "INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', %s, %s) RETURNING id",
+            (bucket, region),
+        ).fetchone()["id"]
+        vault_uuid = connection.execute(
+            "INSERT INTO vaults(id, target_id, name, source_root) VALUES (2, %s, 'CI', %s) RETURNING uuid",
+            (target_id, str(source)),
+        ).fetchone()["uuid"]
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=len(payload),
             mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",
         )
-    return source, database_path
+    return source, database_path, f"vaults/{vault_uuid}"
 
 
 def force_cleanup(bucket: str, prefix: str) -> None:

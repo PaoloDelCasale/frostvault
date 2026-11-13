@@ -42,6 +42,8 @@ BASELINE_TABLES = {
     "copy_attempts", "copy_receipts", "copy_multiparts", "source_volumes",
     "directory_aggregates", "vault_catalog_revisions", "catalog_events",
     "vault_component_health", "cloud_preflight_state",
+    "metadata_backup_runs", "recovery_kit_custody", "metadata_restore",
+    "metadata_restore_vaults", "metadata_restore_updates",
 }
 
 

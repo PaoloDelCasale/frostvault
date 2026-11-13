@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import source_directories, source_layout, source_identity
-from .job_admission import lock_vault
 from .directory_aggregates import request_vault_rebuild
 from .audit_events import record_audit_event
 
@@ -236,12 +235,13 @@ def _reconnect_vault_root(
     """
     cleaned_reason = _clean_reason(reason)
     source_directories.lock_vault_root_allocation(connection)
-    try:
-        lock_vault(connection, vault_id)
-    except LookupError as exc:
-        reason = "not_found" if str(exc) == "vault_not_found" else "protection_stopped"
-        raise VaultRelocationError(reason) from exc
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
+    # The admission fence of lock_vault, but a Vault already waiting for its
+    # Reconnect (a failed earlier attempt, a metadata restore) may reconnect.
+    vault = connection.execute(
+        "SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,),
+    ).fetchone()
+    if vault is None:
+        raise VaultRelocationError("not_found")
     if vault["lifecycle"] not in {"active", "reconnect_required"} or vault.get("root_released_at"):
         raise VaultRelocationError(
             "protection_stopped",
@@ -343,6 +343,9 @@ def complete_relocation_scan(
         """,
         (vault_id,),
     )
+    # The first complete Reconnect after a metadata restore ends its cloud
+    # reconciliation; later reconnects never adopt cloud versions.
+    connection.execute("DELETE FROM metadata_restore_vaults WHERE vault_id=%s", (vault_id,))
     if release_runtime:
         release_relocation_scan_runtime(vault_id)
 

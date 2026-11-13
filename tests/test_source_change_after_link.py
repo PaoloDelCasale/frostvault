@@ -15,6 +15,7 @@ from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
 from types import SimpleNamespace
@@ -33,24 +34,39 @@ from app.catalog import ArchiveCatalog
 
 from app.main import queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
-from tests.test_upload_verification import _prepare_plain_vault, _sha256_hex
+from tests.test_upload_verification import _observed, _prepare_plain_vault, _sha256_hex
 
 
 def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> None:
     with PostgresConnection(str(database_path)) as connection:
         connection.execute(
-            "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
+            "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' "
+            "WHERE file_id=(SELECT id FROM files WHERE path=%s)",
             (relative_path,),
         )
+
+
+def _observe(database_path: Path, local: Path, relative_path: str = "report.txt") -> None:
+    """The watcher's observation of a changed Local Copy: a new generation,
+    which an upload publication never matches (ADR-0035)."""
+    with PostgresConnection(str(database_path)) as connection:
+        stat = local.stat()
+        ArchiveCatalog(connection).observe_local_copy(
+            vault_id=2, path=relative_path, file_type="regular", size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns, observed_at="2026-07-21T10:05:00+00:00")
 
 
 def _job_row(database_path: Path, relative_path: str = "report.txt"):
     with PostgresConnection(str(database_path)) as connection:
         return connection.execute(
             """
-            SELECT status, retry_count, archive_version_id,
-                   upload_plaintext_sha256, message, message_key
-            FROM jobs WHERE path=%s
+            SELECT j.status, j.retry_count, j.archive_version_id,
+                   encode(s.plaintext_sha256, 'hex') AS upload_plaintext_sha256,
+                   j.message, j.message_key
+            FROM jobs j JOIN files f ON f.id=j.file_id
+            LEFT JOIN job_uploads b ON b.job_id=j.id
+            LEFT JOIN upload_snapshots s ON s.id=b.snapshot_id
+            WHERE f.path=%s ORDER BY j.id LIMIT 1
             """,
             (relative_path,),
         ).fetchone()
@@ -73,10 +89,16 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             operation_concurrency=1,
             restore_poll_interval=900,
         )
-        provider = VersionedS3Stub(head_object=lambda **_: {
+        # One provider per catalog: the versions (and their metadata) it
+        # stored survive between worker runs, like a real bucket.
+        providers = self.__dict__.setdefault("_providers", {})
+        provider = providers.get(str(database_path))
+        if provider is None:
+            provider = providers[str(database_path)] = VersionedS3Stub(head_object=lambda **_: None)
+        provider._head = lambda **_: {
             "VersionId": version_id, "ContentLength": content_length,
             "StorageClass": "STANDARD", "ETag": '"etag"',
-        })
+        }
 
         def stream(*args, **kwargs):
             consume = kwargs["on_chunk"]
@@ -118,6 +140,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 uploads.append(command[0] if command else "")
                 if command[:1] == ("upload",):
                     local.write_bytes(mutated)
+                    _observe(database_path, local)
 
             def fake_stream(*args, **kwargs) -> int:
                 command = tuple(str(arg) for arg in args if not callable(arg))
@@ -149,12 +172,12 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             job = _job_row(database_path)
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
                 ).fetchone()["total"]
                 local_copy = connection.execute(
-                    "SELECT matched_archive_version_id FROM local_copies"
+                    "SELECT matched_version_id AS matched_archive_version_id FROM files"
                 ).fetchone()
             self.assertEqual(job["status"], "completed")
             self.assertEqual(job["retry_count"] or 0, 0)
@@ -239,9 +262,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                     vault_id=2,
                     path="report.txt",
                     action="upload",
-                    requested_by=1,
                     requested_at="2026-07-21T12:00:00+00:00",
-                    group_id="archive-b",
+                    group_id=str(uuid.uuid4()),
                     is_directory=False,
                 )
                 row = catalog.list_file_rows(2)[0]
@@ -259,26 +281,30 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 versions = connection.execute(
                     """
-                    SELECT provider_version_id, integrity, plaintext_sha256
-                    FROM archive_versions
-                    ORDER BY version_number
+                    SELECT provider_version_id, integrity,
+                           encode(plaintext_sha256, 'hex') AS plaintext_sha256
+                    FROM archive_versions ORDER BY created_at
                     """
                 ).fetchall()
                 jobs = connection.execute(
                     "SELECT status FROM jobs ORDER BY id"
                 ).fetchall()
                 file_ids = {
-                    row["vault_file_id"]
+                    row["file_id"]
                     for row in connection.execute(
-                        "SELECT vault_file_id FROM archive_versions"
+                        "SELECT file_id FROM jobs"
                     ).fetchall()
                 }
-            self.assertEqual(len(versions), 2)
-            self.assertEqual(versions[0]["provider_version_id"], "s3-a")
-            self.assertEqual(versions[0]["plaintext_sha256"], _sha256_hex(original))
-            self.assertEqual(versions[1]["provider_version_id"], "s3-b")
-            self.assertEqual(versions[1]["plaintext_sha256"], _sha256_hex(mutated))
+                current = _observed(connection, "report.txt")["current_version"]
+            # B became Current; A, superseded, was deleted by its exact
+            # VersionId and left the catalog (Current Snapshot, ADR-0035).
+            self.assertEqual(len(versions), 1)
+            self.assertEqual(versions[0]["provider_version_id"], "s3-b")
+            self.assertEqual(versions[0]["plaintext_sha256"], _sha256_hex(mutated))
+            self.assertEqual(current["provider_version_id"], "s3-b")
             self.assertTrue(all(row["integrity"] == "verified" for row in versions))
+            provider = self._providers[str(database_path)]
+            self.assertEqual([d["VersionId"] for d in provider.deleted], ["s3-a"])
             self.assertEqual([job["status"] for job in jobs], ["completed", "completed"])
             self.assertEqual(len(file_ids), 1)
             self.assertEqual(uploads, ["upload", "upload"])
@@ -300,6 +326,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             def mutating_stream(*args, **kwargs) -> int:
                 local.write_bytes(mutated)
+                _observe(database_path, local)
                 kwargs["on_chunk"](original)
                 return len(original)
 
@@ -317,9 +344,9 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             )
             job = _job_row(database_path)
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 local_copy = connection.execute(
-                    "SELECT matched_archive_version_id FROM local_copies"
+                    "SELECT matched_version_id AS matched_archive_version_id FROM files"
                 ).fetchone()
             self.assertEqual(job["status"], "completed")
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
@@ -376,7 +403,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             )
             job = _job_row(database_path)
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
             self.assertEqual(job["status"], "completed")
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
             self.assertEqual(

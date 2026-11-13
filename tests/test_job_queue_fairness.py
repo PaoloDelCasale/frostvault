@@ -23,6 +23,7 @@ from app import main, storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.services import health, notifications, vault_relocation
+from app.services.operation_policies import queue_auto_uploads
 from app.sessions import create_session, csrf_token_for
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
@@ -161,52 +162,48 @@ class QueueFixture(unittest.TestCase):
         return target
 
     def queue(self, vault_id):
-        """Admit one automatic upload per File that never had a Job."""
-        queued = 0
+        """Run the real automatic admission (stability window on the clock)."""
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            paths = connection.execute(
-                """
-                SELECT f.path FROM files f
-                WHERE f.vault_id=%s AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id)
-                ORDER BY f.path
-                """,
-                (vault_id,),
-            ).fetchall()
-            for row in paths:
-                job_ids, _total, _eligible = catalog.queue_jobs(
-                    vault_id=vault_id, path=row["path"], action="upload",
-                    requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()),
-                    is_directory=False, origin="automatic",
-                )
-                queued += len(job_ids)
-        return queued
+            return queue_auto_uploads(
+                connection, vault_id=vault_id, source_root=str(self.roots[vault_id]),
+                now=self.clock,
+            )
 
     def jobs(self, vault_id=None):
         with self.db() as connection:
             if vault_id is None:
-                return connection.execute("SELECT * FROM jobs ORDER BY id").fetchall()
+                return connection.execute(
+                    "SELECT j.*, f.path FROM jobs j JOIN files f ON f.id=j.file_id ORDER BY j.id"
+                ).fetchall()
             return connection.execute(
-                "SELECT * FROM jobs WHERE vault_id=%s ORDER BY id", (vault_id,)
+                "SELECT j.*, f.path FROM jobs j JOIN files f ON f.id=j.file_id "
+                "WHERE j.vault_id=%s ORDER BY j.id", (vault_id,)
             ).fetchall()
 
     def add_intent(self, job_id, *, send_started):
-        """Bind an upload intent to a Job (the provenance machinery's own rows)."""
+        """Open a send attempt of the Job (the provenance machinery's own rows)."""
         with self.db() as connection:
             file_id = connection.execute(
-                "SELECT vault_file_id FROM jobs WHERE id=%s", (job_id,)
-            ).fetchone()["vault_file_id"]
-            connection.execute(
-                "INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,target_json,"
-                "snapshot_json,requested,inventory_json,send_started,created_at) "
-                "VALUES (%s,%s,2,%s,%s,'{}','{}','read_back','{}',%s,%s)",
-                (f"intent-{job_id}", f"token-{job_id}", file_id, job_id, send_started,
-                 self.clock.isoformat()),
-            )
-            connection.execute(
-                "INSERT INTO upload_intent_jobs(job_id,intent_id) VALUES (%s,%s)",
-                (job_id, f"intent-{job_id}"),
-            )
+                "SELECT file_id FROM jobs WHERE id=%s", (job_id,)
+            ).fetchone()["file_id"]
+            digest = b"\x01" * 32
+            snapshot = connection.execute(
+                """INSERT INTO upload_snapshots(vault_id,file_id,path,path_since,source_root,provider,
+                       local_generation,size,mtime_ns,plaintext_sha256,part_size,part_sha256,verification)
+                   SELECT vault_id,id,path,path_since,%s,'s3',0,4,1,%s,8388608,ARRAY[%s::bytea],'read_back'
+                   FROM files WHERE id=%s RETURNING id""",
+                (str(self.roots[2]), digest, digest, file_id),
+            ).fetchone()["id"]
+            attempt = connection.execute(
+                "INSERT INTO upload_attempts(snapshot_id,file_id,job_id,inventory_versions,inventory_markers) "
+                "VALUES (%s,%s,%s,'{}','{}') RETURNING id", (snapshot, file_id, job_id),
+            ).fetchone()["id"]
+            connection.execute("INSERT INTO job_uploads(job_id,verification_mode,snapshot_id) "
+                               "VALUES (%s,'read_back',%s) ON CONFLICT (job_id) DO UPDATE "
+                               "SET snapshot_id=EXCLUDED.snapshot_id", (job_id, snapshot))
+            if send_started:
+                connection.execute("UPDATE upload_attempts SET send_started_at=%s WHERE id=%s",
+                                   (self.clock.isoformat(), attempt))
 
     def candidates(self, **kwargs):
         stamp = self.clock.isoformat()
@@ -503,8 +500,8 @@ class RemovedFileTests(QueueFixture):
     def queue_manual(self, name):
         with self.db() as connection:
             ids, _, _ = ArchiveCatalog(connection).queue_jobs(
-                vault_id=2, path=name, action="upload", requested_by=1,
-                requested_at=self.clock.isoformat(), group_id=f"manual-{name}", is_directory=False,
+                vault_id=2, path=name, action="upload",
+                requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
         return ids[0]
 
@@ -523,9 +520,9 @@ class RemovedFileTests(QueueFixture):
                 "SELECT count(*) AS n FROM notifications WHERE event='job_failed'"
             ).fetchone()["n"]
             presence = connection.execute(
-                "SELECT presence FROM local_copies lc JOIN jobs j ON j.vault_file_id=lc.vault_file_id "
+                "SELECT f.local_presence FROM files f JOIN jobs j ON j.file_id=f.id "
                 "WHERE j.id=%s", (job_id,),
-            ).fetchone()["presence"]
+            ).fetchone()["local_presence"]
         self.assertEqual(failures, 0)
         self.assertEqual(presence, "missing")
 
@@ -577,7 +574,7 @@ class RemovedFileTests(QueueFixture):
         target.unlink()
         self.assertEqual(self.run_once(), 1)
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "missing")
+            self.assertEqual(connection.execute("SELECT local_presence FROM files").fetchone()["local_presence"], "missing")
         # The same bytes (same size and mtime) come back.
         self.advance(10)
         self.write(2, "same.jpg", b"identical")
@@ -885,7 +882,8 @@ class CancelPendingHttpTests(QueueFixture):
         ids = {row["path"]: row["id"] for row in self.jobs(2)}
         with self.db() as connection:
             connection.execute("UPDATE jobs SET status='uploading' WHERE id=%s", (ids["album/a.jpg"],))
-            connection.execute("UPDATE jobs SET upload_reconcile_only=TRUE WHERE id=%s", (ids["album/b.jpg"],))
+            connection.execute("UPDATE job_uploads SET reconcile_only=TRUE WHERE job_id=%s",
+                               (ids["album/b.jpg"],))
         response = self.cancel("")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["cancelled_count"], 1)
@@ -897,33 +895,23 @@ class CancelPendingHttpTests(QueueFixture):
         ids = {row["path"]: row["id"] for row in self.jobs(2)}
         self.add_intent(ids["album/a.jpg"], send_started=True)
         self.add_intent(ids["album/b.jpg"], send_started=False)
-        stamp = self.clock.isoformat()
         with self.db() as connection:
-            file_id = connection.execute(
-                "SELECT vault_file_id FROM jobs WHERE id=%s", (ids["other/c.jpg"],)
-            ).fetchone()["vault_file_id"]
-            connection.execute(
-                "INSERT INTO upload_intents(id,token,vault_id,vault_file_id,original_job_id,target_json,"
-                "snapshot_json,requested,inventory_json,send_started,created_at) "
-                "SELECT 'ep-intent','ep-token',2,%s,%s,'{}','{}','read_back','{}',FALSE,%s",
-                (file_id, ids["other/c.jpg"], stamp),
-            )
-            connection.execute(
-                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
-                "size,state,phase,due_at,current_job_id,created_at,updated_at) "
-                "VALUES ('ep-1','key-ep-1',2,%s,'ep-intent','{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
-                (file_id, stamp, ids["other/c.jpg"], stamp, stamp),
-            )
-            connection.execute(
-                "INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) "
-                "VALUES (%s,'ep-1',%s,2)", (ids["other/c.jpg"], file_id),
-            )
+            job = connection.execute("SELECT id, file_id FROM jobs WHERE id=%s",
+                                     (ids["other/c.jpg"],)).fetchone()
+            episode = connection.execute(
+                "INSERT INTO upload_remediations(vault_id,file_id,state,due_at,current_job_id) "
+                "VALUES (2,%s,'queued',%s,%s) RETURNING id",
+                (job["file_id"], self.clock.isoformat(), job["id"]),
+            ).fetchone()["id"]
+            connection.execute("INSERT INTO upload_remediation_jobs(job_id,remediation_id) VALUES (%s,%s)",
+                               (job["id"], episode))
         response = self.cancel("")
         self.assertEqual(response.json()["cancelled_count"], 0)
         self.assertEqual(set(self.statuses(2).values()), {"queued"})
         with self.db() as connection:
-            episode = connection.execute("SELECT state FROM upload_remediations WHERE id='ep-1'").fetchone()
-        self.assertEqual(episode["state"], "queued")
+            state = connection.execute("SELECT state FROM upload_remediations WHERE id=%s",
+                                       (episode,)).fetchone()["state"]
+        self.assertEqual(state, "queued")
 
     def test_unauthenticated_and_csrf_less_requests_are_refused(self):
         anonymous = TestClient(main.app, client=("127.0.0.1", 50001))

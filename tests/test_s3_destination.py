@@ -3,13 +3,17 @@
 Seams under test:
 - ``expected_cloud_key`` — builds exact namespaced S3 keys.
 - Plain upload Job worker — SDK destinations and HeadObject share one key.
+
+The rename destination under the Vault namespace (former
+``S3RenamePrefixTests``) is a server-side copy since #595: covered by
+``tests.test_rename_sync.test_rename_copies_the_exact_current_and_removes_the_old_key_exactly``
+(exact source key + VersionId, destination ``vaults/<uuid>/<new path>``, no upload).
 """
 
 from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
 
-import hashlib
 import os
 import tempfile
 import unittest
@@ -32,6 +36,7 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.storage import expected_cloud_key, process_jobs_once
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
 
 
@@ -73,21 +78,9 @@ class S3UploadPrefixTests(unittest.TestCase):
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
-                        2, 'docs', 'Docs', %s, 'example-bucket', %s)
-                    """,
-                    (str(source), prefix),
-                )
+                insert_owner(connection)
+                insert_vault(connection, id=2, source_root=str(source),
+                             bucket="example-bucket", uuid=prefix.removeprefix("vaults/"))
                 from app.services.vault_relocation import enroll_vault_root_identity
                 enroll_vault_root_identity(connection, 2, str(source))
                 ArchiveCatalog(connection).observe_local_copy(
@@ -155,188 +148,3 @@ class S3UploadPrefixTests(unittest.TestCase):
             self.assertIn(expected_remote, upload_destinations)
             # Includes the checksum-enabled exact HEAD before visible GET fallback.
             self.assertEqual(head_keys, [expected_key] * 4)
-
-
-class S3RenamePrefixTests(unittest.TestCase):
-    def test_rename_copy_destination_includes_vault_prefix(self) -> None:
-        prefix = "vaults/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        old_path = "reports/old-name.txt"
-        new_path = "archive/new-name.txt"
-        old_key = f"{prefix}/{old_path}"
-        new_key = f"{prefix}/{new_path}"
-        expected_remote = f"{new_key}"
-        payload = b"rename-prefixed"
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source"
-            target = source / new_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
-            database_path = root / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            digest = hashlib.sha256(payload).hexdigest()
-
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
-                        2, 'docs', 'Docs', %s, 'example-bucket', %s)
-                    """,
-                    (str(source), prefix),
-                )
-                from app.services.vault_relocation import enroll_vault_root_identity
-                enroll_vault_root_identity(connection, 2, str(source))
-                catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
-                    vault_id=2,
-                    path=old_path,
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=target.stat().st_mtime_ns,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path=old_path,
-                    object_key=f"{prefix}/{old_path}",
-                    provider_version_id="old-s3-version",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="old-etag",
-                    uploaded_at="2026-07-21T10:01:00+00:00",
-                    observed_at="2026-07-21T10:01:00+00:00",
-                    scan_id="2026-07-21T10:01:00+00:00",
-                    origin="upload",
-                )
-                catalog.mark_version_verified(
-                    version_id,
-                    plaintext_sha256=digest,
-                    verified_at="2026-07-21T10:02:00+00:00",
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=2,
-                    path=old_path,
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=version_id,
-                )
-                catalog.mark_local_copy_missing(
-                    file_id, observed_at="2026-07-21T11:00:00+00:00"
-                )
-                catalog.observe_local_copy(
-                    vault_id=2,
-                    path=new_path,
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=target.stat().st_mtime_ns,
-                    observed_at="2026-07-21T11:00:00+00:00",
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=2,
-                    path=new_path,
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=None,
-                )
-                catalog.confirm_file_rename(
-                    vault_file_id=file_id,
-                    new_path=new_path,
-                    changed_at="2026-07-21T11:05:00+00:00",
-                    vault_id=2,
-                )
-
-            transfer_calls: list[tuple[str, ...]] = []
-            head_keys: list[str] = []
-            download_calls: list[dict[str, str]] = []
-
-            def fake_upload(*args, **kwargs) -> None:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                transfer_calls.append(command)
-                if command[:1] != ("upload",) or len(command) < 3:
-                    return
-                origin = command[1]
-                if ":" in origin and not Path(origin).exists():
-                    raise RuntimeError(
-                        "plain rename verification must pin S3 VersionId"
-                    )
-
-            def fake_download_file(
-                Bucket: str,
-                Key: str,
-                Filename: str,
-                ExtraArgs: dict | None = None,
-                Callback=None,
-                Config=None,
-            ) -> None:
-                version_id = str((ExtraArgs or {}).get("VersionId") or "")
-                download_calls.append(
-                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
-                )
-                out = Path(Filename)
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(payload)
-                if Callback is not None:
-                    Callback(len(payload))
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs(new_path, "rename", 2, 1)
-                self.assertEqual(queued["item_count"], 1)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=fake_upload),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"old-s3-version"}},
-                            head_object=lambda **kwargs: (
-                                head_keys.append(kwargs["Key"])
-                                or {
-                                    "VersionId": (
-                                        "old-s3-version"
-                                        if kwargs["Key"] == old_key
-                                        else "new-s3-version"
-                                    ),
-                                    "ContentLength": len(payload),
-                                    "StorageClass": "STANDARD",
-                                    "ETag": '"new-etag"',
-                                }
-                            ),
-                            delete_object=lambda **kwargs: {
-                                "VersionId": "delete-marker-1",
-                                "DeleteMarker": True,
-                            },
-                            download_file=fake_download_file,
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            self.assertTrue(transfer_calls)
-            self.assertEqual(transfer_calls[0][2], expected_remote)
-            self.assertEqual(head_keys, [new_key, new_key, new_key])
-            self.assertEqual(
-                download_calls,
-                [
-                    {
-                        "Bucket": "example-bucket",
-                        "Key": new_key,
-                        "VersionId": "new-s3-version",
-                    }
-                ],
-            )

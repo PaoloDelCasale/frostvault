@@ -19,8 +19,6 @@ from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
 
-RECOVERY_KIT = "Recovery Kit moves to the rebuilt model in #598"
-
 
 class ReconnectRecoveryHttpTests(unittest.TestCase):
     def setUp(self):
@@ -53,7 +51,6 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(client.post("/api/vaults/7/reconnect", json=payload).status_code, 403)
         self.assertEqual(client.post("/api/vaults/7/relocate", json=payload, headers=headers).status_code, 404)
 
-    @unittest.skip(RECOVERY_KIT)
     def test_kit_requires_authentication_and_recent_reauthentication(self):
         anonymous = TestClient(app)
         self.assertIn(anonymous.get("/api/recovery-kit/download").status_code, (401, 403))
@@ -64,7 +61,6 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "reauth_required"})
         build.assert_not_called()
 
-    @unittest.skip(RECOVERY_KIT)
     def test_no_store_download_is_non_catalog_and_audited_without_secret(self):
         client, _ = self.client_for()
         # Session creation is a fresh identity proof.
@@ -80,7 +76,6 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertNotIn(self.settings.archive_master_key, "\n".join(logs.output) + event["detail"])
         self.assertIn("s3api restore-object", kit["instructions"])
 
-    @unittest.skip(RECOVERY_KIT)
     def test_one_custody_is_fingerprint_bound_and_csrf_protected(self):
         client, headers = self.client_for()
         status = client.get("/api/recovery-kit").json()

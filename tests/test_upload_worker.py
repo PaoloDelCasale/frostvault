@@ -520,14 +520,12 @@ class UploadWorkerTests(unittest.TestCase):
             self.observe(connection)
             connection.execute("UPDATE files SET local_content_observed_at=now() - interval '1 day', "
                                "local_observed_at=now() - interval '1 day'")
-            self.assertEqual(queue_auto_uploads(connection, vault_id=2, source_root=str(self.source),
-                                                requested_by=1), 1)
+            self.assertEqual(queue_auto_uploads(connection, vault_id=2, source_root=str(self.source)), 1)
         job_id = self.rows("SELECT id FROM jobs WHERE origin='automatic'")[0]["id"]
         self.run_job(job_id)
         self.assert_current(job_id, A)
         with self.db() as connection:
-            self.assertEqual(queue_auto_uploads(connection, vault_id=2, source_root=str(self.source),
-                                                requested_by=1), 0)
+            self.assertEqual(queue_auto_uploads(connection, vault_id=2, source_root=str(self.source)), 0)
 
 
 if __name__ == "__main__":

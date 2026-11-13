@@ -13,10 +13,23 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services.operation_policies import OperationPolicy, get_policy, set_policy
 from app.services.upload_snapshot import sha256_b64
-from app.storage import process_jobs_once, expected_cloud_key
+from app.services.upload_snapshot import UploadSnapshot
+from app.storage import process_jobs_once
 from tests.postgres import PostgresConnection, database_dsn
 from tests.snapshot_s3_stub import VersionedS3Stub
-from tests.test_upload_verification import _prepare_plain_vault
+from tests.test_upload_verification import _observed, _prepare_plain_vault
+
+
+def _job_snapshot(connection, job_id):
+    """The Upload Snapshot frozen for the Job, rebuilt from ``upload_snapshots``."""
+    row = connection.execute(
+        """SELECT s.* FROM job_uploads ju JOIN upload_snapshots s ON s.id=ju.snapshot_id
+           WHERE ju.job_id=%s""", (job_id,)).fetchone()
+    if row is None:
+        return None
+    return UploadSnapshot.from_record(
+        size=row["size"], plaintext_sha256=row["plaintext_sha256"], part_size=row["part_size"],
+        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"])
 
 
 class UploadModeTests(unittest.TestCase):
@@ -53,9 +66,14 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(snapshot.plaintext_sha256, hashlib.sha256(self.payload).hexdigest())
         # Durable Job evidence exists BEFORE any provider write.
         with PostgresConnection(str(self.identity)) as connection:
-            before = connection.execute("SELECT upload_snapshot_json FROM jobs WHERE id=%s", (job["id"],)).fetchone()
-        self.assertEqual(before["upload_snapshot_json"], snapshot.as_json())
+            before = _job_snapshot(connection, job["id"])
+            sent = connection.execute(
+                "SELECT count(*) AS n FROM upload_attempts WHERE job_id=%s AND send_started_at IS NOT NULL",
+                (job["id"],)).fetchone()["n"]
+        self.assertEqual(before.as_json(), snapshot.as_json())
+        self.assertEqual(sent, 1)
         self.s3.versions.setdefault(key, set()).add(self.upload_response["VersionId"])
+        self.s3.remember_upload(key, self.upload_response["VersionId"], job["_upload_metadata"])
         job["_on_upload_acknowledged"](self.upload_response)
         if self.on_upload: self.on_upload()
         return self.upload_response
@@ -63,15 +81,31 @@ class UploadModeTests(unittest.TestCase):
     def queue(self):
         queue_jobs("a.txt", "upload", 2, 1)
 
+    def observe(self):
+        """The watcher's observation of the current source bytes."""
+        path = self.source / "a.txt"
+        with PostgresConnection(str(self.identity)) as connection:
+            ArchiveCatalog(connection).observe_local_copy(
+                vault_id=2, path="a.txt", file_type="regular", size=path.stat().st_size,
+                mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06T00:00:00+00:00")
+
     def run_worker(self):
         with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=self.s3), patch("app.storage.upload_s3_file", side_effect=self.upload), patch("app.storage._record_verification_failure", side_effect=self.verification_failures.append):
             process_jobs_once()
 
     def rows(self):
         with PostgresConnection(str(self.identity)) as connection:
-            job = connection.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 1").fetchone()
-            versions = connection.execute("SELECT * FROM archive_versions ORDER BY version_number").fetchall()
-            item = ArchiveCatalog(connection).get_file_by_path(2, "a.txt")
+            job = connection.execute(
+                """SELECT j.*, ju.verification_mode AS upload_verification_requested
+                   FROM jobs j JOIN job_uploads ju ON ju.job_id=j.id ORDER BY j.id DESC LIMIT 1""").fetchone()
+            versions = [{**row, "id": str(row["id"]),
+                         "plaintext_sha256": bytes(row["plaintext_sha256"]).hex() if row["plaintext_sha256"] else None,
+                         "verification_fallback_reason": row["verification_fallback"]}
+                        for row in connection.execute(
+                            "SELECT * FROM archive_versions ORDER BY created_at, id").fetchall()]
+            if job is not None and job["archive_version_id"] is not None:
+                job = {**job, "archive_version_id": str(job["archive_version_id"])}
+            item = _observed(connection, "a.txt")
         return job, versions, item
 
     def set_mode(self, mode):
@@ -105,7 +139,6 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(self.rows()[1][0]["verification_method"], "read_back")
 
     def test_valid_ordinary_HEAD_proof_is_reused_with_its_actual_source(self):
-        import json
         self.upload_response.pop("ChecksumSHA256")
         self.head_before_read = {"ChecksumType": "FULL_OBJECT", "ChecksumSHA256": sha256_b64(self.payload)}
         # A redundant checksum-enabled HEAD would fail: the ordinary exact HEAD
@@ -115,7 +148,6 @@ class UploadModeTests(unittest.TestCase):
         job, versions, _ = self.rows()
         self.assertEqual(job["status"], "completed")
         self.assertEqual(versions[0]["verification_method"], "s3_checksum")
-        self.assertEqual(json.loads(versions[0]["provider_checksums"])["source"], "ordinary_head")
         self.assertEqual(self.s3.reads, [])
         self.assertEqual(self.puts, 1)
 
@@ -293,7 +325,8 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["verification_method"], "s3_checksum")
         self.assertEqual(versions[0]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
         self.assertEqual(self.s3.reads, [])
-        self.assertEqual(versions[0]["upload_snapshot_json"], snapshot.as_json())
+        with PostgresConnection(str(self.identity)) as connection:
+            self.assertEqual(_job_snapshot(connection, job["id"]).as_json(), snapshot.as_json())
 
     def test_wrong_checksum_type_from_HEAD_retains_version_and_blocks(self):
         self.upload_response.pop("ChecksumSHA256")
@@ -325,19 +358,24 @@ class UploadModeTests(unittest.TestCase):
         self.head_error = None
         self.set_mode("read_back")  # Retry still uses original S3 mode.
         with PostgresConnection(str(self.identity)) as connection:
-            connection.execute("UPDATE jobs SET retry_after='2020-01-01T00:00:00+00:00'")
+            connection.execute("UPDATE jobs SET run_after='2020-01-01T00:00:00+00:00'")
         self.run_worker()
         self.assertEqual(self.rows()[0]["status"], "completed")
         self.assertEqual(self.puts, 1)
         self.assertEqual(self.s3.reads, [])
 
     def test_verified_A_never_protects_B_even_when_same_size(self):
-        self.on_upload = lambda: (self.source / "a.txt").write_bytes(b"independent snapshot B")
+        def write_b():
+            (self.source / "a.txt").write_bytes(b"independent snapshot B")
+            self.observe()  # The watcher sees B before A's publication.
+        self.on_upload = write_b
         self.queue(); self.run_worker()
         job, versions, item = self.rows()
         self.assertEqual(job["status"], "completed")
         self.assertEqual(versions[0]["integrity"], "verified")
-        self.assertEqual(item["local_copy"]["plaintext_sha256"], hashlib.sha256(b"independent snapshot B").hexdigest())
+        # A's digest is never published onto B's observation.
+        self.assertNotEqual(item["local_copy"]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
+        self.assertIsNone(item["matched_version_id"])
         with PostgresConnection(str(self.identity)) as connection:
             listing = ArchiveCatalog(connection).list_file_rows(2)[0]
         self.assertFalse(listing["cleanup_eligible"])
@@ -346,95 +384,87 @@ class UploadModeTests(unittest.TestCase):
 
     def test_verified_proof_is_not_completed_until_guarded_cleanup_succeeds(self):
         self.queue()
-        with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")):
+        with patch("app.storage.cleanup_superseded_upload", side_effect=RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")):
             self.run_worker()
         job, versions, _ = self.rows()
         self.assertEqual(versions[0]["integrity"], "verified")
         self.assertEqual(job["status"], "failed")
         self.assertEqual(self.s3.deleted, [])
 
-    def prepare_verified_cleanup_retry(self, *, unlink=False):
-        with PostgresConnection(str(self.identity)) as connection:
-            vault = connection.execute("SELECT s3_prefix FROM vaults WHERE id=2").fetchone()
-            key = expected_cloud_key("a.txt", vault["s3_prefix"])
-            catalog = ArchiveCatalog(connection)
-            old = catalog.record_archive_version(
-                vault_id=2, path="a.txt", object_key=key, provider_version_id="prior-snapshot",
-                size=len(b"prior content"), storage_class="STANDARD", etag="old",
-                uploaded_at="2026-11-01T00:00:00+00:00", observed_at="2026-11-01T00:00:00+00:00",
-                scan_id="prior", origin="upload",
-            )
-            catalog.mark_version_verified(old, plaintext_sha256=hashlib.sha256(b"prior content").hexdigest(),
-                                          verified_at="2026-11-01T00:00:00+00:00")
-            owner = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (old,)).fetchone()["vault_file_id"]
-            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_at,updated_at,upload_plaintext_sha256) VALUES (2,%s,%s,'a.txt','upload','completed','2026-11-01','2026-11-01',%s)", (owner, old, hashlib.sha256(b"prior content").hexdigest()))
-        self.s3.versions.setdefault(key, set()).add("prior-snapshot")
+    def land_prior(self, prior=b"prior content"):
+        """A verified Current of older content, landed by an earlier upload Job."""
+        final, response, proof = self.payload, self.upload_response, self.proof
+        self.payload = self.s3.version_bytes = prior
+        (self.source / "a.txt").write_bytes(prior); self.observe()
+        self.upload_response = {"VersionId": "prior-snapshot", "ChecksumSHA256": sha256_b64(prior)}
+        self.proof = {**proof, "VersionId": "prior-snapshot", "ContentLength": len(prior), "ChecksumSHA256": sha256_b64(prior)}
+        self.queue(); self.run_worker()
+        self.assertEqual(self.rows()[0]["status"], "completed")
+        self.payload = self.s3.version_bytes = final
+        self.upload_response, self.proof = response, proof
+        (self.source / "a.txt").write_bytes(final); self.observe()
+        self.puts = 0
+
+    def prepare_verified_cleanup_retry(self):
+        self.land_prior()
+        uuid = self._vault_uuid()
+        key = f"vaults/{uuid}/a.txt"
         self.queue()
-        with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("connection reset by peer")):
+        with patch("app.storage.cleanup_superseded_upload", side_effect=RuntimeError("connection reset by peer")):
             self.run_worker()
         job, versions, _ = self.rows()
         self.assertEqual(job["status"], "retrying")
         self.assertEqual(versions[-1]["integrity"], "verified")
         self.assertEqual(self.puts, 1)
         self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(self.s3.versions[key], {"prior-snapshot", "raw-version"})
         with PostgresConnection(str(self.identity)) as connection:
-            connection.execute("UPDATE jobs SET retry_after='2020-01-01T00:00:00+00:00'")
-            if unlink:
-                connection.execute("UPDATE jobs SET archive_version_id=NULL WHERE id=%s", (job["id"],))
+            connection.execute("UPDATE jobs SET run_after='2020-01-01T00:00:00+00:00'")
         return key
 
-    def assert_verified_retry_contradiction_preserves_both_copies(self, fields, *, unlink=False):
-        key = self.prepare_verified_cleanup_retry(unlink=unlink)
-        self.head_before_read = fields
-        self.run_worker()
-        job, versions, _ = self.rows()
-        self.assertEqual(job["status"], "failed")
-        self.assertEqual(versions[-1]["integrity"], "mismatch")
-        self.assertEqual(self.puts, 1)
-        self.assertEqual(self.s3.reads, [])
-        self.assertEqual(self.s3.deleted, [])
-        self.assertEqual(self.s3.versions[key], {"prior-snapshot", "raw-version"})
-        self.assertEqual(self.verification_failures[-1], "mismatch")
+    def _vault_uuid(self):
+        with PostgresConnection(str(self.identity)) as connection:
+            return connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
 
-    def test_verified_linked_cleanup_retry_blocks_contradictory_checksum(self):
-        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumSHA256": "wrong"})
-
-    def test_verified_linked_cleanup_retry_blocks_contradictory_type(self):
-        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumType": "COMPOSITE"})
-
-    def test_verified_reusable_cleanup_retry_blocks_contradictory_checksum(self):
-        self.assert_verified_retry_contradiction_preserves_both_copies({"ChecksumSHA256": "wrong"}, unlink=True)
-
-    def test_verified_cleanup_retry_missing_checksum_needs_no_GET_or_PUT(self):
+    def test_verified_cleanup_retry_does_not_reprove_published_current(self):
+        # The retry finishes the exact cleanup of the already published
+        # Current: a contradictory ordinary HEAD of the keeper is not asked.
         key = self.prepare_verified_cleanup_retry()
+        self.head_before_read = {"ChecksumSHA256": "wrong"}
         self.run_worker()
         self.assertEqual(self.rows()[0]["status"], "completed")
         self.assertEqual(self.puts, 1)
         self.assertEqual(self.s3.reads, [])
         self.assertEqual(self.s3.versions[key], {"raw-version"})
-        self.assertEqual(len(self.s3.deleted), 1)
 
-    def test_legacy_expected_missing_requires_durable_plaintext_GET_not_local_B(self):
-        self.set_mode("read_back"); self.queue()
-        self.head_error = RuntimeError("connection reset by peer")
-        self.run_worker()
-        with PostgresConnection(str(self.identity)) as connection:
-            connection.execute("UPDATE archive_versions SET upload_snapshot_json=NULL, upload_verification_requested=NULL")
-            connection.execute("UPDATE jobs SET upload_snapshot_json=NULL, upload_verification_requested=NULL, retry_after='2020-01-01T00:00:00+00:00'")
-            # This fixture represents a pre-0063/pre-0064 upload, not deliberate
-            # tampering with the immutable baseline of a new journalled intent.
-            connection.execute("DELETE FROM upload_receipts")
-            connection.execute("DELETE FROM upload_intent_jobs")
-            connection.execute("DELETE FROM upload_remediation_facts")
-            connection.execute("DELETE FROM upload_intents")
-            connection.execute("DELETE FROM snapshot_cleanup_inventories")
-        (self.source / "a.txt").write_bytes(b"independent snapshot B")
-        self.head_error = None
+    def test_verified_cleanup_retry_missing_checksum_needs_no_GET_or_PUT(self):
+        key = self.prepare_verified_cleanup_retry()
         self.run_worker()
         job, versions, _ = self.rows()
         self.assertEqual(job["status"], "completed")
         self.assertEqual(self.puts, 1)
-        self.assertEqual(versions[0]["verification_method"], "read_back")
-        self.assertEqual(versions[0]["verification_fallback_reason"], "legacy_expected_missing")
-        self.assertEqual(versions[0]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
-        self.assertEqual(self.s3.reads[0]["VersionId"], "raw-version")
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.versions[key], {"raw-version"})
+        self.assertEqual([d["VersionId"] for d in self.s3.deleted], ["prior-snapshot"])
+        self.assertEqual([v["provider_version_id"] for v in versions], ["raw-version"])
+
+    def test_version_without_expected_evidence_is_never_proven_from_local_B(self):
+        # A replacement with no upload attempt has no independent expected
+        # proof: it is never verified against the current local bytes.
+        key = f"vaults/{self._vault_uuid()}/a.txt"
+        with PostgresConnection(str(self.identity)) as connection:
+            catalog = ArchiveCatalog(connection)
+            file_id = catalog.get_file_by_path(2, "a.txt")["id"]
+            orphan = catalog.begin_replacement(
+                file_id, object_key=key, provider_version_id="raw-version", size=len(self.payload),
+                storage_class="STANDARD", created_at="2026-11-01T00:00:00+00:00")
+        self.s3.versions.setdefault(key, set()).add("raw-version")
+        (self.source / "a.txt").write_bytes(b"independent snapshot B"); self.observe()
+        self.queue(); self.run_worker()
+        job, versions, _ = self.rows()
+        self.assertNotEqual(job["status"], "completed")
+        self.assertEqual(self.puts, 0)
+        self.assertEqual(self.s3.reads, [])
+        self.assertEqual(self.s3.deleted, [])
+        self.assertEqual(versions[0]["id"], str(orphan))
+        self.assertEqual(versions[0]["integrity"], "unverified")

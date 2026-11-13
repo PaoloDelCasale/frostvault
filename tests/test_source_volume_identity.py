@@ -1,6 +1,7 @@
 """Markerless Source Volume replacement detection (issue #151)."""
 from __future__ import annotations
 
+from tests.owner_fixtures import insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 
 import asyncio
@@ -153,7 +154,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         self.assertTrue(access.local_operations_allowed)
         with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT * FROM source_volumes").fetchone()
-        serialized = json.dumps(row, sort_keys=True)
+        serialized = json.dumps(row, sort_keys=True, default=str)
         self.assertNotIn("/host/photos", serialized)
         self.assertNotIn("/dev/sda1", serialized)
         self.assertRegex(row["expected_fingerprint"], r"^[0-9a-f]{64}$")
@@ -163,13 +164,8 @@ class PersistedSourceIdentityTests(unittest.TestCase):
 
         self.enroll()
         with PostgresConnection(str(self.database_path)) as connection:
-            vault_id = connection.execute(
-                """
-                INSERT INTO vaults(slug, name, source_root, s3_bucket, s3_prefix)
-                VALUES ('family', 'Family', %s, 'b', 'p/') RETURNING id
-                """,
-                (str(self.vault_root),),
-            ).fetchone()["id"]
+            vault_id = insert_vault(connection, name="Family", source_root=str(self.vault_root),
+                                    bucket="b")["id"]
         self.mountinfo = mountinfo_line(
             self.photos, root="/host/other", source="/dev/sdb1"
         )
@@ -188,7 +184,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
                 "WHERE event='source_volume_identity_transition'"
             ).fetchall()
             local_count = connection.execute(
-                "SELECT COUNT(*) AS total FROM local_copies"
+                "SELECT COUNT(*) AS total FROM files WHERE local_presence IS NOT NULL"
             ).fetchone()["total"]
         self.assertEqual(len(events), 1)
         self.assertEqual(local_count, 0)

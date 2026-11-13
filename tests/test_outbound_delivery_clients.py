@@ -18,11 +18,6 @@ from app.storage import _deliver_notifications_once, set_job
 from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
-# The v0.6 baseline (ADR-0035) gains these in later issues of epic #578.
-UPLOAD_PROOFS = "upload failure closure proofs are ported by #592"
-CATALOG_INCIDENTS = "needs catalog_incidents, not yet in 0001_baseline"
-TERMINAL_OUTBOX = "needs the Job terminal-notification marker, ported by #589"
-
 
 class _SmtpRecorder(threading.Thread):
     def __init__(self) -> None:
@@ -138,13 +133,16 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.assertIn("To: ops@example.com", smtp.messages[0])
         self.assertNotIn("To: owner@example.com", smtp.messages[0])
 
-    @unittest.skip(UPLOAD_PROOFS)
     def test_only_terminal_upload_failure_not_routine_success_uses_email(self) -> None:
-        for status in ("completed", "failed"):
+        with PostgresConnection(str(self.path)) as connection:
+            # A terminal Job never runs again: each outcome ends its own Job.
+            jobs = {"completed": self.job_id,
+                    "failed": insert_job(connection, vault_id=2, path="b.txt", status="uploading")}
+        for status, job_id in jobs.items():
             with self.subTest(status=status), patch(
                 "app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))
             ):
-                self.assertTrue(set_job(self.job_id, status, "result"))
+                self.assertTrue(set_job(job_id, status, "result"))
         with PostgresConnection(str(self.path)) as connection:
             rows = connection.execute(
                 "SELECT n.event, d.channel FROM notification_deliveries d "
@@ -153,7 +151,6 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             self.assertEqual([(row["event"], row["channel"]) for row in rows], [("job_failed", "email")])
             self.assertEqual(len(notifications.list_in_app_notifications(connection)), 1)
 
-    @unittest.skip(CATALOG_INCIDENTS)
     def test_existing_incidents_reach_both_channels_once(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for incident_id, enqueue in enumerate((
@@ -183,7 +180,6 @@ class OutboundDeliveryClientTests(unittest.TestCase):
                 ).fetchone()["total"], 0)
                 self.assertGreater(notifications.count_unread_notifications(connection), 0)
 
-    @unittest.skip(TERMINAL_OUTBOX)
     def test_worker_uses_production_smtp_client(self) -> None:
         smtp = _SmtpRecorder()
         smtp.start()
