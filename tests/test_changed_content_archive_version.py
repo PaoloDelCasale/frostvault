@@ -1,695 +1,125 @@
 """Archive a changed Local Copy of a Vault File already present on S3 (#295).
 
-Seams under test:
-- ArchiveCatalog.queue_jobs / list_file_rows: admit B when A exists.
-- Directory aggregates: upload action for unmatched local modifications.
-- process_upload: new Archive Version for B, reuse/resume without duplicates.
+Admission seams on the rebuilt model (ADR-0035): ``ArchiveCatalog.queue_jobs``
+and ``list_file_rows`` admit new bytes when Current holds older content, and
+directory aggregates offer the upload. Disposable PostgreSQL 16 only.
+
+Former worker cases now owned by the real upload worker suites (one Current
+per file; superseded versions are removed exactly after verification):
+- changed content uploads a second version / A→B→C keeps only the latest →
+  ``tests.test_upload_cleanup.test_replacement_deletes_the_exact_superseded_version_before_completion``,
+  ``test_steady_state_keeps_only_current_per_file``;
+- three versions recoverable on one file: retired, only Current is
+  recoverable → ``tests.test_recovery_versions``;
+- an unchanged digest relinks without a new object →
+  ``tests.test_upload_worker.test_unchanged_content_is_matched_to_current_without_a_send``;
+- an unverified retry resumes without a new object →
+  ``tests.test_upload_worker.test_materialized_version_waits_for_verification_and_another_job_finishes_it``;
+- a mismatch is kept and blocks instead of being replaced silently →
+  ``tests.test_upload_worker.test_contradicting_proof_never_becomes_current``,
+  ``tests.test_upload_cleanup.test_proven_mismatch_is_retained_and_blocks_the_cleanup``.
 """
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
-
-import hashlib
-import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
-from tests.snapshot_s3_stub import VersionedS3Stub
-from types import SimpleNamespace
-from unittest.mock import patch
-
-# Windows test hosts lack the Linux open flags imported by vault decommission.
-for _flag, _value in (
-    ("O_DIRECTORY", 0x10000),
-    ("O_NOFOLLOW", 0x20000),
-    ("O_CLOEXEC", 0x80000),
-):
-    if not hasattr(os, _flag):
-        setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-
-from app.main import queue_jobs
 from app.services import directory_aggregates as aggregates
-from app.storage import process_jobs_once
+from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
+from tests.owner_fixtures import insert_owner
+from tests.postgres import PostgresConnection
 from tests.test_database import run_alembic
-
-
-def _sha(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _seed_user_vault(connection: PostgresConnection, source: Path) -> None:
-    connection.execute(
-        """
-        INSERT INTO users(id, username, display_name, password_hash)
-        VALUES (1, 'owner', 'Owner', 'hash')
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-        """,
-        (str(source),),
-    )
-    from app.services.vault_relocation import enroll_vault_root_identity
-    enroll_vault_root_identity(connection, 2, str(source))
-
-
-def _record_verified(
-    catalog: ArchiveCatalog,
-    *,
-    path: str,
-    payload: bytes,
-    provider_version_id: str,
-    uploaded_at: str,
-) -> str:
-    version_id = catalog.record_archive_version(
-        vault_id=2,
-        path=path,
-        object_key=f"docs/{path}",
-        provider_version_id=provider_version_id,
-        size=len(payload),
-        storage_class="STANDARD",
-        etag="etag",
-        uploaded_at=uploaded_at,
-        observed_at=uploaded_at,
-        scan_id=uploaded_at,
-        origin="upload",
-    )
-    catalog.mark_version_verified(
-        version_id,
-        plaintext_sha256=_sha(payload),
-        verified_at=uploaded_at,
-    )
-    return version_id
 
 
 class ChangedContentAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.source = Path(self.tmp.name) / "source"
-        self.source.mkdir()
-        self.database_path = Path(self.tmp.name) / "catalog.db"
-        self.assertEqual(run_alembic(self.database_path).returncode, 0)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        database_path = Path(tmp.name) / "catalog.db"
+        self.assertEqual(run_alembic(database_path).returncode, 0)
+        self.connection = PostgresConnection(str(database_path))
+        self.connection.__enter__()
+        self.addCleanup(self.connection.__exit__, None, None, None)
+        insert_owner(self.connection)
+        seed_vault(self.connection, source_root=str(Path(tmp.name) / "source"))
+        self.catalog = ArchiveCatalog(self.connection)
 
-    def _open(self) -> PostgresConnection:
-        connection = PostgresConnection(str(self.database_path))
-        connection.__enter__()
-        self.addCleanup(connection.__exit__, None, None, None)
-        return connection
+    def observe(self, path: str, size: int, mtime_ns: int) -> str:
+        return self.catalog.observe_local_copy(
+            vault_id=2, path=path, file_type="regular", size=size, mtime_ns=mtime_ns,
+            observed_at="2026-07-21T10:00:00+00:00")
+
+    def protected(self, path: str, payload: bytes) -> str:
+        """Observe, fingerprint and protect ``payload``: Current, matched."""
+        self.observe(path, len(payload), 1)
+        fingerprint(self.catalog, 2, path, sha256_hex(payload))
+        return protect(self.catalog, 2, path, sha256_hex(payload))
+
+    def queue(self, path: str = "report.txt") -> tuple[list[int], int]:
+        job_ids, _, eligible = self.catalog.queue_jobs(
+            vault_id=2, path=path, action="upload", requested_at="2026-07-21T10:03:00+00:00",
+            group_id=str(uuid.uuid4()), is_directory=False)
+        return job_ids, eligible
 
     def test_changed_content_can_queue_second_archive_version(self) -> None:
-        payload_a = b"alpha"
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=len(payload_a),
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        version_a = _record_verified(
-            catalog,
-            path="report.txt",
-            payload=payload_a,
-            provider_version_id="s3-a",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-        )
-        catalog.set_local_fingerprint(
-            vault_id=2,
-            path="report.txt",
-            plaintext_sha256=_sha(payload_a),
-            matched_archive_version_id=version_a,
-        )
-        file_id = catalog.get_file_by_path(2, "report.txt")["id"]
-        none, _, _ = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:01:00+00:00",
-            group_id="protected",
-            is_directory=False,
-        )
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=len(payload_a) + 4,
-            mtime_ns=2,
-            observed_at="2026-07-21T10:02:00+00:00",
-        )
-        job_ids, _, eligible = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:03:00+00:00",
-            group_id="changed",
-            is_directory=False,
-        )
-        row = catalog.list_file_rows(2)[0]
-        after = catalog.get_file_by_path(2, "report.txt")
-        self.assertEqual(none, [])
-        self.assertEqual(len(job_ids), 1)
-        self.assertEqual(eligible, 1)
+        self.protected("report.txt", b"alpha")
+        file_id = self.catalog.get_file_by_path(2, "report.txt")["id"]
+        self.assertEqual(self.queue(), ([], 0), "matched content is protected")
+        self.observe("report.txt", len(b"alpha") + 4, 2)
+        job_ids, eligible = self.queue()
+        self.assertEqual((len(job_ids), eligible), (1, 1))
+        row = self.catalog.list_file_rows(2)[0]
         self.assertEqual(row["state"], "pending")
         self.assertTrue(row["previous_snapshot_protected"])
         self.assertTrue(row["upload_eligible"])
         self.assertFalse(row["cleanup_eligible"])
-        self.assertEqual(after["id"], file_id)
+        after = self.catalog.get_file_by_path(2, "report.txt")
+        self.assertEqual(after["id"], file_id, "the same Vault File gets the new version")
         self.assertIsNone(after["local_copy"]["plaintext_sha256"])
 
     def test_protected_content_does_not_queue_duplicate(self) -> None:
-        payload = b"same-bytes"
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        version_id = _record_verified(
-            catalog,
-            path="report.txt",
-            payload=payload,
-            provider_version_id="s3-a",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-        )
-        catalog.set_local_fingerprint(
-            vault_id=2,
-            path="report.txt",
-            plaintext_sha256=_sha(payload),
-            matched_archive_version_id=version_id,
-        )
-        job_ids, _, eligible = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:01:00+00:00",
-            group_id="dup",
-            is_directory=False,
-        )
-        row = catalog.list_file_rows(2)[0]
-        self.assertEqual(job_ids, [])
-        self.assertEqual(eligible, 0)
+        self.protected("report.txt", b"same-bytes")
+        self.assertEqual(self.queue(), ([], 0))
+        row = self.catalog.list_file_rows(2)[0]
         self.assertFalse(row["upload_eligible"])
         self.assertTrue(row["cleanup_eligible"])
 
     def test_list_and_aggregates_mark_changed_content_upload_eligible(self) -> None:
-        payload = b"alpha"
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="notes/report.txt",
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        version_id = _record_verified(
-            catalog,
-            path="notes/report.txt",
-            payload=payload,
-            provider_version_id="s3-a",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-        )
-        catalog.set_local_fingerprint(
-            vault_id=2,
-            path="notes/report.txt",
-            plaintext_sha256=_sha(payload),
-            matched_archive_version_id=version_id,
-        )
-        aggregates.flush_directory_aggregates(connection, vault_id=2)
-        before_dir = catalog.list_files_page(2)["items"][0]
-        before_file = catalog.list_files_page(2, directory="notes")["items"][0]
+        self.protected("notes/report.txt", b"alpha")
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        before_dir = self.catalog.list_files_page(2)["items"][0]
+        before_file = self.catalog.list_files_page(2, directory="notes")["items"][0]
         self.assertEqual(before_dir["available_actions"]["upload"], 0)
         self.assertFalse(before_file["upload_eligible"])
 
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="notes/report.txt",
-            file_type="regular",
-            size=len(payload) + 8,
-            mtime_ns=2,
-            observed_at="2026-07-21T10:02:00+00:00",
-        )
-        aggregates.flush_directory_aggregates(connection, vault_id=2)
-        after_dir = catalog.list_files_page(2)["items"][0]
-        after_file = catalog.list_files_page(2, directory="notes")["items"][0]
-        self.assertEqual(after_dir["available_actions"]["upload"], 1)
-        self.assertEqual(after_dir["state"], "pending")
+        self.observe("notes/report.txt", len(b"alpha") + 8, 2)
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        after_dir = self.catalog.list_files_page(2)["items"][0]
+        after_file = self.catalog.list_files_page(2, directory="notes")["items"][0]
+        self.assertEqual((after_dir["available_actions"]["upload"], after_dir["state"]), (1, "pending"))
         self.assertTrue(after_file["upload_eligible"])
         self.assertEqual(after_file["state"], "pending")
 
-    def test_unverified_and_mismatch_terminal_versions_are_upload_eligible(self) -> None:
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=4,
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        unverified = catalog.record_archive_version(
-            vault_id=2,
-            path="report.txt",
-            object_key="docs/report.txt",
-            provider_version_id="s3-unverified",
-            size=4,
-            storage_class="STANDARD",
-            etag="etag",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="scan-u",
-        )
-        row = catalog.list_file_rows(2)[0]
-        job_ids, _, eligible = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:01:00+00:00",
-            group_id="retry-unverified",
-            is_directory=False,
-        )
+    def test_an_unverified_replacement_is_upload_eligible_to_resume(self) -> None:
+        file_id = self.observe("report.txt", 4, 1)
+        self.catalog.begin_replacement(
+            file_id, object_key="vaults/x/report.txt", provider_version_id="s3-unverified",
+            size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00")
+        row = self.catalog.list_file_rows(2)[0]
         self.assertTrue(row["upload_eligible"])
-        self.assertEqual(len(job_ids), 1)
-        self.assertEqual(eligible, 1)
-        connection.execute(
-            "UPDATE jobs SET status='failed' WHERE id=%s", (job_ids[0],)
-        )
-        catalog.mark_version_mismatch(
-            unverified,
-            plaintext_sha256=_sha(b"bad!"),
-            checked_at="2026-07-21T10:02:00+00:00",
-        )
-        retry_ids, _, retry_eligible = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:03:00+00:00",
-            group_id="retry-mismatch",
-            is_directory=False,
-        )
-        self.assertEqual(len(retry_ids), 1)
-        self.assertEqual(retry_eligible, 1)
-        still = connection.execute(
-            "SELECT integrity FROM archive_versions WHERE id=%s",
-            (unverified,),
-        ).fetchone()
-        self.assertEqual(still["integrity"], "mismatch")
+        self.assertEqual(self.queue()[1], 1)
 
     def test_active_job_still_blocks_second_upload(self) -> None:
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=4,
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        first, _, _ = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:01:00+00:00",
-            group_id="first",
-            is_directory=False,
-        )
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=8,
-            mtime_ns=2,
-            observed_at="2026-07-21T10:02:00+00:00",
-        )
-        second, _, eligible = catalog.queue_jobs(
-            vault_id=2,
-            path="report.txt",
-            action="upload",
-            requested_by=1,
-            requested_at="2026-07-21T10:03:00+00:00",
-            group_id="second",
-            is_directory=False,
-        )
+        self.observe("report.txt", 4, 1)
+        first, _ = self.queue()
+        self.observe("report.txt", 8, 2)
+        second, eligible = self.queue()
         self.assertEqual(len(first), 1)
-        self.assertEqual(second, [])
-        self.assertEqual(eligible, 0)
-
-    def test_three_versions_remain_recoverable_on_the_same_vault_file(self) -> None:
-        connection = self._open()
-        _seed_user_vault(connection, self.source)
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path="report.txt",
-            file_type="regular",
-            size=1,
-            mtime_ns=1,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        file_id = catalog.get_file_by_path(2, "report.txt")["id"]
-        for label, payload, mtime in (
-            ("a", b"A", 1),
-            ("b", b"BB", 2),
-            ("c", b"CCC", 3),
-        ):
-            catalog.observe_local_copy(
-                vault_id=2,
-                path="report.txt",
-                file_type="regular",
-                size=len(payload),
-                mtime_ns=mtime,
-                observed_at=f"2026-07-21T10:0{mtime}:00+00:00",
-            )
-            version_id = _record_verified(
-                catalog,
-                path="report.txt",
-                payload=payload,
-                provider_version_id=f"s3-{label}",
-                uploaded_at=f"2026-07-21T10:0{mtime}:00+00:00",
-            )
-            catalog.set_local_fingerprint(
-                vault_id=2,
-                path="report.txt",
-                plaintext_sha256=_sha(payload),
-                matched_archive_version_id=version_id,
-            )
-        observed = catalog.get_file_by_path(2, "report.txt")
-        versions = catalog.list_versions(2, "report.txt")
-        self.assertEqual(observed["id"], file_id)
-        self.assertEqual(len(versions), 3)
-        self.assertTrue(all(row["recoverable"] for row in versions))
-        self.assertEqual(
-            [row["provider_version_id"] for row in versions],
-            ["s3-c", "s3-b", "s3-a"],
-        )
-
-
-class ChangedContentUploadWorkerTests(unittest.TestCase):
-    def _prepare(self, root: Path, payload: bytes) -> tuple[Path, Path]:
-        from tests.upload_provenance_provider import VersionedProvider
-        self.provider = VersionedProvider()
-        source = root / "source"
-        source.mkdir()
-        target = source / "report.txt"
-        target.write_bytes(payload)
-        database_path = root / "catalog.db"
-        self.assertEqual(run_alembic(database_path).returncode, 0)
-        with PostgresConnection(str(database_path)) as connection:
-            _seed_user_vault(connection, source)
-            ArchiveCatalog(connection).observe_local_copy(
-                vault_id=2,
-                path="report.txt",
-                file_type="regular",
-                size=len(payload),
-                mtime_ns=target.stat().st_mtime_ns,
-                observed_at="2026-07-21T10:00:00+00:00",
-            )
-        return source, database_path
-
-    def _run_upload(
-        self,
-        database_path: Path,
-        *,
-        payload: bytes,
-        version_id: str,
-    ) -> list[str]:
-        commands: list[str] = []
-        from tests.upload_provenance_provider import VersionedProvider
-        from app.services.operation_policies import set_policy, OperationPolicy
-        if not hasattr(self, "provider"):
-            self.provider = VersionedProvider()
-
-        def fake_sdk_upload(*args, **kwargs) -> None:
-            command = tuple(str(arg) for arg in args if not callable(arg))
-            commands.append(command[0] if command else "")
-            self.provider.add("docs/report.txt", payload, version=version_id)
-
-        def fake_stream(*args, **kwargs) -> int:
-            command = tuple(str(arg) for arg in args if not callable(arg))
-            commands.append(command[0] if command else "")
-            kwargs["on_chunk"](payload)
-            return len(payload)
-
-        database_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(database_path)),
-        )
-        worker_settings = SimpleNamespace(
-            operation_concurrency=1,
-            restore_poll_interval=900,
-        )
-        with patch("app.database.settings", database_settings):
-            with PostgresConnection(str(database_path)) as connection:
-                set_policy(connection, 2, OperationPolicy(upload_verification="read_back"))
-            queued = queue_jobs("report.txt", "upload", 2, 1)
-            self.assertEqual(queued["item_count"], 1)
-            with (
-                patch("app.storage.settings", worker_settings),
-                patch("app.storage.validate_cloud_vault"),
-                mock_sdk_upload(side_effect=fake_sdk_upload, return_value={"VersionId": version_id}),
-                mock_sdk_read( side_effect=fake_stream),
-                patch(
-                    "app.storage.s3_client",
-                    return_value=self.provider,
-                ),
-            ):
-                process_jobs_once()
-        return commands
-
-    def test_changed_content_uploads_a_second_archive_version(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload_a = b"alpha-bytes"
-            payload_b = b"beta-bytes-are-longer"
-            source, database_path = self._prepare(root, payload_a)
-            commands_a = self._run_upload(
-                database_path, payload=payload_a, version_id="s3-a"
-            )
-            local = source / "report.txt"
-            local.write_bytes(payload_b)
-            with PostgresConnection(str(database_path)) as connection:
-                ArchiveCatalog(connection).observe_local_copy(
-                    vault_id=2,
-                    path="report.txt",
-                    file_type="regular",
-                    size=len(payload_b),
-                    mtime_ns=local.stat().st_mtime_ns,
-                    observed_at="2026-07-21T11:00:00+00:00",
-                )
-                file_id = ArchiveCatalog(connection).get_file_by_path(
-                    2, "report.txt"
-                )["id"]
-            commands_b = self._run_upload(
-                database_path, payload=payload_b, version_id="s3-b"
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, "report.txt")
-                versions = catalog.list_versions(2, "report.txt")
-                jobs = connection.execute(
-                    "SELECT status FROM jobs ORDER BY id"
-                ).fetchall()
-            self.assertEqual(commands_a, ["upload", "read"])
-            self.assertEqual(commands_b, ["upload", "read"])
-            self.assertEqual(observed["id"], file_id)
-            self.assertEqual(observed["latest_version"]["provider_version_id"], "s3-b")
-            self.assertEqual(len(versions), 2)
-            self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-b"])
-            self.assertEqual(versions[1]["availability"], "purged")
-            self.assertEqual([job["status"] for job in jobs], ["completed", "completed"])
-
-    def test_unchanged_digest_relinks_without_new_s3_object(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"same-bytes"
-            source, database_path = self._prepare(root, payload)
-            self._run_upload(database_path, payload=payload, version_id="s3-a")
-            local = source / "report.txt"
-            local.write_bytes(payload)
-            with PostgresConnection(str(database_path)) as connection:
-                ArchiveCatalog(connection).observe_local_copy(
-                    vault_id=2,
-                    path="report.txt",
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=local.stat().st_mtime_ns,
-                    observed_at="2026-07-21T11:00:00+00:00",
-                )
-            commands = self._run_upload(
-                database_path, payload=payload, version_id="s3-should-not-apply"
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                versions = connection.execute(
-                    """
-                    SELECT provider_version_id, integrity FROM archive_versions
-                    ORDER BY version_number
-                    """
-                ).fetchall()
-                local_copy = connection.execute(
-                    "SELECT matched_archive_version_id FROM local_copies"
-                ).fetchone()
-            self.assertEqual(commands, [])
-            self.assertEqual(len(versions), 1)
-            self.assertEqual(versions[0]["provider_version_id"], "s3-a")
-            self.assertEqual(versions[0]["integrity"], "verified")
-            self.assertIsNotNone(local_copy["matched_archive_version_id"])
-
-    def test_unverified_retry_resumes_without_new_s3_object(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"needs-verify"
-            source, database_path = self._prepare(root, payload)
-            local = source / "report.txt"
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path="report.txt",
-                    object_key="docs/report.txt",
-                    provider_version_id="s3-unverified",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="scan-u",
-                )
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
-                        total_bytes, upload_plaintext_sha256
-                    )
-                    SELECT 2, vf.id, %s, 'report.txt', 'upload', 'failed', 1,
-                           '2026-07-21T10:01:00+00:00', '2026-07-21T10:01:00+00:00',
-                           %s, %s
-                    FROM vault_files vf
-                    JOIN file_paths fp
-                      ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                    WHERE fp.path='report.txt'
-                    """,
-                    (version_id, len(payload), _sha(payload)),
-                )
-            # The scenario is an upload that already reached cloud storage.
-            # Seed actual bytes independently; strict HEAD/listing must not
-            # invent this version from its catalog row or create a new upload.
-            from tests.upload_provenance_provider import VersionedProvider
-            self.provider = VersionedProvider()
-            self.provider.add("docs/report.txt", payload, version="s3-unverified")
-            commands = self._run_upload(
-                database_path, payload=payload, version_id="s3-unverified"
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                versions = connection.execute(
-                    """
-                    SELECT provider_version_id, integrity FROM archive_versions
-                    """
-                ).fetchall()
-                jobs = connection.execute(
-                    "SELECT status,message FROM jobs ORDER BY id"
-                ).fetchall()
-            self.assertEqual(jobs[-1]["status"], "completed", jobs[-1]["message"])
-            self.assertEqual(local.read_bytes(), payload)
-            self.assertEqual(commands, ["read"])
-            self.assertEqual(len(versions), 1)
-            self.assertEqual(versions[0]["integrity"], "verified")
-            self.assertEqual([job["status"] for job in jobs], ["failed", "completed"])
-
-    def test_mismatch_retry_uploads_new_version_and_keeps_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"retry-after-mismatch"
-            _source, database_path = self._prepare(root, payload)
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path="report.txt",
-                    object_key="docs/report.txt",
-                    provider_version_id="s3-mismatch",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="scan-m",
-                )
-                catalog.mark_version_mismatch(
-                    version_id,
-                    plaintext_sha256=_sha(payload),
-                    checked_at="2026-07-21T10:01:00+00:00",
-                )
-            commands = self._run_upload(
-                database_path, payload=payload, version_id="s3-retry"
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                versions = connection.execute(
-                    """
-                    SELECT provider_version_id, integrity
-                    FROM archive_versions
-                    ORDER BY version_number
-                    """
-                ).fetchall()
-            self.assertEqual(commands, ["upload", "read"])
-            self.assertEqual(len(versions), 2)
-            self.assertEqual(versions[0]["provider_version_id"], "s3-mismatch")
-            self.assertEqual(versions[0]["integrity"], "mismatch")
-            self.assertEqual(versions[1]["provider_version_id"], "s3-retry")
-            self.assertEqual(versions[1]["integrity"], "verified")
-
-    def test_abc_keep_only_latest_recoverable_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payloads = (b"A", b"BB", b"CCC")
-            source, database_path = self._prepare(root, payloads[0])
-            local = source / "report.txt"
-            for index, payload in enumerate(payloads, start=1):
-                if index > 1:
-                    local.write_bytes(payload)
-                    with PostgresConnection(str(database_path)) as connection:
-                        ArchiveCatalog(connection).observe_local_copy(
-                            vault_id=2, path="report.txt", file_type="regular", size=len(payload),
-                            mtime_ns=local.stat().st_mtime_ns,
-                            observed_at=f"2026-07-21T1{index}:00:00+00:00",
-                        )
-                self._run_upload(database_path, payload=payload, version_id=f"s3-{index}")
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                versions = catalog.list_versions(2, "report.txt")
-                file_id = catalog.get_file_by_path(2, "report.txt")["id"]
-                ids = {row["vault_file_id"] for row in connection.execute("SELECT vault_file_id FROM archive_versions").fetchall()}
-            self.assertEqual(len(versions), 3)
-            self.assertEqual([row["provider_version_id"] for row in versions if row["recoverable"]], ["s3-3"])
-            self.assertTrue(all(row["availability"] == "purged" for row in versions[1:]))
-            self.assertEqual(ids, {file_id})
+        self.assertEqual((second, eligible), ([], 0))
 
 
 if __name__ == "__main__":
