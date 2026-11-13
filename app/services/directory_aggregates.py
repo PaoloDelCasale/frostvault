@@ -1025,9 +1025,12 @@ def _visible_file_select_sql(
     if limit is not None:
         limit_sql = "LIMIT %s"
         params.append(int(limit))
+    # A Stopped Upload is counted as pending here: whether one holds depends on
+    # Jobs, which do not invalidate this projection. Readers overlay the live
+    # count (:func:`stopped_upload_counts`).
     sql = f"""
         SELECT
-            {state_sql(policy)} AS protection_state,
+            {state_sql(policy, stopped=False)} AS protection_state,
             f.id AS file_id,
             f.path,
             f.local_presence,
@@ -1308,13 +1311,66 @@ def _upsert_rollup(
     )
 
 
-def directory_row_to_item(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[str, Any]:
-    """Project a durable aggregate row into the public directory list item."""
+def stopped_upload_counts(
+    connection: Any, vault_id: int, *, parent_path: str, policy: Any = None,
+) -> dict[str, int]:
+    """Live Stopped Uploads under each child directory of ``parent_path`` (#630).
+
+    The projection counts a Stopped Upload as pending; this read moves it out
+    with the same state CASE as files and statistics. It starts from the
+    Vault's failed or cancelled upload Jobs (``jobs_vault_status_idx``), so its
+    cost follows the Jobs that can hold a File, not the Vault's size.
+    """
+    parent = (parent_path or "").strip().strip("/")
+    cut = len(parent) + 1 if parent else 0
+    scope = "starts_with(f.path, %s)" if parent else "TRUE"
+    # The state is computed in the target list behind OFFSET 0, so only the
+    # held Files are classified whatever join order the planner picks.
+    rows = connection.execute(
+        f"""
+        SELECT classified.directory, COUNT(*) AS total
+        FROM (
+            SELECT left(f.path, %s + strpos(substr(f.path, %s + 1), '/') - 1) AS directory,
+                   {state_sql(policy)} AS protection_state
+            FROM (
+                SELECT DISTINCT held.file_id FROM jobs held
+                WHERE held.vault_id = %s AND held.status IN ('failed', 'cancelled')
+                  AND held.action = 'upload'
+            ) held
+            JOIN files f ON f.id = held.file_id
+            {CURRENT_JOIN_SQL}
+            WHERE f.vault_id = %s
+              AND {scope}
+              AND strpos(substr(f.path, %s + 1), '/') > 0
+            OFFSET 0
+        ) classified
+        WHERE classified.protection_state = 'stopped'
+        GROUP BY classified.directory
+        """,
+        [cut, cut, int(vault_id), int(vault_id), *([f"{parent}/"] if parent else []), cut],
+    ).fetchall()
+    return {str(row["directory"]): int(row["total"]) for row in rows if int(row["total"] or 0) > 0}
+
+
+def directory_row_to_item(
+    row: Mapping[str, Any], *, unconfirmed: bool = False, stopped: int = 0,
+) -> dict[str, Any]:
+    """Project a durable aggregate row into the public directory list item.
+
+    ``stopped`` is the live Stopped Upload count of the directory, which the
+    projection holds as pending (:func:`stopped_upload_counts`).
+    """
     state_counts = {
         state: int(row[column] or 0)
         for state, column in _STATE_COLUMNS.items()
         if int(row[column] or 0) > 0
     }
+    if stopped > 0:
+        # A stale projection can hold fewer pending files than live stops.
+        pending = state_counts.pop("pending", 0) - stopped
+        if pending > 0:
+            state_counts["pending"] = pending
+        state_counts["stopped"] = stopped
     last_known_counts = dict(state_counts)
     if unconfirmed:
         state_counts = {"unconfirmed": int(row["item_count"] or 0)}
@@ -1349,6 +1405,33 @@ def directory_row_to_item(row: Mapping[str, Any], *, unconfirmed: bool = False) 
     }
 
 
+def _child_directory_clauses(
+    vault_id: int, *, parent_path: str, state_filter: str, stopped: Mapping[str, int] | None,
+) -> tuple[list[str] | None, list[Any]]:
+    """Child-directory filter; ``stopped`` is the live overlay of the level.
+
+    None means no directory can match. Pending and stopped read the overlay:
+    a directory whose pending files are all stopped is not pending.
+    """
+    clauses = ["vault_id=%s", "parent_path=%s"]
+    params: list[Any] = [int(vault_id), parent_path or ""]
+    stopped = {path: count for path, count in (stopped or {}).items() if count > 0}
+    if state_filter == "stopped":
+        if not stopped:
+            return None, params
+        clauses.append("path = ANY(%s::text[])")
+        params.append(sorted(stopped))
+    elif state_filter == "pending" and stopped:
+        clauses.append("state_pending > coalesce((%s::jsonb ->> path)::bigint, 0)")
+        params.append(json.dumps(stopped))
+    elif state_filter:
+        column = _STATE_COLUMNS.get(state_filter)
+        if column is None:
+            return None, params
+        clauses.append(f"{column} > 0")
+    return clauses, params
+
+
 def list_child_directory_rows(
     connection: Any,
     vault_id: int,
@@ -1358,14 +1441,12 @@ def list_child_directory_rows(
     limit: int,
     offset: int,
     unconfirmed: bool = False,
+    stopped: Mapping[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    clauses = ["vault_id=%s", "parent_path=%s"]
-    params: list[Any] = [int(vault_id), parent_path or ""]
-    if state_filter:
-        column = _STATE_COLUMNS.get(state_filter)
-        if column is None:
-            return []
-        clauses.append(f"{column} > 0")
+    clauses, params = _child_directory_clauses(
+        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped)
+    if clauses is None:
+        return []
     if limit < 0:
         limit = 0
     if offset < 0:
@@ -1380,7 +1461,9 @@ def list_child_directory_rows(
         """,
         [*params, int(limit), int(offset)],
     ).fetchall()
-    return [directory_row_to_item(row, unconfirmed=unconfirmed) for row in rows]
+    stopped = stopped or {}
+    return [directory_row_to_item(row, unconfirmed=unconfirmed, stopped=stopped.get(row["path"], 0))
+            for row in rows]
 
 
 def count_child_directories(
@@ -1389,14 +1472,12 @@ def count_child_directories(
     *,
     parent_path: str,
     state_filter: str = "",
+    stopped: Mapping[str, int] | None = None,
 ) -> int:
-    clauses = ["vault_id=%s", "parent_path=%s"]
-    params: list[Any] = [int(vault_id), parent_path or ""]
-    if state_filter:
-        column = _STATE_COLUMNS.get(state_filter)
-        if column is None:
-            return 0
-        clauses.append(f"{column} > 0")
+    clauses, params = _child_directory_clauses(
+        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped)
+    if clauses is None:
+        return 0
     row = connection.execute(
         f"""
         SELECT COUNT(*) AS total

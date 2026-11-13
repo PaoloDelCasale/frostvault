@@ -13,8 +13,9 @@ describe("Owner app routing and shell (#512)", () => {
   const calls: string[] = [];
   let blocked = false;
   let reloads = 0;
+  let stopped = 0;
   beforeEach(() => {
-    blocked = false; reloads = 0;
+    blocked = false; reloads = 0; stopped = 0;
     calls.length = 0; localStorage.clear(); resetApiClientForTests(); window.history.replaceState({}, "", "/");
     window.addEventListener("beforeunload", () => { reloads += 1; });
     configureApiClient({ fetch: vi.fn(async (input) => {
@@ -28,7 +29,7 @@ describe("Owner app routing and shell (#512)", () => {
       }
       if (url.startsWith("/api/stats")) {
         const second = url.endsWith("vault_id=2");
-        return jsonResponse({ states: second ? { protected: 5 } : { protected: 3, pending: 2 }, protection_state: second ? "protected" : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
+        return jsonResponse({ states: second ? { protected: 5, ...(stopped ? { stopped } : {}) } : { protected: 3, pending: 2 }, protection_state: second ? (stopped ? "stopped" : "protected") : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
       }
       if (url.startsWith("/api/problems") || url.startsWith("/api/general/vaults") || url.startsWith("/api/general/source-volumes")) return jsonResponse({ items: [] });
       if (url.startsWith("/api/general")) return jsonResponse({ vaults: [{ id: 1, uuid: "first", name: "First", lifecycle: "active", monthly_estimate: 0.5, open_problem_count: 1 }, { id: 2, uuid: "second", name: "Second", lifecycle: "active", monthly_estimate: 0.25, open_problem_count: 0 }], open_problem_count: 1, month: "2026-11", monthly_estimate: 0.75, previous_month_delta: null, currency: "EUR", email_configured: false, last_verified_backup: null, cloud_preflight: blocked ? { status: "blocked", remediation: "Grant s3:GetBucketPublicAccessBlock", next_probe_at: null } : undefined });
@@ -56,6 +57,16 @@ describe("Owner app routing and shell (#512)", () => {
     expect(within(screen.getByTestId("tile-pending")).getByText("2")).toBeInTheDocument();
     expect(within(table).getByRole("link", { name: "First" })).toHaveAttribute("href", "/vaults/1/files");
     expect(screen.queryByTestId("file-browser")).not.toBeInTheDocument();
+  });
+
+  it("counts Stopped Uploads apart from pending, so they do not read as a stall (#630)", async () => {
+    stopped = 4; show();
+    const tile = await screen.findByTestId("tile-pending");
+    expect(await within(tile).findByTestId("tile-stopped")).toHaveTextContent(/^4 stopped by you/);
+    expect(within(tile).getByText("2")).toBeInTheDocument();
+    const table = screen.getByTestId("overview-table");
+    await waitFor(() => expect(within(table).getAllByTestId("overview-row")[1]).toHaveTextContent("5 / 9"));
+    expect(within(table).getByText("Stopped by you")).toHaveAttribute("data-state", "stopped");
   });
 
   it("lists the Vaults in the header switcher, not in the sidebar", async () => {

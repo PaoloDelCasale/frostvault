@@ -72,6 +72,23 @@ describe("essential file browser", () => {
     expect(screen.getAllByText("state.cloud_only 2")[0]).toHaveAttribute("data-state", "cloud_only");
     expect(screen.queryByText(/mixed|misto/i)).not.toBeInTheDocument();
   });
+  it("explains Stopped Uploads of the level and uploads their files and folders now (#630)", async () => {
+    const calls = setup([
+      { type: "directory", name: "2026", path: "2026", state: "stopped", item_count: 7, total_size: 99, state_counts: { protected: 4, stopped: 3 } },
+      { type: "directory", name: "2025", path: "2025", state: "protected", item_count: 2, total_size: 9, state_counts: { protected: 2 } },
+      { ...file, name: "held.jpg", path: "held.jpg", state: "stopped", local_exists: true, upload_eligible: true },
+    ]);
+    expect((await screen.findAllByText("state.stopped 3"))[0]).toHaveAttribute("data-state", "stopped");
+    const notice = screen.getByTestId("stopped-uploads");
+    expect(notice).toHaveTextContent("files.stopped_notice");
+    await userEvent.setup().click(within(notice).getByRole("button", { name: "essential.upload_now" }));
+    await waitFor(() => expect(calls.filter((url) => url === "/api/upload?vault_id=1")).toHaveLength(2));
+    expect(within(screen.getByTestId("state-filter")).getByRole("button", { name: /files.chip_stopped/ })).toBeInTheDocument();
+  });
+  it("shows no Stopped Upload notice without one", async () => {
+    setup(); await screen.findAllByText("photo.jpg");
+    expect(screen.queryByTestId("stopped-uploads")).not.toBeInTheDocument();
+  });
   it("roots the breadcrumb at the Vault name", async () => {
     setup([file], "?directory=2026%2Fsummer");
     const crumbs = await screen.findByTestId("breadcrumbs");

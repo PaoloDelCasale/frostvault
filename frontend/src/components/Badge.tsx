@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority";
-import { AlertTriangle, Ban, Clock, Cloud, CloudOff, HardDrive, HelpCircle, MinusCircle, RotateCw, ShieldCheck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Ban, CirclePause, Clock, Cloud, CloudOff, HardDrive, HelpCircle, MinusCircle, RotateCw, ShieldCheck, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,6 +9,7 @@ export type BadgeState =
   | "problem"
   | "unconfirmed"
   | "excluded"
+  | "stopped"
   | "both"
   | "local_only"
   | "cloud_only"
@@ -23,6 +24,7 @@ export const BADGE_STATE_VARIANT_CLASSES = {
   problem: "bg-[var(--state-problem-bg)] text-[var(--state-problem-fg)]",
   unconfirmed: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
   excluded: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",
+  stopped: "bg-[var(--state-missing-bg)] text-[var(--state-missing-fg)]",
   both: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
   local_only: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
   cloud_only: "bg-[var(--state-cloud-bg)] text-[var(--state-cloud-fg)]",
@@ -38,6 +40,7 @@ export const BADGE_STATE_LABELS: Record<BadgeState, string> = {
   problem: "Problem",
   unconfirmed: "Unconfirmed",
   excluded: "Excluded",
+  stopped: "Stopped by you",
   both: "Available",
   local_only: "Local backup",
   cloud_only: "Cloud only",
@@ -53,6 +56,7 @@ const BADGE_STATE_ICONS: Record<BadgeState, LucideIcon> = {
   problem: AlertTriangle,
   unconfirmed: HelpCircle,
   excluded: MinusCircle,
+  stopped: CirclePause,
   both: ShieldCheck,
   local_only: HardDrive,
   cloud_only: Cloud,

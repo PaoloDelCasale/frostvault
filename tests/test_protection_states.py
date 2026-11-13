@@ -70,6 +70,26 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertEqual(aggregate_state({'excluded': 18}), 'excluded')
         self.assertIn('excluded', STATES)
 
+    def test_stopped_ranks_below_pending_and_above_protected(self):
+        # #630: a Stopped Upload is no queue, but a Vault holding one is not protected.
+        self.assertIn('stopped', STATES)
+        self.assertEqual(aggregate_state({'stopped': 5, 'protected': 100}), 'stopped')
+        self.assertEqual(aggregate_state({'stopped': 5, 'pending': 1}), 'pending')
+        self.assertEqual(aggregate_state({'stopped': 5, 'unconfirmed': 1}), 'unconfirmed')
+        self.assertEqual(aggregate_state({'stopped': 5, 'problem': 1}), 'problem')
+        self.assertEqual(aggregate_state({'stopped': 5, 'cloud_only': 3, 'excluded': 2}), 'stopped')
+
+    def test_stopped_keeps_its_last_known_state_and_previous_cloud_copy(self):
+        unknown = {'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'present',
+                   'matched_version_id': None, 'current_version_id': 'v1',
+                   'local_sha256': 'b', 'version_sha256': 'a'}
+        self.assertEqual(project_file({**unknown, 'upload_stopped': True})['last_known_state'], 'stopped')
+        self.assertEqual(project_file({**unknown, 'upload_stopped': True, 'path_excluded': True})['last_known_state'], 'excluded')
+        result = project_file({'protection_state': 'stopped', 'current_version_id': 'v1',
+                               'integrity': 'verified', 'availability': 'available'})
+        self.assertEqual(result['state'], 'stopped')
+        self.assertTrue(result['previous_snapshot_protected'])
+
     def test_unsupported_never_outranks_actionable_states_and_is_reported_alone(self):
         # #524: a symlink or FIFO is not a protection failure.
         self.assertEqual(aggregate_state({'unsupported': 4, 'protected': 3}), 'protected')
@@ -296,6 +316,94 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         unknown = rows['photos/._unknown']
         self.assertEqual((unknown['state'], unknown['last_known_state']), ('unconfirmed', 'excluded'))
         self.assertEqual(rows['photos/._failed']['state'], 'problem')
+
+    def job(self, file_id, status, *, origin='manual', key=None, at='2026-11-03T10:05:00+00:00'):
+        """An upload Job of ``file_id`` requested at ``at`` (after the seed's observation)."""
+        finished = at if status in ('completed', 'failed', 'cancelled') else None
+        return self.connection.execute(
+            "INSERT INTO jobs(vault_id, file_id, action, status, origin, message_key, requested_at, updated_at, finished_at) "
+            "VALUES (9, %s, 'upload', %s, %s, %s, %s, %s, %s) RETURNING id",
+            (file_id, status, origin, key, at, at, finished)).fetchone()['id']
+
+    def test_owner_stopped_upload_is_its_own_state_until_the_content_changes(self):
+        # #630: the Owner cancelled the upload; admission holds the File, so it
+        # is shown as stopped, not pending, everywhere the state is read.
+        self.seed('protected', archive=True, verified=True)
+        stopped_id, _ = self.seed('stopped', path='photos/sub/stopped.jpg')
+        self.job(stopped_id, 'cancelled', key='job.upload_stopped')
+        auto_id, _ = self.seed('auto', path='photos/sub/auto.jpg')
+        self.job(auto_id, 'cancelled', origin='automatic', key='job.upload_stopped')
+        aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
+        self.connection.commit()
+        expected = {'protected': 1, 'stopped': 2}
+        summary = self.catalog.summary(9)
+        self.assertEqual(summary['states'], expected)
+        self.assertEqual(summary['protection_state'], 'stopped')
+        rows = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        stopped = rows['photos/sub/stopped.jpg']
+        self.assertEqual((stopped['state'], stopped['last_known_state']), ('stopped', 'stopped'))
+        # A manual upload stays possible.
+        self.assertTrue(stopped['upload_eligible'])
+        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+            payload = stats({'id': 9, 'source_root': '/source'})
+        self.assertEqual(payload['states'], expected)
+        self.assertEqual(payload['protection_state'], 'stopped')
+        # Folders: the projection holds them as pending; the listing reads them live.
+        for directory, name in (('', 'photos'), ('photos', 'photos/sub')):
+            with self.subTest(directory=directory):
+                folder = next(item for item in self.catalog.list_files_page(9, directory=directory)['items']
+                              if item['path'] == name)
+                self.assertEqual(folder['state_counts'], expected if name == 'photos' else {'stopped': 2})
+                self.assertEqual(folder['state'], 'stopped')
+                stopped_page = self.catalog.list_files_page(9, directory=directory, state='stopped')
+                self.assertEqual([item['path'] for item in stopped_page['items']], [name])
+                self.assertEqual(self.catalog.list_files_page(9, directory=directory, state='pending')['total'], 0)
+        page = self.catalog.list_files_page(9, directory='photos/sub', state='stopped')
+        self.assertEqual(page['total'], 2)
+        self.assertEqual(self.catalog.list_files_page(9, search='.jpg', state='stopped')['total'], 2)
+        # The dirty SQL rollup agrees with the streamed rebuild.
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos/sub')
+        aggregates.mark_directory_dirty(self.connection, 9, 'photos')
+        aggregates.flush_directory_aggregates(self.connection, vault_id=9)
+        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+
+        # A manual upload the Owner asks for runs: the File is pending again.
+        manual = self.job(stopped_id, 'queued', at='2026-11-03T10:06:00+00:00')
+        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
+        folder = self.catalog.list_files_page(9)['items'][0]
+        self.assertEqual(folder['state_counts'], {'protected': 1, 'stopped': 1, 'pending': 1})
+        self.assertEqual(folder['state'], 'pending')
+        self.assertEqual(self.catalog.list_files_page(9, state='pending')['total'], 1)
+        self.connection.execute("UPDATE jobs SET status='cancelled', message_key='job.upload_stopped', "
+                                "finished_at=requested_at WHERE id=%s", (manual,))
+        # Changed content is observed after the stop: automatic upload resumes.
+        self.catalog.observe_local_copy(vault_id=9, path='photos/sub/stopped.jpg', file_type='regular',
+                                        size=13, mtime_ns=2, observed_at='2026-11-03T10:10:00+00:00')
+        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
+        states = {row['path']: row['state'] for row in self.catalog.list_file_rows(9)}
+        self.assertEqual(states['photos/sub/stopped.jpg'], 'pending')
+        self.assertEqual(states['photos/sub/auto.jpg'], 'stopped')
+
+    def test_a_failed_upload_stays_a_problem_and_other_closures_do_not_stop(self):
+        failed_auto, _ = self.seed('failed_auto')
+        self.job(failed_auto, 'failed', origin='automatic')
+        failed_manual, _ = self.seed('failed_manual')
+        self.job(failed_manual, 'failed')
+        # A manual upload closed for another reason (removed file) holds nothing.
+        removed, _ = self.seed('removed')
+        self.job(removed, 'cancelled', key='job.upload_file_removed')
+        # A stop older than the content observation no longer holds.
+        old, _ = self.seed('old')
+        self.job(old, 'cancelled', key='job.upload_stopped', at='2026-11-03T09:00:00+00:00')
+        # An excluded path stays excluded even when its upload was stopped.
+        noise, _ = self.seed('._noise', path='photos/._noise')
+        self.job(noise, 'cancelled', key='job.upload_stopped')
+        states = {row['path']: row['state'] for row in self.catalog.list_file_rows(9)}
+        self.assertEqual(states, {
+            'photos/failed_auto.jpg': 'problem', 'photos/failed_manual.jpg': 'problem',
+            'photos/removed.jpg': 'pending', 'photos/old.jpg': 'pending', 'photos/._noise': 'excluded',
+        })
+        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'pending': 2, 'excluded': 1})
 
     def test_a_stored_unsupported_glob_cannot_break_classification_or_rebuilds(self):
         # Saved before the glob was validated (or by hand): it must never reach

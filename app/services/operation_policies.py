@@ -46,6 +46,29 @@ def stopped_upload_holds_automatic_admission_sql(job: str, file: str) -> str:
     )"""
 
 
+def stopped_upload_sql(file: str) -> str:
+    """SQL predicate: ``file`` is a Stopped Upload (#630).
+
+    Automatic admission skips the File because an upload Job holds it
+    (:func:`stopped_upload_holds_automatic_admission_sql`, the same predicate
+    admission and upload activity read) and no Job of the File is running or
+    waiting, so nothing will start it until its content is observed again. A
+    manual upload the Owner asks for is an active Job, so the File is no
+    longer stopped while it runs. The subqueries are served by
+    ``jobs_one_active_per_file_uq`` and ``jobs_file_idx``.
+    """
+    return f"""(
+        NOT EXISTS (
+            SELECT 1 FROM jobs stopped_active WHERE stopped_active.file_id={file}.id
+              AND stopped_active.status NOT IN ('completed', 'failed', 'cancelled')
+        )
+        AND EXISTS (
+            SELECT 1 FROM jobs stopped_hold WHERE stopped_hold.file_id={file}.id
+              AND {stopped_upload_holds_automatic_admission_sql("stopped_hold", file)}
+        )
+    )"""
+
+
 def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
     """Fixed noise exclusions are additional to, never editable via, user globs."""
     return not any(

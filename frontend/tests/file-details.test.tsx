@@ -42,6 +42,15 @@ describe("deliberate file Details", () => {
     expect(screen.getByText("essential.excluded_help")).toBeInTheDocument();
     expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
   });
+  it("explains a Stopped Upload and uploads it now on request (#630)", async () => {
+    const calls = setup("stopped", true, false, false, false, { upload_eligible: true });
+    expect(within(await screen.findByTestId("details-summary")).getByText("state.stopped")).toHaveAttribute("data-state", "stopped");
+    const help = screen.getByTestId("stopped-help");
+    expect(help).toHaveTextContent("essential.stopped_help");
+    expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
+    await userEvent.setup().click(within(help).getByRole("button", { name: "essential.upload_now" }));
+    await waitFor(() => expect(calls).toContain("/api/upload?vault_id=2"));
+  });
   it.each([["symlink", "essential.unsupported_symlink_help"], ["other", "essential.unsupported_other_help"]])("explains an unsupported %s entry by its cause, not as a problem (#524)", async (type, help) => {
     setup("unsupported", true, false, false, false, { local_file_type: type, cloud_exists: 0 });
     expect(within(await screen.findByTestId("details-summary")).getByText("state.unsupported")).toHaveAttribute("data-state", "unsupported");

@@ -11,6 +11,7 @@ const STATES: BadgeState[] = [
   "missing",
   "unsupported",
   "excluded",
+  "stopped",
 ];
 
 describe("Badge", () => {

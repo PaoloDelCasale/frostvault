@@ -11,8 +11,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from . import notifications as inbox
-from .operation_policies import auto_upload_path_is_included, file_is_stable, get_policy
-from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql
+from .operation_policies import (
+    auto_upload_path_is_included, file_is_stable, get_policy, stopped_upload_sql,
+)
+from .protection_states import (
+    CURRENT_JOIN_SQL, FAILED_UPLOAD_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql,
+)
 
 _last_maintenance = 0.0
 
@@ -89,6 +93,9 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
         WHERE f.vault_id=%s AND f.local_presence='present'
           AND f.held_version_id IS NULL
           AND NOT COALESCE({PROTECTED_SQL},FALSE)
+          -- A Stopped Upload waits for the Owner, not for the queue (#630);
+          -- a failed upload still counts, as before.
+          AND (({FAILED_UPLOAD_SQL}) OR NOT {stopped_upload_sql("f")})
     """, (vault_id,)).fetchall()
     candidates = [dict(row) for row in rows if auto_upload_path_is_included(row["path"], policy)]
     # One durable continuous timer per included pending file, on its files row.
