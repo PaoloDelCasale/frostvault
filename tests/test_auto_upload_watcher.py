@@ -5,6 +5,7 @@ import hashlib
 import os
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,8 @@ from app.services import vault_relocation
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 from app.services.vaults import VAULT_ROW_SQL
 from tests.owner_fixtures import insert_owner, insert_vault
-from tests.snapshot_s3_stub import VersionedS3Stub
+from tests.catalog_support import fingerprint, protect
+from tests.upload_provenance_provider import VersionedProvider
 
 
 class WatcherAutomaticUploadTests(unittest.TestCase):
@@ -66,6 +68,10 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
     def db(self):
         return PostgresConnection(self.database)
 
+    def leases(self):
+        with self.db() as connection:
+            return connection.execute("SELECT job_id FROM job_leases").fetchall()
+
     def advance(self, seconds):
         self.clock += timedelta(seconds=seconds)
 
@@ -87,14 +93,19 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         with self.db() as connection:
             return connection.execute("SELECT * FROM jobs ORDER BY id").fetchall()
 
-    def provider(self, payload=b"photo"):
-        return VersionedS3Stub(
-            version_bytes=payload,
-            head_object=lambda **kwargs: {
-                "VersionId": kwargs.get("VersionId") or "uploaded-1",
-                "ContentLength": len(payload), "StorageClass": "STANDARD", "ETag": '"etag"',
-            },
-        )
+    def local(self, column):
+        with self.db() as connection:
+            return connection.execute(
+                f"SELECT {column} FROM files WHERE local_presence IS NOT NULL ORDER BY path").fetchone()
+
+    def protect(self, payload):
+        """Protect ``payload`` at photo.jpg as a verified, matched Current."""
+        digest = hashlib.sha256(payload).hexdigest()
+        with self.db() as connection:
+            catalog = ArchiveCatalog(connection)
+            fingerprint(catalog, 2, "photo.jpg", digest)
+            return protect(catalog, 2, "photo.jpg", digest, provider_version_id="previous",
+                           created_at=self.clock.isoformat(), verified_at=self.clock.isoformat())
 
     def test_copy_reaches_verified_in_five_minutes_without_full_scan(self):
         with patch("app.storage.scan_vault", side_effect=AssertionError("must not scan")), patch("app.storage.s3_client") as no_cloud:
@@ -105,16 +116,18 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             self.assertEqual(self.queue(), 1)
             self.assertEqual(self.queue(), 0)  # durable deduplication
             no_cloud.assert_not_called()
-        provider = self.provider()
-        with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_s3_file", return_value={"VersionId": "uploaded-1"}):
+        provider = VersionedProvider()
+        with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_file", side_effect=provider.upload):
             self.assertEqual(storage.process_jobs_once(), 1)
         with self.db() as connection:
-            current = ArchiveCatalog(connection).get_file_by_path(2, "photo.jpg")
-        self.assertEqual(self.jobs()[0]["status"], "completed")
+            current = connection.execute(
+                """SELECT av.integrity, av.availability, av.object_key, av.provider_version_id
+                   FROM files f JOIN archive_versions av ON av.id=f.current_version_id
+                   WHERE f.path='photo.jpg'""").fetchone()
+        self.assertEqual(self.jobs()[0]["status"], "completed", self.jobs()[0]["message"])
         self.assertEqual(self.jobs()[0]["origin"], "automatic")
-        self.assertEqual(current["latest_version"]["integrity"], "verified")
-        self.assertEqual(current["latest_version"]["availability"], "available")
-        self.assertEqual(provider.reads[0]["VersionId"], "uploaded-1")
+        self.assertEqual((current["integrity"], current["availability"]), ("verified", "available"))
+        self.assertEqual(provider.objects[current["object_key"], current["provider_version_id"]][0], b"photo")
         self.assertEqual(provider.deleted, [])
         self.assertLess((self.clock - self.start).total_seconds(), 3600)
 
@@ -131,16 +144,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
 
     def test_same_size_edit_invalidates_previously_verified_fingerprint(self):
         self.write(content=b"first")
-        with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            version = catalog.record_archive_version(
-                vault_id=2, path="photo.jpg", object_key="photos/photo.jpg",
-                provider_version_id="previous", size=5, storage_class="STANDARD", etag="etag",
-                uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="first",
-            )
-            digest = hashlib.sha256(b"first").hexdigest()
-            catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.clock.isoformat())
-            catalog.set_local_fingerprint(vault_id=2, path="photo.jpg", plaintext_sha256=digest, matched_archive_version_id=version)
+        self.protect(b"first")
         self.advance(300)
         self.assertEqual(self.queue(), 0)
         self.write(content=b"other")
@@ -151,17 +155,16 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT integrity, availability FROM archive_versions").fetchone(),
                              {"integrity": "verified", "availability": "available"})
 
-    def test_disabled_or_relocation_suspended_vault_preserves_catalog(self):
+    def test_reconnect_required_vault_preserves_catalog(self):
+        # The rebuilt Vault has no "disabled" flag: a Vault waiting for its
+        # Reconnect is the one whose local work is suspended (ADR-0035).
         self.write()
         self.advance(300)
         with self.db() as connection:
-            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
+            connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=2")
+        self.vault["lifecycle"] = "reconnect_required"
         self.assertEqual(self.queue(), 0)
-        with self.db() as connection:
-            connection.execute("UPDATE vaults SET enabled=TRUE, relocation_state='scan_required' WHERE id=2")
-        self.assertEqual(self.queue(), 0)
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
+        self.assertEqual(self.local("local_presence")["local_presence"], "present")
         self.assertEqual(self.jobs(), [])
 
     def test_paused_vault_and_queued_automatic_job_wait_for_resume(self):
@@ -181,7 +184,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             preflight.assert_not_called()
             upload.assert_not_called()
         self.assertEqual(self.jobs()[0]["status"], "queued")
-        self.assertIsNone(self.jobs()[0]["claim_token"])
+        self.assertEqual(self.leases(), [])
 
     def test_paused_automatic_jobs_do_not_starve_explicit_manual_work(self):
         self.write()
@@ -193,15 +196,15 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             set_policy(connection, 2, OperationPolicy(auto_upload=False))
             catalog = ArchiveCatalog(connection)
             manual, _, _ = catalog.queue_jobs(
-                vault_id=2, path="manual.jpg", action="upload", requested_by=1,
-                requested_at=self.clock.isoformat(), group_id="manual", is_directory=False,
+                vault_id=2, path="manual.jpg", action="upload",
+                requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
             candidates = catalog.list_claimable_jobs(
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(), limit=1,
             )
             self.assertEqual([row["id"] for row in candidates], manual)
             self.assertIsNone(catalog.claim_job(
-                job_id=automatic_id, claim_token="paused", claimed_at=self.clock.isoformat(),
+                job_id=automatic_id, claim_token=str(uuid.uuid4()), claimed_at=self.clock.isoformat(),
                 claim_expires_at=(self.clock + timedelta(minutes=5)).isoformat(),
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
             ))
@@ -251,7 +254,10 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             set_policy(connection, 2, OperationPolicy(include_globs=("*",)))
         self.advance(300)
         self.assertEqual(self.queue(), 1)
-        self.assertEqual([job["path"] for job in self.jobs()], ["catalog.lrcat"])
+        with self.db() as connection:
+            paths = connection.execute(
+                "SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id ORDER BY j.id").fetchall()
+        self.assertEqual([row["path"] for row in paths], ["catalog.lrcat"])
 
     def test_observations_survive_restart_and_unchanged_reconciliation(self):
         self.write()
@@ -277,8 +283,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.access = SimpleNamespace(local_operations_allowed=False, volume_alias="offline", volume_health="absent")
         with patch("app.storage._pinned_verified_scan_root", side_effect=AssertionError("must not open root")):
             self.assertEqual(self.queue(), 0)
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
+        self.assertEqual(self.local("local_presence")["local_presence"], "present")
         self.assertEqual(self.jobs(), [])
 
     def test_replaced_root_blocks_watcher_and_queue_preserving_catalog(self):
@@ -291,9 +296,8 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             storage.apply_filesystem_changes(self.vault, {(Change.modified, str(replacement))})
         with self.assertRaises(RuntimeError):
             self.queue()
-        with self.db() as connection:
-            row = connection.execute("SELECT size, presence FROM local_copies").fetchone()
-        self.assertEqual(row, {"size": 5, "presence": "present"})
+        self.assertEqual(self.local("local_size AS size, local_presence AS presence"),
+                         {"size": 5, "presence": "present"})
         self.assertEqual(self.jobs(), [])
 
     def test_root_replaced_during_watcher_batch_rolls_back_observations(self):
@@ -310,7 +314,8 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 storage.apply_filesystem_changes(self.vault, {(Change.added, str(target))})
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM local_copies").fetchone()["n"], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM files WHERE local_presence IS NOT NULL").fetchone()["n"], 0)
         self.assertEqual(self.jobs(), [])
 
     def test_lifecycle_and_validation_failures_do_not_block_scan_enqueue(self):
@@ -344,7 +349,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             upload.assert_not_called()
         self.assertEqual(self.jobs()[0]["status"], "queued")
         self.assertEqual(self.jobs()[0]["retry_count"], 0)
-        self.assertIsNone(self.jobs()[0]['claim_token'])
+        self.assertEqual(self.leases(), [])
         # Do not create a duplicate or reset a budget on another watcher tick.
         self.advance(300)
         self.assertEqual(self.queue(), 0)
@@ -355,16 +360,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
 
     def test_cloud_only_conflict_and_local_deletion_preserve_sole_cloud_copy(self):
         target = self.write()
-        digest = hashlib.sha256(b"photo").hexdigest()
-        with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            version = catalog.record_archive_version(
-                vault_id=2, path="photo.jpg", object_key="photos/photo.jpg",
-                provider_version_id="sole-copy", size=5, storage_class="STANDARD", etag="etag",
-                uploaded_at=self.clock.isoformat(), observed_at=self.clock.isoformat(), scan_id="first",
-            )
-            catalog.mark_version_verified(version, plaintext_sha256=digest, verified_at=self.clock.isoformat())
-            catalog.set_local_fingerprint(vault_id=2, path="photo.jpg", plaintext_sha256=digest, matched_archive_version_id=version)
+        version = self.protect(b"photo")
         target.unlink()  # disposable fixture only
         storage.apply_filesystem_changes(self.vault, {(Change.deleted, str(target))})
         self.write(content=b"different")
@@ -374,9 +370,9 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             cloud.assert_not_called()
         with self.db() as connection:
             row = connection.execute("SELECT integrity, availability FROM archive_versions WHERE id=%s", (version,)).fetchone()
-            hold = connection.execute("SELECT cloud_only_version_id FROM local_copies").fetchone()
+            hold = connection.execute("SELECT held_version_id FROM files WHERE path='photo.jpg'").fetchone()
         self.assertEqual(row, {"integrity": "verified", "availability": "available"})
-        self.assertEqual(hold["cloud_only_version_id"], version)
+        self.assertEqual(str(hold["held_version_id"]), str(version))
         self.assertEqual(self.jobs(), [])
 
 
