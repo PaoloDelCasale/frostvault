@@ -2019,8 +2019,9 @@ class ArchiveCatalog:
         acquire. An active Vault runs its ordinary work; a stopping Vault runs
         only the purge consented by Stop Protection; a paused Vault holds every
         new cloud Job except recoveries and a storage-class change already
-        restoring (ADR-0033). A live lease, anywhere in a purge group, keeps
-        the Job unclaimable.
+        restoring (ADR-0033). An automatic upload not yet materialized waits
+        while the Vault's automatic upload is off (#423). A live lease,
+        anywhere in a purge group, keeps the Job unclaimable.
         """
         runnable_sql, params = cls._claimable_job_status_sql(
             prefix=prefix,
@@ -2043,6 +2044,15 @@ class ArchiveCatalog:
                      OR {prefix}action = 'recover'
                      OR ({prefix}action = 'storage-class' AND {prefix}status = 'restoring')
                   )
+            )
+            AND (
+                    {prefix}action <> 'upload'
+                 OR {prefix}origin <> 'automatic'
+                 OR {prefix}archive_version_id IS NOT NULL
+                 OR COALESCE((
+                        SELECT upload_policy.auto_upload FROM vault_operation_policies upload_policy
+                        WHERE upload_policy.vault_id = {prefix}vault_id
+                    ), TRUE)
             )
             AND NOT EXISTS (
                 SELECT 1 FROM job_leases live_lease
