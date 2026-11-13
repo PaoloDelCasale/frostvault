@@ -4141,6 +4141,9 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         )
     if not purge_jobs:
         return
+    # The lead carries the worker's claim checkpoints: settle it in the last
+    # batch, so an ended lead never fences the members still to be deleted.
+    items = sorted(items, key=lambda item: int(item["id"]) == int(job["id"]))
     expected_job_ids = [int(purge_job["id"]) for purge_job in purge_jobs]
     actor = "owner"
 
