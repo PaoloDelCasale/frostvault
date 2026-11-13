@@ -36,6 +36,47 @@ class UploadCapacityTests(unittest.TestCase):
                 self.assertEqual(coordinator.catalog.count, min(concurrency, 4))
                 self.assertEqual(coordinator._vault_count, min(concurrency, 2))
 
+    def test_a_queued_waiter_is_woken_by_the_release_not_by_polling(self):
+        """No 0.1 s poll (#622): the release wakes the head waiter at once."""
+        capacity = pipeline._Capacity(1)
+        checks, acquired, queued = [], threading.Event(), threading.Event()
+
+        def check():
+            checks.append(1)
+            queued.set()
+
+        def wait_for_permit():
+            with capacity.take(check):
+                acquired.set()
+        with patch.object(pipeline, "RECHECK_SECONDS", 30.0), ThreadPoolExecutor(1) as pool:
+            with capacity.take(lambda: None):
+                work = pool.submit(wait_for_permit)
+                self.assertTrue(queued.wait(2))
+                self.assertFalse(acquired.wait(0.3), "the permit is still held")
+                waiting_checks = len(checks)
+            self.assertTrue(acquired.wait(2), "the release must wake the waiter")
+            work.result(timeout=2)
+        # One check before sleeping, one on the wake-up, one after acquiring:
+        # nothing ran while it slept.
+        self.assertEqual(waiting_checks, 1)
+        self.assertEqual(len(checks), 3)
+        self.assertEqual((capacity._count, len(capacity._waiting)), (0, 0))
+
+    def test_a_queued_waiter_still_checks_without_a_wake_up(self):
+        capacity = pipeline._Capacity(1)
+        stopped = threading.Event()
+
+        def check():
+            if stopped.is_set():
+                raise OperationCancelled("stopped while queued")
+        with patch.object(pipeline, "RECHECK_SECONDS", 0.05), ThreadPoolExecutor(1) as pool:
+            with capacity.take(lambda: None):
+                work = pool.submit(lambda: capacity.take(check).__enter__())
+                stopped.set()
+                with self.assertRaises(OperationCancelled):
+                    work.result(timeout=2)
+        self.assertEqual((capacity._count, len(capacity._waiting)), (0, 0))
+
     def test_byte_pressure_is_independent_of_count_and_releases_after_fault(self):
         capacity = pipeline._Capacity(4, 10)
         waiting, entered = threading.Event(), threading.Event()

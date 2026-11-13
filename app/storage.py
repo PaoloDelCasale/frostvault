@@ -182,6 +182,13 @@ CLAIM_CHECKPOINT_RENEW_SECONDS = 15.0
 EXPIRED_LEASE_RECONCILE_BATCH = 100
 # How often the backlog gauges and the stall detector re-read a deep queue.
 BACKLOG_OBSERVE_SECONDS = 10.0
+# How often the background loop folds dirty directories into their aggregates
+# (#622). While the queue is deep the loop spins every 100 ms: flushing on every
+# cycle recomputed each ancestor directory for almost every finished file. A
+# batch per interval recomputes it once for all the files finished meanwhile.
+# Freshness: a listing that finds dirty directories reports ``stale`` with the
+# previous projection and schedules its own refresh at once (ADR-0038).
+DIRECTORY_AGGREGATE_BATCH_SECONDS = 2.0
 JOB_TERMINAL_STATUSES = frozenset(TERMINAL_JOB_STATUSES)
 _JOB_COUNTER_ACTIONS = frozenset(
     {
@@ -3526,6 +3533,15 @@ def cleanup_superseded_upload(
     snapshot_cleanup.cleanup(sys.modules[__name__], job, keeper_id, client)
 
 
+def require_sole_keeper(job: dict[str, Any], keeper: dict[str, Any], *, client: Any,
+                        bucket: str) -> None:
+    """Postcondition of a published keeper that superseded nothing (#622)."""
+    import sys
+    from .services import snapshot_cleanup
+    snapshot_cleanup.require_sole_keeper(sys.modules[__name__], job, keeper,
+                                         client=client, bucket=bucket)
+
+
 def _upload_protection_paused(job: dict[str, Any]) -> bool:
     from .services.operation_policies import get_policy, auto_upload_path_is_included
     with db() as connection:
@@ -6398,6 +6414,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_backup_verify = marks["backup_verify"]
     backlog_observed_at: float | None = None
     backlog_runnable = 0
+    last_aggregates: float | None = None
     try:
         while True:
             # Clear before dispatch, not before waiting: a completion arriving
@@ -6415,8 +6432,12 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 await asyncio.to_thread(process_jobs_once, wait=False)
                 await asyncio.to_thread(_deliver_notifications_once)
                 # Converge durable directory aggregate dirty/rebuild work off the
-                # /api/files request path (issue #229).
-                await asyncio.to_thread(process_directory_aggregate_maintenance)
+                # /api/files request path (issue #229), one batch per interval
+                # rather than one per cycle (#622).
+                if (last_aggregates is None
+                        or loop.time() - last_aggregates >= DIRECTORY_AGGREGATE_BATCH_SECONDS):
+                    last_aggregates = loop.time()
+                    await asyncio.to_thread(process_directory_aggregate_maintenance)
                 await asyncio.to_thread(protection_stop_service.reconcile_all)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due

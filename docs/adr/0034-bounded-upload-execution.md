@@ -1,5 +1,9 @@
 # Keep per-file upload evidence while restructuring execution
 
+> **Amended in part by [ADR-0038](0038-a-never-written-key-needs-no-listing-before-its-put.md)**
+> (#622): a key the catalog never wrote pins a presumed-empty inventory without
+> listing; permit waits are woken by releases instead of polling.
+
 Issue [#562](https://github.com/PaoloDelCasale/frostvault/issues/562). Small-file uploads pay fixed orchestration costs beyond their PUT. The Owner approved restructuring execution behind a deep UploadExecution Module, retaining one independently recoverable S3 key per Vault File, rather than adopting packs or relaxing integrity. This records the design contract and its implemented bounds; verified revisions and measured benefits are tracked in the issue, not inferred from the architecture alone.
 
 ## Decision
