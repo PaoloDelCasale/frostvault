@@ -11,16 +11,10 @@ from app.config import settings
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.source_layout import VaultLocalAccess
+from tests.owner_fixtures import insert_job
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
-# The v0.6 baseline (ADR-0035) gains these tables in later issues of epic #578;
-# each skipped case runs again once its table is ported.
-UPLOAD_PROOFS = "upload failure closure proofs are ported by #592"
-
-
-def _needs(table: str) -> str:
-    return f"needs {table}, not yet in 0001_baseline"
 ONLINE = VaultLocalAccess(True, True, None, 'ok')
 
 
@@ -85,7 +79,6 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         from tests.postgres import PostgresConnection
         return PostgresConnection(str(self.path))
 
-    @unittest.skip(UPLOAD_PROOFS)
     def test_every_terminal_event_fixed_routing_and_no_routine_events(self):
         with self.connect() as c:
             for action, status, origin, event in (
@@ -96,10 +89,12 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 ('recover','completed','automatic',None),
             ):
                 with self.subTest(action=action, status=status, origin=origin):
-                    c.execute('UPDATE jobs SET action=%s,status=%s,origin=%s WHERE id=%s', (action,status,origin,self.job_id))
-                    count = inbox.enqueue_job_terminal_notification(c, job_id=self.job_id)
+                    # A Job keeps its action and origin for life: one Job per case.
+                    job_id = insert_job(c, vault_id=self.vault_id, path=f'{action}-{status}-{origin}.txt',
+                                        action=action, status=status, origin=origin)
+                    count = inbox.enqueue_job_terminal_notification(c, job_id=job_id)
                     self.assertEqual(count, int(event is not None))
-                    self.assertEqual(inbox.enqueue_job_terminal_notification(c, job_id=self.job_id), 0)
+                    self.assertEqual(inbox.enqueue_job_terminal_notification(c, job_id=job_id), 0)
             self.assertEqual({row['event'] for row in c.execute('SELECT event FROM notifications').fetchall()},
                              {'job_failed','recovery_completed','recovery_failed'})
             self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'], 3)
@@ -127,14 +122,14 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             resolved = inbox.list_in_app_notifications(c,status='read')
             self.assertIn('resolved', {row['problem_status'] for row in resolved})
 
-    @unittest.skip(UPLOAD_PROOFS)
     def test_retry_status_alone_does_not_resolve_historical_failure(self):
         with self.connect() as c:
-            c.execute("UPDATE jobs SET status='failed' WHERE id=%s",(self.job_id,))
-            inbox.enqueue_job_terminal_notification(c,job_id=self.job_id)
-            c.execute("UPDATE jobs SET status='retrying' WHERE id=%s",(self.job_id,))
+            failed = insert_job(c, vault_id=self.vault_id, status='failed')
+            inbox.enqueue_job_terminal_notification(c,job_id=failed)
+            # A terminal Job never runs again: the retry is another Job.
+            insert_job(c, vault_id=self.vault_id, status='retrying')
             # #459 requires demonstrable exact completion+cleanup linkage,
-            # not a status rewrite or merely queueing another attempt.
+            # not merely queueing another attempt.
             self.assertEqual(inbox.count_open_problems(c),1)
             self.assertEqual(inbox.count_unread_notifications(c),1)
             inbox.mark_all_notifications_read(c)
@@ -299,12 +294,11 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertEqual(inbox.count_open_problems(c),0)
             self.assertEqual(inbox.count_unread_notifications(c),0)
 
-    @unittest.skip(UPLOAD_PROOFS)
     def test_monitor_fault_does_not_suppress_durable_email_and_next_success_resolves_it(self):
         from app import storage
         with self.connect() as c:
-            c.execute("UPDATE jobs SET status='failed' WHERE id=%s",(self.job_id,))
-            inbox.enqueue_job_terminal_notification(c,job_id=self.job_id)
+            failed = insert_job(c, vault_id=self.vault_id, status='failed')
+            inbox.enqueue_job_terminal_notification(c,job_id=failed)
         smtp = unittest.mock.Mock()
         with patch('app.storage.db',side_effect=self.connect), patch.object(inbox,'production_smtp_client',return_value=smtp), patch.object(monitor,'maintain_notifications',side_effect=RuntimeError('SECRET monitor context')):
             storage._deliver_notifications_once()
