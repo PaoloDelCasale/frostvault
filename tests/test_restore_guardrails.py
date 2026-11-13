@@ -458,6 +458,9 @@ class GroupRestoreApprovalTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        # ``cancel_job_group`` raises process-wide cancel flags by Job id; keep
+        # them out of later tests whose fresh catalogs reuse the same ids.
+        self.enterContext(patch("app.storage.cancelled_jobs", set()))
         _source, self.database_path, _version_id = _prepare_cloud_only_version(
             Path(self._tmp.name),
             relative_path="photos/p00.jpg",
