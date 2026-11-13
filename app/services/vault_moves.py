@@ -39,7 +39,7 @@ def eligibility(row: dict[str, Any], target: str) -> str | None:
         return "cloud_check_unavailable"
     if (row.get("integrity") != "verified" or row.get("availability") != "available"
             or not row.get("plaintext_sha256") or row.get("size") is None
-            or not row.get("provider_version_id")):
+            or not row.get("provider_version_id") or row["provider_version_id"] == "null"):
         return "unverified_or_unavailable"
     if target not in ALLOWED_TARGETS.get(current, ()):
         return "already_equal_or_colder"
@@ -63,11 +63,17 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
     """, (vault_id,)).fetchall()
 
 
+def _with_bucket(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
+    target = connection.execute(
+        "SELECT bucket FROM vault_targets WHERE id=%s", (vault["target_id"],)).fetchone()
+    return {**vault, "s3_bucket": target["bucket"]}
+
+
 def _namespace(vault: dict[str, Any]) -> str:
     return f"vaults/{vault['uuid']}/"
 
 
-def refresh_cold_sources(connection: Any, vault: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     """Observe an explicit external/recovery restore, never request one.
 
     Restore availability is temporary and listing does not expose it. A cached
@@ -76,8 +82,7 @@ def refresh_cold_sources(connection: Any, vault: dict[str, Any], rows: list[dict
     """
     from .. import storage as worker
 
-    bucket = connection.execute(
-        "SELECT bucket FROM vault_targets WHERE id=%s", (vault["target_id"],)).fetchone()["bucket"]
+    bucket = vault["s3_bucket"]
     client = None
     for row in rows:
         if row.get("storage_class") != "GLACIER" or eligibility({**row, "restore_state": "available"}, "DEEP_ARCHIVE"):
@@ -121,7 +126,7 @@ def preview(connection: Any, vault_id: int) -> dict[str, Any]:
     plan = load_vault_plan(connection, vault_id)
     rows = candidates(connection, vault_id)
     if any(step.storage_class == "DEEP_ARCHIVE" for step in plan.transitions):
-        refresh_cold_sources(connection, vault, rows)
+        refresh_cold_sources(_with_bucket(connection, vault), rows)
     return {"vault_id": vault_id, "targets": [estimate(rows, step.storage_class)
                         for step in plan.transitions]}
 
@@ -138,7 +143,7 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
         raise MoveBlocked("Choose a colder class on this Vault's saved Storage Plan")
     rows = candidates(connection, vault_id)
     if target == "DEEP_ARCHIVE":
-        refresh_cold_sources(connection, vault, rows)
+        refresh_cold_sources(_with_bucket(connection, vault), rows)
     result = estimate(rows, target)
     eligible = [row for row in rows if eligibility(row, target) is None]
     if any(not str(row["object_key"]).startswith(_namespace(vault)) for row in eligible):

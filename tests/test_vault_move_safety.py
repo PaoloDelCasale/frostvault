@@ -1,11 +1,18 @@
-"""Pure provider/eligibility boundaries; no database, network or credentials."""
+"""Pure provider/eligibility boundaries; no database, network or credentials (#595)."""
 import base64
 import hashlib
 import io
 import unittest
 from unittest.mock import Mock, patch
 
-from app.services import s3_copy, vault_moves as moves
+from types import SimpleNamespace
+
+from app.services import copy_provenance, s3_copy, upload_provenance as provenance, vault_moves as moves
+from app.services.s3_copy import COPY_TOKEN_KEY
+from tests.upload_provenance_provider import VersionedProvider
+
+
+VAULT = {'s3_bucket': 'bucket', 'uuid': '11111111-1111-1111-1111-111111111111'}
 
 
 class MoveEligibilityTests(unittest.TestCase):
@@ -42,13 +49,11 @@ class MoveEligibilityTests(unittest.TestCase):
         self.assertEqual(sum(result["skipped"].values()),3)
         self.assertIn("excluded",result["assumptions"])
 
-    def test_stopped_disabled_and_reconnecting_vaults_are_fenced(self):
-        vault = dict(enabled=True,decommission_state="active",relocation_state="ready")
-        moves.require_ready(vault)
-        for key,value in (("enabled",False),("decommission_state","decommissioning"),
-                          ("relocation_state","scan_required"),("root_released_at","yesterday")):
-            with self.subTest(key=key),self.assertRaises(moves.MoveBlocked):
-                moves.require_ready({**vault,key:value})
+    def test_stopped_and_reconnecting_vaults_are_fenced(self):
+        moves.require_ready(dict(lifecycle="active"))
+        for lifecycle in ("reconnect_required","stopping","tombstone"):
+            with self.subTest(lifecycle=lifecycle),self.assertRaises(moves.MoveBlocked):
+                moves.require_ready(dict(lifecycle=lifecycle))
 
 
 class ExactCopyTests(unittest.TestCase):
@@ -60,24 +65,24 @@ class ExactCopyTests(unittest.TestCase):
 
     def test_explicit_external_cold_restore_is_observed_without_requesting_one(self):
         row=dict(storage_class='GLACIER',busy=False,integrity='verified',availability='available',
-                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vault/photo',restore_state='not_requested')
+                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vaults/11111111-1111-1111-1111-111111111111/photo',restore_state='not_requested')
         self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER',
                                              'Restore':'ongoing-request="false", expiry-date="Fri, 06 Nov 2026 12:00:00 GMT"'}
         with patch('app.storage.s3_client',return_value=self.client):
-            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+            moves.refresh_cold_sources(VAULT,[row])
         self.assertIsNone(moves.eligibility(row,'DEEP_ARCHIVE'))
         self.assertEqual(self.client.head_object.call_args.kwargs['VersionId'],'source')
         self.client.restore_object.assert_not_called()
 
     def test_expired_or_unprovable_cold_restore_is_not_admitted_from_cached_flag(self):
         row=dict(storage_class='GLACIER',busy=False,integrity='verified',availability='available',
-                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vault/photo',restore_state='available')
+                 plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vaults/11111111-1111-1111-1111-111111111111/photo',restore_state='available')
         self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER'}
         with patch('app.storage.s3_client',return_value=self.client):
-            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+            moves.refresh_cold_sources(VAULT,[row])
             self.assertEqual(moves.eligibility(row,'DEEP_ARCHIVE'),'explicit_restore_required')
             self.client.head_object.side_effect=RuntimeError('provider unavailable')
-            moves.refresh_cold_sources({'s3_bucket':'bucket','s3_prefix':'vault/'},[row])
+            moves.refresh_cold_sources(VAULT,[row])
             self.assertEqual(moves.eligibility(row,'DEEP_ARCHIVE'),'cloud_check_unavailable')
         self.client.restore_object.assert_not_called()
 
@@ -93,25 +98,43 @@ class ExactCopyTests(unittest.TestCase):
         self.assertEqual(kwargs["TaggingDirective"],"COPY")
         self.assertEqual(kwargs["ContentType"],"image/jpeg")
 
-    def test_discovery_uses_token_not_current_class_size_or_etag(self):
-        self.client.list_object_versions.return_value = {"Versions":[
-            {"Key":"vault/photo","VersionId":"source"},{"Key":"vault/photo","VersionId":"foreign"}], "IsTruncated": False}
-        self.client.head_object.return_value = {"VersionId":"foreign","ContentLength":3,
-                                              "StorageClass":"DEEP_ARCHIVE","Metadata":{}}
-        self.assertIsNone(moves.discover_destination(self.client,self.job,self.move))
-        self.client.head_object.return_value["Metadata"] = {moves.TOKEN_KEY:"intent"}
-        self.assertEqual(moves.discover_destination(self.client,self.job,self.move),"foreign")
+    def _attempt(self, provider):
+        source = provider.add("vaults/v/photo", b"abc")
+        inventory = provenance.inventory(provider, "bucket", "vaults/v/new")
+        return copy_provenance.Attempt(
+            id="attempt", purpose="rename", job_id=1, source_version_id="av",
+            source_key="vaults/v/photo", source_provider_version_id=source,
+            destination_key="vaults/v/new", storage_class="STANDARD", size=3,
+            plaintext_sha256=hashlib.sha256(b"abc").digest(), token="intent",
+            inventory=inventory, composite_checksum=None, send_started=True, bucket="bucket")
 
-    def test_duplicate_provider_results_and_markers_are_ambiguous_never_deleted(self):
-        for markers in ([],[{"Key":"vault/photo","VersionId":"marker"}]):
-            self.client.list_object_versions.return_value = {"Versions":[
-                {"Key":"vault/photo","VersionId":"d1"},{"Key":"vault/photo","VersionId":"d2"}],
-                "DeleteMarkers":markers, "IsTruncated": False}
-            self.client.head_object.side_effect = lambda **kw: {"VersionId":kw["VersionId"],"ContentLength":3,
-                                                                "Metadata":{moves.TOKEN_KEY:"intent"}}
-            with self.assertRaises(moves.MoveBlocked):
-                moves.discover_destination(self.client,self.job,self.move)
-            self.client.delete_object.assert_not_called()
+    def _reconcile(self, provider, attempt):
+        journal = Mock()
+        journal.__enter__ = Mock(return_value=journal)
+        journal.__exit__ = Mock(return_value=False)
+        journal.execute.return_value.fetchall.return_value = []
+        worker = SimpleNamespace(db=lambda: journal)
+        return copy_provenance.reconcile(worker, {"id": 1}, attempt, provider, Mock())
+
+    def test_discovery_uses_the_copy_token_not_class_size_or_etag(self):
+        provider = VersionedProvider()
+        attempt = self._attempt(provider)
+        provider.add("vaults/v/new", b"abc", {"frostvault-upload": "intent"})
+        with self.assertRaises(provenance.UploadBlocked) as blocked:
+            self._reconcile(provider, attempt)
+        self.assertEqual(blocked.exception.reason, "ambiguous_send")
+        own = provider.add("vaults/v/new", b"abc", {COPY_TOKEN_KEY: "intent"})
+        self.assertEqual(self._reconcile(provider, attempt), own)
+
+    def test_duplicate_provider_results_are_ambiguous_never_deleted(self):
+        provider = VersionedProvider()
+        attempt = self._attempt(provider)
+        for _ in range(2):
+            provider.add("vaults/v/new", b"abc", {COPY_TOKEN_KEY: "intent"})
+        with self.assertRaises(provenance.UploadBlocked) as blocked:
+            self._reconcile(provider, attempt)
+        self.assertEqual(blocked.exception.reason, "ambiguous_receipt")
+        self.assertEqual(provider.deleted, [])
 
     def test_destination_must_match_known_plaintext_not_just_size_etag(self):
         self.client.head_object.return_value = {"VersionId":"dest","ContentLength":3,"StorageClass":"DEEP_ARCHIVE",
