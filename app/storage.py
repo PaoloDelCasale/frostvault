@@ -2101,6 +2101,112 @@ def apply_auto_renames(
     return summary
 
 
+def _identify_new_local_copies(
+    vault: dict[str, Any], root: Path, *, now: datetime,
+) -> dict[str, int]:
+    """Decide stable new Local Copies by digest before automatic upload (#621).
+
+    The watcher sees additions and deletions, never a move. Two kinds of new
+    content are hashed (outside any write transaction) as soon as they are
+    stable: content back at a cloud-only path, which becomes the Local Copy
+    again when identical and a Cloud-only Conflict when different (ADR-0016),
+    and a new Local Copy with the size of one that just went missing, which
+    keeps that Vault File's identity when it is its unique equal-digest match
+    (ADR-0001). Automatic admission skips the latter until this decided it, so
+    an upload never races ahead of the rename.
+    """
+    from .catalog import VaultFileNotFound
+    from .services.catalog_incidents import settle_cloud_only_copies
+
+    vault_id = int(vault["id"])
+    summary = {"hashed": 0, "confirmed": 0, "queued": 0}
+    with db() as connection:
+        policy = get_policy(connection, vault_id)
+        rows = ArchiveCatalog(connection).local_copies_to_identify(vault_id)
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        if row["mtime_ns"] is None or not file_is_stable(
+            mtime_ns=int(row["mtime_ns"]), now=now,
+            stability_seconds=policy.stability_seconds,
+            content_observed_at=(row["content_observed_at"].isoformat()
+                                 if row["content_observed_at"] else None),
+        ):
+            continue
+        try:
+            local_path = safe_local_path(str(root), row["path"])
+            if not local_path.is_file():
+                continue
+            digest, stat_result = hash_stable_regular_file(local_path)
+        except OSError:
+            with db() as connection:
+                report_problem(
+                    connection, event="file_unreadable", vault_id=vault_id,
+                    path=row["path"],
+                )
+            continue
+        except (ValueError, RuntimeError):
+            continue
+        if (stat_result.st_size, stat_result.st_mtime_ns) != (row["size"], row["mtime_ns"]):
+            # Changed since observed: the watcher reports it again.
+            continue
+        updates.append({**row, "digest": digest})
+    if not updates:
+        return summary
+    with db() as connection:
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+        catalog = ArchiveCatalog(connection)
+        published: list[dict[str, Any]] = []
+        for update in updates:
+            if catalog.publish_local_fingerprint(
+                update["vault_file_id"], generation=update["generation"],
+                plaintext_sha256=update["digest"], size=update["size"],
+                mtime_ns=update["mtime_ns"],
+            ):
+                published.append(update)
+        summary["hashed"] = len(published)
+        for update in published:
+            if update["held"]:
+                # Identical content was released by its fingerprint; different
+                # content opens the Owner's Cloud-only Conflict now.
+                settle_cloud_only_copies(
+                    connection, vault_id=vault_id, path=update["path"],
+                    observed_at=now_iso(),
+                )
+        new_ids = {update["vault_file_id"] for update in published if not update["held"]}
+        renamed: list[str] = []
+        changed_at = now_iso()
+        for digest in sorted({update["digest"] for update in published if not update["held"]}):
+            # The same unique, in-window, history-free match a scan accepts.
+            for candidate in catalog.list_rename_candidates(vault_id, digest=digest):
+                if candidate["new_vault_file_id"] not in new_ids:
+                    continue
+                try:
+                    catalog.confirm_file_rename(
+                        vault_file_id=candidate["missing_vault_file_id"],
+                        new_path=candidate["new_path"],
+                        changed_at=changed_at,
+                        vault_id=vault_id,
+                    )
+                except VaultFileNotFound:
+                    continue
+                renamed.append(candidate["new_path"])
+        summary["confirmed"] = len(renamed)
+        for path in renamed:
+            job_ids, _total, _eligible = catalog.queue_jobs(
+                vault_id=vault_id,
+                path=path,
+                action="rename",
+                requested_at=now_iso(),
+                group_id=uuid.uuid4().hex,
+                is_directory=False,
+            )
+            summary["queued"] += len(job_ids)
+        if "root_identity" in vault:
+            _current_verified_scan_row(connection, vault)
+    return summary
+
+
 def _claim_write_succeeded(result: Any) -> bool:
     """Normalize real cursors and lightweight unit-test recording seams."""
     rowcount = getattr(result, "rowcount", None)
@@ -5248,31 +5354,37 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             _pinned_verified_scan_root(vault)
             if "root_identity" in vault else nullcontext(Path(vault["source_root"]))
         )
-        with pinned_root as root, db() as connection:
-            from .services.job_admission import lock_vault
-            try:
-                lock_vault(connection, int(vault["id"]))
-            except LookupError:
-                return 0
-            current = connection.execute(
-                f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault["id"],),
-            ).fetchone()
-            if (not current or current["lifecycle"] != "active"
-                    or current["source_root"] != vault["source_root"]):
-                return 0
-            queued = 0
-            if retry_failed_only:
-                from .services import upload_remediation
-                queued += upload_remediation.retry_vault(connection,dict(current),None,
-                    (now or datetime.now(timezone.utc)).isoformat())
-            queued += queue_auto_uploads(
-                connection, vault_id=int(vault["id"]), source_root=str(root),
-                now=now, retry_failed_only=retry_failed_only,
+        with pinned_root as root:
+            # Renames and reappearances are decided first, in their own
+            # transaction: admission then sees the outcome (#621).
+            _identify_new_local_copies(
+                vault, root, now=now or datetime.now(timezone.utc),
             )
-            if "root_identity" in vault:
-                _current_verified_scan_row(connection, vault)
-            if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
-                raise _ScanRootMismatch("Source Volume changed during automatic upload admission")
+            with db() as connection:
+                from .services.job_admission import lock_vault
+                try:
+                    lock_vault(connection, int(vault["id"]))
+                except LookupError:
+                    return 0
+                current = connection.execute(
+                    f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault["id"],),
+                ).fetchone()
+                if (not current or current["lifecycle"] != "active"
+                        or current["source_root"] != vault["source_root"]):
+                    return 0
+                queued = 0
+                if retry_failed_only:
+                    from .services import upload_remediation
+                    queued += upload_remediation.retry_vault(connection,dict(current),None,
+                        (now or datetime.now(timezone.utc)).isoformat())
+                queued += queue_auto_uploads(
+                    connection, vault_id=int(vault["id"]), source_root=str(root),
+                    now=now, retry_failed_only=retry_failed_only,
+                )
+                if "root_identity" in vault:
+                    _current_verified_scan_row(connection, vault)
+                if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+                    raise _ScanRootMismatch("Source Volume changed during automatic upload admission")
         # Admission completed: whatever failed before is over (#496). Done after
         # the Vault transaction ends so the inbox write takes no Owner lock under it.
         _note_worker_ok("auto_upload_queue", int(vault["id"]))

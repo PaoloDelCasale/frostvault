@@ -496,19 +496,37 @@ def enqueue_archive_version_missing(
     )
 
 
+def cloud_only_conflict_key(file_id: Any, held_version_id: Any) -> str:
+    """The one problem of a Cloud-only Conflict: its file and held version."""
+    return f"conflict:{file_id}:{held_version_id}"
+
+
 def enqueue_cloud_only_conflict(
-    connection: Any, *, incident: Mapping[str, Any]
+    connection: Any,
+    *,
+    vault_id: int,
+    file_id: Any,
+    held_version_id: Any,
+    path: str,
+    observed_at: str,
 ) -> int:
-    """Tell the owner that new content is held back at a cloud-only path."""
-    return _enqueue_incident_notification(
-        connection,
-        incident=incident,
-        event="cloud_only_conflict",
-        params={
-            "path": str(incident.get("path") or ""),
-            "observed_at": str(incident.get("opened_at") or now_iso()),
-        },
+    """Tell the Owner that different content is held back at a cloud-only path.
+
+    It is an open Problem of the Vault, notified once per conflict, until the
+    file no longer holds that version (renamed away, removed, or the Owner
+    confirmed the replacement). Returns 1 when this call opened it.
+    """
+    key = cloud_only_conflict_key(file_id, held_version_id)
+    existing = connection.execute(
+        "SELECT problem_status FROM notifications WHERE dedupe_key=%s", (key,),
+    ).fetchone()
+    if existing is not None and existing["problem_status"] == "open":
+        return 0
+    set_problem(
+        connection, key=key, event="cloud_only_conflict", vault_id=int(vault_id),
+        active=True, params={"path": str(path), "observed_at": str(observed_at)},
     )
+    return 1
 
 
 def _enqueue_incident_notification(
