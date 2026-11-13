@@ -35,7 +35,7 @@ from watchfiles import Change, awatch
 from .config import is_placeholder, settings, settings_snapshot
 from .catalog import ArchiveCatalog
 from .database import db
-from .services import source_layout
+from .services import audit_failures, source_layout
 from .services.upload_pipeline import UploadJournalHeld
 from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
@@ -1725,6 +1725,7 @@ def _record_scan_component_health(
     verified: bool = False,
     extra: Mapping[str, Any] | None = None,
     notify_problem: bool = True,
+    problem_params: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist one scan/audit outcome and surface failures without diagnostic UI."""
     from .services.component_health import record_component_health
@@ -1732,7 +1733,14 @@ def _record_scan_component_health(
     stamp = now_iso()
     try:
         with db() as connection:
-            if component in {"source", "cloud", "policy"} and (ok or notify_problem):
+            if component == "audit":
+                # Even behind a blocked gate: each Vault it leaves unconfirmed
+                # says why, until its own audit succeeds (#620).
+                audit_failures.set_audit_problem(
+                    connection, vault_id=int(vault_id), active=not ok,
+                    params=dict(problem_params or {}),
+                )
+            elif component in {"source", "cloud", "policy"} and (ok or notify_problem):
                 notification_service.set_problem(
                     connection, key=f"blocked:{vault_id}:{component}",
                     event="protection_blocked", vault_id=int(vault_id), active=not ok,
@@ -5287,6 +5295,12 @@ def scan_vaults_with_cloud_error() -> None:
         scan_vault(vault)
 
 
+def recover_vaults_after_cloud_ready() -> None:
+    scan_vaults_with_cloud_error()
+    # A failed audit also stays failed until an audit lists S3 again (#620).
+    audit_vaults_with_error()
+
+
 def reprobe_cloud_readiness_once() -> None:
     # Independent of scheduler capacity and maintenance scans. A blocked gate
     # must recover even if the Owner has since suspended all queued Vaults.
@@ -5310,7 +5324,7 @@ def reprobe_cloud_readiness_once() -> None:
             # S3 answers again (a corrected key, bucket or permission). Without a
             # restart nothing else would list it again before the next periodic
             # scan, and every Vault that failed on S3 would stay unconfirmed.
-            _submit_maintenance("cloud_recovery_scan", scan_vaults_with_cloud_error)
+            _submit_maintenance("cloud_recovery_scan", recover_vaults_after_cloud_ready)
 
 
 async def cloud_preflight_loop() -> None:
@@ -5901,48 +5915,94 @@ async def filesystem_watch_loop() -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def audit_all_vaults() -> None:
+# Failed audits are retried on their own backoff, in monotonic seconds (#620).
+# A failure from before a restart needs no retry: it makes the full audit due
+# at startup (``persisted_maintenance_ages``).
+_audit_retry_lock = threading.Lock()
+_audit_retry: dict[str, float] = {"failures": 0, "due": float("inf")}
+
+
+def _note_audit_outcome(failed: bool) -> None:
+    with _audit_retry_lock:
+        if failed:
+            _audit_retry["failures"] += 1
+            _audit_retry["due"] = time.monotonic() + audit_failures.retry_seconds(
+                int(_audit_retry["failures"]))
+        else:
+            _audit_retry.update(failures=0, due=float("inf"))
+
+
+def audit_retry_due(now: float | None = None) -> bool:
+    with _audit_retry_lock:
+        return (time.monotonic() if now is None else now) >= _audit_retry["due"]
+
+
+def _active_vaults_for_audit(*, failed_only: bool) -> list[dict[str, Any]]:
+    failed = (
+        "JOIN vault_component_health h ON h.vault_id=v.id AND h.component='audit' "
+        "AND h.last_error IS NOT NULL" if failed_only else ""
+    )
     with db() as connection:
-        vaults = connection.execute(
-            f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
-        ).fetchall()
+        return [dict(row) for row in connection.execute(
+            f"{VAULT_ROW_SQL} {failed} WHERE v.lifecycle='active' ORDER BY v.id"
+        ).fetchall()]
+
+
+def audit_all_vaults() -> None:
+    _audit_vaults(_active_vaults_for_audit(failed_only=False))
+
+
+def audit_vaults_with_error() -> None:
+    """Re-audit the Vaults whose last audit failed; nothing else clears it."""
+    _audit_vaults(_active_vaults_for_audit(failed_only=True))
+
+
+def _audit_vaults(vaults: list[dict[str, Any]]) -> None:
+    failed = False
     for vault in vaults:
-        vault_id = int(vault["id"])
+        failed = not _audit_vault(vault) or failed
+    _note_audit_outcome(failed)
+
+
+def _audit_vault(vault: dict[str, Any]) -> bool:
+    vault_id = int(vault["id"])
+    with status_lock:
+        status = runtime_status.setdefault(
+            vault_id,
+            {
+                "scanning": False,
+                "last_scan": None,
+                "last_audit": None,
+                "last_error": None,
+            },
+        )
+    try:
+        validate_cloud_vault(vault)
+        with db() as connection:
+            report = audit_vault_catalog(connection, vault, s3_client())
+        stamp = now_iso()
         with status_lock:
-            status = runtime_status.setdefault(
-                vault_id,
-                {
-                    "scanning": False,
-                    "last_scan": None,
-                    "last_audit": None,
-                    "last_error": None,
-                },
-            )
-        try:
-            validate_cloud_vault(vault)
-            with db() as connection:
-                report = audit_vault_catalog(connection, vault, s3_client())
-            stamp = now_iso()
-            with status_lock:
-                status["last_audit"] = stamp
-                status["last_audit_report"] = report
-                status["last_audit_healthy"] = bool(report.get("healthy", 1))
-                status["last_error"] = None
-            _record_scan_component_health(
-                vault_id,
-                "audit",
-                ok=True,
-                verified=True,
-                extra=report,
-            )
-        except Exception as exc:
-            message = f"Catalog audit: {exc}"
-            with status_lock:
-                status["last_error"] = message
-            _record_scan_component_health(
-                vault_id, "audit", ok=False, error=message,
-                notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
-            )
+            status["last_audit"] = stamp
+            status["last_audit_report"] = report
+            status["last_audit_healthy"] = bool(report.get("healthy", 1))
+            status["last_error"] = None
+        _record_scan_component_health(
+            vault_id,
+            "audit",
+            ok=True,
+            verified=True,
+            extra=report,
+        )
+        return True
+    except Exception as exc:
+        message = f"Catalog audit: {exc}"
+        with status_lock:
+            status["last_error"] = message
+        _record_scan_component_health(
+            vault_id, "audit", ok=False, error=message,
+            problem_params=audit_failures.problem_params(exc),
+        )
+        return False
 
 
 def _deliver_notifications_once() -> None:
@@ -6139,14 +6199,19 @@ def persisted_maintenance_ages(
         ).fetchall()
         audit_ages: list[float] = []
         for vault in vaults:
+            # From the last success: a failed audit has not run, and a Vault
+            # it left unconfirmed is audited again at startup (#620).
             row = connection.execute(
                 """
-                SELECT updated_at FROM vault_component_health
+                SELECT last_success_at, last_error FROM vault_component_health
                 WHERE vault_id=%s AND component='audit'
                 """,
                 (int(vault["id"]),),
             ).fetchone()
-            age = _seconds_since(row["updated_at"], now=now) if row else None
+            age = (
+                _seconds_since(row["last_success_at"], now=now)
+                if row and not row["last_error"] else None
+            )
             if age is None:
                 audit_ages = []
                 break
@@ -6213,6 +6278,8 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     except Exception:
         ages = {}
     marks = initial_maintenance_marks(loop.time(), ages)
+    # A new loop starts from the persisted ages, not from an earlier retry.
+    _note_audit_outcome(False)
     last_scan = marks["scan"]
     last_audit = marks["audit"]
     last_backup = marks["backup"]
@@ -6285,6 +6352,8 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 if current - last_audit >= runtime.audit_interval:
                     _submit_maintenance("audit", audit_all_vaults)
                     last_audit = current
+                elif audit_retry_due():
+                    _submit_maintenance("audit_retry", audit_vaults_with_error)
                 if (
                     runtime.metadata_backup_interval_seconds > 0
                     and current - last_backup

@@ -729,6 +729,16 @@ _FILE_UNREADABLE_RESOLUTION = """
     )
 """
 
+# A failed audit closes with the next successful audit of its Vault (#620), or
+# when the Vault is no longer active and so no longer audited.
+_CATALOG_AUDIT_FAILED_RESOLUTION = """
+    n.event='catalog_audit_failed' AND NOT EXISTS (
+        SELECT 1 FROM vault_component_health h JOIN vaults v ON v.id=h.vault_id
+        WHERE h.vault_id=n.vault_id AND h.component='audit'
+          AND h.last_error IS NOT NULL AND v.lifecycle='active'
+    )
+"""
+
 
 def _problem_resolutions() -> dict[frozenset[str], str]:
     from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as resolution
@@ -737,6 +747,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"job_failed_group"}): _JOB_FAILED_GROUP_RESOLUTION.format(resolution=resolution),
         frozenset({"archive_version_missing", "cloud_only_conflict"}): _INCIDENT_RESOLUTION,
         frozenset({"file_unreadable"}): _FILE_UNREADABLE_RESOLUTION,
+        frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
     }
 
 
