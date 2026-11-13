@@ -130,7 +130,7 @@ class TargetCapabilityTests(unittest.TestCase):
         job = {"id": 1, "vault_id": 2, "vault_file_id": "file", "path": "file"}
         pinned = {"vault_id": 2, "vault_file_id": "file", "path": "file", "key": "key", "provider": "provider"}
         connection = MagicMock()
-        with patch.object(provenance, "target", return_value=pinned) as target:
+        with patch.object(provenance, "_target", return_value=(pinned, {})) as target:
             with provenance._validated_target(connection, job, key="key", provider="provider", shared=True):
                 provenance.require_target(connection, job, pinned, shared=True)
                 provenance.require_target(connection, job, pinned, shared=True)
@@ -148,7 +148,7 @@ class TargetCapabilityTests(unittest.TestCase):
         job = {"id": 1}
         pinned = {"key": "key", "provider": "provider"}
         connection = MagicMock()
-        with patch.object(provenance, "target", return_value=pinned):
+        with patch.object(provenance, "_target", return_value=(pinned, {})):
             with provenance._validated_target(connection, job, key="key", provider="provider", shared=True):
                 with self.assertRaisesRegex(RuntimeError, "upgrade"):
                     provenance.require_target(connection, job, pinned)
@@ -156,7 +156,7 @@ class TargetCapabilityTests(unittest.TestCase):
     def test_context_is_revoked_on_rollback(self):
         connection, job = MagicMock(), {"id": 1}
         pinned = {"key": "key", "provider": "provider"}
-        with patch.object(provenance, "target", return_value=pinned) as target:
+        with patch.object(provenance, "_target", return_value=(pinned, {})) as target:
             with self.assertRaises(RuntimeError):
                 with provenance._validated_target(connection, job, **pinned):
                     raise RuntimeError("rollback")

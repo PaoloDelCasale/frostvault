@@ -568,6 +568,8 @@ def enqueue_job_terminal_notification_best_effort(
     try:
         enqueued = enqueue_job_terminal_notification(connection, job_id=job_id)
     except Exception as exc:
+        from .directory_aggregates import forget_unit_dirty_marks
+        forget_unit_dirty_marks(connection)
         try:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         finally:

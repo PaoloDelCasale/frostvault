@@ -84,6 +84,18 @@ def _current_id(connection: Any, file_id: str) -> str | None:
     return str(row["current_version_id"]) if row and row["current_version_id"] else None
 
 
+# Whether ``cleanup(keeper_id=None)`` has anything to do, over a ``files f``
+# row: an open batch, or a superseded version while a Current exists. The
+# same decision ``cleanup`` takes from its own load, for callers (the upload's
+# first unit) that read the file row anyway.
+RESUME_NEEDED_SQL = """(EXISTS (SELECT 1 FROM cleanup_batches WHERE file_id = f.id)
+                  OR (f.current_version_id IS NOT NULL AND EXISTS (
+                      SELECT 1 FROM archive_versions av
+                      WHERE av.file_id = f.id
+                        AND av.id IS DISTINCT FROM f.current_version_id
+                        AND av.id IS DISTINCT FROM f.replacing_version_id)))"""
+
+
 def _require_candidate(row: dict[str, Any]) -> None:
     """Only a superseded application write of this file can be deleted."""
     if row["integrity"] == "mismatch":
@@ -137,10 +149,15 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         connection = catalog.connection
         batch = connection.execute(
             "SELECT * FROM cleanup_batches WHERE file_id=%s", (job["file_id"],)).fetchone()
-        return (provenance.validated_pin(connection, job), _current_id(connection, job["file_id"]),
-                batch, _superseded(connection, job["file_id"]))
+        # A published keeper is read in the same unit (#597): no second unit
+        # only to find the row the publication just committed.
+        keeper = _keeper(connection, job, str(keeper_id), key) if keeper_id is not None else None
+        # The keeper is the file's Current by construction.
+        current = str(keeper["id"]) if keeper is not None else _current_id(connection, job["file_id"])
+        return (provenance.validated_pin(connection, job), current,
+                batch, _superseded(connection, job["file_id"]), keeper)
 
-    pinned, current, batch, superseded = w._upload_catalog_unit(job, load, shared=True)
+    pinned, current, batch, superseded, keeper = w._upload_catalog_unit(job, load, shared=True)
     if keeper_id is None:
         if batch is None and (not superseded or current is None):
             # Nothing to resume, or no Current to keep yet: the next verified
@@ -163,13 +180,15 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         raise UploadBlocked("inventory_changed")
     for row in superseded:
         _require_candidate(row)
-    w._require_upload_source_identity(job)
-    active()
+    if superseded or batch is not None:
+        # Before the batch is frozen or anything is deleted. Each DELETE checks
+        # the Source Volume/root again; listings alone are no effect.
+        w._require_upload_source_identity(job)
+    if keeper is None:
+        def keeper_row(catalog: Any) -> dict[str, Any]:
+            return _keeper(catalog.connection, job, str(keeper_id), key)
 
-    def keeper_row(catalog: Any) -> dict[str, Any]:
-        return _keeper(catalog.connection, job, str(keeper_id), key)
-
-    keeper = w._upload_catalog_unit(job, keeper_row, shared=True)
+        keeper = w._upload_catalog_unit(job, keeper_row, shared=True)
     keep = (keeper["object_key"], keeper["provider_version_id"])
     candidates = {(row["object_key"], row["provider_version_id"]): row for row in superseded}
     allowed = set(candidates) | {keep}
@@ -213,7 +232,8 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         observed[object_key] = {**observed[object_key],
                                 "versions": [v for v in observed[object_key]["versions"] if v != version]}
 
-    active()
+    if candidates:
+        active()
     final = _listing(client, bucket, keys)
     if any(value["markers"] for value in final.values()):
         raise UploadBlocked("markers_present")

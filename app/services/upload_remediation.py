@@ -249,14 +249,21 @@ def _resolve(connection: Any, episode: dict[str, Any], job: dict[str, Any], stam
 
 
 def transition(connection: Any, job_id: int, status: str, stamp: Any, *,
-               suspension: str | None = None, closing_reason: str | None = None) -> None:
-    """Move the episode with its Job, in the Job's authoritative transaction."""
-    job = connection.execute(
+               suspension: str | None = None, closing_reason: str | None = None,
+               bound: bool | None = None, job: Any = None) -> None:
+    """Move the episode with its Job, in the Job's authoritative transaction.
+
+    ``bound=False``: the caller read in this transaction that the Job has no
+    episode binding (bindings change only with the Job's creation or
+    completion), so the binding is not read again. ``job``: the row the
+    caller's transition just moved (``ArchiveCatalog.transitioned_job``).
+    """
+    job = job or connection.execute(
         "SELECT id, file_id, vault_id, action, status, retry_count, run_after, archive_version_id "
         "FROM jobs WHERE id=%s", (job_id,)).fetchone()
     if job is None or job["action"] != "upload":
         return
-    episode = connection.execute(
+    episode = None if bound is False else connection.execute(
         """SELECT r.* FROM upload_remediation_jobs b JOIN upload_remediations r
            ON r.id=b.remediation_id WHERE b.job_id=%s FOR UPDATE OF r""", (job_id,)).fetchone()
     if episode is None or (episode["closed_at"] is None and episode["current_job_id"] != job_id):
