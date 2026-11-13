@@ -16,6 +16,7 @@ from app.config import settings
 from app.main import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
 from app.services.source_layout import VaultLocalAccess
+from tests.catalog_support import seed_vault, sha256_hex
 from tests.test_database import run_alembic
 
 
@@ -27,10 +28,19 @@ class StatsTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', '/sources/photos', 'bucket', 'files')")
+            seed_vault(connection, vault_id=9, source_root="/sources/photos", name="Files")
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21")
-            catalog.record_archive_version(vault_id=9, path="photo.jpg", object_key="files/photo.jpg", provider_version_id="only-copy", size=44, storage_class="STANDARD", etag="etag", uploaded_at="2026-07-21", observed_at="2026-07-21", scan_id="scan")
+            catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
+            # Current holds other (older) content: the Local Copy is pending.
+            row = catalog.get_file_by_path(9, "photo.jpg")
+            version = catalog.begin_replacement(
+                row["id"], object_key="vaults/x/photo.jpg", provider_version_id="only-copy",
+                size=44, storage_class="STANDARD", created_at="2026-07-21T00:00:00+00:00",
+            )
+            catalog.promote_replacement(
+                row["id"], archive_version_id=version, plaintext_sha256=sha256_hex(b"older"),
+                verified_at="2026-07-21T00:01:00+00:00", local_generation=row["generation"],
+            )
         self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         runtime_status.pop(9, None)
         self.addCleanup(runtime_status.pop, 9, None)

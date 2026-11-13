@@ -38,6 +38,8 @@ BASELINE_TABLES = {
     "upload_attempts", "upload_receipts", "upload_multiparts",
     "vault_operation_policies", "bulk_upload_admissions", "bulk_upload_exclusions",
     "cleanup_batches", "cleanup_candidates",
+    "directory_aggregates", "vault_catalog_revisions", "catalog_events",
+    "vault_component_health", "cloud_preflight_state",
 }
 
 

@@ -14,6 +14,7 @@ from app.config import Settings
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
@@ -34,10 +35,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.managed_root = source_layout.ensure_managed_directory()
 
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
-            )
+            insert_owner(connection, display_name="Alice")
 
         self.settings = replace(
             Settings(),
@@ -58,7 +56,8 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         vault = vaults_service.create_vault("My Archive")
 
         self.assertEqual(vault["name"], "My Archive")
-        self.assertEqual(vault["slug"], "my-archive")
+        self.assertNotIn("slug", vault)
+        self.assertEqual(vault["lifecycle"], "active")
         self.assertTrue(vault["uuid"])
         self.assertEqual(len(vault["uuid"]), 36)
 
@@ -73,8 +72,9 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertTrue(Path(vault["source_root"]).is_dir())
 
     def test_renaming_the_label_never_changes_the_storage_identity(self) -> None:
-        first = vaults_service.create_vault("Docs", slug="docs")
-        second = vaults_service.create_vault("Docs", slug="docs-2")
+        # The name is only a label: two Vaults may share it (#593).
+        first = vaults_service.create_vault("Docs")
+        second = vaults_service.create_vault("Docs")
 
         self.assertNotEqual(first["uuid"], second["uuid"])
         self.assertNotEqual(first["source_root"], second["source_root"])
@@ -89,7 +89,6 @@ class VaultCreationServiceTestCase(unittest.TestCase):
             list(signature.parameters),
             [
                 "name",
-                "slug",
                 "creation_mode",
                 "volume_alias",
                 "relative_path",
@@ -106,24 +105,21 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         }
         self.assertTrue(forbidden.isdisjoint(signature.parameters))
 
-    def test_duplicate_slug_is_rejected_and_leaves_nothing_partial_behind(self) -> None:
-        vaults_service.create_vault("Docs", slug="docs")
-
-        with self.assertRaises(vaults_service.VaultSlugTaken):
-            vaults_service.create_vault("Docs Again", slug="docs")
-
-        self.assertEqual(len(self._vaults()), 1)
-        created_dirs = [p for p in self.managed_root.iterdir() if p.is_dir()]
-        self.assertEqual(len(created_dirs), 1)
+    def test_vaults_of_one_bucket_share_one_immutable_vault_target(self) -> None:
+        vaults_service.create_vault("Docs")
+        vaults_service.create_vault("Photos")
+        with PostgresConnection(str(self.database_path)) as connection:
+            targets = connection.execute("SELECT bucket, region FROM vault_targets").fetchall()
+            columns = {row["column_name"] for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='vaults'"
+            ).fetchall()}
+        self.assertEqual([(row["bucket"], row["region"]) for row in targets],
+                         [("test-bucket", self.settings.aws_region)])
+        self.assertTrue({"slug", "s3_bucket", "s3_prefix", "enabled"}.isdisjoint(columns))
 
     def test_blank_name_is_rejected(self) -> None:
         with self.assertRaises(vaults_service.InvalidVaultName):
             vaults_service.create_vault("   ")
-        self.assertEqual(self._vaults(), [])
-
-    def test_a_name_with_no_alphanumeric_characters_is_rejected(self) -> None:
-        with self.assertRaises(vaults_service.InvalidVaultName):
-            vaults_service.create_vault("!!!")
         self.assertEqual(self._vaults(), [])
 
     def test_creation_is_unavailable_without_a_configured_bucket_and_remote(self) -> None:

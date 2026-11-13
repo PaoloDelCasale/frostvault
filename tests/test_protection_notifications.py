@@ -141,7 +141,6 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertEqual(inbox.count_unread_notifications(c),0)
             self.assertEqual(inbox.count_open_problems(c),1)
 
-    @unittest.skip(_needs("the catalog tables"))
     def test_delay_is_aggregated_deduplicated_and_never_stable_age_survives_writes(self):
         from app.catalog import ArchiveCatalog
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
@@ -157,15 +156,15 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             monitor.monitor_vault(c,vault,now=NOW+timedelta(seconds=30))
             notes = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchall()
             self.assertEqual(len(notes),1)
-            self.assertEqual(json.loads(notes[0]['message_params'])['unstable'],1)
+            self.assertEqual(notes[0]['message_params']['unstable'],1)
             self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'],0)
-            c.execute("UPDATE local_copies SET presence='missing'")
+            for row in c.execute('SELECT id FROM files WHERE vault_id=%s',(self.vault_id,)).fetchall():
+                catalog.mark_local_copy_missing(str(row['id']),observed_at=NOW+timedelta(minutes=1))
             monitor.monitor_vault(c,vault,now=NOW+timedelta(minutes=1))
             self.assertEqual(inbox.count_open_problems(c),0)
             self.assertEqual(inbox.count_unread_notifications(c),0)
 
-    @unittest.skip(_needs("vault_operation_policies"))
     def test_source_and_suspension_are_blocked_with_no_secret_details(self):
         with self.connect() as c:
             c.execute("INSERT INTO vault_operation_policies(vault_id,auto_upload,suspended_at) VALUES (%s,FALSE,%s)",
@@ -175,12 +174,11 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 monitor.monitor_vault(c,vault,now=NOW)
                 monitor.monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),2)
-            c.execute('UPDATE vault_operation_policies SET auto_upload=TRUE WHERE vault_id=%s',(self.vault_id,))
+            c.execute('UPDATE vault_operation_policies SET auto_upload=TRUE,suspended_at=NULL WHERE vault_id=%s',(self.vault_id,))
             with patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
                 monitor.monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
 
-    @unittest.skip(_needs("vault_component_health"))
     def test_partial_unreadable_scan_does_not_invent_global_source_blockage(self):
         from app.services.component_health import record_component_health
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
@@ -197,14 +195,13 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             monitor.monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
 
-    @unittest.skip(_needs("the catalog tables"))
     def test_summary_is_weekly_and_contains_required_persisted_evidence(self):
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE), patch.object(inbox,'now_iso',return_value=NOW.isoformat()):
             monitor.maintain_notifications(c,now=NOW)
             monitor.maintain_notifications(c,now=NOW+timedelta(days=6))
             rows = c.execute("SELECT * FROM notifications WHERE event='weekly_summary'").fetchall()
             self.assertEqual(len(rows),1)
-            data = json.loads(rows[0]['message_params'])
+            data = rows[0]['message_params']
             self.assertEqual(set(data['states']),set(monitor.STATES))
             self.assertIsNone(data['last_verified_backup'])
             for key in ('last_scan','last_audit','suspended'):
@@ -214,62 +211,64 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             monitor.maintain_notifications(c,now=NOW+timedelta(days=7))
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='weekly_summary'").fetchone()['n'],2)
 
-    @unittest.skip(_needs("catalog_incidents"))
     def test_resolved_catalog_incident_is_read_without_dismissing_open_problems(self):
         from app.catalog import ArchiveCatalog
         from app.services.catalog_incidents import remember_missing_archives, resolve_archive_version_incidents
+        from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c:
             catalog = ArchiveCatalog(c)
-            version = catalog.record_archive_version(vault_id=self.vault_id,path='lost.jpg',object_key='docs/lost.jpg',
-                provider_version_id='v1',size=2,storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
-                observed_at=NOW.isoformat(),scan_id='scan')
-            row = c.execute('SELECT av.*, fp.path FROM archive_versions av JOIN file_paths fp ON fp.vault_file_id=av.vault_file_id WHERE av.id=%s',(version,)).fetchone()
-            remember_missing_archives(c,[row],reason='missing_in_cloud',observed_at=NOW.isoformat())
+            catalog.observe_local_copy(vault_id=self.vault_id,path='lost.jpg',file_type='regular',size=2,
+                                       mtime_ns=1,observed_at=NOW)
+            digest = sha256_hex(b'lost')
+            fingerprint(catalog,self.vault_id,'lost.jpg',digest)
+            version = protect(catalog,self.vault_id,'lost.jpg',digest)
+            row = c.execute('SELECT av.id, f.vault_id, f.path, av.provider_version_id FROM archive_versions av '
+                            'JOIN files f ON f.id=av.file_id WHERE av.id=%s',(version,)).fetchone()
+            # The problem is derived from the version's availability, never stored apart.
+            c.execute("UPDATE archive_versions SET availability='missing' WHERE id=%s",(version,))
+            remember_missing_archives(c,[row],reason='missing_in_cloud',observed_at=NOW)
+            remember_missing_archives(c,[row],reason='missing_in_cloud',observed_at=NOW)
             self.assertEqual(inbox.count_open_problems(c),1)
-            resolve_archive_version_incidents(c,[version],observed_at=NOW.isoformat())
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications").fetchone()['n'],1)
+            c.execute("UPDATE archive_versions SET availability='available' WHERE id=%s",(version,))
+            resolve_archive_version_incidents(c,[version],observed_at=NOW)
             self.assertEqual(inbox.count_unread_notifications(c),0)
             self.assertEqual(inbox.list_in_app_notifications(c)[0]['problem_status'],'resolved')
             # Notification resolution never changes or removes the sole cloud copy.
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions WHERE id=%s',(version,)).fetchone()['n'],1)
 
-    @unittest.skip(_needs("the catalog tables"))
     def test_summary_reads_success_dates_freed_space_cost_and_every_state(self):
         from app.catalog import ArchiveCatalog
         from app.services.component_health import record_component_health
-        from app.services.metadata_backups import record_backup_run
+        from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
             catalog = ArchiveCatalog(c)
+            digest = sha256_hex(b'content')
             for state in monitor.STATES:
                 name = '._excluded.jpg' if state == 'excluded' else state + '.jpg'
-                local = state != 'cloud_only'
-                version = None
-                if local:
-                    catalog.observe_local_copy(vault_id=self.vault_id,path=name,
-                                               file_type='symlink' if state == 'unsupported' else 'regular',
-                                               size=1024**3,mtime_ns=1,observed_at=NOW.isoformat())
-                if state not in ('pending', 'excluded', 'unsupported'):
-                    version = catalog.record_archive_version(vault_id=self.vault_id,path=name,
-                        object_key='docs/'+state,provider_version_id=state,size=1024**3,
-                        storage_class='STANDARD',etag='e',uploaded_at=NOW.isoformat(),
-                        observed_at=NOW.isoformat(),scan_id='scan')
-                    availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
-                    c.execute("UPDATE archive_versions SET integrity='verified',plaintext_sha256=%s,availability=%s WHERE id=%s",
-                              ('a'*64,availability,version))
-                    if local:
-                        catalog.set_local_fingerprint(vault_id=self.vault_id,path=name,plaintext_sha256='a'*64,
-                                                      matched_archive_version_id=version)
+                catalog.observe_local_copy(vault_id=self.vault_id,path=name,
+                                           file_type='symlink' if state == 'unsupported' else 'regular',
+                                           size=1024**3,mtime_ns=1,observed_at=NOW)
+                if state in ('pending', 'excluded', 'unsupported'):
+                    continue
+                fingerprint(catalog,self.vault_id,name,digest)
+                version = protect(catalog,self.vault_id,name,digest,provider_version_id=state)
+                availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
+                c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s",(availability,version))
+                if state == 'cloud_only':
+                    catalog.mark_local_copy_missing(catalog.get_file_by_path(self.vault_id,name)['id'],observed_at=NOW)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
-            record_backup_run(c,reason='manual',backend='postgresql',status='verified',verified_at='2026-11-02T11:00:00+00:00')
+            protected = catalog.get_file_by_path(self.vault_id,'protected.jpg')['id']
             for status, age in (('completed',1),('completed',9),('failed',1)):
-                c.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes) "
-                          "VALUES (%s,(SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path='protected.jpg' "
-                          "AND valid_to IS NULL),'protected.jpg','free-space',%s,%s,%s,1048576)",
-                          (self.vault_id,self.vault_id,status,NOW.isoformat(),(NOW-timedelta(days=age)).isoformat()))
+                c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,total_bytes) "
+                          "VALUES (%s,%s,'free-space',%s,'manual',%s,%s,1048576)",
+                          (self.vault_id,protected,status,NOW,NOW-timedelta(days=age)))
             inbox.set_problem(c,key='safe-worker',event='internal_error',active=True,params={'component':'worker'})
             summary = monitor.weekly_summary(c,now=NOW)
             self.assertEqual(summary['states'],dict.fromkeys(monitor.STATES,1))
-            self.assertEqual(summary['last_verified_backup'],'2026-11-02T11:00:00+00:00')
+            # Metadata backups are rebuilt by #598: no verified backup is known yet.
+            self.assertIsNone(summary['last_verified_backup'])
             self.assertEqual(summary['vaults'][0]['last_scan'],'2026-11-02T10:00:00+00:00')
             self.assertEqual(summary['vaults'][0]['last_audit'],'2026-11-01T10:00:00+00:00')
             self.assertEqual(summary['open_problems'],1)
@@ -282,7 +281,6 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
                                  {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)})
 
-    @unittest.skip(_needs("cloud_preflight_state"))
     def test_cloud_preflight_failure_and_recovery_only_persist_safe_context(self):
         from app import storage
         vault = {'id':self.vault_id,'s3_bucket':'bucket'}

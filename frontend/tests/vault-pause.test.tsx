@@ -13,7 +13,7 @@ describe("Persistent Vault pause controls (#537)", () => {
   function setup(page: "overview" | "settings", failed = false) {
     let paused = false;
     const posts: { url: string; init?: RequestInit }[] = [];
-    const inventory = () => jsonResponse({ items: [{ id: 2, slug: "photos", name: "Photos", paused, decommission_state: "active", enabled: true, source_root: "/sources/photos", s3_prefix: "photos" }] });
+    const inventory = () => jsonResponse({ items: [{ id: 2, uuid: "photos", name: "Photos", paused, lifecycle: "active", source_root: "/sources/photos", s3_prefix: "photos" }] });
     const fetcher = createVaultAccessFetch({
       "GET /api/general/vaults": inventory,
       "GET /api/stats": () => jsonResponse({ states: { protected: 1 }, protection_state: "protected", storage: {} }),
@@ -30,7 +30,7 @@ describe("Persistent Vault pause controls (#537)", () => {
     });
     configureApiClient({ fetch: fetcher }); setCsrfToken("pause-csrf");
     render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>{page === "overview"
-      ? <OverviewPage vaults={[{ id: 2, slug: "photos", name: "Photos" }]} />
+      ? <OverviewPage vaults={[{ id: 2, uuid: "photos", name: "Photos" }]} />
       : <VaultSettingsPanel vaultId={2} vaultName="Photos" onStopped={vi.fn()} />}</I18nProvider></ApiQueryProvider>);
     return posts;
   }

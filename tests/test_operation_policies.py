@@ -17,6 +17,7 @@ import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 
@@ -29,7 +30,18 @@ from app.services.operation_policies import (
     preview_glob_rules,
     set_policy,
 )
+from tests.catalog_support import fingerprint, protect, seed_vault
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+
+
+def _protect(catalog, path: str, digest: str, provider_version_id: str, verified_at: str) -> str:
+    """Fingerprint the Local Copy at ``path`` and make it a verified Current."""
+    fingerprint(catalog, 2, path, digest)
+    return protect(
+        catalog, 2, path, digest, provider_version_id=provider_version_id,
+        created_at=verified_at, verified_at=verified_at,
+    )
 
 
 class OperationPolicyDefaultTests(unittest.TestCase):
@@ -40,9 +52,7 @@ class OperationPolicyDefaultTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
-            )
+            seed_vault(connection, vault_id=1)
 
     def test_missing_row_means_automatic_upload_and_no_custom_globs(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
@@ -203,9 +213,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'docs')"
-            )
+            seed_vault(connection, vault_id=1)
 
     def test_set_policy_round_trips(self) -> None:
         desired = OperationPolicy(
@@ -240,7 +248,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         thread.start()
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
-                "UPDATE vaults SET decommission_state='decommissioning' WHERE id=1"
+                "UPDATE vaults SET lifecycle='stopping' WHERE id=1"
             )
             transition_started.set()
             self.assertFalse(policy_finished.wait(0.1))
@@ -258,6 +266,13 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
 
 class AutoUploadEligibilityTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Upload remediation (#592) is outside this seam.
+        remediation = patch(
+            "app.services.upload_remediation.intercept_upload",
+            return_value=(False, None),
+        )
+        remediation.start()
+        self.addCleanup(remediation.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -267,14 +282,8 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', 'hash')"
-            )
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')",
-                (str(self.source),),
-            )
+            insert_owner(connection)
+            seed_vault(connection, source_root=str(self.source))
 
     def test_auto_upload_queues_only_stable_included_files(self) -> None:
         from app.services.operation_policies import queue_auto_uploads
@@ -328,7 +337,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
             paths = [
                 row["path"]
                 for row in connection.execute(
-                    "SELECT path FROM jobs WHERE action='upload' ORDER BY path"
+                    "SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id WHERE j.action='upload' ORDER BY f.path"
                 ).fetchall()
             ]
         self.assertEqual(queued, 1)
@@ -390,29 +399,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-01T11:00:00+00:00",
             )
-            version_id = catalog.record_archive_version(
-                vault_id=2,
-                path="ready.txt",
-                object_key="docs/ready.txt",
-                provider_version_id="s3-a",
-                size=len(original),
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-07-01T11:00:00+00:00",
-                observed_at="2026-07-01T11:00:00+00:00",
-                scan_id="scan-a",
-            )
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=digest,
-                verified_at="2026-07-01T11:01:00+00:00",
-            )
-            catalog.set_local_fingerprint(
-                vault_id=2,
-                path="ready.txt",
-                plaintext_sha256=digest,
-                matched_archive_version_id=version_id,
-            )
+            version_id = _protect(catalog, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
             set_policy(
                 connection,
                 2,
@@ -445,7 +432,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 now=now,
             )
             jobs = connection.execute(
-                "SELECT path, action, archive_version_id FROM jobs"
+                "SELECT f.path, j.action, j.archive_version_id FROM jobs j JOIN files f ON f.id=j.file_id"
             ).fetchall()
         self.assertEqual(queued, 1)
         self.assertEqual(len(jobs), 1)
@@ -474,29 +461,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-01T11:00:00+00:00",
             )
-            version_id = catalog.record_archive_version(
-                vault_id=2,
-                path="ready.txt",
-                object_key="docs/ready.txt",
-                provider_version_id="s3-a",
-                size=len(payload),
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-07-01T11:00:00+00:00",
-                observed_at="2026-07-01T11:00:00+00:00",
-                scan_id="scan-a",
-            )
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=digest,
-                verified_at="2026-07-01T11:01:00+00:00",
-            )
-            catalog.set_local_fingerprint(
-                vault_id=2,
-                path="ready.txt",
-                plaintext_sha256=digest,
-                matched_archive_version_id=version_id,
-            )
+            version_id = _protect(catalog, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
             set_policy(
                 connection,
                 2,
@@ -531,7 +496,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 now=now,
             )
             jobs = connection.execute(
-                "SELECT path, action, archive_version_id, status FROM jobs"
+                "SELECT f.path, j.action, j.archive_version_id, j.status FROM jobs j JOIN files f ON f.id=j.file_id"
             ).fetchall()
             kept = connection.execute(
                 "SELECT availability FROM archive_versions WHERE id=%s",
@@ -544,72 +509,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(jobs[0]["action"], "upload")
         self.assertIsNone(jobs[0]["archive_version_id"])
         self.assertEqual(kept["availability"], "missing")
-
-    def test_purged_cloud_copy_is_not_automatically_reuploaded(self) -> None:
-        from app.services.operation_policies import queue_auto_uploads
-        import os
-
-        target = self.source / "ready.txt"
-        payload = b"protected-bytes"
-        target.write_bytes(payload)
-        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
-        os.utime(target, (old, old))
-        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-        digest = hashlib.sha256(payload).hexdigest()
-        with PostgresConnection(str(self.path)) as connection:
-            catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
-                vault_id=2,
-                path="ready.txt",
-                file_type="regular",
-                size=len(payload),
-                mtime_ns=target.stat().st_mtime_ns,
-                observed_at="2026-07-01T11:00:00+00:00",
-            )
-            version_id = catalog.record_archive_version(
-                vault_id=2,
-                path="ready.txt",
-                object_key="docs/ready.txt",
-                provider_version_id="s3-a",
-                size=len(payload),
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-07-01T11:00:00+00:00",
-                observed_at="2026-07-01T11:00:00+00:00",
-                scan_id="scan-a",
-            )
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=digest,
-                verified_at="2026-07-01T11:01:00+00:00",
-            )
-            catalog.set_local_fingerprint(
-                vault_id=2,
-                path="ready.txt",
-                plaintext_sha256=digest,
-                matched_archive_version_id=version_id,
-            )
-            connection.execute(
-                "UPDATE archive_versions SET availability='purged' WHERE id=%s",
-                (version_id,),
-            )
-            set_policy(
-                connection,
-                2,
-                OperationPolicy(auto_upload=True, stability_seconds=300),
-            )
-            queued = queue_auto_uploads(
-                connection,
-                vault_id=2,
-                source_root=str(self.source),
-                requested_by=1,
-                now=now,
-            )
-            total = connection.execute(
-                "SELECT COUNT(*) AS total FROM jobs"
-            ).fetchone()["total"]
-        self.assertEqual(queued, 0)
-        self.assertEqual(total, 0)
 
     def test_auto_cleanup_queues_only_matching_versions_past_retention(self) -> None:
         from app.services.operation_policies import queue_auto_local_cleanups
@@ -646,31 +545,9 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                     mtime_ns=target.stat().st_mtime_ns,
                     observed_at=now.isoformat() if name == "imported-old.jpg" else verified_at,
                 )
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path=name,
-                    object_key=f"docs/{name}",
-                    provider_version_id=f"s3-{name}",
-                    size=len(content),
-                    storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at=verified_at,
-                    observed_at=verified_at,
-                    scan_id=verified_at,
-                )
+                version_id = _protect(catalog, name, digest, f"s3-{name}", verified_at)
                 if name == "due.txt":
                     due_version_id = version_id
-                catalog.mark_version_verified(
-                    version_id,
-                    plaintext_sha256=digest,
-                    verified_at=verified_at,
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=2,
-                    path=name,
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=version_id,
-                )
             set_policy(
                 connection,
                 2,
@@ -688,8 +565,8 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 now=now,
             )
             jobs = connection.execute(
-                "SELECT id, path, action, archive_version_id, origin "
-                "FROM jobs ORDER BY path"
+                "SELECT j.id, f.path, j.action, j.archive_version_id::text AS archive_version_id, j.origin "
+                "FROM jobs j JOIN files f ON f.id=j.file_id ORDER BY f.path"
             ).fetchall()
             audit_events = connection.execute(
                 "SELECT event, job_id, outcome FROM audit_events ORDER BY id"

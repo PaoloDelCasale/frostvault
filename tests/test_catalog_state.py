@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 from app.services.catalog_events import CatalogEventStore
+from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
 
 
@@ -21,12 +22,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                """
-            )
+            seed_vault(connection, vault_id=2, name="Docs")
 
     def test_catalog_mutation_and_publication_commit_as_one_transaction(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
@@ -50,7 +46,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 "FROM vault_catalog_revisions WHERE vault_id=2"
             ).fetchone()
             event = connection.execute(
-                "SELECT vault_id, revision, domain, scope, payload_json "
+                "SELECT vault_id, revision, domain, scope, payload "
                 "FROM catalog_events WHERE vault_id=2"
             ).fetchone()
 
@@ -61,7 +57,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
         self.assertEqual(event["revision"], 1)
         self.assertEqual(event["domain"], "files")
         self.assertEqual(event["scope"], "root")
-        self.assertIn('"operation":"observe"', event["payload_json"])
+        self.assertEqual(event["payload"]["operation"], "observe")
 
     def test_outer_transaction_can_roll_back_a_successful_publication(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "outer failure"):

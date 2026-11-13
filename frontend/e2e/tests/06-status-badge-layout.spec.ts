@@ -10,7 +10,7 @@ const longLabel = `${messages["state.unconfirmed"]} · ${messages["state.last_kn
 for (const width of [375, 390, 1400]) {
   test(`Italian status labels remain fully readable without horizontal overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
-    const vault = { id: 1, slug: "family", name: "Family Archive" };
+    const vault = { id: 1, uuid: "family", name: "Family Archive" };
     await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
       const pathname = new URL(route.request().url()).pathname;
       let json: unknown = {};

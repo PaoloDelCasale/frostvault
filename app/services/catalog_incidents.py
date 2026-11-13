@@ -1,8 +1,15 @@
-"""Durable catalog incidents that need the owner.
+"""Catalog problems that need the Owner, derived from explicit catalog state.
 
-``archive_version_missing``: unexpected Archive Version loss (#303).
+``archive_version_missing``: a known Archive Version a complete cloud listing
+no longer shows (#303). Its state is ``archive_versions.availability``.
 ``cloud_only_conflict``: different content at the path of a file whose only
-copy is in the cloud; it is held back from upload (#411, #363 D7).
+copy is in the cloud; it is held back from upload (#411, #363 D7). Its state
+is ``files.held_version_id``.
+
+There is no incident table (#593): each problem is one Owner notification
+whose ``dedupe_key`` names the exact version (and file), opened and resolved
+from those columns. Resolution is reconciled by
+:mod:`app.services.notifications` from the same columns.
 """
 
 from __future__ import annotations
@@ -15,8 +22,31 @@ from . import notifications as notification_service
 
 INCIDENT_KIND_MISSING = "archive_version_missing"
 INCIDENT_KIND_CLOUD_ONLY_CONFLICT = "cloud_only_conflict"
-INCIDENT_STATUS_OPEN = "open"
-INCIDENT_STATUS_RESOLVED = "resolved"
+MISSING_KEY_PREFIX = "missing:"
+CONFLICT_KEY_PREFIX = "conflict:"
+
+
+def missing_key(version_id: Any) -> str:
+    return f"{MISSING_KEY_PREFIX}{version_id}"
+
+
+def conflict_key(file_id: Any, version_id: Any) -> str:
+    return f"{CONFLICT_KEY_PREFIX}{file_id}:{version_id}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stamp(value: Any) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _is_open(connection: Any, key: str) -> bool:
+    row = connection.execute(
+        "SELECT problem_status FROM notifications WHERE dedupe_key=%s", (key,),
+    ).fetchone()
+    return bool(row and row["problem_status"] == "open")
 
 
 def remember_missing_archives(
@@ -24,63 +54,31 @@ def remember_missing_archives(
     rows: list[Mapping[str, Any]],
     *,
     reason: str,
-    observed_at: str,
+    observed_at: Any,
 ) -> list[dict[str, Any]]:
-    """Open or refresh one incident per newly missing Archive Version.
+    """Open one Owner problem per newly missing Archive Version.
 
-    Repeated scans update ``last_seen_at`` without a second open incident or
-    a second notification. Authorized purge rows never reach this helper.
+    Repeated scans never notify twice while the problem is open. Authorized
+    purges never reach this helper.
     """
     opened: list[dict[str, Any]] = []
     for row in rows:
         version_id = str(row["id"])
-        existing = connection.execute(
-            """
-            SELECT * FROM catalog_incidents
-            WHERE archive_version_id=%s AND kind=%s AND status=%s
-            """,
-            (version_id, INCIDENT_KIND_MISSING, INCIDENT_STATUS_OPEN),
-        ).fetchone()
-        if existing:
-            connection.execute(
-                """
-                UPDATE catalog_incidents
-                SET last_seen_at=%s, reason=%s
-                WHERE id=%s
-                """,
-                (observed_at, reason, existing["id"]),
-            )
+        key = missing_key(version_id)
+        if _is_open(connection, key):
             continue
-        inserted = connection.execute(
-            """
-            INSERT INTO catalog_incidents(
-                vault_id, vault_file_id, archive_version_id, kind, status,
-                reason, path, object_key, provider_version_id,
-                opened_at, last_seen_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING *
-            """,
-            (
-                int(row["vault_id"]),
-                str(row["vault_file_id"]),
-                version_id,
-                INCIDENT_KIND_MISSING,
-                INCIDENT_STATUS_OPEN,
-                reason,
-                str(row.get("path") or ""),
-                row.get("object_key"),
-                row.get("provider_version_id"),
-                observed_at,
-                observed_at,
-            ),
-        ).fetchone()
-        if inserted is None:
-            continue
-        incident = dict(inserted)
-        notification_service.enqueue_archive_version_missing(
-            connection, incident=incident
+        params = {
+            "path": str(row.get("path") or ""),
+            "archive_version_id": version_id,
+            "provider_version_id": str(row.get("provider_version_id") or ""),
+            "observed_at": _stamp(observed_at),
+            "reason": reason,
+        }
+        notification_service.set_problem(
+            connection, key=key, event=INCIDENT_KIND_MISSING,
+            vault_id=int(row["vault_id"]), active=True, params=params,
         )
-        opened.append(incident)
+        opened.append({**params, "vault_id": int(row["vault_id"]), "key": key})
     return opened
 
 
@@ -88,84 +86,18 @@ def resolve_archive_version_incidents(
     connection: Any,
     archive_version_ids: list[str],
     *,
-    observed_at: str,
+    observed_at: Any = None,
 ) -> int:
-    """Mark open missing-archive incidents resolved once protection is valid."""
+    """Resolve open missing-version problems whose version is located again."""
     resolved = 0
     for version_id in archive_version_ids:
-        result = connection.execute(
-            """
-            UPDATE catalog_incidents
-            SET status=%s, resolved_at=%s, last_seen_at=%s
-            WHERE archive_version_id=%s AND kind=%s AND status=%s
-            """,
-            (
-                INCIDENT_STATUS_RESOLVED,
-                observed_at,
-                observed_at,
-                str(version_id),
-                INCIDENT_KIND_MISSING,
-                INCIDENT_STATUS_OPEN,
-            ),
-        )
-        resolved += int(getattr(result, "rowcount", 0) or 0)
+        key = missing_key(version_id)
+        if _is_open(connection, key):
+            notification_service.set_problem(
+                connection, key=key, event=INCIDENT_KIND_MISSING, active=False,
+            )
+            resolved += 1
     return resolved
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _open_cloud_only_conflict(
-    connection: Any, row: Mapping[str, Any], *, observed_at: str
-) -> dict[str, Any] | None:
-    existing = connection.execute(
-        """
-        SELECT id FROM catalog_incidents
-        WHERE archive_version_id=%s AND kind=%s AND status=%s
-        """,
-        (
-            str(row["cloud_only_version_id"]),
-            INCIDENT_KIND_CLOUD_ONLY_CONFLICT,
-            INCIDENT_STATUS_OPEN,
-        ),
-    ).fetchone()
-    if existing:
-        connection.execute(
-            "UPDATE catalog_incidents SET last_seen_at=%s WHERE id=%s",
-            (observed_at, existing["id"]),
-        )
-        return None
-    inserted = connection.execute(
-        """
-        INSERT INTO catalog_incidents(
-            vault_id, vault_file_id, archive_version_id, kind, status,
-            reason, path, object_key, provider_version_id,
-            opened_at, last_seen_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING *
-        """,
-        (
-            int(row["vault_id"]),
-            str(row["vault_file_id"]),
-            str(row["cloud_only_version_id"]),
-            INCIDENT_KIND_CLOUD_ONLY_CONFLICT,
-            INCIDENT_STATUS_OPEN,
-            "different_content",
-            str(row["path"]),
-            row.get("object_key"),
-            row.get("provider_version_id"),
-            observed_at,
-            observed_at,
-        ),
-    ).fetchone()
-    if inserted is None:
-        return None
-    incident = dict(inserted)
-    notification_service.enqueue_cloud_only_conflict(
-        connection, incident=incident
-    )
-    return incident
 
 
 def settle_cloud_only_copies(
@@ -173,102 +105,56 @@ def settle_cloud_only_copies(
     *,
     vault_id: int,
     path: str | None = None,
-    observed_at: str | None = None,
+    observed_at: Any = None,
 ) -> dict[str, int]:
-    """Decide hashed content that reappeared at a cloud-only path.
+    """Decide held content at a cloud-only path (``files.held_version_id``).
 
-    Identical content becomes a Local Copy of the cloud-only Archive Version
-    with no upload. Different content stays held back (never uploaded) and
-    opens one ``cloud_only_conflict`` incident with an immediate notification.
-    When that version is no longer recoverable there is nothing left to
-    protect, so the hold is lifted. Open conflicts whose content left the path
-    (renamed or deleted), or whose hold was lifted, are resolved.
+    Identical content is matched (and released) by the fingerprint itself
+    (:meth:`ArchiveCatalog.set_local_fingerprint`). Here: when Current is no
+    longer recoverable there is nothing left to protect, so the hold is
+    lifted; fingerprinted different content opens one ``cloud_only_conflict``
+    problem with an immediate notification; problems whose hold ended are
+    resolved by the notification reconciliation.
     """
-    stamp = observed_at or _now_iso()
-    path_clause = "AND fp.path=%s" if path is not None else ""
+    stamp = _stamp(observed_at or _now_iso())
+    path_clause = "AND f.path=%s" if path is not None else ""
     params: list[Any] = [vault_id]
     if path is not None:
         params.append(path)
-    rows = connection.execute(
+    released = connection.execute(
         f"""
-        SELECT vf.vault_id, lc.vault_file_id, fp.path, lc.presence,
-               lc.file_type, lc.plaintext_sha256, lc.cloud_only_version_id,
-               av.plaintext_sha256 AS version_sha256, av.integrity,
-               av.availability, av.object_key, av.provider_version_id
-        FROM local_copies lc
-        JOIN vault_files vf ON vf.id=lc.vault_file_id
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        LEFT JOIN archive_versions av ON av.id=lc.cloud_only_version_id
-        WHERE fp.vault_id=%s
-          AND vf.vault_id=fp.vault_id
-          AND lc.cloud_only_version_id IS NOT NULL
-          {path_clause}
+        UPDATE files f SET held_version_id=NULL
+        FROM archive_versions cur
+        WHERE f.vault_id=%s {path_clause}
+          AND cur.id=f.held_version_id
+          AND NOT (cur.integrity='verified' AND cur.availability='available')
+        """,
+        params,
+    ).rowcount
+    held = connection.execute(
+        f"""
+        SELECT f.vault_id, f.id AS file_id, f.path, f.held_version_id,
+               cur.provider_version_id
+        FROM files f
+        JOIN archive_versions cur ON cur.id=f.held_version_id
+        WHERE f.vault_id=%s {path_clause}
+          AND f.local_presence='present'
+          AND f.local_sha256 IS NOT NULL
+          AND f.local_sha256 <> cur.plaintext_sha256
         """,
         params,
     ).fetchall()
-    summary = {"identical": 0, "conflicts": 0, "released": 0, "resolved": 0}
-    for row in rows:
-        if row["integrity"] != "verified" or row["availability"] != "available":
-            connection.execute(
-                """
-                UPDATE local_copies SET cloud_only_version_id=NULL
-                WHERE vault_file_id=%s AND cloud_only_version_id=%s
-                """,
-                (row["vault_file_id"], row["cloud_only_version_id"]),
-            )
-            summary["released"] += 1
+    summary = {"identical": 0, "conflicts": 0, "released": int(released or 0), "resolved": 0}
+    for row in held:
+        key = conflict_key(row["file_id"], row["held_version_id"])
+        if _is_open(connection, key):
             continue
-        if (
-            row["presence"] != "present"
-            or row["file_type"] != "regular"
-            or not row["plaintext_sha256"]
-        ):
-            continue
-        if str(row["plaintext_sha256"]).lower() == str(
-            row["version_sha256"] or ""
-        ).lower():
-            connection.execute(
-                """
-                UPDATE local_copies
-                SET matched_archive_version_id=cloud_only_version_id,
-                    cloud_only_version_id=NULL
-                WHERE vault_file_id=%s AND cloud_only_version_id=%s
-                """,
-                (row["vault_file_id"], row["cloud_only_version_id"]),
-            )
-            summary["identical"] += 1
-            continue
-        if _open_cloud_only_conflict(connection, row, observed_at=stamp):
-            summary["conflicts"] += 1
-    resolve_params: list[Any] = [
-        INCIDENT_STATUS_RESOLVED,
-        stamp,
-        stamp,
-        vault_id,
-        INCIDENT_KIND_CLOUD_ONLY_CONFLICT,
-        INCIDENT_STATUS_OPEN,
-    ]
-    resolve_path = ""
-    if path is not None:
-        resolve_path = "AND catalog_incidents.path=%s"
-        resolve_params.append(path)
-    result = connection.execute(
-        f"""
-        UPDATE catalog_incidents
-        SET status=%s, resolved_at=%s, last_seen_at=%s
-        WHERE vault_id=%s AND kind=%s AND status=%s
-          {resolve_path}
-          AND NOT EXISTS (
-              SELECT 1 FROM local_copies lc
-              WHERE lc.vault_file_id=catalog_incidents.vault_file_id
-                AND lc.cloud_only_version_id=catalog_incidents.archive_version_id
-                AND lc.presence='present'
-          )
-        """,
-        resolve_params,
-    )
-    summary["resolved"] = int(getattr(result, "rowcount", 0) or 0)
+        notification_service.set_problem(
+            connection, key=key, event=INCIDENT_KIND_CLOUD_ONLY_CONFLICT,
+            vault_id=int(row["vault_id"]), active=True,
+            params={"path": str(row["path"]), "observed_at": stamp},
+        )
+        summary["conflicts"] += 1
     return summary
 
 
@@ -282,57 +168,48 @@ def confirm_cloud_only_replacement(
     vault_id: int,
     path: str,
     actor: str,
-    observed_at: str | None = None,
+    observed_at: Any = None,
 ) -> dict[str, Any]:
     """Release held-back content so its upload may replace the cloud copy.
 
-    The owner's explicit choice for a ``cloud_only_conflict``. The caller
-    queues the upload; Current Snapshot deletes the previous version only
-    after the new one is verified.
+    The Owner's explicit choice for a ``cloud_only_conflict``. The caller
+    queues the upload; Current is replaced (and its exact cleanup frozen)
+    only after the new version is verified.
     """
     from ..audit import audit_log
 
-    stamp = observed_at or _now_iso()
     settle_cloud_only_copies(
-        connection, vault_id=vault_id, path=path, observed_at=stamp
+        connection, vault_id=vault_id, path=path, observed_at=observed_at,
     )
-    incident = connection.execute(
+    row = connection.execute(
         """
-        SELECT * FROM catalog_incidents
-        WHERE vault_id=%s AND path=%s AND kind=%s AND status=%s
-        ORDER BY id DESC
-        LIMIT 1
+        UPDATE files f SET held_version_id=NULL
+        FROM files before
+        WHERE f.id=before.id AND f.vault_id=%s AND f.path=%s
+          AND f.held_version_id IS NOT NULL AND f.local_presence='present'
+        RETURNING f.id AS file_id, before.held_version_id
         """,
-        (vault_id, path, INCIDENT_KIND_CLOUD_ONLY_CONFLICT, INCIDENT_STATUS_OPEN),
+        (vault_id, path),
     ).fetchone()
-    if incident is None:
+    if row is None:
         raise NoCloudOnlyConflict(path)
-    released = connection.execute(
-        """
-        UPDATE local_copies SET cloud_only_version_id=NULL
-        WHERE vault_file_id=%s AND cloud_only_version_id=%s
-          AND presence='present'
-        """,
-        (incident["vault_file_id"], incident["archive_version_id"]),
-    )
-    if not int(getattr(released, "rowcount", 0) or 0):
-        raise NoCloudOnlyConflict(path)
-    connection.execute(
-        """
-        UPDATE catalog_incidents
-        SET status=%s, resolved_at=%s, last_seen_at=%s
-        WHERE id=%s
-        """,
-        (INCIDENT_STATUS_RESOLVED, stamp, stamp, incident["id"]),
+    key = conflict_key(row["file_id"], row["held_version_id"])
+    notification_service.set_problem(
+        connection, key=key, event=INCIDENT_KIND_CLOUD_ONLY_CONFLICT, active=False,
     )
     audit_log(
         "cloud_only_conflict_replacement_confirmed",
         connection=connection,
         vault_id=vault_id,
         actor=actor,
-        vault_file_id=incident["vault_file_id"],
-        archive_version_id=incident["archive_version_id"],
+        vault_file_id=str(row["file_id"]),
+        archive_version_id=str(row["held_version_id"]),
         path=path,
         outcome="confirmed",
     )
-    return dict(incident)
+    return {
+        "vault_id": vault_id,
+        "file_id": str(row["file_id"]),
+        "archive_version_id": str(row["held_version_id"]),
+        "path": path,
+    }

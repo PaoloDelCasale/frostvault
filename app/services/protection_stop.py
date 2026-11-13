@@ -15,6 +15,8 @@ from .bulk_upload_admission import has_pending
 
 
 def local_work_suspended(vault: dict[str, Any]) -> bool:
+    if "lifecycle" in vault:
+        return str(vault["lifecycle"]) in {"stopping", "tombstone"}
     return str(vault.get("decommission_state") or "active") != "active"
 
 

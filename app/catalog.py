@@ -13,7 +13,8 @@ from .services.job_admission import (
 )
 from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
-    VISIBLE_SQL, LATEST_JOIN_SQL, aggregate_state, path_excluded_sql, project_file, state_sql,
+    CURRENT_JOIN_SQL, VISIBLE_SQL, aggregate_state, current_is_recoverable,
+    local_copy_matches_current, path_excluded_sql, project_file, state_sql,
 )
 from .services.directory_aggregates import (
     count_child_directories,
@@ -74,6 +75,30 @@ _FILE_JOINS_SQL = """
     LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
     LEFT JOIN archive_versions rep ON rep.id = f.replacing_version_id
 """
+
+
+# The verification the Owner requested for Current's upload, read from the
+# Upload Snapshot its landed attempt sent (#588), never copied onto the version.
+_REQUESTED_VERIFICATION_SQL = """
+    SELECT snapshot.verification FROM upload_attempts attempt
+    JOIN upload_snapshots snapshot ON snapshot.id = attempt.snapshot_id
+    WHERE attempt.id = cur.upload_attempt_id
+"""
+
+
+def _cleanup_state(row: Mapping[str, Any]) -> str | None:
+    """Exact cleanup of superseded versions: in progress, blocked or waiting.
+
+    A frozen batch (#591) is in progress; a reconciliation block on a file
+    with superseded versions or a batch means the cleanup is blocked and needs
+    the Owner. Superseded versions without a batch wait for the next upload
+    Job of the file. None: only Current (and a replacement) remain.
+    """
+    if row["cleanup_batch_id"] is None and not row["has_superseded"]:
+        return None
+    if row["reconciliation_block"] is not None:
+        return "blocked"
+    return "in_progress" if row["cleanup_batch_id"] is not None else "waiting"
 
 
 def _only_cloud_copy_sql(file_alias: str) -> str:
@@ -1438,57 +1463,70 @@ class ArchiveCatalog:
         )
         return archive_version_id
 
+    # -- Projections: browse, search, versions (#593) ----------------------------
+    #
+    # Every listing reads one ``files`` row per Vault File and its explicit
+    # Current (``cur``); the replacement in progress is the explicit pending
+    # pointer. Nothing is ever chosen as "the most recent version" by ordering.
+
     def list_versions(self, vault_id: int, path: str) -> list[dict[str, Any]]:
+        """Current and the replacement in progress of the file at ``path``.
+
+        These are the only Archive Versions a Vault File can have besides
+        superseded versions awaiting exact cleanup, which are never offered.
+        Each row names its role explicitly; only Current can be recoverable.
+        """
         rows = self.connection.execute(
-            """
-            SELECT
-                av.id,
-                av.version_number,
-                av.object_key,
-                av.provider_version_id,
-                av.size,
-                av.storage_class,
-                av.storage_class_source,
-                av.origin,
-                av.etag,
-                av.plaintext_sha256,
-                av.uploaded_at,
-                av.verified_at,
-                av.integrity,
-                av.availability,
-                av.restore_state,
-                av.restore_expiry,
-                av.upload_verification_requested, av.verification_method,
-                av.verification_fallback_reason, av.verification_egress_bytes
-            FROM archive_versions av
-            JOIN vault_files vf ON vf.id=av.vault_file_id
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND fp.path=%s
-            ORDER BY av.version_number DESC
+            f"""
+            SELECT role.role, av.id, av.object_key, av.provider_version_id,
+                   av.size, av.storage_class, av.plaintext_sha256, av.integrity,
+                   av.availability, av.availability_checked_at, av.verified_at,
+                   av.verification_method, av.verification_fallback,
+                   av.verification_egress_bytes, av.created_at,
+                   ({_REQUESTED_VERIFICATION_SQL}) AS upload_verification_requested
+            FROM files f
+            CROSS JOIN LATERAL (VALUES
+                ('current', f.current_version_id),
+                ('pending', f.replacing_version_id)
+            ) AS role(role, version_id)
+            JOIN archive_versions av ON av.id = role.version_id
+            WHERE f.vault_id=%s AND f.path=%s
+            ORDER BY role.role
             """,
             (vault_id, path),
         ).fetchall()
-        return [
-            {
-                **row,
-                "recoverable": (
-                    row["integrity"] == "verified"
-                    and row["availability"] == "available"
+        versions = []
+        for row in rows:
+            recoverable = (
+                row["role"] == "current"
+                and row["integrity"] == "verified"
+                and row["availability"] == "available"
+            )
+            versions.append({
+                "id": str(row["id"]),
+                "role": row["role"],
+                "object_key": row["object_key"],
+                "provider_version_id": row["provider_version_id"],
+                "size": row["size"],
+                "storage_class": row["storage_class"],
+                "plaintext_sha256": _hex(row["plaintext_sha256"]),
+                "integrity": row["integrity"],
+                "availability": row["availability"],
+                "availability_checked_at": row["availability_checked_at"],
+                "verified_at": row["verified_at"],
+                "created_at": row["created_at"],
+                "upload_verification_requested": row["upload_verification_requested"],
+                "verification_method": row["verification_method"],
+                "verification_fallback_reason": row["verification_fallback"],
+                "verification_egress_bytes": row["verification_egress_bytes"],
+                "recoverable": recoverable,
+                "not_selectable_reason": None if recoverable else (
+                    "pending" if row["role"] == "pending"
+                    else row["availability"] if row["availability"] != "available"
+                    else row["integrity"]
                 ),
-                "not_selectable_reason": (
-                    None
-                    if row["integrity"] == "verified"
-                    and row["availability"] == "available"
-                    else (
-                        row["availability"]
-                        if row["availability"] in {"missing", "purged", "unknown"}
-                        else row["integrity"]
-                    )
-                ),
-            }
-            for row in rows
-        ]
+            })
+        return versions
 
     def list_file_rows(
         self,
@@ -1497,24 +1535,28 @@ class ArchiveCatalog:
         search: str = "",
         path_prefix: str = "",
     ) -> list[dict[str, Any]]:
-        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
+        clauses = ["f.vault_id=%s"]
         params: list[Any] = [vault_id]
         if search:
-            clauses.append("lower(fp.path) LIKE lower(%s)")
+            clauses.append("lower(f.path) LIKE lower(%s)")
             params.append(f"%{search}%")
         if path_prefix:
-            escaped = (
-                path_prefix.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
-            clauses.append("fp.path LIKE %s ESCAPE '\\'")
-            params.append(f"{escaped}/%")
+            clauses.append("starts_with(f.path, %s)")
+            params.append(f"{path_prefix}/")
         clauses.append(VISIBLE_SQL)
         rows = self.connection.execute(
-            self._file_row_select_sql(clauses, vault_id) + " ORDER BY lower(fp.path)", params,
+            self._file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
         ).fetchall()
         return self._materialize_file_items(vault_id, rows, name_from_path=True)
+
+    def get_file_item(self, vault_id: int, path: str) -> dict[str, Any] | None:
+        """The browse item of the visible file at exactly ``path``."""
+        rows = self.connection.execute(
+            self._file_row_select_sql(["f.vault_id=%s", "f.path=%s", VISIBLE_SQL], vault_id),
+            (vault_id, path),
+        ).fetchall()
+        items = self._materialize_file_items(vault_id, rows, name_from_path=True)
+        return items[0] if items else None
 
     def list_files_page(
         self,
@@ -1582,8 +1624,8 @@ class ArchiveCatalog:
                 vault["id"], directory="", state=state, search=search or "%",
             )
             sql = catalog._file_row_select_sql(clauses, vault["id"])
-            branches.append(f"SELECT scoped.*, %s::bigint AS vault_id, %s::text AS vault_name FROM ({sql}) scoped")
-            params.extend([vault["id"], vault["name"], *values])
+            branches.append(f"SELECT scoped.*, %s::text AS vault_name FROM ({sql}) scoped")
+            params.extend([vault["name"], *values])
         if not branches:
             return {"items": [], "total": 0, "page": page, "mode": "search", "directory": "", "aggregate_status": "ready"}
         union = " UNION ALL ".join(branches)
@@ -1671,25 +1713,19 @@ class ArchiveCatalog:
         state: str,
         search: str = "",
     ) -> tuple[list[str], list[Any]]:
-        clauses = ["vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'"]
+        clauses = ["f.vault_id=%s"]
         params: list[Any] = [vault_id]
         if search:
-            clauses.append("lower(fp.path) LIKE lower(%s)")
+            clauses.append("lower(f.path) LIKE lower(%s)")
             params.append(f"%{search}%")
         elif directory:
-            escaped = (
-                directory.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
-            # Immediate children only.
-            clauses.append("fp.path LIKE %s ESCAPE '\\'")
-            params.append(f"{escaped}/%")
-            clauses.append("fp.path NOT LIKE %s ESCAPE '\\'")
-            params.append(f"{escaped}/%/%")
+            # Immediate children only; starts_with treats wildcards literally.
+            clauses.append("starts_with(f.path, %s)")
+            params.append(f"{directory}/")
+            clauses.append("strpos(substr(f.path, %s), '/') = 0")
+            params.append(len(directory) + 2)
         else:
-            clauses.append("fp.path NOT LIKE %s")
-            params.append("%/%")
+            clauses.append("strpos(f.path, '/') = 0")
         clauses.append(VISIBLE_SQL)
         if state:
             if self.protection_unconfirmed:
@@ -1713,40 +1749,42 @@ class ArchiveCatalog:
             SELECT
                 {self._state_sql(vault_id)} AS protection_state,
                 {self._path_excluded_sql(vault_id)} AS path_excluded,
-                CASE WHEN av.availability='unknown'
-                     THEN greatest(lc.observed_at, av.verified_at)
-                     ELSE greatest(lc.observed_at, av.verified_at, av.availability_checked_at)
+                CASE WHEN cur.availability='unknown'
+                     THEN greatest(f.local_observed_at, cur.verified_at)
+                     ELSE greatest(f.local_observed_at, cur.verified_at, cur.availability_checked_at)
                 END AS protection_observed_at,
-                fp.path,
-                lc.presence AS local_presence,
-                lc.file_type AS local_file_type,
-                lc.size AS local_size,
-                lc.mtime_ns AS local_mtime_ns,
-                lc.plaintext_sha256 AS local_sha256,
-                lc.matched_archive_version_id,
-                lc.cloud_only_version_id,
-                av.id AS archive_version_id,
-                av.size AS cloud_size,
-                av.storage_class,
-                av.plaintext_sha256 AS version_sha256,
-                av.integrity,
-                av.availability,
-                av.restore_state,
-                av.restore_expiry,
-                av.upload_verification_requested, av.verification_method,
-                av.verification_fallback_reason, av.verification_egress_bytes,
-                (
-                    SELECT COUNT(*)
-                    FROM archive_versions recoverable
-                    WHERE recoverable.vault_file_id=vf.id
-                      AND recoverable.integrity='verified'
-                      AND recoverable.availability='available'
-                ) AS recoverable_version_count
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            {LATEST_JOIN_SQL}
+                f.id AS file_id,
+                f.vault_id,
+                f.path,
+                f.local_presence,
+                f.local_file_type,
+                f.local_size,
+                f.local_mtime_ns,
+                f.local_sha256,
+                f.matched_version_id,
+                f.held_version_id,
+                f.reconciliation_block,
+                f.current_version_id,
+                f.replacing_version_id,
+                cur.size AS cloud_size,
+                cur.storage_class,
+                cur.plaintext_sha256 AS version_sha256,
+                cur.integrity,
+                cur.availability,
+                cur.verification_method,
+                cur.verification_fallback,
+                cur.verification_egress_bytes,
+                ({_REQUESTED_VERIFICATION_SQL}) AS upload_verification_requested,
+                cleanup.id AS cleanup_batch_id,
+                EXISTS (
+                    SELECT 1 FROM archive_versions superseded
+                    WHERE superseded.file_id = f.id
+                      AND superseded.id IS DISTINCT FROM f.current_version_id
+                      AND superseded.id IS DISTINCT FROM f.replacing_version_id
+                ) AS has_superseded
+            FROM files f
+            {CURRENT_JOIN_SQL}
+            LEFT JOIN cleanup_batches cleanup ON cleanup.file_id = f.id
             WHERE {" AND ".join(clauses)}
         """
 
@@ -1762,23 +1800,11 @@ class ArchiveCatalog:
         items: list[dict[str, Any]] = []
         for row in rows:
             local_exists = row["local_presence"] in {"present", "unsupported"}
-            cloud_exists = row["archive_version_id"] is not None and row["availability"] not in {"missing", "purged"}
-            if not local_exists and row["archive_version_id"] is None:
-                continue
+            current_id = row["current_version_id"]
+            cloud_exists = current_id is not None and row["availability"] != "missing"
             protection = project_file(row, unconfirmed=self.protection_unconfirmed)
             upload_eligible = local_copy_is_upload_eligible(row)
-            recoverable_count = int(row["recoverable_version_count"] or 0)
-            recover_eligible = not local_exists and recoverable_count > 0
-            cleanup_eligible = (
-                row["local_presence"] == "present"
-                and row["local_file_type"] == "regular"
-                and cloud_exists
-                and row["integrity"] == "verified"
-                and row["availability"] == "available"
-                and row["matched_archive_version_id"] == row["archive_version_id"]
-                and row["local_sha256"] is not None
-                and row["local_sha256"] == row["version_sha256"]
-            )
+            recoverable = current_is_recoverable(row)
             if name_from_path:
                 name = row["path"]
             else:
@@ -1786,30 +1812,38 @@ class ArchiveCatalog:
             items.append(
                 {
                     "type": "file",
+                    "id": str(row["file_id"]),
                     "name": name,
                     "path": row["path"],
                     "local_exists": int(local_exists),
-                    "local_size": row["local_size"],
-                    "modified_at": (datetime.fromtimestamp(int(row["local_mtime_ns"]) / 1e9, timezone.utc).isoformat()
-                                    if row.get("local_mtime_ns") else None),
+                    "local_size": row["local_size"] if local_exists else None,
+                    "modified_at": (
+                        datetime.fromtimestamp(int(row["local_mtime_ns"]) / 1e9, timezone.utc).isoformat()
+                        if row["local_mtime_ns"] is not None else None
+                    ),
                     "local_file_type": row["local_file_type"],
                     "cloud_exists": int(cloud_exists),
                     "cloud_size": row["cloud_size"],
                     "storage_class": row["storage_class"],
                     "integrity": row["integrity"],
                     "availability": row["availability"],
-                    "restore_state": row["restore_state"],
-                    "restore_expiry": row["restore_expiry"],
-                    "upload_verification_requested": row.get("upload_verification_requested"),
-                    "verification_method": row.get("verification_method"),
-                    "verification_fallback_reason": row.get("verification_fallback_reason"),
-                    "verification_egress_bytes": row.get("verification_egress_bytes"),
+                    "current_version_id": _id(current_id),
+                    "pending_version_id": _id(row["replacing_version_id"]),
+                    "recoverable": recoverable,
+                    "upload_verification_requested": row["upload_verification_requested"],
+                    "verification_method": row["verification_method"],
+                    "verification_fallback_reason": row["verification_fallback"],
+                    "verification_egress_bytes": row["verification_egress_bytes"],
                     **protection,
-                    "cloud_only_conflict": bool(row.get("cloud_only_version_id")),
+                    "cloud_only_conflict": row["held_version_id"] is not None,
+                    "reconciliation_block": row["reconciliation_block"],
+                    "cleanup": _cleanup_state(row),
                     "upload_eligible": upload_eligible and not self.protection_unconfirmed,
-                    "recover_eligible": recover_eligible,
-                    "recoverable_version_count": recoverable_count,
-                    "cleanup_eligible": cleanup_eligible and protection["state"] == "protected",
+                    "recover_eligible": not local_exists and recoverable,
+                    "cleanup_eligible": (
+                        local_copy_matches_current(row) and recoverable
+                        and protection["state"] == "protected"
+                    ),
                 }
             )
         return items
@@ -1827,11 +1861,8 @@ class ArchiveCatalog:
         row = self.connection.execute(
             f"""
             SELECT COUNT(*) AS total
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            {LATEST_JOIN_SQL}
+            FROM files f
+            {CURRENT_JOIN_SQL}
             WHERE {" AND ".join(clauses)}
             """,
             params,
@@ -1856,7 +1887,7 @@ class ArchiveCatalog:
         rows = self.connection.execute(
             f"""
             {sql}
-            ORDER BY lower(fp.path) ASC, fp.path ASC
+            ORDER BY lower(f.path) ASC, f.path ASC
             LIMIT %s OFFSET %s
             """,
             [*params, int(limit), max(0, int(offset))],
@@ -1884,15 +1915,11 @@ class ArchiveCatalog:
             search=search,
         )
         # The shared clauses already apply search, visibility and protection.
-
         total_row = self.connection.execute(
             f"""
             SELECT COUNT(*) AS total
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-            {LATEST_JOIN_SQL}
+            FROM files f
+            {CURRENT_JOIN_SQL}
             WHERE {" AND ".join(clauses)}
             """,
             params,
@@ -1903,7 +1930,7 @@ class ArchiveCatalog:
         rows = self.connection.execute(
             f"""
             {sql}
-            ORDER BY lower(fp.path) ASC, fp.path ASC
+            ORDER BY lower(f.path) ASC, f.path ASC
             LIMIT %s OFFSET %s
             """,
             [*params, int(page_size), max(0, int(offset))],
@@ -2821,15 +2848,13 @@ class ArchiveCatalog:
                    coalesce(SUM(classified.cloud_bytes), 0) AS cloud_bytes
             FROM (
                 SELECT {self._state_sql(vault_id)} AS state,
-                    CASE WHEN lc.presence IN ('present', 'unsupported')
-                         THEN coalesce(lc.size, 0) ELSE 0 END AS local_bytes,
-                    CASE WHEN av.availability NOT IN ('missing', 'purged')
-                         THEN coalesce(av.size, 0) ELSE 0 END AS cloud_bytes
-                FROM vault_files vf
-                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-                {LATEST_JOIN_SQL}
-                WHERE vf.vault_id=%s AND vf.status='active' AND {VISIBLE_SQL}
+                    CASE WHEN f.local_presence IN ('present', 'unsupported')
+                         THEN coalesce(f.local_size, 0) ELSE 0 END AS local_bytes,
+                    CASE WHEN cur.availability <> 'missing'
+                         THEN coalesce(cur.size, 0) ELSE 0 END AS cloud_bytes
+                FROM files f
+                {CURRENT_JOIN_SQL}
+                WHERE f.vault_id=%s AND {VISIBLE_SQL}
             ) classified GROUP BY classified.state
             """, (vault_id,),
         ).fetchall()
@@ -2906,34 +2931,26 @@ class ArchiveCatalog:
 
     @staticmethod
     def _queue_candidate_allowed(action: str, row: Mapping[str, Any]) -> bool:
-        current = row["archive_version_id"] is not None
+        current = row["current_version_id"] is not None
         available = current and row["availability"] == "available"
-        verified_available = available and row["integrity"] == "verified"
+        recoverable = current_is_recoverable(row)
+        present_regular = (
+            row["local_presence"] == "present" and row["local_file_type"] == "regular"
+        )
         if action == "upload":
             # Cloud history is not protection. Admit a new Archive Version
-            # when the current Local Copy is not backed by a verified,
-            # available, digest-matching version. Unchanged protected
-            # content stays ineligible so duplicates are not queued.
+            # when the present Local Copy is not matched to a verified,
+            # available Current. Unchanged protected content stays
+            # ineligible so duplicates are not queued.
             return local_copy_is_upload_eligible(row)
         if action == "recover":
-            return row["presence"] != "present" and verified_available
+            return row["local_presence"] != "present" and recoverable
         if action == "free-space":
-            return (
-                row["presence"] == "present"
-                and row["file_type"] == "regular"
-                and verified_available
-                and row["matched_archive_version_id"] == row["archive_version_id"]
-                and row["local_sha256"] is not None
-                and row["local_sha256"] == row["version_sha256"]
-            )
+            return present_regular and recoverable and local_copy_matches_current(row)
         if action == "rename":
             # The File already points at its new path. A rename Job migrates
             # verified cloud content to that path's key.
-            return (
-                row["presence"] == "present"
-                and row["file_type"] == "regular"
-                and verified_available
-            )
+            return present_regular and recoverable
         if action == "storage-class":
             return available
         raise ValueError(f"Unsupported job action: {action}")
@@ -3018,13 +3035,13 @@ class ArchiveCatalog:
             SELECT
                 f.id AS file_id,
                 f.path,
-                f.local_presence AS presence,
-                f.local_file_type AS file_type,
+                f.local_presence,
+                f.local_file_type,
                 f.local_size,
                 f.local_sha256,
-                f.matched_version_id AS matched_archive_version_id,
-                f.held_version_id AS cloud_only_version_id,
-                cur.id AS archive_version_id,
+                f.matched_version_id,
+                f.held_version_id,
+                f.current_version_id,
                 cur.size AS cloud_size,
                 cur.plaintext_sha256 AS version_sha256,
                 cur.integrity,
@@ -3102,7 +3119,7 @@ class ArchiveCatalog:
                 vault_id, group_id, action, origin, requested_at, requested_at,
                 [str(row["file_id"]) for row in eligible],
                 [
-                    None if action == "upload" else row["archive_version_id"]
+                    None if action == "upload" else row["current_version_id"]
                     for row in eligible
                 ],
                 sizes,

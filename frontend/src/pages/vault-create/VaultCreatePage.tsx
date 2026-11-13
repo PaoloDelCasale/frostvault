@@ -37,7 +37,6 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const Surface = embedded ? "section" : "main";
   const { t } = useI18n();
   const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
   const [creationMode, setCreationMode] = useState<VaultCreationMode>("empty");
   const [volumeOptions, setVolumeOptions] = useState<string[]>([]);
   const [volumeAlias, setVolumeAlias] = useState("");
@@ -84,15 +83,12 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       const payload: {
         name: string;
         creation_mode: VaultCreationMode;
-        slug?: string;
         volume_alias?: string;
         relative_path?: string;
       } = {
         name: name.trim(),
         creation_mode: creationMode,
       };
-      const trimmedSlug = slug.trim();
-      if (trimmedSlug) payload.slug = trimmedSlug;
       if (creationMode === "adopt") {
         payload.volume_alias = volumeAlias;
         payload.relative_path = relativePath ?? "";
@@ -142,23 +138,6 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                   autoFocus
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                />
-              </FormField>
-
-              <FormField
-                label={`${t("ui.vault_create.slug")} ${t("ui.vault_create.slug_optional")}`}
-                htmlFor="vault-slug"
-                help={t("ui.vault_create.slug_placeholder")}
-              >
-                <FormInput
-                  id="vault-slug"
-                  name="slug"
-                  maxLength={60}
-                  pattern="[a-z0-9-]+"
-                  autoComplete="off"
-                  placeholder={t("ui.vault_create.slug_placeholder")}
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
                 />
               </FormField>
 

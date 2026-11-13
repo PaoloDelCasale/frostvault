@@ -1,46 +1,36 @@
-"""Current Snapshot cloud scan must not trust a catalog that is behind S3 (#408).
+"""Cloud scan must not trust or repair a catalog that is behind S3 (#408, #593).
 
-Seam: ``scan_cloud`` on a Current Snapshot Vault. A restored metadata backup
-can name an Archive Version (A) whose S3 VersionId was already purged after a
-newer verified upload (B). The scan must keep B, never delete it.
+Seam: ``scan_cloud``. A restored metadata backup can name a Current (A) whose
+S3 VersionId was already purged after a newer upload (B) the catalog never
+recorded. The listing is observation only (ADR-0035): B is never recorded,
+attributed, elected Current or deleted, and nothing is purged by a scan; the
+known version the complete listing did not show is marked missing.
 """
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-for _flag, _value in (
-    ("O_DIRECTORY", 0x10000),
-    ("O_NOFOLLOW", 0x20000),
-    ("O_CLOEXEC", 0x80000),
-):
-    if not hasattr(os, _flag):
-        setattr(os, _flag, _value)
-
 from app.catalog import ArchiveCatalog
-
 from app.storage import scan_cloud
+from tests.catalog_support import fingerprint, sha256_hex
+from tests.owner_fixtures import insert_owner, insert_vault
+from tests.postgres import PostgresConnection, database_dsn
 from tests.test_database import run_alembic
 
-VAULT = {
-    "id": 2,
-    "s3_bucket": "bucket",
-    "s3_prefix": "docs",
-
-}
+VAULT_UUID = "00000000-0000-4000-8000-000000000002"
+PREFIX = f"vaults/{VAULT_UUID}/"
+VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket"}
 
 
 def _item(version_id: str, hour: int) -> dict:
     return {
-        "Key": "docs/report.txt",
+        "Key": PREFIX + "report.txt",
         "VersionId": version_id,
         "Size": 4,
         "StorageClass": "STANDARD",
@@ -61,41 +51,14 @@ class _ListingS3:
             )
         )
 
-    def get_object_tagging(self, **_kwargs):
-        return {"TagSet": []}
-
-    def list_object_versions(self, **kwargs):
-        prefix = str(kwargs.get("Prefix") or "")
-        return {
-            "Versions": [
-                {"Key": item["Key"], "VersionId": item["VersionId"]}
-                for item in self.versions
-                if item["Key"].startswith(prefix)
-            ],
-            "DeleteMarkers": [],
-            "IsTruncated": False,
-        }
-
     def delete_object(self, **kwargs):
         self.deleted.append((str(kwargs["Key"]), str(kwargs["VersionId"])))
-        self.versions = [
-            item
-            for item in self.versions
-            if item["VersionId"] != str(kwargs["VersionId"])
-        ]
         return {"VersionId": kwargs["VersionId"]}
-
-
-def _scan_id() -> str:
-    """Scan ids are scan start times; rows discovered later are left alone."""
-    return (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
 
 
 class SnapshotScanStaleCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Direct scan_cloud calls have no registered scan generation. Other
-        # modules can leave Vault 2 in the process-wide watcher runtime; that
-        # belongs to another disposable DB and must not suppress this scan.
+        # Direct scan_cloud calls have no registered scan generation.
         runtime = patch("app.storage.runtime_status", {})
         runtime.start()
         self.addCleanup(runtime.stop)
@@ -104,121 +67,90 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         self.database_path = Path(self._tmp.name) / "catalog.db"
         migrated = run_alembic(self.database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        digest = sha256_hex(b"report")
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
-                """
+            insert_owner(connection)
+            insert_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
+            catalog = ArchiveCatalog(connection)
+            self.file_id = catalog.observe_local_copy(
+                vault_id=2, path="report.txt", file_type="regular", size=4,
+                mtime_ns=1, observed_at="2026-07-21T09:00:00+00:00",
             )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                """
+            fingerprint(catalog, 2, "report.txt", digest)
+            row = catalog.get_file_by_path(2, "report.txt")
+            self.current_id = catalog.begin_replacement(
+                row["id"], object_key=PREFIX + "report.txt", provider_version_id="s3-a",
+                size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00",
+            )
+            catalog.promote_replacement(
+                row["id"], archive_version_id=self.current_id, plaintext_sha256=digest,
+                verified_at="2026-07-21T10:01:00+00:00", local_generation=row["generation"],
             )
 
-    def _scan(self, s3: _ListingS3, scan_id: str) -> None:
+    def _scan(self, s3: _ListingS3, scan_id: str = "2026-07-21T13:00:00+00:00") -> dict:
+        report: dict = {}
         settings = SimpleNamespace(database_dsn=database_dsn(str(self.database_path)))
         with (
             patch("app.database.settings", settings),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client", return_value=s3),
         ):
-            scan_cloud(dict(VAULT), scan_id)
+            scan_cloud(dict(VAULT), scan_id, report=report)
+        return report
 
     def _versions(self) -> dict[str, str]:
         with PostgresConnection(str(self.database_path)) as connection:
-            rows = ArchiveCatalog(connection).list_versions(2, "report.txt")
+            rows = connection.execute(
+                "SELECT provider_version_id, availability FROM archive_versions"
+            ).fetchall()
         return {row["provider_version_id"]: row["availability"] for row in rows}
 
-    def test_newer_version_survives_when_catalog_keeper_is_gone(self) -> None:
-        # The (restored) catalog knows only A as the recoverable version.
-        self._scan(_ListingS3([_item("s3-a", 10)]), _scan_id())
-        self.assertEqual(self._versions(), {"s3-a": "available"})
+    def _file(self) -> dict:
+        with PostgresConnection(str(self.database_path)) as connection:
+            return ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
 
-        # After the backup, B was uploaded and verified, and A was purged.
+    def test_uncatalogued_newer_version_is_never_adopted_when_current_is_gone(self) -> None:
         s3 = _ListingS3([_item("s3-b", 12)])
-        self._scan(s3, _scan_id())
+        report = self._scan(s3)
 
         self.assertEqual(s3.deleted, [], "the only cloud copy must never be deleted")
-        versions = self._versions()
-        self.assertEqual(versions.get("s3-b"), "available")
-        # A is superseded, not a loss: no false missing-copy incident.
-        self.assertEqual(versions.get("s3-a"), "purged")
-        with PostgresConnection(str(self.database_path)) as connection:
-            incidents = connection.execute(
-                "SELECT COUNT(*) AS n FROM catalog_incidents"
-            ).fetchone()
-        self.assertEqual(incidents["n"], 0)
+        self.assertEqual(report["unknown_versions"], 1)
+        # B is not recorded; A really is no longer listed.
+        self.assertEqual(self._versions(), {"s3-a": "missing"})
+        current = self._file()
+        self.assertEqual(current["current_version"]["id"], self.current_id)
+        self.assertIsNone(current["replacing_version"])
 
-    def test_unverified_or_mismatched_legacy_keeper_never_authorizes_purge(self) -> None:
-        for integrity in ("unverified", "mismatch"):
-            with self.subTest(integrity=integrity):
-                self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-                with PostgresConnection(str(self.database_path)) as connection:
-                    connection.execute("UPDATE archive_versions SET integrity=%s", (integrity,))
-                s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
-                self._scan(s3, _scan_id())
+    def test_uncatalogued_extras_are_never_elected_or_deleted(self) -> None:
+        for hour in (10, 12, 14):
+            with self.subTest(extra_hour=hour):
+                s3 = _ListingS3([_item("s3-a", 12), _item(f"s3-x{hour}", hour)])
+                self._scan(s3)
                 self.assertEqual(s3.deleted, [])
-                self.assertEqual(set(self._versions().values()), {"available"})
-                with PostgresConnection(str(self.database_path)) as connection:
-                    rows = connection.execute("SELECT integrity FROM archive_versions").fetchall()
-                self.assertFalse(any(row["integrity"] == "verified" for row in rows))
+                self.assertEqual(self._versions(), {"s3-a": "available"})
+                current = self._file()
+                self.assertEqual(current["current_version"]["id"], self.current_id)
+                self.assertIsNone(current["replacing_version"])
 
-    def test_verified_but_older_keeper_cannot_delete_newer_uncatalogued_content(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 10)]), _scan_id())
-        self._verify("s3-a")
+    def test_listed_pending_replacement_is_not_promoted(self) -> None:
+        with PostgresConnection(str(self.database_path)) as connection:
+            pending_id = ArchiveCatalog(connection).begin_replacement(
+                self.file_id, object_key=PREFIX + "report.txt", provider_version_id="s3-b",
+                size=4, storage_class="STANDARD", created_at="2026-07-21T12:00:00+00:00",
+            )
         s3 = _ListingS3([_item("s3-a", 10), _item("s3-b", 12)])
-        self._scan(s3, _scan_id())
-        self.assertEqual(s3.deleted, [])
+        self._scan(s3)
 
-    def _verify(self, provider: str) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE archive_versions SET integrity='verified', plaintext_sha256=%s WHERE provider_version_id=%s", ("a" * 64, provider))
-
-    def test_scan_extra_is_retained_without_claimed_exact_duplicate_proof(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-        self._verify("s3-a")
-        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
-        self._scan(s3, _scan_id())
-        self.assertEqual(s3.deleted, [])
-        self.assertEqual(self._versions().get("s3-a"), "available")
-        self.assertEqual(self._versions().get("s3-b"), "available")
-        with PostgresConnection(str(self.database_path)) as connection:
-            current = ArchiveCatalog(connection).list_versions(2, "report.txt")[0]
-            self.assertEqual(current["provider_version_id"], "s3-a", "Older discovery cannot elect itself by version_number")
-            self.assertIsNotNone(connection.execute("SELECT * FROM snapshot_reconciliation_blocks").fetchone())
-            self.assertIsNone(connection.execute("SELECT * FROM snapshot_cleanup_proofs").fetchone())
-
-    def test_equal_timestamp_ambiguity_preserves_both_copies(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-        self._verify("s3-a")
-        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 12)])
-        self._scan(s3, _scan_id())
         self.assertEqual(s3.deleted, [])
         self.assertEqual(self._versions(), {"s3-a": "available", "s3-b": "available"})
-
-    def test_active_job_prevents_scan_cleanup(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-        self._verify("s3-a")
+        current = self._file()
+        self.assertEqual(current["current_version"]["id"], self.current_id)
+        self.assertEqual(current["replacing_version"]["id"], pending_id)
         with PostgresConnection(str(self.database_path)) as connection:
-            file_id = connection.execute("SELECT vault_file_id FROM archive_versions").fetchone()["vault_file_id"]
-            connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (2, %s, 'report.txt', 'upload', 'queued', '2026-11-03', '2026-11-03')", (file_id,))
-        s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
-        self._scan(s3, _scan_id())
-        self.assertEqual(s3.deleted, [])
-        self.assertEqual(set(self._versions().values()), {"available"})
-
-    def test_failed_or_changed_keeper_listing_never_deletes_extras(self) -> None:
-        self._scan(_ListingS3([_item("s3-a", 12)]), _scan_id())
-        self._verify("s3-a")
-        for response in ({"Versions": [], "IsTruncated": False}, RuntimeError("listing failed")):
-            s3 = _ListingS3([_item("s3-a", 12), _item("s3-b", 10)])
-            with patch.object(s3, "list_object_versions", **({"side_effect": response} if isinstance(response, Exception) else {"return_value": response})):
-                self._scan(s3, _scan_id())
-            self.assertEqual(s3.deleted, [])
-            self.assertEqual(self._versions().get("s3-b"), "available", "A failed cleanup is not evidence that a discovered extra is missing")
+            integrity = connection.execute(
+                "SELECT integrity FROM archive_versions WHERE id=%s", (pending_id,)
+            ).fetchone()["integrity"]
+        self.assertNotEqual(integrity, "verified", "a listing is not verification")
 
 
 if __name__ == "__main__":

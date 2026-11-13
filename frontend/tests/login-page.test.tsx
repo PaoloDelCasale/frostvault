@@ -92,9 +92,6 @@ describe("LoginPage local sign-in", () => {
       );
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "admin" },
-    });
     fireEvent.change(screen.getByLabelText(en["login.password"]), {
       target: { value: "correct-horse-battery" },
     });
@@ -107,7 +104,6 @@ describe("LoginPage local sign-in", () => {
     expect(url).toBe("/api/login");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({
-      username: "admin",
       password: "correct-horse-battery",
     });
     await waitFor(() => {
@@ -139,13 +135,10 @@ describe("LoginPage local sign-in", () => {
 
   it("shows a localized error and does not redirect when credentials are wrong", async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ detail: "Incorrect username or password" }, 401),
+      jsonResponse({ detail: "Incorrect password" }, 401),
     );
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "admin" },
-    });
     fireEvent.change(screen.getByLabelText(en["login.password"]), {
       target: { value: "wrong" },
     });
@@ -164,9 +157,6 @@ describe("LoginPage local sign-in", () => {
     );
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "admin" },
-    });
     fireEvent.change(screen.getByLabelText(en["login.password"]), {
       target: { value: "secret" },
     });
@@ -202,9 +192,6 @@ describe("LoginPage local sign-in", () => {
 
     render(<LocaleHarness />);
 
-    fireEvent.change(screen.getByLabelText(en["login.username"]), {
-      target: { value: "typed-user" },
-    });
     fireEvent.change(screen.getByLabelText(en["login.password"]), {
       target: { value: "typed-pass" },
     });
@@ -221,7 +208,7 @@ describe("LoginPage local sign-in", () => {
     expect(
       screen.getByRole("button", { name: it["login.oidc"] }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(it["login.username"])).toHaveValue("typed-user");
+    expect(screen.queryByLabelText(/username|nome utente/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText(it["login.password"])).toHaveValue("typed-pass");
   });
 });

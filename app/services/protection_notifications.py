@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from . import notifications as inbox
 from .operation_policies import auto_upload_path_is_included, file_is_stable, get_policy
-from .protection_states import LATEST_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql
+from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql
 
 _last_maintenance = 0.0
 
@@ -81,41 +81,24 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
                           vault_id=vault_id, active=not access.local_operations_allowed,
                           params={"component": "source"})
     rows = connection.execute(f"""
-        SELECT vf.id, fp.path, lc.mtime_ns, lc.content_observed_at,
-               COALESCE(lc.content_observed_at,lc.observed_at,vf.created_at) AS observed_at
-        FROM vault_files vf JOIN local_copies lc ON lc.vault_file_id=vf.id
-        JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        {LATEST_JOIN_SQL}
-        WHERE vf.vault_id=%s AND vf.status='active' AND lc.presence='present'
-          AND lc.file_type='regular' AND lc.cloud_only_version_id IS NULL
+        SELECT f.id, f.path, f.local_mtime_ns AS mtime_ns,
+               f.local_content_observed_at AS content_observed_at,
+               COALESCE(f.local_content_observed_at, f.local_observed_at, f.created_at) AS observed_at
+        FROM files f
+        {CURRENT_JOIN_SQL}
+        WHERE f.vault_id=%s AND f.local_presence='present'
+          AND f.held_version_id IS NULL
           AND NOT COALESCE({PROTECTED_SQL},FALSE)
     """, (vault_id,)).fetchall()
     candidates = [dict(row) for row in rows if auto_upload_path_is_included(row["path"], policy)]
-    # One durable continuous timer per included pending file; no path or secret
-    # persisted in monitoring tables. Existing timers never reset on writes.
-    for start in range(0, len(candidates), 500):
-        chunk = candidates[start:start + 500]
-        connection.execute(
-            "INSERT INTO protection_pending(vault_file_id,pending_since) VALUES " +
-            ",".join(["(%s,%s)"] * len(chunk)) + " ON CONFLICT(vault_file_id) DO NOTHING",
-            [value for row in chunk for value in (row["id"], row["observed_at"])],
-        )
-    ages = {row["vault_file_id"]: row["pending_since"] for row in connection.execute(
-        "SELECT p.* FROM protection_pending p JOIN vault_files vf ON vf.id=p.vault_file_id WHERE vf.vault_id=%s",
-        (vault_id,),
-    ).fetchall()}
-    active = {row["id"] for row in candidates}
-    stale = list(ages.keys() - active)
-    for start in range(0, len(stale), 500):
-        chunk = stale[start:start + 500]
-        connection.execute("DELETE FROM protection_pending WHERE vault_file_id IN (" +
-                           ",".join(["%s"] * len(chunk)) + ")", chunk)
-    # Upload completion can delete a timer after the candidate query (READ
-    # COMMITTED). Missing ages are no longer pending in this observation; never
-    # recreate their age or abort maintenance for every other Vault (#549).
-    candidates = [row for row in candidates if row["id"] in ages]
+    # One durable continuous timer per included pending file, on its files row.
+    # Existing timers never reset on writes; files no longer pending lose theirs.
+    from ..catalog import ArchiveCatalog
+    ages = ArchiveCatalog(connection).record_pending_files(
+        vault_id, {str(row["id"]): row["observed_at"] for row in candidates},
+    )
     for row in candidates:
-        row["pending_since"] = ages[row["id"]]
+        row["pending_since"] = ages[str(row["id"])]
     progress = connection.execute(
         "SELECT MAX(updated_at) AS at FROM jobs WHERE vault_id=%s AND action='upload' AND status='completed'",
         (vault_id,),
@@ -134,17 +117,16 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     from .source_layout import vault_local_access
     totals = dict.fromkeys(STATES, 0)
     vaults = []
-    for vault in connection.execute("SELECT * FROM vaults WHERE decommission_state<>'decommissioned' ORDER BY id").fetchall():
+    for vault in connection.execute("SELECT * FROM vaults WHERE lifecycle<>'tombstone' ORDER BY id").fetchall():
         health = load_vault_health(connection, vault["id"])
         unknown = (not vault_local_access(vault["source_root"]).local_operations_allowed
                    or observation_is_unconfirmed(health))
         counts = dict.fromkeys(STATES, 0)
         state_expression = state_sql(get_policy(connection, vault["id"]))
         for row in connection.execute(f"""
-            SELECT {state_expression} AS state, count(*) AS total FROM vault_files vf
-            JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {LATEST_JOIN_SQL}
-            WHERE vf.vault_id=%s AND vf.status='active' AND {VISIBLE_SQL} GROUP BY 1
+            SELECT {state_expression} AS state, count(*) AS total FROM files f
+            {CURRENT_JOIN_SQL}
+            WHERE f.vault_id=%s AND {VISIBLE_SQL} GROUP BY 1
         """, (vault["id"],)).fetchall():
             counts["unconfirmed" if unknown else row["state"]] += int(row["total"])
         for state in STATES:
@@ -153,7 +135,8 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
                        "suspended": not get_policy(connection, vault["id"]).auto_upload,
                        "last_scan": (health.get("source") or {}).get("last_success_at"),
                        "last_audit": (health.get("audit") or {}).get("last_success_at")})
-    verified = connection.execute("SELECT MAX(verified_at) AS at FROM metadata_backup_runs WHERE status='verified'").fetchone()
+    # Metadata backups are rebuilt by #598; until then no verified backup is known.
+    verified = {"at": None}
     freed = connection.execute("SELECT count(*) AS files, COALESCE(sum(total_bytes),0) AS bytes FROM jobs "
                                "WHERE action='free-space' AND status='completed' AND updated_at >= %s",
                                ((now - timedelta(days=7)).isoformat(),)).fetchone()
@@ -182,7 +165,7 @@ def maintain_notifications(connection: Any, *, now: datetime | None = None) -> N
     now = now or datetime.now(timezone.utc)
     # Serialize summary scheduling and episode updates against another worker.
     connection.execute("SELECT id FROM owner WHERE id=1 FOR NO KEY UPDATE")
-    for vault in connection.execute("SELECT * FROM vaults WHERE enabled=TRUE AND decommission_state='active'").fetchall():
+    for vault in connection.execute("SELECT * FROM vaults WHERE lifecycle='active'").fetchall():
         monitor_vault(connection, vault, now=now)
     inbox.reconcile_problem_states(connection)
     latest = connection.execute("SELECT created_at FROM notifications WHERE event='weekly_summary' "

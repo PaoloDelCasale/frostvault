@@ -33,7 +33,7 @@ function loadCatalog(locale: "en" | "it"): Record<string, string> {
 const shellCapabilities: ShellCapabilities = {
   locale: "en",
   locales: ["en", "it"],
-  vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
+  vaults: [{ id: 1, uuid: "test", name: "Test Archive" }],
   currentVaultId: 1,
 };
 

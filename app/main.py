@@ -120,11 +120,11 @@ from .services.lifecycle_profiles import (
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
 from .services.vaults import (
+    VAULT_ROW_SQL,
     InvalidVaultName,
     VaultAdoptionError,
     VaultCreationError,
     VaultProvisioningUnavailable,
-    VaultSlugTaken,
     create_vault,
     list_vault_inventory,
 )
@@ -524,7 +524,7 @@ def current_vault(
         vault = None
         if requested_id:
             vault = connection.execute(
-                f"SELECT v.* FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
+                f"{VAULT_ROW_SQL} WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
                 (requested_id,),
             ).fetchone()
         if not vault and explicit:
@@ -532,7 +532,7 @@ def current_vault(
         if not vault:
             vault = connection.execute(
                 f"""
-                SELECT v.* FROM vaults v WHERE {_OPERATIONAL_VAULT}
+                {VAULT_ROW_SQL} WHERE {_OPERATIONAL_VAULT}
                 ORDER BY v.name
                 LIMIT 1
                 """
@@ -556,9 +556,7 @@ def current_vault(
 
 
 class LoginRequest(BaseModel):
-    # Ignored: the Owner has no username and the Emergency Password alone
-    # signs in (#586). Still accepted while the login form sends it.
-    username: str = ""
+    # The Owner has no username: the Emergency Password alone signs in (#586).
     password: str
 
 
@@ -585,7 +583,6 @@ class VaultSelfServiceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
-    slug: str | None = Field(default=None, min_length=2, max_length=60)
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
@@ -1312,7 +1309,7 @@ def list_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
             f"""
-            SELECT v.id, v.slug, v.name, v.paused
+            SELECT v.id, v.uuid::text AS uuid, v.name, v.paused, v.lifecycle
             FROM vaults v
             WHERE {_OPERATIONAL_VAULT}
             ORDER BY v.name
@@ -1352,13 +1349,10 @@ def create_owner_vault(
     try:
         vault = create_vault(
             action.name,
-            action.slug,
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
         )
-    except VaultSlugTaken:
-        return _vault_create_error(request, 409, "api.vault_name_taken")
     except VaultProvisioningUnavailable:
         return _vault_create_error(request, 503, "api.vault_provisioning_unavailable")
     except InvalidVaultName:
@@ -1373,8 +1367,7 @@ def create_owner_vault(
         background_tasks.add_task(scan_vault, {"id": vault["id"]})
     payload: dict[str, Any] = {
         "id": vault["id"],
-        "uuid": vault["uuid"],
-        "slug": vault["slug"],
+        "uuid": str(vault["uuid"]),
         "name": vault["name"],
         "creation_mode": action.creation_mode,
     }
@@ -1432,10 +1425,7 @@ def select_vault(
 ):
     with db() as connection:
         allowed = connection.execute(
-            """
-            SELECT 1 FROM vaults v
-            WHERE v.id=%s AND v.enabled=TRUE AND v.decommission_state='active'
-            """,
+            f"SELECT 1 FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
             (action.vault_id,),
         ).fetchone()
         if not allowed:
@@ -1462,7 +1452,7 @@ def _protection_observation(connection: Any, vault: dict[str, Any], access: Any)
     health = load_vault_health(connection, int(vault["id"]))
     unconfirmed = (
         not access.local_operations_allowed
-        or vault.get("relocation_state", "ready") != "ready"
+        or vault.get("lifecycle", "active") != "active"
         or observation_is_unconfirmed(health)
     )
     suspended = not get_policy(connection, int(vault["id"])).auto_upload
@@ -1517,13 +1507,10 @@ def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
         access = vault_local_access(vault.get("source_root") or "")
         unconfirmed, _ = _protection_observation(connection, vault, access)
         catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
-        rows = connection.execute(catalog._file_row_select_sql([
-            "vf.vault_id=%s", "fp.vault_id=vf.vault_id", "vf.status='active'", "fp.path=%s",
-        ], vault["id"]), (vault["id"], path)).fetchall()
-        items = catalog._materialize_file_items(vault["id"], rows, name_from_path=True)
-        if not items:
+        item = catalog.get_file_item(vault["id"], path)
+        if item is None:
             raise HTTPException(404, "Vault File not found")
-        return items[0]
+        return item
 
 
 @app.get("/api/files/search", response_model=response_model("FilesResponse"))
@@ -1534,7 +1521,7 @@ def search_all_files(
 ):
     """Search name/path across all protected Vaults, independent of Session choice."""
     with db() as connection:
-        vaults = connection.execute(f"SELECT v.* FROM vaults v WHERE {_OPERATIONAL_VAULT}").fetchall()
+        vaults = connection.execute(f"{VAULT_ROW_SQL} WHERE {_OPERATIONAL_VAULT}").fetchall()
         scoped = []
         for vault in vaults:
             access = vault_local_access(vault.get("source_root") or "")
@@ -2258,10 +2245,7 @@ def queue_jobs(
     if action in {"upload", "recover", "free-space", "rename", "storage-class"}:
         with db() as connection:
             vault_row = connection.execute(
-                """
-                SELECT source_root, relocation_state, decommission_state
-                FROM vaults WHERE id=%s
-                """,
+                "SELECT source_root, lifecycle FROM vaults WHERE id=%s",
                 (vault_id,),
             ).fetchone()
         if vault_row is None:
@@ -2508,24 +2492,22 @@ def recover_estimate(
     selection = [(safe_relative_path(item.path).as_posix(), item.is_directory) for item in action.selection] if action.selection else None
     logical_path = "" if selection else safe_relative_path(action.path).as_posix()
     if action.is_directory or selection:
-        recoverable_join = """LEFT JOIN archive_versions av ON av.id=(
-            SELECT recoverable.id FROM archive_versions recoverable
-            WHERE recoverable.vault_file_id=vf.id AND recoverable.integrity='verified'
-              AND recoverable.availability='available' ORDER BY recoverable.version_number DESC LIMIT 1
-        )"""
+        # Current only: an explicit reference, never the latest available
+        # version. Restore progress of a version belongs to Recovery (#594).
         scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(
-            selection or [(logical_path, True)], column="fp.path",
+            selection or [(logical_path, True)], column="f.path",
         )
         with db() as connection:
             classes = connection.execute(
-                f"SELECT av.storage_class, av.restore_state, sum(av.size) AS bytes FROM vault_files vf "
-                f"JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL "
-                f"LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id {recoverable_join} "
-                f"WHERE vf.vault_id=%s AND fp.vault_id=vf.vault_id AND vf.status='active' AND {scope_sql} "
-                "AND av.integrity='verified' AND av.availability='available' "
-                "AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.vault_file_id=vf.id "
-                "AND pending.status NOT IN ('completed','failed','cancelled')) "
-                "AND (lc.presence IS NULL OR lc.presence<>'present') GROUP BY av.storage_class, av.restore_state",
+                f"""SELECT cur.storage_class, NULL::text AS restore_state, sum(cur.size) AS bytes
+                FROM files f JOIN archive_versions cur ON cur.id=f.current_version_id
+                WHERE f.vault_id=%s AND {scope_sql}
+                  AND cur.integrity='verified' AND cur.availability='available'
+                  AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.file_id=f.id
+                      AND pending.status NOT IN ('completed','failed','cancelled'))
+                  AND coalesce(f.local_presence, 'missing')<>'present'
+                GROUP BY cur.storage_class
+                """,
                 [vault["id"], *scope_params],
             ).fetchall()
         tier, days = resolve_directory_restore(action.restore_tier, action.restore_days)
@@ -3193,7 +3175,7 @@ def reconnect_vault_root(
     return {
         "vault_id": vault_id,
         "source_root": vault["source_root"],
-        "reconnect_state": vault["relocation_state"],
+        "reconnect_state": vault.get("lifecycle"),
         "full_scan_required": True,
     }
 
@@ -3275,17 +3257,15 @@ def storage_cost_estimate(
                 "SELECT id FROM vaults WHERE id=%s", (action.vault_id,)
             ).fetchone():
                 raise HTTPException(404, "Vault not found")
+            # Every Archive Version has a known size; the Vault is the file's.
             usage = connection.execute(
                 """
-                SELECT COALESCE(SUM(size), 0) AS total,
-                       SUM(CASE WHEN size IS NULL THEN 1 ELSE 0 END) AS unknown
-                FROM archive_versions
-                WHERE vault_id=%s AND availability='available'
+                SELECT COALESCE(SUM(av.size), 0) AS total
+                FROM archive_versions av JOIN files f ON f.id = av.file_id
+                WHERE f.vault_id=%s AND av.availability='available'
                 """,
                 (action.vault_id,),
             ).fetchone()
-        if usage["unknown"]:
-            raise HTTPException(409, "The Vault's cloud storage size is unknown")
         size_bytes = int(usage["total"] or 0)
     return estimate_storage_month(
         list_prices(settings.aws_region),

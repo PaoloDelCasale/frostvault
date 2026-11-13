@@ -18,6 +18,7 @@ from app.main import (
     list_files,
     normalize_directory,
 )
+from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
 
 
@@ -230,14 +231,9 @@ class FileBrowserTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
+                seed_vault(connection, vault_id=2, name="Docs")
                 catalog = ArchiveCatalog(connection)
-                catalog.observe_local_copy(
+                file_id = catalog.observe_local_copy(
                     vault_id=2,
                     path="reports/annual.txt",
                     file_type="regular",
@@ -245,17 +241,13 @@ class FileBrowserTests(unittest.TestCase):
                     mtime_ns=10,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                catalog.record_archive_version(
-                    vault_id=2,
-                    path="reports/annual.txt",
-                    object_key="docs/reports/annual.txt",
+                pending = catalog.begin_replacement(
+                    file_id,
+                    object_key="vaults/x/reports/annual.txt",
                     provider_version_id="version-1",
                     size=7,
                     storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="2026-07-21T10:00:00+00:00",
+                    created_at="2026-07-21T10:00:00+00:00",
                 )
             test_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),
@@ -270,10 +262,16 @@ class FileBrowserTests(unittest.TestCase):
 
             self.assertEqual(result["total"], 1)
             self.assertEqual(result["items"][0]["path"], "reports/annual.txt")
-            # Mere presence in S3 is not content verification.
-            self.assertEqual(result["items"][0]["state"], "pending")
-            self.assertEqual(result["items"][0]["cloud_size"], 7)
-            self.assertFalse(result["items"][0]["cleanup_eligible"])
+            item = result["items"][0]
+            # Mere presence in S3 is not content verification: an unverified
+            # upload is the explicit replacement in progress, never Current.
+            self.assertEqual(item["state"], "pending")
+            self.assertIsNone(item["current_version_id"])
+            self.assertEqual(item["pending_version_id"], pending)
+            self.assertFalse(item["recoverable"])
+            self.assertEqual(item["cloud_exists"], 0)
+            self.assertFalse(item["cleanup_eligible"])
+            self.assertNotIn("version_number", item)
 
 
 if __name__ == "__main__":

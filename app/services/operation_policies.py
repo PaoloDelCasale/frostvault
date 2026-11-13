@@ -259,14 +259,16 @@ def file_is_stable(
     mtime_ns: int,
     now: datetime,
     stability_seconds: int,
-    content_observed_at: str | None = None,
+    content_observed_at: str | datetime | None = None,
 ) -> bool:
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     mtime = datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc)
     # Copy tools can preserve an old mtime. The observed content must also
     # remain unchanged for a complete window, across scans and restarts.
     if content_observed_at:
-        mtime = max(mtime, _aware(datetime.fromisoformat(content_observed_at)))
+        observed = (content_observed_at if isinstance(content_observed_at, datetime)
+                    else datetime.fromisoformat(content_observed_at))
+        mtime = max(mtime, _aware(observed))
     age = (current - mtime).total_seconds()
     return age >= stability_seconds
 
@@ -277,12 +279,12 @@ def _aware(value: datetime) -> datetime:
 
 def local_cleanup_is_due(
     *,
-    verified_at: str,
+    verified_at: str | datetime,
     retention_days: int,
     now: datetime,
     local_mtime_ns: int | None = None,
-    recovered_at: str | None = None,
-    content_observed_at: str | None = None,
+    recovered_at: str | datetime | None = None,
+    content_observed_at: str | datetime | None = None,
 ) -> bool:
     """Return True once the Local Copy has been both protected and untouched.
 
@@ -295,10 +297,13 @@ def local_cleanup_is_due(
     cloud copy was verified long ago.  The recovery time is explicit because a
     recovered file may keep its original (old) modification time.
     """
-    reference = _aware(datetime.fromisoformat(verified_at))
+    def moment(value: str | datetime) -> datetime:
+        return _aware(value if isinstance(value, datetime) else datetime.fromisoformat(value))
+
+    reference = moment(verified_at)
     for observed in (recovered_at, content_observed_at):
         if observed is not None:
-            reference = max(reference, _aware(datetime.fromisoformat(observed)))
+            reference = max(reference, moment(observed))
     if local_mtime_ns is not None:
         modified = datetime.fromtimestamp(int(local_mtime_ns) / 1e9, tz=timezone.utc)
         if modified > reference:
@@ -437,12 +442,11 @@ def local_release_is_confirmed(
     from .source_layout import vault_local_access
 
     vault = connection.execute(
-        "SELECT source_root, enabled, decommission_state, relocation_state FROM vaults WHERE id=%s",
-        (vault_id,),
+        "SELECT source_root, lifecycle FROM vaults WHERE id=%s", (vault_id,),
     ).fetchone()
-    if not vault or not vault["enabled"] or vault["relocation_state"] != "ready":
-        return False
-    if vault["decommission_state"] != "active":
+    # Only an active Vault: reconnect_required, stopping and tombstone never
+    # release a Local Copy (#607).
+    if not vault or vault["lifecycle"] != "active":
         return False
     return (vault_local_access(vault["source_root"]).local_operations_allowed
             and not observation_is_unconfirmed(load_vault_health(connection, vault_id)))
@@ -458,6 +462,7 @@ def queue_auto_local_cleanups(
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""
     from ..catalog import ArchiveCatalog
     from .audit_events import record_audit_event
+    from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL
 
     policy = get_policy(connection, vault_id)
     if policy.local_release_after_days is None:
@@ -466,31 +471,20 @@ def queue_auto_local_cleanups(
     if not local_release_is_confirmed(connection, vault_id):
         return 0
     current = now or datetime.now(timezone.utc)
+    # The present Local Copy is matched to its verified, available Current:
+    # the explicit pointer, never the latest version by ordering (ADR-0035).
     rows = connection.execute(
-        """
-        SELECT fp.path, av.id AS archive_version_id, av.verified_at,
-               lc.mtime_ns AS local_mtime_ns,
-               COALESCE(lc.content_observed_at, lc.observed_at) AS content_observed_at,
-               lc.recovered_at AS local_recovered_at
-        FROM vault_files vf
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        JOIN local_copies lc ON lc.vault_file_id=vf.id
-        JOIN archive_versions av ON av.id=lc.matched_archive_version_id
-        WHERE vf.vault_id=%s
-          AND vf.status='active'
-          AND lc.presence='present'
-          AND lc.file_type='regular'
-          AND lc.plaintext_sha256 IS NOT NULL
-          AND lc.plaintext_sha256=av.plaintext_sha256
-          AND av.integrity='verified'
-          AND av.availability='available'
-          AND av.verified_at IS NOT NULL
-          AND lc.cloud_only_version_id IS NULL
-          AND av.id=(SELECT latest.id FROM archive_versions latest
-                     WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
-                     ORDER BY latest.version_number DESC LIMIT 1)
-        ORDER BY lower(fp.path)
+        f"""
+        SELECT f.path, cur.id::text AS archive_version_id, cur.verified_at,
+               f.local_mtime_ns,
+               coalesce(f.local_content_observed_at, f.local_observed_at) AS content_observed_at,
+               f.local_recovered_at
+        FROM files f {CURRENT_JOIN_SQL}
+        WHERE f.vault_id=%s
+          AND {PROTECTED_SQL}
+          AND f.held_version_id IS NULL
+          AND cur.verified_at IS NOT NULL
+        ORDER BY lower(f.path), f.path
         """,
         (vault_id,),
     ).fetchall()

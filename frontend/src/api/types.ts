@@ -4,7 +4,6 @@ import type { components } from "./openapi.generated";
 export type ApiErrorResponse = components["schemas"]["ApiErrorResponse"];
 export type ArchiveListItem = components["schemas"]["ArchiveListItem"];
 export type ArchiveVersionItem = components["schemas"]["ArchiveVersionItem"];
-export type ArchiveVersionSummary = components["schemas"]["ArchiveVersionSummary"];
 export type AuthMethod = components["schemas"]["AuthMethod"];
 export type BulkUploadAdmissionActivity = components["schemas"]["BulkUploadAdmissionActivity"];
 export type BulkUploadAdmissionResponse = components["schemas"]["BulkUploadAdmissionResponse"];

@@ -40,7 +40,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const show = useCallback((message: string, error = false) => setNotice({ message, error }), []);
   const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
-  const stopped = Boolean(vault?.decommission_state && vault.decommission_state !== "active");
+  const stopped = vault?.lifecycle === "stopping" || vault?.lifecycle === "tombstone";
   useEffect(() => {
     let live = true;
     void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) show(String(error), true); });

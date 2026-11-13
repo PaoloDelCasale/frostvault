@@ -99,7 +99,7 @@ class LocalReleasePolicyTests(unittest.TestCase):
     def test_absent_volume_never_queues_automatic_release(self):
         connection = MagicMock()
         connection.execute.return_value.fetchone.return_value = {
-            "source_root": "/absent", "enabled": True, "relocation_state": "ready", "decommission_state": "active",
+            "source_root": "/absent", "lifecycle": "active",
         }
         with (patch("app.services.operation_policies.get_policy", return_value=OperationPolicy(local_release_after_days=90)),
               patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)),
@@ -119,7 +119,7 @@ class LocalReleasePolicyTests(unittest.TestCase):
     def test_absent_untrusted_or_unconfirmed_sources_never_authorize_release(self):
         connection = MagicMock()
         connection.execute.return_value.fetchone.return_value = {
-            "source_root": "/test", "enabled": True, "relocation_state": "ready", "decommission_state": "active",
+            "source_root": "/test", "lifecycle": "active",
         }
         for allowed, health in ((False, {}), (True, {"cloud": {"last_error": "unavailable"}}),
                                (True, {"source": {"last_error": "replaced"}}),

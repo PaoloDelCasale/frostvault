@@ -13,12 +13,14 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
     notifications.reconcile_problem_states(connection)
     prices = list_prices()
     rows = connection.execute(
-        "SELECT id, name, slug, decommission_state FROM vaults ORDER BY lower(name), id"
+        "SELECT id, uuid::text AS uuid, name, lifecycle FROM vaults ORDER BY lower(name), id"
     ).fetchall()
     costs = connection.execute(
-        "SELECT vf.vault_id, av.storage_class, sum(av.size) AS bytes FROM archive_versions av "
-        "JOIN vault_files vf ON vf.id=av.vault_file_id WHERE av.availability='available' "
-        "GROUP BY vf.vault_id, av.storage_class"
+        # Every stored version costs, including a replacement in progress and
+        # superseded versions awaiting exact cleanup (#591).
+        "SELECT f.vault_id, av.storage_class, sum(av.size) AS bytes FROM archive_versions av "
+        "JOIN files f ON f.id=av.file_id WHERE av.availability='available' "
+        "GROUP BY f.vault_id, av.storage_class"
     ).fetchall()
     totals: dict[int, float] = {}
     for row in costs:
@@ -45,9 +47,8 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
         if isinstance(params, str):
             params = json.loads(params)
         baseline = params.get("monthly_cost_estimate")
-    backup = connection.execute(
-        "SELECT max(verified_at) AS verified_at FROM metadata_backup_runs WHERE verified_at IS NOT NULL"
-    ).fetchone()
+    # Metadata backup runs are rebuilt with backup/restore (#598).
+    backup = None
     total = sum(totals.values())
     return {
         "vaults": [{**row, "monthly_estimate": round(totals.get(row["id"], 0), 6),

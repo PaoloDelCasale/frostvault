@@ -5,7 +5,7 @@ Materialized cloud writes still require the exact remediation/cleanup proof.
 Only a failure with no cloud work left to reconcile can be superseded by later
 successful protection of the same stable Vault File's current Local Copy.
 """
-from .protection_states import LATEST_JOIN_SQL, PROTECTED_SQL
+from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL
 from .upload_remediation import CLOSED_SQL as REMEDIATION_CLOSED_SQL
 
 
@@ -38,18 +38,17 @@ SUPERSEDED_FAILURE_SQL = f"""(
     AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=original.id)
     AND NOT EXISTS (SELECT 1 FROM upload_remediation_discovery q WHERE q.job_id=original.id)
     AND EXISTS (
-        SELECT 1 FROM vault_files vf
-        JOIN local_copies lc ON lc.vault_file_id=vf.id
-        {LATEST_JOIN_SQL}
-        WHERE vf.id=original.vault_file_id AND vf.vault_id=original.vault_id
-          AND vf.status='active' AND lc.cloud_only_version_id IS NULL
+        SELECT 1 FROM files f
+        {CURRENT_JOIN_SQL}
+        WHERE f.id=original.file_id AND f.vault_id=original.vault_id
+          AND f.held_version_id IS NULL
           AND {PROTECTED_SQL}
           AND EXISTS (
               SELECT 1 FROM jobs successful
-              WHERE successful.vault_file_id=vf.id AND successful.vault_id=vf.vault_id
+              WHERE successful.file_id=f.id AND successful.vault_id=f.vault_id
                 AND successful.action='upload' AND successful.status='completed'
                 AND successful.id>original.id AND successful.updated_at>=original.updated_at
-                AND successful.archive_version_id=av.id
+                AND successful.archive_version_id=cur.id
           )
     )
 )"""

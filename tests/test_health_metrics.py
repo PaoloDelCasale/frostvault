@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.config import settings
 
-from app.security import hash_password
+from tests.owner_fixtures import insert_owner
 from app.services import health as health_service
 from app.services import source_layout
 from app.services import metrics as metrics_service
@@ -36,13 +36,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s)
-                """,
-                (hash_password("admin-password-1"),),
-            )
+            insert_owner(connection, display_name="Admin", password="admin-password-1")
 
         self.test_settings = replace(
             settings,

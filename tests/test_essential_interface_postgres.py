@@ -2,11 +2,28 @@
 import unittest
 from tests import test_protection_states as fixtures
 from app.catalog import ArchiveCatalog
+from tests.catalog_support import fingerprint, seed_vault
+from tests.owner_fixtures import insert_owner
 
 
 class EssentialSearchPostgresTests(unittest.TestCase):
     setUp = fixtures.ProtectionStatePostgresTests.setUp
     seed = fixtures.ProtectionStatePostgresTests.seed
+
+    def _cloud_only(self, vault_id, path, provider_version_id, storage_class, digest):
+        """A verified Current whose Local Copy is gone, in ``vault_id``."""
+        stamp = '2026-11-03T10:00:00Z'
+        file_id = self.catalog.observe_local_copy(
+            vault_id=vault_id, path=path, file_type='regular', size=12, mtime_ns=1, observed_at=stamp)
+        fingerprint(self.catalog, vault_id, path, digest)
+        version = self.catalog.begin_replacement(
+            file_id, object_key=f'vaults/x/{path}', provider_version_id=provider_version_id,
+            size=12, storage_class=storage_class, created_at=stamp)
+        self.catalog.promote_replacement(
+            file_id, archive_version_id=version, plaintext_sha256=digest, verified_at=stamp,
+            local_generation=self.catalog.get_file_by_path(vault_id, path)['generation'])
+        self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
+        return version
 
     def test_recursive_estimate_includes_released_missing_copies_only_in_its_vault(self):
         from unittest.mock import patch
@@ -15,9 +32,8 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         file_id, version = self.seed('cold', archive=True, verified=True)
         self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
         self.connection.execute("UPDATE archive_versions SET storage_class='DEEP_ARCHIVE' WHERE id=%s", (version,))
-        self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
-        other = self.catalog.record_archive_version(vault_id=10, path='photos/cold.jpg', object_key='second/photos/cold.jpg', provider_version_id='other', size=12, storage_class='STANDARD', etag='e', uploaded_at=stamp, observed_at=stamp, scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified',availability='available' WHERE id=%s", (other,))
+        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        self._cloud_only(10, 'photos/cold.jpg', 'other', 'STANDARD', 'a' * 64)
         self.connection.commit()
         request = RecoverEstimateRequest(path='photos', is_directory=True, restore_tier='Bulk')
         with patch('app.database.settings', self.cfg), patch('app.main.settings', self.cfg):
@@ -34,10 +50,10 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         from app.main import app
         from app.sessions import create_session
         from app.services.operation_policies import get_policy
-        self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
-        self.connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','test')")
-        token = create_session(self.connection, user_id=1, auth_method='local')
-        self.connection.execute('UPDATE sessions SET vault_id=9 WHERE user_id=1')
+        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        insert_owner(self.connection)
+        token = create_session(self.connection, auth_method='local')
+        self.connection.execute('UPDATE sessions SET vault_id=9')
         self.connection.commit()
         with patch('app.main.settings', self.cfg), patch('app.database.settings', self.cfg), patch('app.sessions.settings', self.cfg):
             client = TestClient(app)
@@ -57,9 +73,8 @@ class EssentialSearchPostgresTests(unittest.TestCase):
 
     def test_duplicate_paths_keep_vault_identity_filter_and_pagination(self):
         _, first_version = self.seed('same', local=False, archive=True, verified=True)
-        self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
-        second = self.catalog.record_archive_version(vault_id=10, path='photos/same.jpg', object_key='second/photos/same.jpg', provider_version_id='second-copy', size=12, storage_class='DEEP_ARCHIVE', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified',availability='available',plaintext_sha256=%s WHERE id=%s", ('b'*64, second))
+        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        second = self._cloud_only(10, 'photos/same.jpg', 'second-copy', 'DEEP_ARCHIVE', 'b' * 64)
         vaults = [{'id':9,'name':'Files','unconfirmed':False}, {'id':10,'name':'Second','unconfirmed':False}]
         one = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=1, page_size=1)
         two = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=2, page_size=1)

@@ -12,7 +12,7 @@ const shellCapabilities: ShellCapabilities = {
   vaults: [
     {
       id: 1,
-      slug: "owner-admin",
+      uuid: "owner-admin",
       name: "Owner Admin Archive",
     },
   ],

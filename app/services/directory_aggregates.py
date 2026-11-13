@@ -29,7 +29,10 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .operation_policies import get_policy
-from .protection_states import LATEST_JOIN_SQL, aggregate_state, state_sql
+from .protection_states import (
+    CURRENT_JOIN_SQL, aggregate_state, current_is_recoverable,
+    local_copy_matches_current, state_sql,
+)
 from .database_retry import owned_connection, retry_database_unit
 
 
@@ -79,46 +82,35 @@ _ACTION_COLUMNS = {
 
 
 def local_copy_is_protected(row: Mapping[str, Any]) -> bool:
-    """Return True when current Local Copy bytes are already in cloud history.
+    """Return True when the present Local Copy is matched to a verified Current.
 
-    Cloud history alone is not protection. The latest non-missing Archive
-    Version must be verified, available, digest-equal, and matched from the
-    Local Copy. Keep this predicate aligned with the SQL ``upload_eligible``
-    CASE in the directory-aggregate rollup.
+    Cloud history alone is not protection: Current (the explicit pointer,
+    never the latest version) must be verified, available and digest-equal
+    to the fingerprinted Local Copy matched to it. Keep this predicate aligned
+    with the SQL ``action_upload`` CASE in the directory-aggregate rollup.
     """
-    archive_version_id = row.get("archive_version_id")
-    if archive_version_id is None:
-        return False
-    local_sha256 = row.get("local_sha256")
-    return (
-        row.get("integrity") == "verified"
-        and row.get("availability") == "available"
-        and row.get("matched_archive_version_id") == archive_version_id
-        and local_sha256 is not None
-        and local_sha256 == row.get("version_sha256")
-    )
+    return local_copy_matches_current(row) and current_is_recoverable(row)
 
 
 def local_copy_is_upload_eligible(row: Mapping[str, Any]) -> bool:
     """Admit an upload when a present regular Local Copy is not protected.
 
-    Rows must select ``lc.cloud_only_version_id`` so held-back content at a
-    cloud-only path is never admitted.
+    Rows use the canonical file columns (``local_presence``,
+    ``local_file_type``, ``held_version_id``, ``current_version_id``,
+    ``matched_version_id``); content held back at a Cloud-only Conflict waits
+    for the Owner (#411).
     """
-    presence = row.get("local_presence")
-    if presence is None:
-        presence = row.get("presence")
-    file_type = row.get("local_file_type")
-    if file_type is None:
-        file_type = row.get("file_type")
     return (
-        presence == "present"
-        and file_type == "regular"
-        and row.get("restore_state") != "restoring"
-        # Content held back at a cloud-only path waits for the owner (#411).
-        and not row.get("cloud_only_version_id")
+        row.get("local_presence") == "present"
+        and row.get("local_file_type") == "regular"
+        and row.get("held_version_id") is None
         and not local_copy_is_protected(row)
     )
+
+
+def _iso(value: Any) -> str | None:
+    """A timestamptz leaves the projection once, as ISO-8601 text."""
+    return value.isoformat() if isinstance(value, datetime) else value
 
 
 def _now() -> str:
@@ -985,16 +977,15 @@ def _visible_file_select_sql(
     limit: int | None = None,
 ) -> tuple[str, list[Any]]:
     """Shared SELECT for visible catalog rows."""
-    clauses = ["vf.vault_id=%s", "vf.status='active'"]
+    clauses = ["f.vault_id=%s"]
     params: list[Any] = []
     # vault_id is bound by the caller as the first param after building SQL.
     if path_prefix:
-        escaped = _escape_like(path_prefix)
         # Strict descendants under directory/ (directory path itself is never a file).
-        clauses.append("fp.path LIKE %s ESCAPE '\\'")
-        params.append(f"{escaped}/%")
+        clauses.append("starts_with(f.path, %s)")
+        params.append(f"{path_prefix}/")
     if keyset_path is not None:
-        clauses.append("fp.path > %s")
+        clauses.append("f.path > %s")
         params.append(keyset_path)
     limit_sql = ""
     if limit is not None:
@@ -1003,35 +994,24 @@ def _visible_file_select_sql(
     sql = f"""
         SELECT
             {state_sql(policy)} AS protection_state,
-            vf.id AS vault_file_id,
-            fp.path,
-            lc.presence AS local_presence,
-            lc.file_type AS local_file_type,
-            lc.size AS local_size,
-            lc.plaintext_sha256 AS local_sha256,
-            lc.matched_archive_version_id,
-            lc.cloud_only_version_id,
-            av.id AS archive_version_id,
-            av.size AS cloud_size,
-            av.storage_class,
-            av.plaintext_sha256 AS version_sha256,
-            av.integrity,
-            av.availability,
-            av.restore_state,
-            (
-                SELECT COUNT(*)
-                FROM archive_versions recoverable
-                WHERE recoverable.vault_file_id=vf.id
-                  AND recoverable.integrity='verified'
-                  AND recoverable.availability='available'
-            ) AS recoverable_version_count
-        FROM vault_files vf
-        JOIN file_paths fp
-          ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-        {LATEST_JOIN_SQL}
+            f.id AS file_id,
+            f.path,
+            f.local_presence,
+            f.local_file_type,
+            f.local_size,
+            f.local_sha256,
+            f.matched_version_id,
+            f.held_version_id,
+            f.current_version_id,
+            cur.size AS cloud_size,
+            cur.storage_class,
+            cur.plaintext_sha256 AS version_sha256,
+            cur.integrity,
+            cur.availability
+        FROM files f
+        {CURRENT_JOIN_SQL}
         WHERE {" AND ".join(clauses)}
-        ORDER BY fp.path ASC
+        ORDER BY f.path ASC
         {limit_sql}
         """
     return sql, params
@@ -1100,41 +1080,28 @@ def _iter_visible_file_contributions(
 
 def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:
     local_exists = row["local_presence"] in {"present", "unsupported"}
-    cloud_exists = row["archive_version_id"] is not None
+    cloud_exists = row["current_version_id"] is not None
     if not local_exists and not cloud_exists:
         return None
     state = str(row["protection_state"])
-    local_size = int(row["local_size"] or 0) if row["local_size"] is not None else 0
-    cloud_size = int(row["cloud_size"] or 0) if row["cloud_size"] is not None else 0
+    local_size = int(row["local_size"] or 0)
+    cloud_size = int(row["cloud_size"] or 0)
+    # A missing Local Copy keeps its last size, which is not on disk.
     total_size = (
         int(row["local_size"])
-        if row["local_size"] is not None
-        else int(row["cloud_size"] or 0)
+        if local_exists and row["local_size"] is not None
+        else cloud_size
     )
-    recoverable_count = int(row["recoverable_version_count"] or 0)
-    upload_eligible = local_copy_is_upload_eligible(row)
-    recover_eligible = not local_exists and recoverable_count > 0
-    cleanup_eligible = (
-        row["local_presence"] == "present"
-        and row["local_file_type"] == "regular"
-        and cloud_exists
-        and row["integrity"] == "verified"
-        and row["availability"] == "available"
-        and row["matched_archive_version_id"] == row["archive_version_id"]
-        and row["local_sha256"] is not None
-        and row["local_sha256"] == row["version_sha256"]
-    )
-    has_cloud = cloud_exists and row["availability"] not in {"missing", "purged"}
-    path = str(row["path"])
+    has_cloud = cloud_exists and row["availability"] != "missing"
     return _FileContribution(
-        path=path,
+        path=str(row["path"]),
         state=state,
         total_size=total_size,
         local_size=local_size if local_exists else 0,
         cloud_size=cloud_size if has_cloud else 0,
-        upload_eligible=upload_eligible,
-        recover_eligible=recover_eligible,
-        cleanup_eligible=cleanup_eligible and state == "protected",
+        upload_eligible=local_copy_is_upload_eligible(row),
+        recover_eligible=not local_exists and current_is_recoverable(row),
+        cleanup_eligible=state == "protected",
         has_cloud=has_cloud,
         storage_class=row["storage_class"] if has_cloud else None,
     )
@@ -1145,7 +1112,6 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     directory = (directory or "").strip().strip("/")
     if not directory:
         return
-    escaped = _escape_like(directory)
     # Use the same SQL classification as files and statistics. The result is
     # bounded to the seven states, regardless of descendant count.
     select_sql, extra_params = _visible_file_select_sql(
@@ -1154,25 +1120,28 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     summaries = connection.execute(
         f"""
         SELECT protection_state, COUNT(*) AS item_count,
-            coalesce(SUM(coalesce(local_size, cloud_size, 0)), 0) AS total_size,
+            -- A missing Local Copy keeps its last size, which is not on disk.
+            coalesce(SUM(CASE WHEN local_presence IN ('present', 'unsupported')
+                         THEN coalesce(local_size, cloud_size, 0)
+                         ELSE coalesce(cloud_size, 0) END), 0) AS total_size,
             coalesce(SUM(CASE WHEN local_presence IN ('present', 'unsupported')
                          THEN coalesce(local_size, 0) ELSE 0 END), 0) AS local_size,
-            coalesce(SUM(CASE WHEN availability NOT IN ('missing', 'purged')
+            coalesce(SUM(CASE WHEN availability <> 'missing'
                          THEN coalesce(cloud_size, 0) ELSE 0 END), 0) AS cloud_size,
             SUM(CASE WHEN local_presence='present' AND local_file_type='regular'
-                AND coalesce(restore_state, '') <> 'restoring'
-                AND cloud_only_version_id IS NULL
+                AND held_version_id IS NULL
                 AND NOT coalesce(integrity='verified' AND availability='available'
-                    AND matched_archive_version_id=archive_version_id
+                    AND matched_version_id=current_version_id
                     AND local_sha256 IS NOT NULL AND local_sha256=version_sha256, FALSE)
                 THEN 1 ELSE 0 END) AS action_upload,
             SUM(CASE WHEN coalesce(local_presence, 'missing') NOT IN ('present', 'unsupported')
-                AND recoverable_version_count > 0 THEN 1 ELSE 0 END) AS action_recover,
+                AND integrity='verified' AND availability='available'
+                THEN 1 ELSE 0 END) AS action_recover,
             SUM(CASE WHEN protection_state='protected' THEN 1 ELSE 0 END) AS action_free_space,
             SUM(CASE WHEN protection_state='cloud_only'
                 THEN 1 ELSE 0 END) AS action_cloud_purge
         FROM ({select_sql}) classified
-        WHERE local_presence IN ('present', 'unsupported') OR archive_version_id IS NOT NULL
+        WHERE local_presence IN ('present', 'unsupported') OR current_version_id IS NOT NULL
         GROUP BY protection_state
         """, (int(vault_id), *extra_params),
     ).fetchall()
@@ -1191,33 +1160,20 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
         )
         return
 
+    # Storage classes of Current only: superseded versions awaiting exact
+    # cleanup and a replacement in progress are not the file's content.
     storage_rows = connection.execute(
         """
-        SELECT av.storage_class AS storage_class, COUNT(*) AS total
-        FROM vault_files vf
-        JOIN file_paths fp
-          ON fp.vault_file_id = vf.id AND fp.valid_to IS NULL
-        LEFT JOIN local_copies lc ON lc.vault_file_id = vf.id
-        JOIN archive_versions av
-          ON av.id = (
-              SELECT latest.id
-              FROM archive_versions latest
-              WHERE latest.vault_file_id = vf.id
-                AND latest.availability NOT IN ('missing', 'purged')
-              ORDER BY latest.version_number DESC
-              LIMIT 1
-          )
-        WHERE vf.vault_id = %s
-          AND vf.status = 'active'
-          AND fp.path LIKE %s ESCAPE '\\'
-          AND av.storage_class IS NOT NULL
-          AND (
-                lc.presence IN ('present', 'unsupported')
-             OR av.id IS NOT NULL
-          )
-        GROUP BY av.storage_class
+        SELECT cur.storage_class AS storage_class, COUNT(*) AS total
+        FROM files f
+        JOIN archive_versions cur ON cur.id = f.current_version_id
+        WHERE f.vault_id = %s
+          AND starts_with(f.path, %s)
+          AND cur.availability <> 'missing'
+          AND cur.storage_class IS NOT NULL
+        GROUP BY cur.storage_class
         """,
-        (int(vault_id), f"{escaped}/%"),
+        (int(vault_id), f"{directory}/"),
     ).fetchall()
     storage_classes = {
         str(row["storage_class"]): int(row["total"] or 0)
@@ -1269,7 +1225,7 @@ def _upsert_rollup(
             %s, %s, %s, %s, %s,
             %s, %s,
             %s, %s, %s,
-            %s, %s, %s
+            %s, %s::jsonb, %s
         )
         ON CONFLICT(vault_id, path) DO UPDATE SET
             parent_path=excluded.parent_path,
@@ -1329,10 +1285,7 @@ def directory_row_to_item(row: Mapping[str, Any], *, unconfirmed: bool = False) 
     if unconfirmed:
         state_counts = {"unconfirmed": int(row["item_count"] or 0)}
     state = aggregate_state(state_counts)
-    try:
-        storage_map = json.loads(row.get("storage_class_counts") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        storage_map = {}
+    storage_map = row.get("storage_class_counts") or {}
     if not isinstance(storage_map, dict):
         storage_map = {}
     storage_classes = sorted(
@@ -1350,7 +1303,7 @@ def directory_row_to_item(row: Mapping[str, Any], *, unconfirmed: bool = False) 
         "state": state,
         "state_counts": state_counts,
         "last_known_states": last_known_counts,
-        "last_known_at": row.get("updated_at"),
+        "last_known_at": _iso(row.get("updated_at")),
         "storage_class": storage_classes[0] if len(storage_classes) == 1 else None,
         "storage_class_count": len(storage_classes),
         "available_actions": {

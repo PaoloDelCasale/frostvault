@@ -41,6 +41,12 @@
               "null"
             ]
           },
+          "availability_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "type": [
               "string",
@@ -51,6 +57,12 @@
             "type": "string"
           },
           "integrity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "not_selectable_reason": {
             "type": [
               "string",
               "null"
@@ -71,17 +83,13 @@
           "recoverable": {
             "type": "boolean"
           },
-          "restore_expiry": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "restore_state": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "role": {
+            "description": "Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.",
+            "enum": [
+              "current",
+              "pending"
+            ],
+            "type": "string"
           },
           "size": {
             "type": [
@@ -90,12 +98,6 @@
             ]
           },
           "storage_class": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "storage_class_source": {
             "type": [
               "string",
               "null"
@@ -140,55 +142,13 @@
               "string",
               "null"
             ]
-          },
-          "version_number": {
-            "type": "number"
           }
         },
         "required": [
           "id",
-          "version_number",
+          "role",
           "recoverable"
         ],
-        "type": "object"
-      },
-      "ArchiveVersionSummary": {
-        "additionalProperties": {},
-        "properties": {
-          "object_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "size": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "storage_class": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "storage_class_source": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "uploaded_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "version_number": {
-            "type": "number"
-          }
-        },
         "type": "object"
       },
       "AuthMethod": {
@@ -922,11 +882,17 @@
           "vaults": {
             "items": {
               "properties": {
-                "decommission_state": {
-                  "type": "string"
-                },
                 "id": {
                   "type": "integer"
+                },
+                "lifecycle": {
+                  "enum": [
+                    "active",
+                    "reconnect_required",
+                    "stopping",
+                    "tombstone"
+                  ],
+                  "type": "string"
                 },
                 "monthly_estimate": {
                   "type": "number"
@@ -937,15 +903,15 @@
                 "open_problem_count": {
                   "type": "integer"
                 },
-                "slug": {
+                "uuid": {
                   "type": "string"
                 }
               },
               "required": [
                 "id",
-                "slug",
+                "uuid",
                 "name",
-                "decommission_state",
+                "lifecycle",
                 "monthly_estimate",
                 "open_problem_count"
               ],
@@ -959,25 +925,17 @@
       "GeneralVault": {
         "additionalProperties": false,
         "properties": {
-          "decommission_state": {
-            "enum": [
-              "active",
-              "decommissioning",
-              "decommissioned"
-            ],
-            "type": "string"
-          },
-          "decommissioned_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "enabled": {
-            "type": "boolean"
-          },
           "id": {
             "type": "number"
+          },
+          "lifecycle": {
+            "enum": [
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -997,9 +955,6 @@
           "s3_prefix": {
             "type": "string"
           },
-          "slug": {
-            "type": "string"
-          },
           "source_root": {
             "type": "string"
           },
@@ -1009,11 +964,11 @@
         },
         "required": [
           "id",
-          "slug",
+          "uuid",
           "name",
           "source_root",
           "s3_prefix",
-          "enabled"
+          "lifecycle"
         ],
         "type": "object"
       },
@@ -1714,11 +1669,6 @@
         "properties": {
           "password": {
             "title": "Password",
-            "type": "string"
-          },
-          "username": {
-            "default": "",
-            "title": "Username",
             "type": "string"
           }
         },
@@ -3365,9 +3315,6 @@
           "relative_path": {
             "type": "string"
           },
-          "slug": {
-            "type": "string"
-          },
           "volume_alias": {
             "type": "string"
           }
@@ -3389,9 +3336,6 @@
           "name": {
             "type": "string"
           },
-          "slug": {
-            "type": "string"
-          },
           "uuid": {
             "type": "string"
           }
@@ -3399,7 +3343,6 @@
         "required": [
           "id",
           "uuid",
-          "slug",
           "name"
         ],
         "type": "object"
@@ -3413,9 +3356,22 @@
       },
       "VaultFileListItem": {
         "additionalProperties": true,
-        "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). Restore progress is independent.",
+        "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem).",
         "properties": {
           "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cleanup": {
+            "description": "Exact cleanup of superseded versions.",
+            "enum": [
+              "waiting",
+              "in_progress",
+              "blocked",
+              null
+            ],
             "type": [
               "string",
               "null"
@@ -3438,6 +3394,16 @@
               "number",
               "null"
             ]
+          },
+          "current_version_id": {
+            "description": "Explicit Current Snapshot reference; null when the file has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
           },
           "integrity": {
             "type": [
@@ -3484,26 +3450,28 @@
           "path": {
             "type": "string"
           },
+          "pending_version_id": {
+            "description": "Explicit replacement in progress; never recoverable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "previous_snapshot_protected": {
             "type": "boolean"
+          },
+          "reconciliation_block": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "recover_eligible": {
             "type": "boolean"
           },
-          "recoverable_version_count": {
-            "type": "number"
-          },
-          "restore_expiry": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "restore_state": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "recoverable": {
+            "description": "Current exists, is verified and available.",
+            "type": "boolean"
           },
           "state": {
             "type": "string"
@@ -3576,19 +3544,28 @@
           "id": {
             "type": "number"
           },
+          "lifecycle": {
+            "enum": [
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "paused": {
             "type": "boolean"
           },
-          "slug": {
+          "uuid": {
             "type": "string"
           }
         },
         "required": [
           "id",
-          "slug",
+          "uuid",
           "name"
         ],
         "type": "object"
@@ -3835,19 +3812,6 @@
               }
             ],
             "title": "Relative Path"
-          },
-          "slug": {
-            "anyOf": [
-              {
-                "maxLength": 60,
-                "minLength": 2,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slug"
           },
           "volume_alias": {
             "anyOf": [

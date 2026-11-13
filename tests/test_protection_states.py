@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import uuid
 import unittest
 from collections import Counter
 from dataclasses import replace
@@ -18,6 +19,9 @@ from app.services.protection_states import (
 )
 from app.services.upload_path_rules import inline_eligibility_sql
 from app.services.source_layout import VaultLocalAccess
+from tests.catalog_support import fingerprint, protect, seed_vault
+
+T = '2026-11-03T10:00:00+00:00'
 
 
 class ProtectionProjectionTests(unittest.TestCase):
@@ -32,18 +36,24 @@ class ProtectionProjectionTests(unittest.TestCase):
                 self.assertEqual(row['protection_state'], state)
 
     def test_pending_indicates_protected_previous_snapshot(self):
-        result = project_file({'protection_state': 'pending', 'integrity': 'verified', 'availability': 'available'})
+        result = project_file({'protection_state': 'pending', 'current_version_id': 'v1',
+                               'integrity': 'verified', 'availability': 'available'})
         self.assertTrue(result['previous_snapshot_protected'])
 
     def test_pending_upload_keeps_indicator_for_an_older_verified_snapshot(self):
-        result = project_file({'protection_state': 'pending', 'integrity': 'unverified',
-                               'availability': 'available', 'recoverable_version_count': 1})
+        # The replacement in progress is never recoverable; Current still is.
+        result = project_file({'protection_state': 'pending', 'current_version_id': 'v1',
+                               'replacing_version_id': 'v2', 'integrity': 'verified',
+                               'availability': 'available'})
         self.assertTrue(result['previous_snapshot_protected'])
+        # Without an explicit Current nothing older is offered as protected.
+        self.assertFalse(project_file({'protection_state': 'pending', 'replacing_version_id': 'v2',
+                                       'integrity': 'verified', 'availability': 'available'})['previous_snapshot_protected'])
 
     def test_unknown_cloud_keeps_last_verified_state(self):
         result = project_file({'protection_state': 'unconfirmed', 'integrity': 'verified',
-            'local_presence': 'present', 'matched_archive_version_id': 'v1',
-            'archive_version_id': 'v1', 'local_sha256': 'a', 'version_sha256': 'a'})
+            'local_presence': 'present', 'matched_version_id': 'v1',
+            'current_version_id': 'v1', 'local_sha256': 'a', 'version_sha256': 'a'})
         self.assertEqual(result['last_known_state'], 'protected')
 
     def test_aggregate_is_actionable_and_empty_is_not_protected(self):
@@ -72,7 +82,8 @@ class ProtectionProjectionTests(unittest.TestCase):
     def test_unsupported_keeps_last_known_state_and_previous_cloud_copy(self):
         result = project_file({'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'unsupported'})
         self.assertEqual(result['last_known_state'], 'unsupported')
-        result = project_file({'protection_state': 'unsupported', 'integrity': 'verified', 'availability': 'available'})
+        result = project_file({'protection_state': 'unsupported', 'current_version_id': 'v1',
+                               'integrity': 'verified', 'availability': 'available'})
         self.assertTrue(result['previous_snapshot_protected'])
 
     def test_state_sql_embeds_fixed_and_vault_rules_as_safe_literals(self):
@@ -91,12 +102,13 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertIn("it''s", sql)
 
     def test_excluded_keeps_the_previous_cloud_copy_indication(self):
-        result = project_file({'protection_state': 'excluded', 'integrity': 'verified', 'availability': 'available'})
+        result = project_file({'protection_state': 'excluded', 'current_version_id': 'v1',
+                               'integrity': 'verified', 'availability': 'available'})
         self.assertTrue(result['previous_snapshot_protected'])
         self.assertEqual(result['state'], 'excluded')
         self.assertFalse(project_file({'protection_state': 'excluded'})['previous_snapshot_protected'])
         unknown = {'protection_state': 'unconfirmed', 'integrity': 'verified', 'local_presence': 'present',
-                   'matched_archive_version_id': None, 'archive_version_id': 'v1',
+                   'matched_version_id': None, 'current_version_id': 'v1',
                    'local_sha256': 'b', 'version_sha256': 'a'}
         self.assertEqual(project_file({**unknown, 'path_excluded': True})['last_known_state'], 'excluded')
         self.assertEqual(project_file(unknown)['last_known_state'], 'pending')
@@ -120,23 +132,31 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.connection = PostgresConnection(str(self.path))
         self.connection.__enter__()
         self.addCleanup(self.connection.__exit__, None, None, None)
-        self.connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', '/source', 'bucket', 'files')")
+        seed_vault(self.connection, vault_id=9, name='Files')
         self.catalog = ArchiveCatalog(self.connection)
         self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
     def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True, path=None, file_type='regular'):
+        """One Vault File; ``archive`` uploads a replacement, ``verified`` makes it Current."""
         path = path or f'photos/{name}.jpg'
-        file_id = None
-        if local:
-            file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at='2026-11-03T10:00:00Z')
+        file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at=T)
         version_id = None
         if archive:
-            version_id = self.catalog.record_archive_version(vault_id=9, path=path, object_key=f'files/{path}', provider_version_id=name, size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-            self.connection.execute("UPDATE archive_versions SET integrity=%s, availability=%s, plaintext_sha256=%s, verified_at=%s WHERE id=%s", ('verified' if verified else 'unverified', availability, 'a'*64, '2026-11-03T10:00:00Z' if verified else None, version_id))
-        if local and archive:
-            self.catalog.set_local_fingerprint(vault_id=9, path=path, plaintext_sha256=('a' if match else 'b')*64, matched_archive_version_id=version_id if match else None)
+            if file_type == 'regular':
+                fingerprint(self.catalog, 9, path, ('a' if match else 'b') * 64)
+            version_id = self.catalog.begin_replacement(
+                file_id, object_key=f'vaults/x/{path}', provider_version_id=name, size=12,
+                storage_class='STANDARD', created_at=T)
+            if verified:
+                self.catalog.promote_replacement(
+                    file_id, archive_version_id=version_id, plaintext_sha256='a' * 64, verified_at=T,
+                    local_generation=self.catalog.get_file_by_path(9, path)['generation'])
+                if availability != 'available':
+                    self.connection.execute('UPDATE archive_versions SET availability=%s WHERE id=%s', (availability, version_id))
+        if not local:
+            self.catalog.mark_local_copy_missing(file_id, observed_at=T)
         return file_id, version_id
 
     def test_every_state_browse_search_folder_rebuild_and_stats_agree(self):
@@ -240,9 +260,8 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         # Manual operations stay explicit: the file remains uploadable...
         self.assertTrue(row['upload_eligible'])
         # ...and once verified in the cloud it is Protected like any other file.
-        version = self.catalog.record_archive_version(vault_id=9, path='._only', object_key='files/._only', provider_version_id='m', size=12, storage_class='STANDARD', etag='e', uploaded_at='2026-11-03T10:00:00Z', observed_at='2026-11-03T10:00:00Z', scan_id='scan')
-        self.connection.execute("UPDATE archive_versions SET integrity='verified', availability='available', plaintext_sha256=%s WHERE id=%s", ('a' * 64, version))
-        self.catalog.set_local_fingerprint(vault_id=9, path='._only', plaintext_sha256='a' * 64, matched_archive_version_id=version)
+        fingerprint(self.catalog, 9, '._only', 'a' * 64)
+        protect(self.catalog, 9, '._only', 'a' * 64)
         self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1})
 
     def test_vault_exclusion_globs_define_excluded_and_removing_them_restores_pending(self):
@@ -260,9 +279,9 @@ class ProtectionStatePostgresTests(unittest.TestCase):
 
     def test_excluded_does_not_mask_problems_and_keeps_the_previous_cloud_copy_visible(self):
         failed_id, _ = self.seed('._failed', path='photos/._failed')
-        self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/._failed', 'upload', 'failed', '2026-11-03', '2026-11-03')", (failed_id,))
+        self.connection.execute("INSERT INTO jobs(vault_id, file_id, action, status) VALUES (9, %s, 'upload', 'failed')", (failed_id,))
         conflict_id, version = self.seed('._held', path='photos/._held', archive=True, verified=True, match=False)
-        self.connection.execute('UPDATE local_copies SET cloud_only_version_id=%s WHERE vault_file_id=%s', (version, conflict_id))
+        self.connection.execute('UPDATE files SET held_version_id=%s WHERE id=%s', (version, conflict_id))
         # Changed after a verified upload, then excluded: the current bytes are not
         # in the cloud (Excluded is not "safe"), but the older copy stays indicated.
         self.seed('._stale', path='photos/._stale', archive=True, verified=True, match=False)
@@ -294,7 +313,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['total'], 1)
 
     def test_global_maintenance_skips_a_failing_vault_and_keeps_its_marks(self):
-        self.connection.execute("INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'other', 'Other', '/other', 'bucket', 'other')")
+        seed_vault(self.connection, vault_id=10, source_root='/other', name='Other')
         for vault_id in (9, 10):
             aggregates.request_vault_rebuild(self.connection, vault_id)
         real = aggregates.flush_directory_aggregates
@@ -330,7 +349,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertTrue(all(not item['cleanup_eligible'] for item in result['items']))
         self.assertEqual(self.connection.execute('SELECT availability FROM archive_versions WHERE id=%s', (version,)).fetchone()['availability'], 'available')
         self.assertEqual(self.connection.execute('SELECT COUNT(*) AS n FROM archive_versions').fetchone()['n'], 2)
-        self.assertEqual(self.connection.execute("SELECT presence FROM local_copies WHERE presence='present'").fetchone()['presence'], 'present')
+        self.assertEqual(self.connection.execute("SELECT local_presence FROM files WHERE local_presence='present'").fetchone()['local_presence'], 'present')
 
     def test_suspension_is_separate_from_verified_content(self):
         from app.services.operation_policies import get_policy, set_policy
@@ -357,24 +376,27 @@ class ProtectionStatePostgresTests(unittest.TestCase):
     def test_terminal_upload_failure_invalidates_folder_and_retry_clears_it(self):
         from app.storage import set_job
         file_id, _ = self.seed('failed')
-        job = self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/failed.jpg', 'upload', 'queued', '2026-11-03', '2026-11-03') RETURNING id", (file_id,)).fetchone()['id']
+        job = self.connection.execute("INSERT INTO jobs(vault_id, file_id, action, status) VALUES (9, %s, 'upload', 'queued') RETURNING id", (file_id,)).fetchone()['id']
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
-        with patch('app.database.settings', self.cfg):
+        # Remediation episodes are #592's; only the Job transition matters here.
+        with patch('app.database.settings', self.cfg), patch('app.services.upload_remediation.transition'):
             self.assertTrue(set_job(job, 'failed'))
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
-        self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_by=None, requested_at='2026-11-03', group_id='retry', is_directory=False)
+        with patch('app.services.upload_remediation.intercept_upload', return_value=(False, None)):
+            self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
 
     def test_failed_upload_mismatch_conflict_and_unverified_are_not_protected(self):
         failed_id, _ = self.seed('failed')
-        self.connection.execute("INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_at, updated_at) VALUES (9, %s, 'photos/failed.jpg', 'upload', 'failed', '2026-11-03', '2026-11-03')", (failed_id,))
+        self.connection.execute("INSERT INTO jobs(vault_id, file_id, action, status) VALUES (9, %s, 'upload', 'failed')", (failed_id,))
         conflict_id, version = self.seed('conflict', archive=True, verified=True, match=False)
-        self.connection.execute('UPDATE local_copies SET cloud_only_version_id=%s WHERE vault_file_id=%s', (version, conflict_id))
-        _, mismatch = self.seed('mismatch', archive=True)
-        self.connection.execute("UPDATE archive_versions SET integrity='mismatch' WHERE id=%s", (mismatch,))
+        self.connection.execute('UPDATE files SET held_version_id=%s WHERE id=%s', (version, conflict_id))
+        # A reconciliation block replaces the v0.5 mismatch state (#587).
+        blocked_id, _ = self.seed('mismatch', archive=True)
+        self.catalog.block_reconciliation(blocked_id, reason='proof_mismatch', at=T)
         self.seed('unverified', archive=True)
         self.seed('missing-local', archive=True, verified=True, availability='missing')
         states = {row['path']: row for row in self.catalog.list_file_rows(9)}

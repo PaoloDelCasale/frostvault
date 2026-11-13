@@ -43,7 +43,6 @@ describe("foundation endpoint helpers", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           id: 1,
-          username: "ada",
           display_name: "Ada",
           active: true,
           session_version: 1,
@@ -337,7 +336,7 @@ describe("foundation endpoint helpers", () => {
 
   it("vault creation and selection have no encryption or custody contract", async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ id: 3, uuid: "u", slug: "docs", name: "Docs" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ id: 3, uuid: "u", name: "Docs" }, 201))
       .mockResolvedValueOnce(jsonResponse({ vault_id: 3 }));
     await expect(createVault({ name: "Docs" })).resolves.toMatchObject({ id: 3 });
     await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });

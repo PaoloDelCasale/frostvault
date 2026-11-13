@@ -238,23 +238,6 @@
         "paused": {
           "type": "boolean"
         },
-        "decommission_state": {
-          "enum": [
-            "active",
-            "decommissioning",
-            "decommissioned"
-          ],
-          "type": "string"
-        },
-        "decommissioned_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "enabled": {
-          "type": "boolean"
-        },
         "id": {
           "type": "number"
         },
@@ -273,23 +256,29 @@
         "s3_prefix": {
           "type": "string"
         },
-        "slug": {
-          "type": "string"
-        },
         "source_root": {
           "type": "string"
         },
         "uuid": {
           "type": "string"
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "active",
+            "reconnect_required",
+            "stopping",
+            "tombstone"
+          ]
         }
       },
       "required": [
         "id",
-        "slug",
+        "uuid",
         "name",
         "source_root",
         "s3_prefix",
-        "enabled"
+        "lifecycle"
       ],
       "type": "object"
     },
@@ -439,10 +428,40 @@
     "ArchiveVersionItem": {
       "additionalProperties": {},
       "properties": {
-        "upload_verification_requested": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
-        "verification_method": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
-        "verification_fallback_reason": {"type": ["string", "null"]},
-        "verification_egress_bytes": {"type": ["integer", "null"]},
+        "upload_verification_requested": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_checksum",
+            "read_back",
+            null
+          ]
+        },
+        "verification_method": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_checksum",
+            "read_back",
+            null
+          ]
+        },
+        "verification_fallback_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verification_egress_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "created_at": {
           "type": [
             "string",
@@ -473,15 +492,6 @@
             "null"
           ]
         },
-        "storage_class_source": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version_number": {
-          "type": "number"
-        },
         "verified_at": {
           "type": [
             "string",
@@ -506,13 +516,21 @@
             "null"
           ]
         },
-        "restore_state": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "current",
+            "pending"
+          ],
+          "description": "Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering."
+        },
+        "availability_checked_at": {
           "type": [
             "string",
             "null"
           ]
         },
-        "restore_expiry": {
+        "not_selectable_reason": {
           "type": [
             "string",
             "null"
@@ -521,48 +539,9 @@
       },
       "required": [
         "id",
-        "version_number",
+        "role",
         "recoverable"
       ],
-      "type": "object"
-    },
-    "ArchiveVersionSummary": {
-      "additionalProperties": {},
-      "properties": {
-        "uploaded_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "object_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "size": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "storage_class": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "storage_class_source": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version_number": {
-          "type": "number"
-        }
-      },
       "type": "object"
     },
     "AuthMethod": {
@@ -837,50 +816,167 @@
     "UploadRemediation": {
       "type": "object",
       "properties": {
-        "id": {"type": "string"},
-        "state": {"type": "string", "enum": ["pending", "queued", "retrying", "blocked", "suspended", "cancelled", "resolved"]},
-        "phase": {"type": "string"},
-        "reason": {"type": ["string", "null"]},
-        "remedy": {"type": "string"},
-        "retry_count": {"type": "integer"},
-        "due_at": {"type": "string"},
-        "can_resume": {"type": "boolean"},
-        "current_job_id": {"type": ["integer", "null"]},
-        "resolved_by_job_id": {"type": ["integer", "null"]},
-        "resolved_at": {"type": ["string", "null"]},
-        "archive_version_id": {"type": ["string", "null"]},
-        "original_job_ids": {"type": "array", "items": {"type": "integer"}}
+        "id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "queued",
+            "retrying",
+            "blocked",
+            "suspended",
+            "cancelled",
+            "resolved"
+          ]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remedy": {
+          "type": "string"
+        },
+        "retry_count": {
+          "type": "integer"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "can_resume": {
+          "type": "boolean"
+        },
+        "current_job_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resolved_by_job_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resolved_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "archive_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "original_job_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
       },
-      "required": ["id", "state", "phase", "reason", "retry_count", "due_at", "can_resume", "current_job_id", "resolved_by_job_id", "resolved_at", "archive_version_id", "original_job_ids", "remedy"]
+      "required": [
+        "id",
+        "state",
+        "phase",
+        "reason",
+        "retry_count",
+        "due_at",
+        "can_resume",
+        "current_job_id",
+        "resolved_by_job_id",
+        "resolved_at",
+        "archive_version_id",
+        "original_job_ids",
+        "remedy"
+      ]
     },
     "FileJobHistoryResponse": {
       "type": "object",
       "properties": {
-        "items": {"type": "array", "items": {"$ref": "#/components/schemas/JobRecord"}},
-        "next_before_id": {"type": ["integer", "null"]}
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/JobRecord"
+          }
+        },
+        "next_before_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
       },
-      "required": ["items", "next_before_id"]
+      "required": [
+        "items",
+        "next_before_id"
+      ]
     },
     "UploadReconciliationResponse": {
       "type": "object",
-      "properties": {"job_id": {"type": "integer"}, "group_id": {"type": "string"}},
-      "required": ["job_id", "group_id"]
+      "properties": {
+        "job_id": {
+          "type": "integer"
+        },
+        "group_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "group_id"
+      ]
     },
     "UploadReconciliation": {
       "type": "object",
       "properties": {
-        "pending": {"type": "boolean"},
-        "can_resume": {"type": "boolean"},
-        "reason": {"type": ["string", "null"], "description": "Bounded reconciliation reason, not an integrity outcome"},
-        "remedy": {"type": ["string", "null"]}
+        "pending": {
+          "type": "boolean"
+        },
+        "can_resume": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Bounded reconciliation reason, not an integrity outcome"
+        },
+        "remedy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
-      "required": ["pending", "can_resume", "reason", "remedy"]
+      "required": [
+        "pending",
+        "can_resume",
+        "reason",
+        "remedy"
+      ]
     },
     "FileVersionsResponse": {
       "additionalProperties": true,
       "properties": {
-        "reconciliation": {"$ref": "#/components/schemas/UploadReconciliation"},
-        "remediations": {"type": "array", "items": {"$ref": "#/components/schemas/UploadRemediation"}},
+        "reconciliation": {
+          "$ref": "#/components/schemas/UploadReconciliation"
+        },
+        "remediations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/UploadRemediation"
+          }
+        },
         "default_archive_version_id": {
           "type": [
             "string",
@@ -1054,7 +1150,10 @@
     "JobCancelResponse": {
       "additionalProperties": true,
       "properties": {
-        "stopped_admissions": { "type": "integer", "minimum": 0 },
+        "stopped_admissions": {
+          "type": "integer",
+          "minimum": 0
+        },
         "cancelled_count": {
           "type": "number"
         },
@@ -1105,8 +1204,12 @@
         "failed_count": {
           "type": "number"
         },
-        "resolved_failed_count": {"type": "number"},
-        "unresolved_failed_count": {"type": "number"},
+        "resolved_failed_count": {
+          "type": "number"
+        },
+        "unresolved_failed_count": {
+          "type": "number"
+        },
         "id": {
           "type": "string"
         },
@@ -1180,10 +1283,31 @@
     "JobRecord": {
       "additionalProperties": true,
       "properties": {
-        "remediation": {"anyOf": [{"$ref": "#/components/schemas/UploadRemediation"}, {"type": "null"}]},
-        "remediation_rejection": {"type": ["string", "null"]},
-        "archive_version_id": {"type": ["string", "null"]},
-        "upload_reconcile_only": {"type": "boolean"},
+        "remediation": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/UploadRemediation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remediation_rejection": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "archive_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upload_reconcile_only": {
+          "type": "boolean"
+        },
         "action": {
           "anyOf": [
             {
@@ -1297,7 +1421,12 @@
     "JobsResponse": {
       "additionalProperties": true,
       "properties": {
-        "next_groups_before_id": {"type": ["integer", "null"]},
+        "next_groups_before_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "groups": {
           "items": {
             "$ref": "#/components/schemas/JobGroup"
@@ -1541,9 +1670,32 @@
     "OperationPolicy": {
       "additionalProperties": true,
       "properties": {
-        "upload_verification": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null], "description": "Override for new upload admissions; null inherits deployment default."},
-        "global_upload_verification": {"type": "string", "enum": ["s3_checksum", "read_back"]},
-        "effective_upload_verification": {"type": "string", "enum": ["s3_checksum", "read_back"]},
+        "upload_verification": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_checksum",
+            "read_back",
+            null
+          ],
+          "description": "Override for new upload admissions; null inherits deployment default."
+        },
+        "global_upload_verification": {
+          "type": "string",
+          "enum": [
+            "s3_checksum",
+            "read_back"
+          ]
+        },
+        "effective_upload_verification": {
+          "type": "string",
+          "enum": [
+            "s3_checksum",
+            "read_back"
+          ]
+        },
         "auto_upload": {
           "type": "boolean"
         },
@@ -1984,9 +2136,6 @@
         "relative_path": {
           "type": "string"
         },
-        "slug": {
-          "type": "string"
-        },
         "volume_alias": {
           "type": "string"
         }
@@ -2008,9 +2157,6 @@
         "name": {
           "type": "string"
         },
-        "slug": {
-          "type": "string"
-        },
         "uuid": {
           "type": "string"
         }
@@ -2018,7 +2164,6 @@
       "required": [
         "id",
         "uuid",
-        "slug",
         "name"
       ],
       "type": "object"
@@ -2032,12 +2177,42 @@
     },
     "VaultFileListItem": {
       "additionalProperties": true,
-      "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). Restore progress is independent.",
+      "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem).",
       "properties": {
-        "upload_verification_requested": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
-        "verification_method": {"type": ["string", "null"], "enum": ["s3_checksum", "read_back", null]},
-        "verification_fallback_reason": {"type": ["string", "null"]},
-        "verification_egress_bytes": {"type": ["integer", "null"]},
+        "upload_verification_requested": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_checksum",
+            "read_back",
+            null
+          ]
+        },
+        "verification_method": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_checksum",
+            "read_back",
+            null
+          ]
+        },
+        "verification_fallback_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verification_egress_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "last_known_state": {
           "type": "string"
         },
@@ -2104,21 +2279,6 @@
         "recover_eligible": {
           "type": "boolean"
         },
-        "recoverable_version_count": {
-          "type": "number"
-        },
-        "restore_expiry": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "restore_state": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "state": {
           "type": "string"
         },
@@ -2149,6 +2309,46 @@
         },
         "cloud_only_conflict": {
           "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "current_version_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Explicit Current Snapshot reference; null when the file has none."
+        },
+        "pending_version_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Explicit replacement in progress; never recoverable."
+        },
+        "recoverable": {
+          "type": "boolean",
+          "description": "Current exists, is verified and available."
+        },
+        "reconciliation_block": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleanup": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "waiting",
+            "in_progress",
+            "blocked",
+            null
+          ],
+          "description": "Exact cleanup of superseded versions."
         }
       },
       "required": [
@@ -2163,30 +2363,54 @@
       "additionalProperties": false,
       "type": "object",
       "properties": {
-        "id": { "type": "integer" },
-        "paused": { "type": "boolean" },
-        "message": { "type": "string" },
-        "message_key": { "type": "string" }
+        "id": {
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "message_key": {
+          "type": "string"
+        }
       },
-      "required": ["id", "paused", "message", "message_key"]
+      "required": [
+        "id",
+        "paused",
+        "message",
+        "message_key"
+      ]
     },
     "VaultListItem": {
       "additionalProperties": true,
       "properties": {
-        "paused": { "type": "boolean" },
+        "paused": {
+          "type": "boolean"
+        },
         "id": {
           "type": "number"
         },
         "name": {
           "type": "string"
         },
-        "slug": {
+        "uuid": {
           "type": "string"
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "active",
+            "reconnect_required",
+            "stopping",
+            "tombstone"
+          ]
         }
       },
       "required": [
         "id",
-        "slug",
+        "uuid",
         "name"
       ],
       "type": "object"
@@ -2371,76 +2595,221 @@
     },
     "RetryFailedUploadsResponse": {
       "type": "object",
-      "properties": { "item_count": { "type": "integer" } },
-      "required": ["item_count"]
+      "properties": {
+        "item_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item_count"
+      ]
     },
     "BulkUploadAdmissionResponse": {
       "type": "object",
       "properties": {
-        "group_id": { "type": "string" },
-        "vault_id": { "type": "integer" },
-        "path": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "completed", "cancelled", "invalidated"] },
-        "reason": { "type": ["string", "null"] },
-        "requested_at": { "type": "string" },
-        "updated_at": { "type": "string" },
-        "origin": { "type": "string", "enum": ["manual"] },
-        "verification_mode": { "type": "string", "enum": ["s3_checksum", "read_back"] },
-        "selected_count": { "type": "integer", "minimum": 0 },
-        "processed_count": { "type": "integer", "minimum": 0 },
-        "admitted_count": { "type": "integer", "minimum": 0 },
-        "total_bytes": { "type": "integer", "minimum": 0 }
+        "group_id": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled",
+            "invalidated"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "manual"
+          ]
+        },
+        "verification_mode": {
+          "type": "string",
+          "enum": [
+            "s3_checksum",
+            "read_back"
+          ]
+        },
+        "selected_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processed_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "admitted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
-      "required": ["group_id", "vault_id", "path", "status", "reason", "requested_at", "updated_at", "origin", "verification_mode", "selected_count", "processed_count", "admitted_count", "total_bytes"]
+      "required": [
+        "group_id",
+        "vault_id",
+        "path",
+        "status",
+        "reason",
+        "requested_at",
+        "updated_at",
+        "origin",
+        "verification_mode",
+        "selected_count",
+        "processed_count",
+        "admitted_count",
+        "total_bytes"
+      ]
     },
     "BulkUploadAdmissionActivity": {
       "type": "object",
       "properties": {
-        "requests": { "type": "integer", "minimum": 0 },
-        "selected_files": { "type": "integer", "minimum": 0 },
-        "processed_files": { "type": "integer", "minimum": 0 },
-        "admitted_files": { "type": "integer", "minimum": 0 }
+        "requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processed_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "admitted_files": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
-      "required": ["requests", "selected_files", "processed_files", "admitted_files"]
+      "required": [
+        "requests",
+        "selected_files",
+        "processed_files",
+        "admitted_files"
+      ]
     },
     "UploadActivityStage": {
       "type": "object",
       "properties": {
-        "files": { "type": "integer", "minimum": 0 },
-        "bytes": { "type": "integer", "minimum": 0 },
-        "transferred_bytes": { "type": "integer", "minimum": 0 }
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transferred_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
-      "required": ["files", "bytes", "transferred_bytes"]
+      "required": [
+        "files",
+        "bytes",
+        "transferred_bytes"
+      ]
     },
     "UploadActivitySummary": {
       "type": "object",
       "properties": {
-        "stability_wait": { "$ref": "#/components/schemas/UploadActivityStage" },
-        "queued": { "$ref": "#/components/schemas/UploadActivityStage" },
-        "uploading": { "$ref": "#/components/schemas/UploadActivityStage" },
-        "verifying": { "$ref": "#/components/schemas/UploadActivityStage" },
-        "bulk_admission": { "$ref": "#/components/schemas/BulkUploadAdmissionActivity" },
-        "awaiting_admission_files": { "type": "integer", "minimum": 0 },
-        "next_stable_at": { "type": ["string", "null"] }
+        "stability_wait": {
+          "$ref": "#/components/schemas/UploadActivityStage"
+        },
+        "queued": {
+          "$ref": "#/components/schemas/UploadActivityStage"
+        },
+        "uploading": {
+          "$ref": "#/components/schemas/UploadActivityStage"
+        },
+        "verifying": {
+          "$ref": "#/components/schemas/UploadActivityStage"
+        },
+        "bulk_admission": {
+          "$ref": "#/components/schemas/BulkUploadAdmissionActivity"
+        },
+        "awaiting_admission_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_stable_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
-      "required": ["stability_wait", "queued", "uploading", "verifying", "awaiting_admission_files", "next_stable_at"]
+      "required": [
+        "stability_wait",
+        "queued",
+        "uploading",
+        "verifying",
+        "awaiting_admission_files",
+        "next_stable_at"
+      ]
     },
     "UploadActivityResponse": {
       "type": "object",
       "properties": {
-        "observed_at": { "type": "string" },
-        "global": { "$ref": "#/components/schemas/UploadActivitySummary" },
+        "observed_at": {
+          "type": "string"
+        },
+        "global": {
+          "$ref": "#/components/schemas/UploadActivitySummary"
+        },
         "vaults": {
           "type": "array",
           "items": {
             "allOf": [
-              { "$ref": "#/components/schemas/UploadActivitySummary" },
-              { "type": "object", "properties": { "vault_id": { "type": "integer" }, "vault_name": { "type": "string" } }, "required": ["vault_id", "vault_name"] }
+              {
+                "$ref": "#/components/schemas/UploadActivitySummary"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "vault_id": {
+                    "type": "integer"
+                  },
+                  "vault_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vault_id",
+                  "vault_name"
+                ]
+              }
             ]
           }
         }
       },
-      "required": ["observed_at", "global", "vaults"]
+      "required": [
+        "observed_at",
+        "global",
+        "vaults"
+      ]
     },
     "GeneralOverview": {
       "type": "object",
@@ -2454,13 +2823,7 @@
               "id": {
                 "type": "integer"
               },
-              "slug": {
-                "type": "string"
-              },
               "name": {
-                "type": "string"
-              },
-              "decommission_state": {
                 "type": "string"
               },
               "monthly_estimate": {
@@ -2468,13 +2831,25 @@
               },
               "open_problem_count": {
                 "type": "integer"
+              },
+              "uuid": {
+                "type": "string"
+              },
+              "lifecycle": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "reconnect_required",
+                  "stopping",
+                  "tombstone"
+                ]
               }
             },
             "required": [
               "id",
-              "slug",
+              "uuid",
               "name",
-              "decommission_state",
+              "lifecycle",
               "monthly_estimate",
               "open_problem_count"
             ]
@@ -2507,11 +2882,32 @@
         "cloud_preflight": {
           "type": "object",
           "properties": {
-            "status": { "type": "string", "enum": ["unknown", "ready", "blocked"] },
-            "remediation": { "type": ["string", "null"] },
-            "next_probe_at": { "type": ["string", "null"] }
+            "status": {
+              "type": "string",
+              "enum": [
+                "unknown",
+                "ready",
+                "blocked"
+              ]
+            },
+            "remediation": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_probe_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           },
-          "required": ["status", "remediation", "next_probe_at"]
+          "required": [
+            "status",
+            "remediation",
+            "next_probe_at"
+          ]
         },
         "last_verified_backup": {
           "type": [

@@ -1077,30 +1077,47 @@ def _own_write_arrived(client: Any, attempt: UploadAttempt, saved: dict[str, Any
     return proof is not None
 
 
-# Resume/Retry projections below still read the v0.5 remediation tables; the
-# remediation (#592) and catalog/API (#593) issues port them onto the proofs above.
-def _only_void_episodes(connection: Any, file_id: str) -> bool:
-    rows = connection.execute("SELECT intent_id FROM upload_remediations WHERE vault_file_id=%s AND state NOT IN ('resolved','cancelled') LIMIT 8", (file_id,)).fetchall()
-    return bool(rows) and all(proven_absent(connection, r["intent_id"]) and unsent(connection, r["intent_id"]) for r in rows)
+# Resume/Retry projections read the proofs above and the file's explicit
+# reconciliation block (#593); remediation episodes are #592's.
+_OWNER_CANCELLED_SQL = """SELECT 1 FROM jobs j LEFT JOIN job_uploads u ON u.job_id=j.id
+    WHERE j.file_id=%s AND j.action='upload' AND j.status='cancelled'
+      AND (coalesce(u.reconcile_only, false)
+           OR EXISTS (SELECT 1 FROM upload_attempts a WHERE a.job_id=j.id
+                      AND a.send_started_at IS NOT NULL))
+    LIMIT 1"""
+_ACTIVE_JOB_SQL = ("SELECT 1 FROM jobs WHERE file_id=%s "
+                   "AND status NOT IN ('failed','cancelled','completed') LIMIT 1")
 
 
 def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
-    row = connection.execute("SELECT vf.id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL WHERE vf.vault_id=%s AND fp.path=%s", (vault_id, path)).fetchone()
+    """Whether the file has an upload whose provider outcome is unknown.
+
+    Pending when the file carries a reconciliation block, a started attempt
+    that never settled, or a receipt contradicting a settled attempt. Resume
+    is offered only when nothing else is running on the file and the Owner
+    did not cancel its reconciliation.
+    """
     empty = {"pending": False, "can_resume": False, "reason": None, "remedy": None}
+    row = connection.execute(
+        "SELECT id, reconciliation_block FROM files WHERE vault_id=%s AND path=%s",
+        (vault_id, path),
+    ).fetchone()
     if not row:
         return empty
     file_id = row["id"]
-    block = connection.execute("SELECT reason FROM snapshot_reconciliation_blocks WHERE vault_file_id=%s", (file_id,)).fetchone()
-    intents = connection.execute("SELECT id,blocked_reason,send_started FROM upload_intents WHERE vault_file_id=%s AND NOT settled AND send_started ORDER BY created_at LIMIT 2", (file_id,)).fetchall()
-    if not block and not intents:
+    attempt = connection.execute(
+        f"""SELECT {_CONTRADICTED} AS contradicted,
+                   EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id=%(file)s
+                           AND a.settled_at IS NULL AND a.send_started_at IS NOT NULL) AS open_send""",
+        {"file": file_id},
+    ).fetchone()
+    if row["reconciliation_block"] is None and not attempt["open_send"] and not attempt["contradicted"]:
         return empty
-    reason = (block["reason"] if block else intents[0]["blocked_reason"]) or "ambiguous_send"
-    busy = connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (file_id,)).fetchone()
-    cancelled = connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (file_id,)).fetchone()
-    # An episode whose re-armed send never started has nothing left to reconcile:
-    # offering Resume would only end in a 409 (the ordinary upload retries it).
-    void_only = not intents and _only_void_episodes(connection, file_id)
-    return {"pending": True, "can_resume": not busy and not cancelled and len(intents) < 2 and not void_only,
+    reason = row["reconciliation_block"] or (
+        "ambiguous_receipt" if attempt["contradicted"] else "ambiguous_send")
+    busy = connection.execute(_ACTIVE_JOB_SQL, (file_id,)).fetchone()
+    cancelled = connection.execute(_OWNER_CANCELLED_SQL, (file_id,)).fetchone()
+    return {"pending": True, "can_resume": not busy and not cancelled,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
 
 
@@ -1108,15 +1125,14 @@ def _unresumable_reason(connection: Any, vault_id: int, path: str, state: dict[s
     """Name why exact resume cannot start; never imply the path/volume changed."""
     if not state["pending"]:
         return "already_resolved"
-    file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL", (vault_id, path)).fetchone()
+    file = connection.execute(
+        "SELECT id FROM files WHERE vault_id=%s AND path=%s", (vault_id, path),
+    ).fetchone()
     if file:
-        fid = file["vault_file_id"]
-        if connection.execute("SELECT 1 FROM jobs WHERE vault_file_id=%s AND status NOT IN ('failed','cancelled','completed') LIMIT 1", (fid,)).fetchone():
+        if connection.execute(_ACTIVE_JOB_SQL, (file["id"],)).fetchone():
             return "active_operation"
-        if connection.execute("SELECT 1 FROM jobs j LEFT JOIN upload_intent_jobs b ON b.job_id=j.id WHERE j.vault_file_id=%s AND j.status='cancelled' AND (j.upload_reconcile_only OR b.intent_id IS NOT NULL) LIMIT 1", (fid,)).fetchone():
+        if connection.execute(_OWNER_CANCELLED_SQL, (file["id"],)).fetchone():
             return "owner_cancelled"
-        if len(connection.execute("SELECT 1 FROM upload_intents WHERE vault_file_id=%s AND NOT settled LIMIT 2", (fid,)).fetchall()) > 1:
-            return "ambiguous_send"
     return state["reason"] if state.get("reason") in REMEDIES else "proof_unavailable"
 
 

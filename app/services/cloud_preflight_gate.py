@@ -53,7 +53,13 @@ def reprobe_seconds(failures: int) -> int:
 
 def snapshot(connection: Any) -> dict[str, Any]:
     row = connection.execute("SELECT * FROM cloud_preflight_state WHERE id=1").fetchone()
-    return dict(row) if row else {"status": "unknown", "remediation": None, "next_probe_at": None}
+    if row is None:
+        return {"status": "unknown", "remediation": None, "next_probe_at": None}
+    state = dict(row)
+    # timestamptz leaves the gate once, as ISO-8601 text.
+    if isinstance(state.get("next_probe_at"), datetime):
+        state["next_probe_at"] = state["next_probe_at"].isoformat()
+    return state
 
 
 def probe_due(state: dict[str, Any], now: datetime) -> bool:

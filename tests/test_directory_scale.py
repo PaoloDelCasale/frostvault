@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +18,8 @@ from app.catalog import ArchiveCatalog
 from app.main import build_directory_items, list_files
 from app.services import directory_aggregates as aggregates
 from app.services import metrics as metrics_service
+from app.services.vaults import VAULT_ROW_SQL
+from tests.catalog_support import fingerprint, protect, seed_vault
 from tests.test_database import run_alembic
 
 
@@ -24,18 +27,30 @@ def _seed_vault(
     connection: PostgresConnection,
     vault_id: int = 2,
     *,
-    slug: str | None = None,
     name: str | None = None,
 ) -> None:
-    vault_slug = slug or ("docs" if vault_id == 2 else f"vault-{vault_id}")
-    vault_name = name or ("Docs" if vault_id == 2 else f"Vault {vault_id}")
-    connection.execute(
-        """
-        INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', %s)
-        """,
-        (vault_id, vault_slug, vault_name, vault_slug),
+    seed_vault(
+        connection,
+        vault_id=vault_id,
+        name=name or ("Docs" if vault_id == 2 else f"Vault {vault_id}"),
+        source_root="/source" if vault_id == 2 else f"/source-{vault_id}",
     )
+
+
+def _cloud_only(catalog, vault_id: int, path: str, provider_version_id: str, size: int) -> str:
+    """A verified Current whose Local Copy is gone."""
+    stamp = "2026-07-21T10:00:00+00:00"
+    file_id = catalog.observe_local_copy(
+        vault_id=vault_id, path=path, file_type="regular", size=size, mtime_ns=1, observed_at=stamp,
+    )
+    digest = "e" * 64
+    fingerprint(catalog, vault_id, path, digest)
+    version_id = protect(
+        catalog, vault_id, path, digest, provider_version_id=provider_version_id,
+        created_at=stamp, verified_at=stamp,
+    )
+    catalog.mark_local_copy_missing(file_id, observed_at=stamp)
+    return version_id
 
 
 def _directory_scale_file_count() -> int:
@@ -58,43 +73,23 @@ def _bulk_local_files(
 ) -> None:
     """Insert many active local-only files with minimal Python overhead."""
     raw = connection.cursor()
-    file_rows = []
-    path_rows = []
-    local_rows = []
-    for index, (path, size) in enumerate(paths_and_sizes):
-        file_id = f"00000000-0000-4000-8000-{index:012d}"
-        file_rows.append((file_id, vault_id, "active", observed_at))
-        path_rows.append((file_id, vault_id, path, observed_at))
-        local_rows.append((file_id, "present", "regular", size, 1, observed_at, observed_at))
     raw.executemany(
         """
-        INSERT INTO vault_files(id, vault_id, status, created_at)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO files(
+            id, vault_id, path, path_since, local_presence, local_file_type,
+            local_size, local_mtime_ns, local_seen_at, local_observed_at, created_at
+        ) VALUES (%s, %s, %s, %s, 'present', 'regular', %s, 1, %s, %s, %s)
         """,
-        file_rows,
-    )
-    raw.executemany(
-        """
-        INSERT INTO file_paths(
-            vault_file_id, vault_id, path, valid_from, valid_to
-        ) VALUES (%s, %s, %s, %s, NULL)
-        """,
-        path_rows,
-    )
-    raw.executemany(
-        """
-        INSERT INTO local_copies(
-            vault_file_id, presence, file_type, size, mtime_ns,
-            plaintext_sha256, matched_archive_version_id,
-            last_seen_at, observed_at
-        ) VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, %s)
-        """,
-        local_rows,
+        [
+            (f"00000000-0000-4000-8000-{index:012d}", vault_id, path, observed_at,
+             size, observed_at, observed_at, observed_at)
+            for index, (path, size) in enumerate(paths_and_sizes)
+        ],
     )
     raw.close()
     # These large fixture writes are uncommitted: autovacuum cannot provide
     # planner statistics before the test queries them on this connection.
-    connection.execute("ANALYZE vault_files, file_paths, local_copies")
+    connection.execute("ANALYZE files")
 
 
 class DirectoryScaleTests(unittest.TestCase):
@@ -146,18 +141,7 @@ class DirectoryScaleTests(unittest.TestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        catalog.record_archive_version(
-            vault_id=2,
-            path="photos/large.jpg",
-            object_key="docs/photos/large.jpg",
-            provider_version_id="v-large",
-            size=2_000_000,
-            storage_class="STANDARD",
-            etag="e1",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="scan-1",
-        )
+        _cloud_only(catalog, 2, "photos/large.jpg", "v-large", 2_000_000)
         catalog.observe_local_copy(
             vault_id=2,
             path="documents/invoice.pdf",
@@ -228,8 +212,7 @@ class DirectoryScaleTests(unittest.TestCase):
         clauses, params = self.catalog._direct_child_file_clauses(
             2, directory="", state=""
         )
-        self.assertIn("fp.path NOT LIKE %s", clauses)
-        self.assertEqual(params[-1], "%/%")
+        self.assertIn("strpos(f.path, '/') = 0", clauses)
         # The SQL text must not embed a bare percent beside a slash.
         self.assertFalse(any("%/" in c for c in clauses))
 
@@ -256,19 +239,7 @@ class DirectoryScaleTests(unittest.TestCase):
             ],
         )
         # Only a verified, available snapshot can be Cloud only.
-        cloud_version = self.catalog.record_archive_version(
-            vault_id=2,
-            path="clips/cloud-only.bin",
-            object_key="docs/clips/cloud-only.bin",
-            provider_version_id="v-cloud",
-            size=9,
-            storage_class="STANDARD",
-            etag="e",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="scan-1",
-        )
-        self.connection.execute("UPDATE archive_versions SET integrity='verified' WHERE id=%s", (cloud_version,))
+        _cloud_only(self.catalog, 2, "clips/cloud-only.bin", "v-cloud", 9)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
         search = self.catalog.list_files_page(
@@ -593,20 +564,16 @@ class DirectoryScaleTests(unittest.TestCase):
         # Discard observe-time dirty rows so this test owns marked_at values.
         self.connection.execute("DELETE FROM directory_aggregate_dirty WHERE vault_id=2")
         aggregates._tracker(self.connection).clear()
-        with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:00+00:00"):
-            aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
-        first = self.connection.execute(
-            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
-        ).fetchone()["marked_at"]
+        # The mark identity is the server transaction (marked_at is now()).
+        aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
+        aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
         # Reuse the connection/tracker after commit: it must not suppress a new mark.
         self.connection.commit()
-        with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:05+00:00"):
-            aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
-        second = self.connection.execute(
-            "SELECT marked_at FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos' ORDER BY marked_at DESC"
-        ).fetchone()["marked_at"]
-        self.assertEqual(first, "2026-07-21T10:00:00+00:00")
-        self.assertEqual(second, "2026-07-21T10:00:05+00:00")
+        aggregates.mark_path_dirty(self.connection, 2, "photos/a.jpg")
+        marks = self.connection.execute(
+            "SELECT mark_id FROM directory_aggregate_dirty WHERE vault_id=2 AND path='photos'"
+        ).fetchall()
+        self.assertEqual(len({row["mark_id"] for row in marks}), 2)
 
     def test_flush_preserves_dirty_marks_newer_than_claim_cutoff(self) -> None:
         """A mark committed after the flush snapshot must survive delete."""
@@ -673,8 +640,8 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(
             remaining,
             {
-                "alpha": "2026-07-21T10:00:09+00:00",
-                "beta": "2026-07-21T10:00:09+00:00",
+                "alpha": datetime.fromisoformat("2026-07-21T10:00:09+00:00"),
+                "beta": datetime.fromisoformat("2026-07-21T10:00:09+00:00"),
             },
         )
 
@@ -720,7 +687,7 @@ class DirectoryScaleTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(
             [(row["path"], row["marked_at"]) for row in remaining],
-            [("keep", "2026-07-21T12:00:00+00:00")],
+            [("keep", datetime.fromisoformat("2026-07-21T12:00:00+00:00"))],
         )
 
     def test_flush_rollback_leaves_durable_dirty_for_restart(self) -> None:
@@ -824,31 +791,10 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        version_id = self.catalog.record_archive_version(
-            vault_id=2,
-            path=path,
-            object_key=f"docs/{path}",
-            provider_version_id="v-1",
-            size=100,
-            storage_class="STANDARD",
-            etag="e1",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="scan-1",
-        )
-        self.connection.execute(
-            """
-            UPDATE archive_versions
-            SET plaintext_sha256=%s, integrity='verified', verified_at=%s
-            WHERE id=%s
-            """,
-            (digest, "2026-07-21T10:00:00+00:00", version_id),
-        )
-        self.catalog.set_local_fingerprint(
-            vault_id=2,
-            path=path,
-            plaintext_sha256=digest,
-            matched_archive_version_id=version_id,
+        fingerprint(self.catalog, 2, path, digest)
+        protect(
+            self.catalog, 2, path, digest, provider_version_id="v-1",
+            created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:00:00+00:00",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         return file_id
@@ -861,7 +807,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.assertEqual(before["state"], "protected")
         self.assertEqual(before["available_actions"]["free-space"], 1)
 
-        vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+        vault = self.connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
 
         class _EmptyClient:
             def get_paginator(self, _name):
@@ -882,7 +828,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         from app.services.catalog_audit import audit_vault_catalog
 
         self._seed_both_file()
-        vault = self.connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+        vault = self.connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
         version = self.connection.execute(
             "SELECT object_key, provider_version_id FROM archive_versions"
         ).fetchone()
@@ -967,24 +913,22 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
 
         file_id = self.connection.execute(
             """
-            SELECT vf.id FROM vault_files vf
-            JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            WHERE fp.path='hash/me.bin'
+            SELECT id FROM files WHERE vault_id=2 AND path='hash/me.bin'
             """
         ).fetchone()["id"]
         # Mimic storage._apply_local_fingerprint_updates direct SQL.
         self.connection.execute(
             """
-            UPDATE local_copies
-            SET plaintext_sha256=%s,
-                matched_archive_version_id=NULL,
-                size=100,
-                mtime_ns=1,
-                last_seen_at='scan-2',
-                observed_at='2026-07-21T12:00:00+00:00'
-            WHERE vault_file_id=%s
+            UPDATE files
+            SET local_sha256=%s,
+                matched_version_id=NULL,
+                local_size=100,
+                local_mtime_ns=1,
+                local_seen_at='2026-07-21T12:00:00+00:00',
+                local_observed_at='2026-07-21T12:00:00+00:00'
+            WHERE id=%s
             """,
-            ("b" * 64, file_id),
+            (bytes.fromhex("b" * 64), file_id),
         )
         aggregates.invalidate_for_vault_file(self.connection, 2, file_id)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
@@ -1027,34 +971,12 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        version_id = None
+        fingerprint(self.catalog, 2, old_path, digest)
         if with_cloud:
-            version_id = self.catalog.record_archive_version(
-                vault_id=2,
-                path=old_path,
-                object_key=f"docs/{old_path}",
-                provider_version_id="rename-v1",
-                size=size,
-                storage_class="STANDARD",
-                etag="rename-etag",
-                uploaded_at="2026-07-21T10:00:00+00:00",
-                observed_at="2026-07-21T10:00:00+00:00",
-                scan_id="scan-rename",
+            protect(
+                self.catalog, 2, old_path, digest, provider_version_id="rename-v1",
+                created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:00:00+00:00",
             )
-            self.connection.execute(
-                """
-                UPDATE archive_versions
-                SET plaintext_sha256=%s, integrity='verified', verified_at=%s
-                WHERE id=%s
-                """,
-                (digest, "2026-07-21T10:00:00+00:00", version_id),
-            )
-        self.catalog.set_local_fingerprint(
-            vault_id=2,
-            path=old_path,
-            plaintext_sha256=digest,
-            matched_archive_version_id=version_id,
-        )
         self.catalog.mark_local_copy_missing(
             file_id, observed_at="2026-07-21T11:00:00+00:00"
         )
@@ -1068,12 +990,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         )
         # Carry the verified match onto the provisional so post-confirm
         # free-space eligibility (local match == archive version) is realistic.
-        self.catalog.set_local_fingerprint(
-            vault_id=2,
-            path=new_path,
-            plaintext_sha256=digest,
-            matched_archive_version_id=version_id,
-        )
+        fingerprint(self.catalog, 2, new_path, digest)
         return file_id
 
     def _clear_dirty(self) -> None:
@@ -1139,8 +1056,10 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.assertIn("cloud-new", names)
         self.assertNotIn("cloud-old", names)
         folder = next(item for item in root if item["name"] == "cloud-new")
-        self.assertEqual(folder["state"], "protected")
-        self.assertEqual(folder["available_actions"]["free-space"], 1)
+        # The moved Local Copy is matched again only by the upload worker's
+        # own proof, never by the scanner's digest: pending, not releasable.
+        self.assertEqual(folder["state"], "pending")
+        self.assertEqual(folder["available_actions"]["free-space"], 0)
         self.assertEqual(folder["storage_class"], "STANDARD")
         self.assertEqual(folder["cloud_size"], 100)
 
@@ -1162,12 +1081,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:05:00+00:00",
         )
-        self.catalog.set_local_fingerprint(
-            vault_id=2,
-            path=second_old,
-            plaintext_sha256=digest,
-            matched_archive_version_id=None,
-        )
+        fingerprint(self.catalog, 2, second_old, digest)
         self.catalog.mark_local_copy_missing(
             second_id, observed_at="2026-07-21T11:05:00+00:00"
         )
@@ -1179,12 +1093,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             mtime_ns=2,
             observed_at="2026-07-21T11:05:00+00:00",
         )
-        self.catalog.set_local_fingerprint(
-            vault_id=2,
-            path=second_new,
-            plaintext_sha256=digest,
-            matched_archive_version_id=None,
-        )
+        fingerprint(self.catalog, 2, second_new, digest)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
