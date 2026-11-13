@@ -228,6 +228,13 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     NO KEY UPDATE writers. Nested target checks must retain the mode: two SHARE
     holders upgrading to NO KEY UPDATE would deadlock (ADR-0031, #551).
     """
+    pinned, _ = _target(connection, job, key=key, provider=provider, shared=shared)
+    return pinned
+
+
+def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
+            shared: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``target`` and the locked Vault row it was read from."""
     lock = "SHARE" if shared else "NO KEY UPDATE"
     vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
     row = connection.execute(
@@ -263,7 +270,7 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     return {"vault_id": vault["id"], "file_id": str(job["file_id"]),
             "bucket": row["bucket"], "region": row["region"], "key": key,
             "provider": provider, "path": row["path"], "path_since": row["path_since"],
-            "source_root": vault["source_root"], "root_identity": vault["root_identity"]}
+            "source_root": vault["source_root"], "root_identity": vault["root_identity"]}, dict(vault)
 
 
 class _ValidatedTarget:
@@ -275,11 +282,13 @@ class _ValidatedTarget:
     No capability is stored on pooled connections or survives commit/rollback.
     """
 
-    def __init__(self, connection: Any, job: dict[str, Any], pinned: dict[str, Any], shared: bool):
+    def __init__(self, connection: Any, job: dict[str, Any], pinned: dict[str, Any], shared: bool,
+                 vault: dict[str, Any] | None = None):
         self.connection = connection
         self.job = dict(job)
         self.pinned = dict(pinned)
         self.shared = shared
+        self.vault = dict(vault or {})
 
     def matches(self, connection: Any, job: dict[str, Any]) -> bool:
         return connection is self.connection and job == self.job
@@ -300,8 +309,8 @@ _validated: ContextVar[_ValidatedTarget | None] = ContextVar("upload_validated_t
 @contextmanager
 def _validated_target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
                       shared: bool = False):
-    pinned = target(connection, job, key=key, provider=provider, shared=shared)
-    token = _validated.set(_ValidatedTarget(connection, job, pinned, shared))
+    pinned, vault = _target(connection, job, key=key, provider=provider, shared=shared)
+    token = _validated.set(_ValidatedTarget(connection, job, pinned, shared, vault))
     try:
         yield pinned
     finally:
@@ -316,12 +325,24 @@ def validated_pin(connection: Any, job: dict[str, Any]) -> dict[str, Any]:
     return dict(validated.pinned)
 
 
+def validated_vault(connection: Any, job: dict[str, Any]) -> dict[str, Any]:
+    """The Vault row the claim-fenced unit on ``connection`` locked (no re-read).
+
+    Fresh for this unit only: the Source Volume/root check before a provider
+    effect compares the filesystem against this row, never against a cached one.
+    """
+    validated = _validated.get()
+    if validated is None or not validated.matches(connection, job):
+        raise RuntimeError("validated_vault needs a claim-fenced upload unit")
+    return dict(validated.vault)
+
+
 def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
                    shared: bool = False) -> None:
     validated = _validated.get()
     if validated is not None and validated.matches(connection, job):
         validated.require(pinned, shared)
-    elif target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared) != pinned:
+    elif _target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared)[0] != pinned:
         raise UploadBlocked("identity_changed")
 
 

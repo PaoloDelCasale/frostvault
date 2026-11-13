@@ -24,6 +24,7 @@ import logging
 import threading
 from collections import defaultdict
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
@@ -175,6 +176,10 @@ def _persist_dirty_directories(
     rollback (including savepoint rollback).
     """
     ordered = sorted(set(directories))
+    unit = getattr(connection, "_dirty_unit_marks", None)
+    if unit is not None:
+        # Already journaled by this same transaction (see unit_dirty_marks).
+        ordered = [d for d in ordered if (int(vault_id), d) not in unit]
     if not ordered:
         return
     connection.execute(
@@ -188,6 +193,34 @@ def _persist_dirty_directories(
     _tracker(connection).dirty_directories.update(
         (int(vault_id), directory) for directory in ordered
     )
+    if unit is not None:
+        unit.update((int(vault_id), directory) for directory in ordered)
+
+
+@contextmanager
+def unit_dirty_marks(connection: Any) -> Iterator[None]:
+    """Journal each dirty directory once for one explicit transaction (#597).
+
+    Only for a caller that owns the whole transaction (checkout to commit or
+    rollback): a second mark of the same directory in that transaction is the
+    no-op ``ON CONFLICT DO NOTHING`` anyway. ``ROLLBACK TO SAVEPOINT`` may undo
+    a mark, so whoever rolls back to a savepoint calls
+    ``forget_unit_dirty_marks``.
+    """
+    setattr(connection, "_dirty_unit_marks", set())
+    try:
+        yield
+    finally:
+        try:
+            delattr(connection, "_dirty_unit_marks")
+        except AttributeError:
+            pass
+
+
+def forget_unit_dirty_marks(connection: Any) -> None:
+    unit = getattr(connection, "_dirty_unit_marks", None)
+    if unit is not None:
+        unit.clear()
 
 
 def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
@@ -548,6 +581,7 @@ def _flush_isolated(connection: Any, vault_id: int) -> dict[str, int] | None:
     try:
         result = flush_directory_aggregates(connection, vault_id=vault_id)
     except Exception as exc:
+        forget_unit_dirty_marks(connection)
         try:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         finally:

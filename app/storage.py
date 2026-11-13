@@ -51,6 +51,7 @@ from .services.directory_aggregates import (
     invalidate_for_vault_file,
     mark_path_dirty,
     process_directory_aggregate_maintenance,
+    unit_dirty_marks,
 )
 from .services.lifecycle_policies import sync_lifecycle_rules_for_bucket
 from .services import health as health_service
@@ -454,7 +455,9 @@ class _ThrottledByteProgress:
         self._lock = threading.Lock()
         self._report_lock = threading.Lock()
         self._committed: int | None = None
-        self._last_report = 0.0
+        # The first report waits one interval too: a small transfer then costs
+        # no progress write at all before its final value.
+        self._last_report = time.monotonic()
         interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
         self._min_interval = max(0.05, interval_ms / 1000.0)
 
@@ -2042,12 +2045,19 @@ def _set_job_in_transaction(
     remediation_suspension: str | None = None,
     remediation_reason: str | None = None,
     transferred_bytes: int | None = None,
+    fenced_unit: bool = False,
 ) -> bool:
     """DB-only transition; caller owns commit/retry and deferred counters.
 
     This is the same transition used by set_job, not a second completion path.
     Terminal/retry transitions still lock the Vault exclusively; never invoke
     from an audited SHARE callback. Final upload progress can share its CAS.
+
+    ``fenced_unit``: the caller is an exclusive claim-fenced upload unit
+    (``_upload_catalog_unit``), which already holds the Vault row NO KEY UPDATE
+    and renewed this lease under the Job row lock in the same transaction. The
+    Vault lock and a held status's second renewal are then not asked again; a
+    terminal status still ends the lease by its own CAS.
     """
     params = message_params or {}
     if message_key and not message:
@@ -2060,26 +2070,29 @@ def _set_job_in_transaction(
     previous_status = None
     action = None
     vault_lock = "NO KEY UPDATE"
-    if (
-        held and claim_token
-        and remediation_suspension is None and remediation_reason is None
-        and _held_transition_may_share_vault(connection, job_id)
-    ):
+    current = None
+    if (held and claim_token
+            and remediation_suspension is None and remediation_reason is None):
+        # A held step reads its subject before the Vault lock, whose mode it
+        # decides; its previous status feeds no counter.
+        current = _transition_subject(connection, job_id)
+    # An unbound held step moves no Upload Remediation episode (see below).
+    unbound_held = bool(current and current["unbound"])
+    if unbound_held:
         # ADR-0031: a held step changes no admission predicate. Keep Vault-first
         # order before locking Jobs or append-only aggregate dirty FK marks.
         vault_lock = "KEY SHARE"
-    connection.execute(
-        f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
-        (job_id,),
-    )
-    current = connection.execute(
-        """SELECT j.status, j.action, j.vault_id, f.path
-           FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.id=%s""",
-        (job_id,),
-    ).fetchone()
+    if not fenced_unit:
+        connection.execute(
+            f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
+            (job_id,),
+        )
+    if current is None:
+        current = _transition_subject(connection, job_id)
     if current is not None:
         previous_status, action = current["status"], current["action"]
-    updated = ArchiveCatalog(connection).transition_job(
+    catalog = ArchiveCatalog(connection)
+    updated = catalog.transition_job(
         job_id=job_id,
         status=status,
         message=message,
@@ -2089,44 +2102,71 @@ def _set_job_in_transaction(
         claim_token=claim_token,
         claim_expires_at=_claim_expiry_at(timestamp) if held else None,
         transferred_bytes=transferred_bytes,
+        lease_renewed=fenced_unit,
     )
     if updated and action == "upload":
         from .services import upload_remediation
-        upload_remediation.transition(
-            connection, job_id, status, timestamp,
-            suspension=remediation_suspension, closing_reason=remediation_reason,
-        )
-        _dirty_job_protection(connection, job_id)
+        if not unbound_held:
+            # Bindings are written only with the Job's creation or completion:
+            # an unbound held step has no episode to move (ADR-0035, #592).
+            upload_remediation.transition(
+                connection, job_id, status, timestamp,
+                suspension=remediation_suspension, closing_reason=remediation_reason,
+                bound=not current["unbound"], job=catalog.transitioned_job,
+            )
+        # Same row as _dirty_job_protection would read again.
+        mark_path_dirty(connection, int(current["vault_id"]), current["path"])
         if remediation_reason == "file_removed" and current is not None:
             ArchiveCatalog(connection).mark_local_path_missing(
                 vault_id=int(current["vault_id"]), path=current["path"], observed_at=timestamp,
             )
     if updated and status in {"completed", "failed"}:
-        notification_service.enqueue_job_terminal_notification_best_effort(connection, job_id=job_id)
+        if action == "upload" and status == "completed":
+            # A completed upload notifies no one (see
+            # enqueue_job_terminal_notification): only leave the outbox.
+            notification_service.mark_terminal_notification_done(connection, job_id=job_id)
+        else:
+            notification_service.enqueue_job_terminal_notification_best_effort(
+                connection, job_id=job_id)
         if previous_status not in JOB_TERMINAL_STATUSES:
             _record_committed_job_counter("completed" if status == "completed" else "failed", action)
     return updated
 
 
-def _held_transition_may_share_vault(connection: Any, job_id: int) -> bool:
-    """Whether a held-status step of ``job_id`` writes nothing admission reads.
+def _set_job_message_in_transaction(connection: Any, job_id: int, message_key: str) -> None:
+    """Change only the visible message of a claimed, running Job.
 
-    An upload bound to an Upload Remediation episode also moves that episode
-    (``upload_remediation.transition``); it keeps the exclusive Vault lock.
-    Bindings are written only with the Job's creation or completion, never
-    while a claimant holds it, so this unlocked read cannot go stale.
+    No status, lease, protection or remediation change: the caller's
+    claim-fenced unit already holds the Job row. A Job that moved on keeps its
+    own message (the CAS matches only the status the run is in).
     """
-    row = connection.execute(
+    connection.execute(
+        """UPDATE jobs SET message=%s, message_key=%s, message_params=NULL, updated_at=%s
+           WHERE id=%s AND status IN ('uploading', 'verifying')""",
+        (translate(message_key, locale=DEFAULT_LOCALE), message_key, now_iso(), job_id),
+    )
+
+
+def _transition_subject(connection: Any, job_id: int) -> dict[str, Any] | None:
+    """The Job a transition moves, and whether it is unbound, in one read.
+
+    ``unbound``: a held-status step of ``job_id`` writes nothing admission
+    reads. An upload bound to an Upload Remediation episode also moves that
+    episode (``upload_remediation.transition``); it keeps the exclusive Vault
+    lock. Bindings are written only with the Job's creation or completion,
+    never while a claimant holds it, so this unlocked read cannot go stale.
+    """
+    return connection.execute(
         """
-        SELECT NOT (
-            j.action='upload'
-            AND EXISTS (SELECT 1 FROM upload_remediation_jobs b WHERE b.job_id=j.id)
-        ) AS unbound
-        FROM jobs j WHERE j.id=%s
+        SELECT j.status, j.action, j.vault_id, f.path,
+               NOT (
+                   j.action='upload'
+                   AND EXISTS (SELECT 1 FROM upload_remediation_jobs b WHERE b.job_id=j.id)
+               ) AS unbound
+        FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.id=%s
         """,
         (job_id,),
     ).fetchone()
-    return bool(row and row["unbound"])
 
 
 @retry_database_unit
@@ -2876,6 +2916,7 @@ def job_progress_callback(
     job: dict[str, Any],
     *,
     minimum_bytes: int = 0,
+    floor_reported: bool = False,
 ) -> Callable[[int, int | None], None]:
     total_bytes = int(job.get("total_bytes") or 0)
     # Upload verification is a second read phase of the same Job. Its stream
@@ -2884,7 +2925,9 @@ def job_progress_callback(
     total_bytes = max(total_bytes, floor)
     interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
     min_interval = max(0.05, interval_ms / 1000.0)
-    state = {"last_at": 0.0, "last_value": floor - 1}
+    # ``floor_reported``: the caller already recorded ``floor`` durably, so
+    # reporting it again would be one more transaction with no new progress.
+    state = {"last_at": 0.0, "last_value": floor if floor_reported else floor - 1}
     lock = threading.Lock()
 
     def update(transferred_bytes: int, _: int | None = None) -> None:
@@ -2937,10 +2980,19 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
     ``identity_changed`` is reserved for a root that was observed and differs
     from the enrolled one. An unreadable/unavailable volume waits (#486).
     """
-    from .services.upload_provenance import UploadBlocked
     ensure_job_active(job["id"], "Upload source claim lost")
     with db() as connection:
         vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+    _upload_source_root_check(job, vault)
+
+
+def _upload_source_root_check(job: dict[str, Any], vault: dict[str, Any] | None) -> None:
+    """Filesystem half of the Source Volume/root check, against a fresh Vault row.
+
+    ``vault`` must come from the DB unit just committed (the claim-fenced
+    upload unit's locked row): this never reads a cached row.
+    """
+    from .services.upload_provenance import UploadBlocked
     if not vault or vault["source_root"] != job["source_root"]:
         raise UploadBlocked("identity_changed")
     if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
@@ -2954,7 +3006,15 @@ def _require_upload_source_identity(job: dict[str, Any]) -> None:
 
 
 def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, Any]:
-    _require_upload_source_identity(job)
+    # The upload Module hands over the Vault row its send-started unit locked
+    # and committed just before: the root is still checked on the filesystem
+    # here, right before the PUT, without reading the same row again.
+    vault = job.get("_upload_source_vault")
+    if vault is None:
+        _require_upload_source_identity(job)
+    else:
+        _upload_source_root_check(job, vault)
+    check_active = job.get("_upload_check_active") or (lambda: ensure_job_active(job["id"], "Upload stopped"))
     reporter = _ThrottledByteProgress(job)
     limit = _runtime_settings().bandwidth_limit_kibps
     from .services.upload_provenance import provider_identity, UploadBlocked
@@ -2965,7 +3025,7 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
     response = upload_file(
         read_client, source=source, bucket=job["s3_bucket"], key=key,
         write_client=write_client,
-        check_active=lambda: ensure_job_active(job["id"], "Upload stopped"),
+        check_active=check_active,
         on_progress=reporter.add,
         max_bandwidth=int(limit) * 1024 if limit else None,
         snapshot=job.get("_upload_snapshot"),
@@ -2973,35 +3033,46 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         on_acknowledged=job.get("_on_upload_acknowledged"),
         on_multipart=job.get("_on_upload_multipart"),
     )
-    reporter.flush()
+    if not job.get("_upload_progress_in_catalog"):
+        # Otherwise the caller's next fenced unit records the final bytes.
+        reporter.flush()
     return response
 
 
 def _stream_plaintext_for_verification(
     job: dict[str, Any], *, target: dict[str, Any], source_size: int,
+    check_active: Callable[[], None] | None = None,
+    floor_reported: bool = False,
 ) -> tuple[str, int]:
-    """Hash only the exact VersionId returned by the upload, never current key."""
+    """Hash only the exact VersionId returned by the upload, never current key.
+
+    ``check_active`` replaces the per-chunk durable checkpoint with the
+    caller's (the upload Module's amortized one); a read-back is no effect.
+    """
     version_id = target.get("provider_version_id")
     key = target.get("object_key")
     if not version_id or not key:
         raise RuntimeError("An exact Archive Version is required for verification")
-    ensure_job_active(job["id"], "Upload stopped")
+    if check_active is None:
+        check_active = lambda: ensure_job_active(job["id"], "Upload stopped")
+    check_active()
     response = s3_client().get_object(Bucket=job["s3_bucket"], Key=key, VersionId=version_id)
     body = response["Body"]
     digest = hashlib.sha256()
     size = 0
-    progress = job_progress_callback(job, minimum_bytes=source_size)
+    progress = job_progress_callback(
+        job, minimum_bytes=source_size, floor_reported=floor_reported)
     try:
         if str(response.get("VersionId") or "") != str(version_id):
             raise RuntimeError("S3 returned a different verification VersionId")
         while chunk := body.read(1024 * 1024):
-            ensure_job_active(job["id"], "Upload stopped")
+            check_active()
             digest.update(chunk)
             size += len(chunk)
             progress(size)
     finally:
         body.close()
-    ensure_job_active(job["id"], "Upload stopped")
+    check_active()
     return digest.hexdigest(), size
 
 
@@ -3186,7 +3257,7 @@ def _upload_catalog_unit(
     # Acquired before connection checkout/Vault locks, released after COMMIT
     # (or rollback), and outside the retry decorator's sleep between attempts.
     with catalog_capacity(job), _defer_job_counters():
-        with owned_connection(db()) as connection:
+        with owned_connection(db()) as connection, unit_dirty_marks(connection):
             # Same Vault -> Job/file order as admission/cleanup, in either mode.
             # The private capability exists only inside this DB unit and still
             # compares every pin; nested prepare/send/publication checks need
@@ -4047,13 +4118,19 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
 
 @retry_database_unit
 def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
-    with owned_connection(db()) as connection:
-        claim_token = job.get("claim_token")
-        if claim_token:
-            return ArchiveCatalog(connection).renew_job_claim(
+    claim_token = job.get("claim_token")
+    if claim_token:
+        with owned_connection(db()) as connection:
+            renewed = ArchiveCatalog(connection).renew_job_claim(
                 job_id=int(job["id"]), claim_token=str(claim_token),
                 now=now_iso(), claim_expires_at=_claim_expiry_at(),
             )
+        if renewed is not None and _claim_token_for(int(job["id"])) == str(claim_token):
+            # This is the run's first extension: the next checkpoints read the
+            # lease and extend it again only after the usual interval.
+            _worker_claim.renewed = ((int(job["id"]), str(claim_token)), time.monotonic())
+        return renewed
+    with owned_connection(db()) as connection:
         # Direct unit/service callers retain the historic unclaimed seam;
         # production scheduling always supplies a token.
         return connection.execute(
@@ -4141,13 +4218,22 @@ def _wait_for_source_volume(job: dict[str, Any]) -> None:
 
 def _clear_source_volume_problem(job: dict[str, Any]) -> None:
     """The volume was read again: resolve the Vault's open problem, if any."""
-    key = _source_volume_problem_key(int(job["vault_id"]))
     with db() as connection:
-        opened = connection.execute(
-            "SELECT 1 FROM notifications WHERE dedupe_key=%s AND problem_status='open' LIMIT 1", (key,),
-        ).fetchone()
-    if not opened:
-        return
+        opened = _source_volume_problem_open(connection, job)
+    if opened:
+        _resolve_source_volume_problem(job)
+
+
+def _source_volume_problem_open(connection: Any, job: dict[str, Any]) -> bool:
+    key = _source_volume_problem_key(int(job["vault_id"]))
+    return connection.execute(
+        "SELECT 1 FROM notifications WHERE dedupe_key=%s AND problem_status='open' LIMIT 1", (key,),
+    ).fetchone() is not None
+
+
+def _resolve_source_volume_problem(job: dict[str, Any]) -> None:
+    key = _source_volume_problem_key(int(job["vault_id"]))
+
     @retry_database_unit
     def resolve() -> None:
         with owned_connection(db()) as connection:

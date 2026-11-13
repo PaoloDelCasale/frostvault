@@ -877,6 +877,7 @@ class ArchiveCatalog:
         plaintext_sha256: str | bytes,
         verified_at: Any,
         local_generation: int | None = None,
+        replacement_locked: bool = False,
     ) -> bool:
         """Verify the replacement in progress and make it Current, atomically.
 
@@ -885,15 +886,19 @@ class ArchiveCatalog:
         becomes matched only when it is still the observation
         ``local_generation`` and its fingerprint equals the verified digest.
         Returns whether the Local Copy is matched to the new Current.
+
+        ``replacement_locked``: the caller read this file row FOR UPDATE in
+        this transaction and saw ``archive_version_id`` as its replacement.
         """
         digest = _digest(plaintext_sha256)
         stamp = _required_timestamp(verified_at)
-        target = self.connection.execute(
-            "SELECT replacing_version_id FROM files WHERE id=%s FOR UPDATE",
-            (vault_file_id,),
-        ).fetchone()
-        if target is None or _id(target["replacing_version_id"]) != str(archive_version_id):
-            raise StaleReplacement("The Archive Version is not the replacement in progress")
+        if not replacement_locked:
+            target = self.connection.execute(
+                "SELECT replacing_version_id FROM files WHERE id=%s FOR UPDATE",
+                (vault_file_id,),
+            ).fetchone()
+            if target is None or _id(target["replacing_version_id"]) != str(archive_version_id):
+                raise StaleReplacement("The Archive Version is not the replacement in progress")
         verified = self.connection.execute(
             """
             UPDATE archive_versions
@@ -930,6 +935,8 @@ class ArchiveCatalog:
                 "version": archive_version_id,
             },
         ).fetchone()
+        if row is None:
+            raise StaleReplacement("The Archive Version is not the replacement in progress")
         self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
         return row["matched_version_id"] is not None
 
@@ -2517,8 +2524,12 @@ class ArchiveCatalog:
         transferred_bytes: int | None = None,
         run_after: str | None = None,
         retry_count: int | None = None,
+        lease_renewed: bool = False,
     ) -> bool:
         """Move a Job to ``status``, compare-and-swap on its live lease.
+
+        ``lease_renewed``: this transaction already renewed the lease under the
+        Job row lock (a claim-fenced unit), so a held status is not renewed twice.
 
         With a claim the Job row is locked first and the lease checked fresh:
         a held status extends the lease, a waiting status gives it back, a
@@ -2527,12 +2538,15 @@ class ArchiveCatalog:
         a claim (administrative callers) only a non-terminal Job moves.
         A terminal Job never moves again.
         """
+        self.transitioned_job = None
         if claim_token:
             token = self._lease_token(claim_token)
             if status in JOB_LEASE_HELD_STATUSES:
                 if not claim_expires_at:
                     raise ValueError("A held Job needs its lease expiry")
-                if self.renew_job_claim(
+                if lease_renewed:
+                    pass
+                elif self.renew_job_claim(
                     job_id=job_id, claim_token=token, now=now,
                     claim_expires_at=claim_expires_at, lock_job=True,
                 ) is None:
@@ -2564,12 +2578,16 @@ class ArchiveCatalog:
                 run_after=COALESCE(%s::timestamptz, run_after),
                 retry_count=COALESCE(%s, retry_count)
             WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            RETURNING id, file_id, vault_id, action, status, retry_count, run_after,
+                      archive_version_id
             """,
             (status, message, message_key, params, now,
              None if transferred_bytes is None else max(0, int(transferred_bytes)),
              run_after, retry_count, job_id),
         )
-        return result.rowcount == 1
+        # The moved row, for the caller's same-transaction follow-ups (#597).
+        self.transitioned_job = result.fetchone()
+        return self.transitioned_job is not None
 
     def cancel_jobs(
         self,

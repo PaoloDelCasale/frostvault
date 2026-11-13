@@ -43,7 +43,10 @@ class ProvenanceLockModeTests(unittest.TestCase):
         bound = (attempt.admitted, False)
         job = {"id": 1}
         for shared in (False, True):
-            with self.subTest(shared=shared), patch.object(provenance, "target", return_value=pinned) as target, \
+            # Every nested check reads the target and its locked Vault row
+            # through ``_target``; each must keep the requested mode.
+            with self.subTest(shared=shared), \
+                    patch.object(provenance, "_target", return_value=(pinned, {})) as target, \
                     patch.object(provenance, "_bound", return_value=bound), \
                     patch.object(provenance, "_open_attempt", return_value=attempt):
                 connection = MagicMock()

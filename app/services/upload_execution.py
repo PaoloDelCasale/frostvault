@@ -40,6 +40,7 @@ import psycopg
 
 from . import upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
+from .snapshot_cleanup import RESUME_NEEDED_SQL
 from .upload_snapshot import CHUNK_SIZE, UploadSnapshot, UploadProofMismatch, unsupported_checksum_api
 
 
@@ -63,6 +64,14 @@ class _UploadCheckpoint:
         self.worker, self.job = worker, job
         self.lost = worker._claim_lost_event_for(job["id"])
         self.next_remote = 0.0
+
+    def fenced(self) -> None:
+        """A claim-fenced DB unit just committed: it read the lease durably.
+
+        The next remote read is due one turn later, as after any remote check.
+        In-memory cancel/shutdown/loss signals are still checked every turn.
+        """
+        self.next_remote = time.monotonic() + 1.0
 
     def __call__(self) -> None:
         w, job_id = self.worker, self.job["id"]
@@ -135,6 +144,10 @@ class UploadExecution:
         ):
             pipeline = upload_pipeline.pipeline_for(self.worker)
             check = _UploadCheckpoint(self.worker, job)
+            # process_job renewed this claim just before dispatching here, and
+            # every DB unit of the run is claim-fenced: no read is owed yet.
+            check.fenced()
+            self._check = check
             with upload_pipeline.bind(pipeline, job, check):
                 return self._run_claimed(job, pipeline, check)
 
@@ -143,13 +156,13 @@ class UploadExecution:
     def _run_claimed(self, job: dict[str, Any], pipeline: upload_pipeline._Pipeline,
                      check: Callable[[], None]) -> UploadOutcome:
         w = self.worker
-        w.ensure_job_active(job["id"], "Upload stopped")
+        # No separate lease read here: the first DB unit below (_load, or the
+        # automatic gate's own CAS) is claim-fenced and sees cancellation,
+        # takeover and expiry durably (#597).
         waiting = self._automatic_gate(job)
         if waiting is not None:
             return waiting
         w.validate_cloud_vault(job)
-        w._require_upload_source_identity(job)
-        w._clear_source_volume_problem(job)
         run = _Run(job, w.safe_local_path(job["source_root"], job["path"]), pipeline, check)
         try:
             self._load(run)
@@ -166,7 +179,8 @@ class UploadExecution:
                     return waiting
             if run.version is None:
                 # An open cleanup of Current ends before a match or a new send.
-                w.cleanup_superseded_upload(job, keeper_id=None, client=run.client)
+                if run.extra.get("cleanup_pending"):
+                    w.cleanup_superseded_upload(job, keeper_id=None, client=run.client)
                 if self._unchanged(run):
                     return UploadOutcome(int(job["id"]), "completed", None)
                 self._send(run)
@@ -193,7 +207,11 @@ class UploadExecution:
             raise
 
     def _db(self, job: dict[str, Any], mutation: Any, *, shared: bool = False) -> Any:
-        return self.worker._upload_catalog_unit(job, mutation, shared=shared)
+        result = self.worker._upload_catalog_unit(job, mutation, shared=shared)
+        check = getattr(self, "_check", None)
+        if check is not None:
+            check.fenced()
+        return result
 
     def _automatic_gate(self, job: dict[str, Any], *, after_hash: bool = False) -> UploadOutcome | None:
         w = self.worker
@@ -221,10 +239,18 @@ class UploadExecution:
         not publish (the replacement in progress) is verified by this Job from
         its own attempt's snapshot, independently of the original Job.
         """
-        job = run.job
+        w, job = self.worker, run.job
+        # The pre-hash stat precedes the unit, so the unit can also return the
+        # catalog observation it is compared with (no second unit, #597).
+        run.observed = _regular_stat(run.source)
 
-        def load(catalog: Any) -> tuple[Any, Any, Any]:
+        def load(catalog: Any) -> tuple[Any, ...]:
             connection = catalog.connection
+            # The Source Volume/root check of this run starts from the Vault
+            # row this fenced unit locked; the filesystem half follows below.
+            vault = provenance.validated_vault(connection, job)
+            if vault.get("source_root") != job["source_root"]:
+                raise provenance.UploadBlocked("identity_changed")
             detail = connection.execute(
                 "SELECT verification_mode, reconcile_only FROM job_uploads WHERE job_id=%s",
                 (job["id"],)).fetchone()
@@ -233,12 +259,26 @@ class UploadExecution:
                 attempt = provenance.outstanding(connection, job["file_id"])
                 if attempt is not None:
                     provenance.bind_for_resume(connection, job["id"], attempt, reconcile_only=None)
-            version = _linked_version(connection, job, attempt)
+            # One read of the file row: the pre-hash observation, the version
+            # linked to the Job or in progress, and whether a cleanup is open.
+            observation = connection.execute(
+                f"""SELECT f.generation, f.local_presence, f.local_file_type, f.local_size,
+                           f.local_mtime_ns, COALESCE(j.archive_version_id, f.replacing_version_id)
+                           AS linked_version_id, {RESUME_NEEDED_SQL} AS cleanup_pending
+                    FROM files f JOIN jobs j ON j.id=%s WHERE f.id=%s""",
+                (job["id"], job["file_id"])).fetchone()
+            version = _linked_version(connection, job, attempt, observation)
             if version is not None:
                 catalog.link_job_version(job["id"], version.id)
-            return detail, attempt, version
+            return (detail, attempt, version, vault, provenance.validated_pin(connection, job),
+                    observation, w._source_volume_problem_open(connection, job),
+                    version is None and bool(observation and observation["cleanup_pending"]))
 
-        detail, run.attempt, run.version = self._db(job, load, shared=True)
+        (detail, run.attempt, run.version, vault, run.extra["pin"], run.extra["observation"],
+         problem, run.extra["cleanup_pending"]) = self._db(job, load, shared=True)
+        w._upload_source_root_check(job, vault)
+        if problem:
+            w._resolve_source_volume_problem(job)
         if detail is not None:
             run.mode, run.reconcile_only = detail["verification_mode"], bool(detail["reconcile_only"])
         bound = run.attempt.admitted if run.attempt is not None else None
@@ -250,6 +290,8 @@ class UploadExecution:
         w, job, attempt = self.worker, run.job, run.attempt
         assert attempt is not None
         run.client = run.client or w.s3_client()
+        # Provider reads follow: the observation is taken again afterwards.
+        run.extra.pop("observation", None)
 
         def inspect(catalog: Any) -> tuple[Any, list[str]]:
             connection = catalog.connection
@@ -313,9 +355,18 @@ class UploadExecution:
                     storage_class=response.get("StorageClass") or "STANDARD",
                     created_at=stamp, upload_attempt_id=attempt.id)
             catalog.link_job_version(job["id"], archive_version_id)
+            # The Job enters verification in the same exclusive unit, with the
+            # bytes this run sent (#597): no separate progress/status units.
+            if not w._set_job_in_transaction(
+                    connection, job["id"], "verifying", message_key="job.verifying_cloud_copy",
+                    transferred_bytes=sent, fenced_unit=True):
+                raise w.JobLeaseLost("Upload claim was lost")
             return archive_version_id
 
+        # A materialized version landed every byte of its snapshot.
+        sent = int(attempt.snapshot.size)
         archive_version_id = self._db(job, publish)
+        run.extra["verifying"] = True
         run.version = _Version(archive_version_id, attempt.target["key"], version_id,
                                attempt.snapshot.size, "unverified", attempt.admitted, attempt.token)
 
@@ -328,17 +379,17 @@ class UploadExecution:
         against: a newer observation, a rename or another stat always wins.
         """
         w, job = self.worker, run.job
-        try:
-            observed = run.source.stat(follow_symlinks=False)
-        except (FileNotFoundError, NotADirectoryError):
-            return False
-        if not stat.S_ISREG(observed.st_mode):
+        # The stat and catalog row _load read together; a reconcile in between
+        # (provider reads only) takes a new pair.
+        observed, row = run.observed, run.extra.pop("observation", None)
+        if row is None:
+            observed = _regular_stat(run.source)
+        if observed is None:
+            run.observed = None
             return False
 
         def current(connection: Any) -> Any:
-            return connection.execute(
-                "SELECT generation, local_presence, local_file_type, local_size, local_mtime_ns "
-                "FROM files WHERE id=%s", (job["file_id"],)).fetchone()
+            return _observation(connection, job)
 
         def same(row: Any) -> bool:
             return bool(row and row["local_presence"] == "present"
@@ -346,7 +397,8 @@ class UploadExecution:
                         and (row["local_size"], row["local_mtime_ns"])
                         == (observed.st_size, observed.st_mtime_ns))
 
-        row = self._db(job, lambda catalog: current(catalog.connection), shared=True)
+        if row is None:
+            row = self._db(job, lambda catalog: current(catalog.connection), shared=True)
         if not same(row):
             def observe(catalog: Any) -> Any:
                 catalog.observe_local_copy(
@@ -368,7 +420,8 @@ class UploadExecution:
         if (hashed.st_size, hashed.st_mtime_ns) != (observed.st_size, observed.st_mtime_ns):
             raise RuntimeError("Local file changed since fingerprinting")
         run.snapshot = snapshot
-        w.ensure_job_active(job["id"], "Upload claim was lost")
+        # The next DB unit (match or send) is claim-fenced; the hashing loop
+        # itself checked the lease at least once a second.
         if run.version is None:
             return self._automatic_gate(job, after_hash=True)
         return None
@@ -381,6 +434,15 @@ class UploadExecution:
         w, job, snapshot, observed = self.worker, run.job, run.snapshot, run.observed
         assert snapshot is not None and observed is not None
         digest = bytes.fromhex(snapshot.plaintext_sha256)
+        current_sql = """SELECT 1 FROM files f JOIN archive_versions cur ON cur.id=f.current_version_id
+                   WHERE f.id=%s AND f.replacing_version_id IS NULL AND f.held_version_id IS NULL
+                     AND cur.integrity='verified' AND cur.availability='available'
+                     AND cur.plaintext_sha256=%s"""
+        # A different digest (the ordinary case) is decided by a shared read;
+        # only an equal one takes the exclusive unit that completes the Job.
+        if self._db(job, lambda catalog: catalog.connection.execute(
+                current_sql, (job["file_id"], digest)).fetchone(), shared=True) is None:
+            return False
 
         def finish(catalog: Any) -> bool:
             connection = catalog.connection
@@ -399,7 +461,7 @@ class UploadExecution:
             catalog.clear_reconciliation_block(job["file_id"])
             if not w._set_job_in_transaction(connection, job["id"], "completed",
                                              message_key="job.upload_verified",
-                                             transferred_bytes=0):
+                                             transferred_bytes=0, fenced_unit=True):
                 raise w.JobLeaseLost("Upload completion claim was lost")
             return True
 
@@ -433,7 +495,7 @@ class UploadExecution:
         w, job = self.worker, run.job
         run.client = run.client or w.s3_client()
         provider = provenance.provider_identity(run.client)
-        w.set_job(job["id"], "uploading", message_key="job.plain_upload")
+        # The "uploading" message is written by the send-started unit itself.
         self._refresh_journal_gate(run.pipeline)
         # Capacity exists BEFORE arming send-started and BEFORE the transport
         # materializes its validated buffers.
@@ -446,8 +508,8 @@ class UploadExecution:
     def _send_bytes(self, run: _Run, provider: str) -> tuple[provenance.UploadAttempt, dict[str, Any]]:
         w, job, client = self.worker, run.job, run.client
         key = w.expected_cloud_key(job["path"], f"vaults/{job['vault_uuid']}")
-        pinned = self._db(job, lambda catalog: provenance.target(
-            catalog.connection, job, key=key, provider=provider, shared=True), shared=True)
+        # The pin _load read; prepare compares it with the live target again.
+        pinned = {**run.extra["pin"], "key": key, "provider": provider}
         before = provenance.inventory(client, pinned["bucket"], key)
         if before != provenance.inventory(client, pinned["bucket"], key):
             raise provenance.UploadBlocked("inventory_changed")
@@ -461,9 +523,11 @@ class UploadExecution:
                 timestamp=w.now_iso(), shared=True)
             # Same DB-only commit, before any provider send. A crash rolls back
             # both or leaves a send-started attempt that MUST reconcile.
-            return provenance.mark_send_started(catalog.connection, job, attempt, shared=True)
+            started = provenance.mark_send_started(catalog.connection, job, attempt, shared=True)
+            w._set_job_message_in_transaction(catalog.connection, job["id"], "job.plain_upload")
+            return started, provenance.validated_vault(catalog.connection, job)
 
-        attempt = self._db(job, prepare_send, shared=True)
+        attempt, vault = self._db(job, prepare_send, shared=True)
         run.attempt = attempt
         journal = provenance.ReceiptJournal(w.db, attempt.id, w.now_iso)
         # Explicit captures: this callback may run on an SDK thread with NONE
@@ -491,9 +555,14 @@ class UploadExecution:
 
         transfer_job = {**job, "_upload_snapshot": run.snapshot, "_upload_provider": provider,
             "_upload_metadata": {provenance.TOKEN_KEY: attempt.token, **run.snapshot.file_metadata()},
-            "_on_upload_acknowledged": acknowledge, "_on_upload_multipart": multipart}
+            "_on_upload_acknowledged": acknowledge, "_on_upload_multipart": multipart,
+            # The send-started unit just committed is this PUT's fresh lease,
+            # cancellation and Vault read; the root is checked on the
+            # filesystem against that row right before the PUT.
+            "_upload_source_vault": vault, "_upload_check_active": run.check_active,
+            "_upload_progress_in_catalog": True}
         # A journal elsewhere may have failed while this DB commit waited.
-        w.ensure_job_active(job["id"], "Upload claim was lost")
+        run.check_active()
         pipeline.require_send_admission()
         try:
             response = w.upload_s3_file(transfer_job, source=run.source, key=key)
@@ -549,9 +618,10 @@ class UploadExecution:
         w, job, version = self.worker, run.job, run.version
         assert version is not None
         expected = version.expected
-        w.ensure_job_active(job["id"], "Upload stopped")
-        w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_copy")
-        w.ensure_job_active(job["id"], "Upload claim was lost")
+        if not run.extra.get("verifying"):
+            # A version materialized by an earlier run: enter verification now.
+            w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_copy")
+            run.check_active()
         run.verification_started = True
         fallback = None
         proof = run.provider_proof
@@ -579,7 +649,9 @@ class UploadExecution:
         if fallback:
             w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_fallback")
         digest, size = w._stream_plaintext_for_verification(
-            job, target=version.target(), source_size=expected.snapshot.size)
+            job, target=version.target(), source_size=expected.snapshot.size,
+            check_active=run.check_active,
+            floor_reported=bool(run.extra.get("verifying")))
         run.verification["egress_bytes"] = size
         try:
             # The post-read HEAD is independent; contradictory evidence blocks.
@@ -650,7 +722,7 @@ class UploadExecution:
                 catalog.promote_replacement(
                     job["file_id"], archive_version_id=version.id,
                     plaintext_sha256=expected.plaintext_sha256, verified_at=verified_at,
-                    local_generation=run.generation)
+                    local_generation=run.generation, replacement_locked=True)
             elif str(row["current_version_id"]) != version.id:
                 raise provenance.UploadBlocked("target_superseded")
             catalog.clear_reconciliation_block(job["file_id"])
@@ -666,14 +738,16 @@ class UploadExecution:
         def finish(catalog: Any) -> None:
             if not w._set_job_in_transaction(
                     catalog.connection, job["id"], "completed",
-                    message_key="job.upload_verified", transferred_bytes=progress):
+                    message_key="job.upload_verified", transferred_bytes=progress,
+                    fenced_unit=True):
                 raise w.JobLeaseLost("Upload completion claim was lost")
 
         self._db(job, finish)
 
 
 def _linked_version(connection: Any, job: dict[str, Any],
-                    attempt: provenance.UploadAttempt | None) -> _Version | None:
+                    attempt: provenance.UploadAttempt | None,
+                    observation: Any = None) -> _Version | None:
     """The version this Job must verify/publish, with its expected proof.
 
     In order: the version its landed attempt produced, the version linked to
@@ -687,13 +761,16 @@ def _linked_version(connection: Any, job: dict[str, Any],
             "SELECT id FROM archive_versions WHERE upload_attempt_id=%s", (attempt.id,)).fetchone()
         if row is None:
             raise provenance.UploadBlocked("ambiguous_receipt")
-    if row is None:
+    if row is None and observation is not None:
+        # The caller's read of the same file and Job rows in this unit.
+        row = {"id": observation["linked_version_id"]}
+    elif row is None:
         row = connection.execute(
             """SELECT COALESCE(j.archive_version_id, f.replacing_version_id) AS id
                FROM jobs j JOIN files f ON f.id=j.file_id WHERE j.id=%s""",
             (job["id"],)).fetchone()
-        if row is None or row["id"] is None:
-            return None
+    if row is None or row["id"] is None:
+        return None
     version = connection.execute(
         """SELECT av.id, av.object_key, av.provider_version_id, av.size, av.integrity,
                   av.availability, a.token,
@@ -724,3 +801,18 @@ def _rearm(catalog: Any, job: dict[str, Any], attempt: provenance.UploadAttempt,
     # The Job is now this file's ordinary upload of the same snapshot.
     connection.execute("UPDATE job_uploads SET reconcile_only=false WHERE job_id=%s", (job["id"],))
     catalog.clear_reconciliation_block(job["file_id"])
+
+
+def _regular_stat(source: Path) -> os.stat_result | None:
+    """The Local Copy's stat, or None when it is not a regular file there."""
+    try:
+        observed = source.stat(follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return observed if stat.S_ISREG(observed.st_mode) else None
+
+
+def _observation(connection: Any, job: dict[str, Any]) -> Any:
+    return connection.execute(
+        "SELECT generation, local_presence, local_file_type, local_size, local_mtime_ns "
+        "FROM files WHERE id=%s", (job["file_id"],)).fetchone()

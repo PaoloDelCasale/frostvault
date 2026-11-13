@@ -17,8 +17,11 @@ class SDKBandwidthTests(unittest.TestCase):
 
     def test_progress_is_throttled_and_retry_rewinds_are_not_double_counted(self):
         job = {"id": 1, "claim_token": "claim"}
-        with patch("app.storage.set_job_progress") as report, patch("app.storage.time.monotonic", return_value=100):
+        clock = [0.0]
+        with patch("app.storage.set_job_progress") as report, \
+                patch("app.storage.time.monotonic", side_effect=lambda: clock[0]):
             progress = _ThrottledByteProgress(job)
+            clock[0] = 100.0  # past the first interval
             progress.add(10)
             for _ in range(100):
                 progress.add(1)
@@ -26,6 +29,15 @@ class SDKBandwidthTests(unittest.TestCase):
             self.assertEqual(report.call_count, 1)
             progress.flush()
         report.assert_called_with(1, 90, claim_token="claim")
+
+    def test_a_transfer_within_the_first_interval_writes_no_progress(self):
+        # A small file reports its bytes with materialization only (#597).
+        with patch("app.storage.set_job_progress") as report, \
+                patch("app.storage.time.monotonic", return_value=100):
+            progress = _ThrottledByteProgress({"id": 1})
+            for _ in range(10):
+                progress.add(1)
+        report.assert_not_called()
 
     def test_flush_deduplicates_only_a_positively_committed_value(self):
         with patch("app.storage.set_job_progress", side_effect=[True, False, True]) as report, \
@@ -41,9 +53,11 @@ class SDKBandwidthTests(unittest.TestCase):
             self.assertEqual([call.args[1] for call in report.call_args_list], [10, 15, 15])
 
     def test_progress_commit_failure_does_not_suppress_the_next_flush(self):
+        clock = [0.0]
         with patch("app.storage.set_job_progress", side_effect=[RuntimeError("commit uncertain"), True]) as report, \
-                patch("app.storage.time.monotonic", return_value=100):
+                patch("app.storage.time.monotonic", side_effect=lambda: clock[0]):
             progress = _ThrottledByteProgress({"id": 1})
+            clock[0] = 100.0  # past the first interval
             with self.assertRaises(RuntimeError):
                 progress.add(10)
             progress.flush()
