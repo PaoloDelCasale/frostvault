@@ -53,9 +53,15 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Use PostgreSQL 16 client tools
-        # The ubuntu-latest image ships PostgreSQL 16; fail if that changes.
         run: |
-          /usr/lib/postgresql/16/bin/pg_dump --version | grep -E ' 16\.[0-9]+'
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-16
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: Run PostgreSQL unit-test shard
         env:
@@ -144,9 +150,15 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Use PostgreSQL 16 client tools for backup guard tests
-        # The ubuntu-latest image ships PostgreSQL 16; fail if that changes.
         run: |
-          /usr/lib/postgresql/16/bin/pg_dump --version | grep -E ' 16\.[0-9]+'
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-16
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: PostgreSQL schema guard and baseline tests
         run: python -m unittest tests.test_database -v
