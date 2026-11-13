@@ -1460,98 +1460,6 @@ class ArchiveCatalog:
         if row is not None:
             self._mark_file_aggregates_dirty(int(row["vault_id"]), str(row["file_id"]))
 
-    def update_version_storage_placement(
-        self,
-        archive_version_id: str,
-        *,
-        provider_version_id: str,
-        storage_class: str,
-        etag: str | None = None,
-        observed_at: str,
-        storage_class_source: str = "manual",
-    ) -> None:
-        """Preserve Archive Version identity while recording a class/placement change."""
-        owned = self.connection.execute(
-            """
-            SELECT vault_id, vault_file_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (archive_version_id,),
-        ).fetchone()
-        self.connection.execute(
-            """
-            UPDATE archive_versions
-            SET provider_version_id=%s,
-                storage_class=%s,
-                etag=COALESCE(%s, etag),
-                storage_class_source=%s,
-                availability='available',
-                availability_checked_at=%s,
-                restore_state=NULL,
-                restore_expiry=NULL,
-                restore_checked_at=%s
-            WHERE id=%s
-            """,
-            (
-                provider_version_id,
-                storage_class,
-                etag,
-                storage_class_source,
-                observed_at,
-                observed_at,
-                archive_version_id,
-            ),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), owned["vault_file_id"]
-            )
-
-    def publish_storage_class_copy(
-        self,
-        *,
-        job_id: int,
-        archive_version_id: str,
-        provider_version_id: str,
-        storage_class: str,
-        etag: str | None,
-        observed_at: str,
-    ) -> str:
-        """Publish a verified placement while keeping one Archive Version identity.
-
-        S3 retains the prior exact VersionId as a noncurrent provider version;
-        the catalog continues to represent the logical Archive Version with one
-        row, as required by the manual storage-class Job contract.  A later
-        cloud scan can rediscover the retained provider version, and the
-        dedicated Cloud Purge workflow remains the only permanent deletion
-        path.
-        """
-        if not provider_version_id:
-            raise ValueError("A provider VersionId is required")
-        source = self.connection.execute(
-            """
-            SELECT vault_file_id, provider_version_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (archive_version_id,),
-        ).fetchone()
-        if source is None:
-            raise LookupError("Archive Version is no longer available")
-        self.update_version_storage_placement(
-            archive_version_id,
-            provider_version_id=str(provider_version_id),
-            storage_class=storage_class,
-            etag=etag,
-            observed_at=observed_at,
-        )
-        self.connection.execute(
-            "UPDATE jobs SET archive_version_id=%s WHERE id=%s",
-            (archive_version_id, job_id),
-        )
-        return archive_version_id
-
     # -- Projections: browse, search, versions (#593) ----------------------------
     #
     # Every listing reads one ``files`` row per Vault File and its explicit
@@ -3068,6 +2976,7 @@ class ArchiveCatalog:
         estimated_hours: float | None = None,
         origin: str = "manual",
         target_storage_class: str | None = None,
+        colder_only: bool = False,
         whole_vault: bool = False,
         recovery_selection: Sequence[tuple[str, bool]] | None = None,
         admission_file_ids: Sequence[str] | None = None,
@@ -3267,10 +3176,10 @@ class ArchiveCatalog:
         if action == "storage-class" and target_class and new_ids:
             self.connection.execute(
                 """
-                INSERT INTO job_storage_class_changes(job_id, target_storage_class)
-                SELECT job_id, %s FROM unnest(%s::bigint[]) AS job_id
+                INSERT INTO job_storage_class_changes(job_id, target_storage_class, colder_only)
+                SELECT job_id, %s, %s FROM unnest(%s::bigint[]) AS job_id
                 """,
-                (target_class, new_ids),
+                (target_class, bool(colder_only), new_ids),
             )
         if (
             action in {"recover", "storage-class"}

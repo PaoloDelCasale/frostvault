@@ -9,6 +9,7 @@ import os
 import random
 import re
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -2374,78 +2375,6 @@ def _fail_upload_on_permission_refusal(job: dict[str, Any], exc: BaseException) 
     return True
 
 
-def purge_current_snapshot_superseded(
-    job: dict[str, Any], *, keep_version_id: str, client: Any,
-) -> int:
-    """Rename's cleanup through the upload gate (rename is ported by #595).
-
-    The gate is upload-scoped (#591): a rename Job is refused by its target
-    fence until #595 gives rename its own keeper and frozen batch.
-    """
-    from .services import upload_provenance
-    from .services.upload_pipeline import catalog_capacity
-    try:
-        cleanup_superseded_upload(job, keeper_id=keep_version_id, client=client)
-        inventory_job_id = int(job["id"])
-    except upload_provenance.UploadBlocked as exc:
-        _record_upload_reconciliation_block(job, exc.reason)
-        raise
-    except (OperationCancelled, SourceVolumeUnavailable):
-        raise
-    except Exception:
-        _record_upload_reconciliation_block(job, "cleanup_unavailable")
-        raise
-    with catalog_capacity(job), db() as connection:
-        notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
-    return inventory_job_id
-
-
-def _storage_head_matches_catalog(
-    version: dict[str, Any],
-    head: dict[str, Any],
-    *,
-    target_class: str,
-) -> bool:
-    """Require provider proof for a catalogued storage-class destination."""
-    if not head.get("VersionId") or str(head["VersionId"]) != str(
-        version.get("provider_version_id")
-    ):
-        return False
-    if (head.get("StorageClass") or "STANDARD").upper() != target_class:
-        return False
-    if (
-        version.get("size") is not None
-        and head.get("ContentLength") is not None
-        and int(head["ContentLength"]) != int(version["size"])
-    ):
-        return False
-    expected_etag = str(version.get("etag") or "").strip('"')
-    observed_etag = str(head.get("ETag") or "").strip('"')
-    return not expected_etag or not observed_etag or expected_etag == observed_etag
-
-
-def _fail_storage_class_reconciliation(
-    connection: Any,
-    job: dict[str, Any],
-    *,
-    timestamp: str,
-    message: str,
-) -> str:
-    """Fail closed rather than issue a second storage-class copy."""
-    if _reconcile_job_transition(
-        connection,
-        job_id=int(job["id"]),
-        status="failed",
-        message=message,
-        timestamp=timestamp,
-    ):
-        notification_service.enqueue_job_terminal_notification_best_effort(
-            connection, job_id=int(job["id"])
-        )
-        return "failed"
-    return "skipped"
-
-
 def _reconcile_recover_job(
     connection: Any,
     job: dict[str, Any],
@@ -2557,96 +2486,17 @@ def _reconcile_storage_class_job(
     *,
     timestamp: str,
 ) -> str:
-    """Reconcile copy postconditions without ever issuing a second copy.
+    """An interrupted class change or Vault move simply resumes.
 
-    ``CopyObject`` creates a new current S3 VersionId before the worker can
-    persist it.  A current-key HEAD can reveal a possible destination but cannot
-    prove provenance if that VersionId was never catalogued.  Only a catalogued
-    exact VersionId that still HEADs as the requested class is safe to complete;
-    every other interrupted outcome is held for explicit operator recovery.
+    Its copy attempt is independent of the Job (#595): the next claim
+    reconciles a started copy from S3 by its journaled receipt or token and
+    never sends it again.
     """
-    if vault_moves.load(connection, int(job["id"])):
-        return "requeued" if _reconcile_job_transition(
-            connection, job_id=int(job["id"]), status="queued",
-            message="Vault move interrupted; exact-version ledger will resume",
-            timestamp=timestamp,
-        ) else "skipped"
-    target = (job.get("target_storage_class") or "").upper()
-    version = connection.execute(
-        """
-        SELECT object_key, provider_version_id, storage_class, size, etag
-        FROM archive_versions WHERE id=%s
-        """,
-        (job.get("archive_version_id"),),
-    ).fetchone()
-    if not target or not version or not version.get("object_key"):
-        return _fail_storage_class_reconciliation(
-            connection,
-            job,
-            timestamp=timestamp,
-            message=(
-                "Storage class change interrupted with no verifiable target; "
-                "manual review is required and no automatic retry was scheduled"
-            ),
-        )
-
-    try:
-        client = s3_client()
-        if (version.get("storage_class") or "").upper() == target:
-            head = client.head_object(
-                Bucket=job["s3_bucket"],
-                Key=version["object_key"],
-                VersionId=version["provider_version_id"],
-            )
-            if _storage_head_matches_catalog(version, head, target_class=target):
-                if _reconcile_job_transition(
-                    connection,
-                    job_id=int(job["id"]),
-                    status="completed",
-                    message="Storage class change completed before restart",
-                    timestamp=timestamp,
-                    complete_progress=True,
-                ):
-                    notification_service.enqueue_job_terminal_notification_best_effort(
-                        connection, job_id=int(job["id"])
-                    )
-                    return "completed"
-                return "skipped"
-            return _fail_storage_class_reconciliation(
-                connection,
-                job,
-                timestamp=timestamp,
-                message=(
-                    "Catalogued storage-class destination no longer matches the "
-                    "provider; manual review is required and no automatic retry "
-                    "was scheduled"
-                ),
-            )
-
-        # A noncatalogued current target may be the copied VersionId or a
-        # concurrent write.  Record neither as ours and never repeat CopyObject.
-        current = client.head_object(
-            Bucket=job["s3_bucket"],
-            Key=version["object_key"],
-        )
-        observed_version = current.get("VersionId")
-        observed_class = (current.get("StorageClass") or "STANDARD").upper()
-        detail = (
-            "an unrecorded destination VersionId was observed"
-            if observed_version and observed_class == target
-            else "the provider could not prove the copy outcome"
-        )
-    except Exception:
-        detail = "the provider postcondition could not be verified"
-    return _fail_storage_class_reconciliation(
-        connection,
-        job,
+    return "requeued" if _reconcile_job_transition(
+        connection, job_id=int(job["id"]), status="queued",
+        message="Storage class change interrupted; its copy attempt will be reconciled",
         timestamp=timestamp,
-        message=(
-            "Storage class change interrupted: "
-            f"{detail}; manual review is required and no automatic retry was scheduled"
-        ),
-    )
+    ) else "skipped"
 
 
 def _reconcile_cloud_purge_group(
@@ -3432,348 +3282,66 @@ def ensure_scheduled_current_version(
         )
 
 
-def _head_exact_archive_version(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    provider_version_id: str | None,
-    operation: str,
-) -> dict[str, Any]:
-    """Prove one recorded S3 VersionId still exists and is not a delete marker."""
-    expected_version = str(provider_version_id or "")
-    if not object_key or not expected_version:
-        raise RuntimeError(
-            f"{operation} aborted: destination has no exact S3 VersionId"
-        )
-    try:
-        head = client.head_object(
-            Bucket=bucket,
-            Key=object_key,
-            VersionId=expected_version,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"{operation} aborted: destination VersionId {expected_version!r} "
-            "is not available"
-        ) from exc
-    if head.get("DeleteMarker"):
-        raise RuntimeError(
-            f"{operation} aborted: destination VersionId {expected_version!r} "
-            "is a delete marker"
-        )
-    observed = head.get("VersionId")
-    if not observed or str(observed) != expected_version:
-        raise RuntimeError(
-            f"{operation} aborted: destination VersionId {observed!r} does not "
-            f"match recorded Archive Version {expected_version!r}"
-        )
-    return head
+def _copy_worker() -> Any:
+    """This module as the worker seam of the copy engine (patched in tests)."""
+    return sys.modules[__name__]
 
 
-def _iter_reusable_rename_destinations(
-    rows: list[Any],
-    expected_digest: str | None,
-):
-    expected = str(expected_digest or "")
-    verified_matches: list[Any] = []
-    unverified: list[Any] = []
-    for row in rows:
-        availability = row["availability"] or "available"
-        integrity = row["integrity"] or "unverified"
-        if availability != "available" or not row["provider_version_id"]:
-            continue
-        if integrity == "verified":
-            if expected and str(row["plaintext_sha256"] or "") == expected:
-                verified_matches.append(row)
-        elif integrity == "unverified":
-            unverified.append(row)
-    yield from verified_matches
-    yield from unverified
+_RENAME_CHAIN_LIMIT = 3
 
 
-def _select_live_rename_destination(
-    client: Any,
-    *,
-    bucket: str,
-    rows: list[Any],
-    expected_digest: str | None,
-) -> Any | None:
-    """Return a live destination version that may be reused for rename.
-
-    Missing, purged, or different-digest verified versions never authorize
-    skipping copy or hiding the old key. An unverified available version can
-    resume verification of its exact VersionId.
-    """
-    for row in _iter_reusable_rename_destinations(rows, expected_digest):
-        try:
-            _head_exact_archive_version(
-                client,
-                bucket=bucket,
-                object_key=str(row["object_key"]),
-                provider_version_id=str(row["provider_version_id"]),
-                operation="Rename",
-            )
-        except RuntimeError:
-            continue
-        return row
-    return None
-
-
-def _verify_rename_destination_bytes(
-    job: dict[str, Any],
-    *,
-    version_id: str,
-    object_key: str,
-    provider_version_id: str,
-    expected_digest: str,
-    source: Path,
-) -> None:
-    """Hash the exact recorded destination VersionId before the old key is hidden."""
-    set_job(job["id"], "verifying", message_key="job.rename_verifying_new_key")
-    ensure_job_active(job["id"], "Rename claim was lost")
-    temporary = source.with_name(
-        f".{source.name}.verify-{uuid.uuid4().hex}.tmp"
-    )
-    try:
-        download_exact_version_plaintext(
-            job,
-            object_key=object_key,
-            provider_version_id=provider_version_id,
-            temporary=temporary,
-        )
-        remote_digest, _ = hash_stable_regular_file(temporary)
-    finally:
-        temporary.unlink(missing_ok=True)
-    if remote_digest != expected_digest:
-        ensure_job_active(job["id"], "Rename claim was lost")
-        with db() as connection:
-            ensure_job_claim_owned_in_transaction(
-                connection,
-                job,
-                "Rename claim was lost",
-            )
-            ArchiveCatalog(connection).mark_version_mismatch(
-                version_id,
-                plaintext_sha256=expected_digest,
-                checked_at=now_iso(),
-            )
-        raise RuntimeError("Cloud copy digest does not match local file")
-    ensure_job_active(job["id"], "Rename claim was lost")
-    verified_at = now_iso()
+def _refresh_rename_path(job: dict[str, Any]) -> bool:
+    """Follow a rename chain: the Job copies to the newest path, never to a stale one."""
     with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Rename claim was lost",
-        )
-        catalog = ArchiveCatalog(connection)
-        catalog.mark_version_verified(
-            version_id,
-            plaintext_sha256=expected_digest,
-            verified_at=verified_at,
-        )
-        catalog.set_local_fingerprint(
-            vault_id=job["vault_id"],
-            path=job["path"],
-            plaintext_sha256=expected_digest,
-            matched_archive_version_id=version_id,
-        )
+        row = connection.execute(
+            "SELECT path FROM files WHERE id=%s AND vault_id=%s",
+            (job["file_id"], job["vault_id"])).fetchone()
+    if row is None or row["path"] == job["path"]:
+        return False
+    job["path"] = row["path"]
+    return True
+
+
+def _copy_blocked(job: dict[str, Any], exc: BaseException) -> None:
+    from .services import upload_provenance as provenance
+    if isinstance(exc, provenance.UploadBlocked) and exc.reason not in provenance.WAIT_REASONS:
+        # Kept copies and attempts stay for reconciliation; the file says why.
+        _record_upload_reconciliation_block(job, exc.reason)
 
 
 def process_rename(job: dict[str, Any]) -> None:
-    """Copy verified content to the new key, then hide the previous key."""
+    """Copy the exact verified Current to the key of the file's new path (#595).
+
+    The copy names its source by key and VersionId, is attributed by its own
+    token, becomes Current only once verified, and the previous key's version
+    is removed only afterwards by exact cleanup. The Local Copy is matched to
+    it only through a fresh digest of the real local bytes.
+    """
+    from .services import copy_provenance
+    from .services.upload_provenance import UploadBlocked
     ensure_job_active(job["id"], "Rename stopped")
     validate_cloud_vault(job)
-    source = safe_local_path(job["source_root"], job["path"])
-    if not source.is_file():
-        raise RuntimeError("The file is no longer available in the source folder")
-    with db() as connection:
-        previous = connection.execute(
-            """
-            SELECT object_key, provider_version_id, plaintext_sha256, integrity, upload_snapshot_json
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (job["archive_version_id"],),
-        ).fetchone()
-    if previous is None:
-        raise RuntimeError("Rename target Archive Version is missing")
-    if previous["integrity"] != "verified" or not previous["object_key"]:
-        raise RuntimeError("Rename requires a verified Archive Version at the old key")
-    old_key = previous["object_key"]
     try:
-        new_key = expected_cloud_key(job["path"], job["s3_prefix"])
-        if new_key == old_key:
-            set_job(job["id"], "completed", message_key="job.rename_key_matches")
-            return
-
-        client = s3_client()
-        with db() as connection:
-            destination_rows = connection.execute(
-                """
-                SELECT id, plaintext_sha256, integrity, availability,
-                       provider_version_id, size, object_key
-                FROM archive_versions
-                WHERE vault_file_id=%s
-                  AND object_key=%s
-                ORDER BY version_number DESC
-                """,
-                (job["vault_file_id"], new_key),
-            ).fetchall()
-
-        live_destination = _select_live_rename_destination(
-            client,
-            bucket=job["s3_bucket"],
-            rows=destination_rows,
-            expected_digest=previous.get("plaintext_sha256"),
-        )
-        version_id: str | None = None
-        destination_version_id: str | None = None
-        source_stat = source.stat(follow_symlinks=False)
-        plaintext_sha256 = previous.get("plaintext_sha256")
-        if plaintext_sha256:
-            # The admitted rename pins independently verified old content, not
-            # scan membership/origin. Persist that lineage for replacement cleanup.
-            _upload_catalog_unit(job, lambda catalog: catalog.set_upload_plaintext_digest(
-                job["id"], plaintext_sha256=plaintext_sha256), shared=True)
-
-        if live_destination is not None:
-            version_id = str(live_destination["id"])
-            destination_version_id = str(live_destination["provider_version_id"])
-            if live_destination["integrity"] == "verified":
-                plaintext_sha256 = live_destination["plaintext_sha256"]
-            else:
-                set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-                plaintext_sha256, source_stat = hash_stable_regular_file(source)
-                if (
-                    previous["plaintext_sha256"]
-                    and previous["plaintext_sha256"] != plaintext_sha256
-                ):
-                    raise RuntimeError(
-                        "Local file digest no longer matches the archived version"
-                    )
-                _verify_rename_destination_bytes(
-                    job,
-                    version_id=version_id,
-                    object_key=new_key,
-                    provider_version_id=destination_version_id,
-                    expected_digest=str(plaintext_sha256),
-                    source=source,
-                )
+        for _link in range(_RENAME_CHAIN_LIMIT):
+            try:
+                keeper = copy_provenance.run(_copy_worker(), job, purpose="rename")
+                break
+            except UploadBlocked as exc:
+                if exc.reason != "identity_changed" or not _refresh_rename_path(job):
+                    raise
         else:
-            set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-            rename_snapshot, source_stat = prepare_upload_snapshot(
-                source, lambda: ensure_job_active(job["id"], "Rename stopped"),
-            )
-            plaintext_sha256 = rename_snapshot.plaintext_sha256
-            # Rename is a separate re-upload path, not UploadExecution. Carry
-            # the archived time when known; otherwise this stable re-upload
-            # records its own observed source time, never an old missing copy.
-            if previous.get("upload_snapshot_json"):
-                from dataclasses import replace
-                previous_snapshot = UploadSnapshot.from_json(previous["upload_snapshot_json"])
-                if previous_snapshot.mtime_ns is not None:
-                    rename_snapshot = replace(rename_snapshot, mtime_ns=previous_snapshot.mtime_ns)
-            if (
-                previous["plaintext_sha256"]
-                and previous["plaintext_sha256"] != plaintext_sha256
-            ):
-                raise RuntimeError(
-                    "Local file digest no longer matches the archived version"
-                )
-            set_job(job["id"], "uploading", message_key="job.rename_copying")
-            ensure_job_active(job["id"], "Rename claim was lost")
-            response = upload_s3_file(
-                {**job, "_upload_snapshot": rename_snapshot,
-                 "_upload_metadata": rename_snapshot.file_metadata()},
-                source=source, key=new_key,
-            )
-            ensure_job_active(job["id"], "Rename stopped")
-            provider_version_id = response.get("VersionId")
-            head = client.head_object(Bucket=job["s3_bucket"], Key=new_key,
-                                      VersionId=provider_version_id)
-            if not provider_version_id:
-                raise RuntimeError(
-                    "Rename stored without an S3 VersionId; bucket Versioning is required"
-                )
-            ensure_job_active(job["id"], "Rename claim was lost")
-            timestamp = now_iso()
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Rename claim was lost",
-                )
-                catalog = ArchiveCatalog(connection)
-                version_id = catalog.record_archive_version(
-                    vault_id=job["vault_id"],
-                    vault_file_id=job["vault_file_id"],
-                    path=job["path"],
-                    object_key=new_key,
-                    provider_version_id=provider_version_id,
-                    size=head.get("ContentLength"),
-                    storage_class=head.get("StorageClass", "STANDARD"),
-                    etag=head.get("ETag", "").strip('"'),
-                    uploaded_at=timestamp,
-                    observed_at=timestamp,
-                    scan_id=timestamp,
-                    origin="upload",
-                )
-                catalog.set_version_upload_snapshot(
-                    version_id, snapshot_json=rename_snapshot.as_json(), requested="read_back",
-                )
-            destination_version_id = str(provider_version_id)
-            ensure_job_active(job["id"], "Rename stopped")
-            after = source.stat(follow_symlinks=False)
-            if (
-                after.st_size != source_stat.st_size
-                or after.st_mtime_ns != source_stat.st_mtime_ns
-                or after.st_dev != source_stat.st_dev
-                or after.st_ino != source_stat.st_ino
-            ):
-                raise RuntimeError("Local file changed since fingerprinting")
-            _verify_rename_destination_bytes(
-                job,
-                version_id=str(version_id),
-                object_key=new_key,
-                provider_version_id=destination_version_id,
-                expected_digest=str(plaintext_sha256),
-                source=source,
-            )
-
-        assert version_id is not None and destination_version_id is not None
-        ensure_job_active(job["id"], "Rename stopped")
-        _head_exact_archive_version(
-            client,
-            bucket=job["s3_bucket"],
-            object_key=new_key,
-            provider_version_id=destination_version_id,
-            operation="Rename",
-        )
-        set_job(
-            job["id"], "cleaning", message_key="job.purging_previous_snapshot",
-        )
-        ensure_job_active(job["id"], "Rename claim was lost")
-        purge_current_snapshot_superseded(
-            job,
-            keep_version_id=str(version_id),
-            client=client,
-        )
-        with db() as connection:
-            ensure_job_claim_owned_in_transaction(
-                connection, job, "Rename claim was lost",
-            )
-            ArchiveCatalog(connection).link_job_version(job["id"], version_id)
-        set_job_progress(
-            job["id"],
-            int(job.get("total_bytes") or getattr(source_stat, "st_size", 0) or 0),
-        )
-        set_job(job["id"], "completed", message_key="job.rename_verified")
-    except OperationCancelled:
+            raise UploadBlocked("identity_changed")
+    except copy_provenance.CopyNeedsRestore as exc:
+        # A cold Current is never warmed implicitly by a rename.
+        raise RuntimeError(
+            f"The current Archive Version is in {exc.storage_class}: restore it "
+            "explicitly, then retry the rename") from exc
+    except Exception as exc:
+        _copy_blocked(job, exc)
         raise
-    except Exception:
-        raise
+    _clear_upload_reconciliation_problem(job)
+    set_job(job["id"], "completed",
+            message_key="job.rename_verified" if keeper else "job.rename_key_matches")
 
 
 def record_automatic_cleanup_outcome(
@@ -4026,188 +3594,79 @@ def _process_free_space(job: dict[str, Any]) -> None:
         )
 
 
-def process_storage_class(job: dict[str, Any]) -> None:
+def _request_copy_restore(job: dict[str, Any], exc: Any) -> None:
+    """A manual class change of a cold Current restores it once, then waits."""
+    from .services import upload_provenance as provenance
     with db() as connection:
-        move = vault_moves.load(connection, int(job["id"]))
-    if move:
-        vault_moves.process(job, dict(move))
-        return
-    check_active = partial(ensure_job_active, int(job["id"]))
-    """Restore if needed, then copy an Archive Version onto a new storage class.
+        current = connection.execute(
+            """SELECT av.id, av.object_key, av.provider_version_id, av.size
+               FROM files f JOIN archive_versions av ON av.id = f.current_version_id
+               WHERE f.id=%s""", (job["file_id"],)).fetchone()
+    if current is None:
+        raise provenance.UploadBlocked("keeper_missing")
+    state, expiry = exc.restore_state, exc.expiry
+    if job["status"] != "restoring" and state == "not_requested":
+        estimate = estimate_restore(
+            size_bytes=int(current["size"] or 0), storage_class=exc.storage_class,
+            tier=str(job.get("restore_tier") or _runtime_settings().restore_tier or "Bulk"),
+            days=int(job.get("restore_days") or _runtime_settings().restore_days or 3))
+        ensure_job_active(job["id"], "Storage class change stopped")
+        s3_client().restore_object(
+            Bucket=job["s3_bucket"], Key=current["object_key"],
+            VersionId=current["provider_version_id"],
+            RestoreRequest={"Days": estimate.days,
+                            "GlacierJobParameters": {"Tier": estimate.tier}})
+        state, expiry = "restoring", None
+    with db() as connection:
+        ensure_job_claim_owned_in_transaction(connection, job, "Storage class claim was lost")
+        ArchiveCatalog(connection).update_restore_state(
+            str(current["id"]), state=state, expiry=expiry, checked_at=now_iso(),
+            storage_class=exc.storage_class)
+    set_job(job["id"], "restoring", message_key="job.storage_class_restoring",
+            message_params={"storage_class": exc.storage_class})
 
-    Warming from GLACIER / DEEP_ARCHIVE chains RestoreObject inside this Job so
-    operators are not forced through Recover (which requires an absent Local Copy).
+
+def process_storage_class(job: dict[str, Any]) -> None:
+    """Copy the exact verified Current in place to another class (#595).
+
+    A manual change may warm a cold Current through one restore of the exact
+    VersionId; a Vault move (``colder_only``) never warms and never restores.
+    The superseded version is removed by exact cleanup once the copy is Current.
     """
+    from .services import copy_provenance
     ensure_job_active(job["id"], "Storage class change stopped")
     validate_cloud_vault(job)
-    target_class = (job.get("target_storage_class") or "").upper()
-    if not target_class:
+    with db() as connection:
+        change = connection.execute(
+            "SELECT target_storage_class, colder_only FROM job_storage_class_changes WHERE job_id=%s",
+            (job["id"],)).fetchone()
+        if change is not None:
+            restore = connection.execute(
+                "SELECT tier, days FROM job_restores WHERE job_id=%s", (job["id"],)).fetchone()
+            if restore is not None:
+                job.setdefault("restore_tier", restore["tier"])
+                job.setdefault("restore_days", restore["days"])
+    if change is None or not change["target_storage_class"]:
         raise RuntimeError("Target storage class is missing")
-    with db() as connection:
-        target = ArchiveCatalog(connection).get_job_target(job["id"])
-    if (
-        not target
-        or not target.get("archive_version_id")
-        or not target.get("object_key")
-        or not target.get("provider_version_id")
-        or target.get("availability") != "available"
-    ):
-        raise RuntimeError("No available Archive Version for storage class change")
-
-    client = s3_client()
-    head = _head_object_with_checksum(
-        client,
-        Bucket=job["s3_bucket"],
-        Key=target["object_key"],
-        VersionId=target["provider_version_id"],
-    )
-    if head.get("DeleteMarker"):
-        raise RuntimeError("The scheduled Archive Version is a Delete Marker")
-    if head.get("VersionId") and str(head["VersionId"]) != str(
-        target["provider_version_id"]
-    ):
-        raise RuntimeError("The provider returned a different source VersionId")
-    # AWS omits StorageClass on STANDARD; never prefer a stale colder catalog class.
-    head_class = (head.get("StorageClass") or "STANDARD").upper()
-    if storage_class_requires_restore(head_class):
-        restore_state, restore_expiry = restore_header_state(head.get("Restore"))
-        if restore_state != "available":
-            tier = (
-                job.get("restore_tier")
-                or _runtime_settings().restore_tier
-                or "Bulk"
-            )
-            days = int(
-                job.get("restore_days")
-                or _runtime_settings().restore_days
-                or 3
-            )
-            estimate = estimate_restore(
-                size_bytes=int(target.get("cloud_size") or job.get("total_bytes") or 0),
-                storage_class=str(head_class),
-                tier=str(tier),
-                days=days,
-            )
-            if job["status"] != "restoring" and restore_state == "not_requested":
-                client.restore_object(
-                    Bucket=job["s3_bucket"],
-                    Key=target["object_key"],
-                    VersionId=target["provider_version_id"],
-                    RestoreRequest={
-                        "Days": estimate.days,
-                        "GlacierJobParameters": {"Tier": estimate.tier},
-                    },
-                )
-                restore_state = "restoring"
-                restore_expiry = None
-            ensure_job_active(job["id"], "Storage class claim was lost")
-            checked_at = now_iso()
-            with db() as connection:
-                ensure_job_claim_owned_in_transaction(
-                    connection,
-                    job,
-                    "Storage class claim was lost",
-                )
-                ArchiveCatalog(connection).update_restore_state(
-                    target["archive_version_id"],
-                    state=restore_state,
-                    expiry=restore_expiry,
-                    checked_at=checked_at,
-                    storage_class=head_class,
-                )
-            set_job(
-                job["id"],
-                "restoring",
-                message_key="job.storage_class_restoring",
-                message_params={"storage_class": head_class},
-            )
-            return
-
-    if head_class == target_class:
-        set_job(
-            job["id"],
-            "completed",
-            message_key="job.storage_class_skipped_same",
-            message_params={"storage_class": target_class},
-        )
-        return
-
-    set_job(
-        job["id"],
-        "uploading",
-        message_key="job.storage_class_changing",
-        message_params={"storage_class": target_class},
-    )
-    ensure_job_active(job["id"], "Storage class change stopped")
-    # The provider's exact-Version HEAD is authoritative for the copy limit;
-    # catalog size may be stale after an external rewrite or prior scan.
-    source_size = head.get("ContentLength")
-    if source_size is None:
-        source_size = target.get("cloud_size")
-    if source_size is None:
-        raise RuntimeError("S3 did not return the Archive Version size")
+    target_class = str(change["target_storage_class"]).upper()
+    colder_only = bool(change["colder_only"])
     try:
-        source_size = int(source_size)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("S3 returned an invalid Archive Version size") from exc
-    if source_size < 0:
-        raise RuntimeError("S3 returned a negative Archive Version size")
-
-    source_checksum = _full_object_sha256_checksum(head)
-    if source_checksum is None:
-        source_checksum = _sha256_s3_version(
-            client,
-            bucket=job["s3_bucket"],
-            object_key=target["object_key"],
-            version_id=str(target["provider_version_id"]),
-            check_active=check_active,
-        )
-    ensure_job_active(job["id"], "Storage class claim was lost")
-    new_version_id = _copy_storage_class_version(
-        client,
-        bucket=job["s3_bucket"],
-        object_key=target["object_key"],
-        source_version_id=str(target["provider_version_id"]),
-        target_class=target_class,
-        source_size=source_size,
-        source_head=head,
-        check_active=check_active,
-    )
-    ensure_job_active(job["id"], "Storage class change stopped")
-    new_version_id, etag = _verify_storage_class_destination(
-        client,
-        bucket=job["s3_bucket"],
-        object_key=target["object_key"],
-        source_version_id=str(target["provider_version_id"]),
-        candidate_version_id=(str(new_version_id) if new_version_id else None),
-        target_class=target_class,
-        expected_size=source_size,
-        expected_sha256_checksum=source_checksum,
-        check_active=check_active,
-    )
-    ensure_job_active(job["id"], "Storage class claim was lost")
-    timestamp = now_iso()
-    with db() as connection:
-        ensure_job_claim_owned_in_transaction(
-            connection,
-            job,
-            "Storage class claim was lost",
-        )
-        ArchiveCatalog(connection).publish_storage_class_copy(
-            job_id=int(job["id"]),
-            archive_version_id=str(target["archive_version_id"]),
-            provider_version_id=new_version_id,
-            storage_class=target_class,
-            etag=etag,
-            observed_at=timestamp,
-        )
-
-    # The prior exact VersionId is intentionally retained.  Only the dedicated
-    # Cloud Purge workflow may permanently delete provider versions.
+        keeper = copy_provenance.run(
+            _copy_worker(), job, purpose="storage-class", storage_class=target_class,
+            check_source=partial(vault_moves.check_source, target_class) if colder_only else None)
+    except copy_provenance.CopyNeedsRestore as exc:
+        if colder_only:
+            raise vault_moves.MoveBlocked(
+                f"Vault move never restores: the Archive Version is in {exc.storage_class}") from exc
+        _request_copy_restore(job, exc)
+        return
+    except Exception as exc:
+        _copy_blocked(job, exc)
+        raise
+    _clear_upload_reconciliation_problem(job)
     set_job(
-        job["id"],
-        "completed",
-        message_key="job.storage_class_completed",
+        job["id"], "completed",
+        message_key="job.storage_class_completed" if keeper else "job.storage_class_skipped_same",
         message_params={"storage_class": target_class},
     )
 
@@ -4769,7 +4228,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 cancelled_jobs.discard(int(job["id"]))
         local_statuses = {
             "upload": {"queued", "retrying"},
-            "rename": {"queued"},
+            "rename": {"queued", "retrying"},
             "recover": {"queued", "retrying", "restoring"},
             "free-space": {"queued"},
         }
@@ -4796,7 +4255,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 return False
         if job["action"] == "upload" and job["status"] in {"queued", "retrying"}:
             process_upload(job)
-        elif job["action"] == "rename" and job["status"] == "queued":
+        elif job["action"] == "rename" and job["status"] in {"queued", "retrying"}:
             process_rename(job)
         elif job["action"] == "recover" and job["status"] in {
             "queued",
@@ -4871,7 +4330,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if _claim_is_lost(int(job["id"])):
             return False
         from .services import upload_provenance as _provenance
-        if (job["action"] == "upload" and isinstance(exc, _provenance.UploadBlocked)
+        if (job["action"] in _provenance.TARGET_ACTIONS and isinstance(exc, _provenance.UploadBlocked)
                 and exc.reason in _provenance.WAIT_REASONS):
             # The Vault is suspended/relocating: wait queued and resume by itself
             # once it is reactivated, instead of failing into a block nobody can lift.
@@ -4935,16 +4394,17 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                     message_params={"error": message},
                     retry_count=next_attempt,
                 )
-        if job["action"] == "storage-class":
-            with db() as connection:
-                move = vault_moves.load(connection, int(job["id"]))
-            if move and not isinstance(exc, vault_moves.MoveBlocked) and classify_upload_failure(exc) == "transient":
-                next_attempt = int(job.get("retry_count") or 0) + 1
-                if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
-                    return schedule_upload_retry(
-                        job["id"], message_key="job.retrying_transient",
-                        message_params={"error": message}, retry_count=next_attempt,
-                    )
+        if (job["action"] in {"rename", "storage-class"}
+                and not isinstance(exc, (_provenance.UploadBlocked, vault_moves.MoveBlocked))
+                and classify_upload_failure(exc) in {"transient", "database_connection"}):
+            # The copy engine reconciles a started copy from S3 on the retry;
+            # it never sends it again.
+            next_attempt = int(job.get("retry_count") or 0) + 1
+            if next_attempt <= UPLOAD_RETRY_MAX_ATTEMPTS:
+                return schedule_upload_retry(
+                    job["id"], message_key="job.retrying_transient",
+                    message_params={"error": message}, retry_count=next_attempt,
+                )
         failed = set_job(job["id"], "failed", message)
         if failed and job["action"] == "free-space":
             record_automatic_cleanup_outcome(

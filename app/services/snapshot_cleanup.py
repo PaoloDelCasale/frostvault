@@ -46,11 +46,14 @@ def _superseded(connection: Any, file_id: str) -> list[dict[str, Any]]:
     """The file's versions that are neither Current nor the replacement in progress."""
     return connection.execute(
         """SELECT av.id, av.object_key, av.provider_version_id, av.integrity,
-                  av.upload_attempt_id, a.outcome, a.landed_version_id,
+                  COALESCE(av.upload_attempt_id, av.copy_attempt_id) AS producer_id,
+                  COALESCE(a.outcome, ca.outcome) AS outcome,
+                  COALESCE(a.landed_version_id, ca.landed_version_id) AS landed_version_id,
                   c.batch_id, c.deleted_at
            FROM archive_versions av
            JOIN files f ON f.id = av.file_id
            LEFT JOIN upload_attempts a ON a.id = av.upload_attempt_id
+           LEFT JOIN copy_attempts ca ON ca.id = av.copy_attempt_id
            LEFT JOIN cleanup_candidates c ON c.archive_version_id = av.id
            WHERE av.file_id = %s
              AND av.id IS DISTINCT FROM f.current_version_id
@@ -85,7 +88,8 @@ def _require_candidate(row: dict[str, Any]) -> None:
     """Only a superseded application write of this file can be deleted."""
     if row["integrity"] == "mismatch":
         raise UploadBlocked("proof_mismatch")
-    if (row["upload_attempt_id"] is None or row["outcome"] != "landed"
+    # A landed upload attempt or a landed server-side copy (#595) of this file.
+    if (row["producer_id"] is None or row["outcome"] != "landed"
             or row["landed_version_id"] != row["provider_version_id"]
             or not row["provider_version_id"]):
         raise UploadBlocked("expected_evidence_missing")

@@ -167,16 +167,20 @@ _FILE_SQL = """
     SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.local_presence,
            f.held_version_id, f.replacing_version_id, f.current_version_id,
            cur.integrity, cur.availability, cur.object_key, cur.provider_version_id,
-           cur.size, att.outcome AS attempt_outcome, att.landed_version_id,
+           cur.size, COALESCE(att.outcome, cpy.outcome) AS attempt_outcome,
+           COALESCE(att.landed_version_id, cpy.landed_version_id) AS landed_version_id,
            EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
                      AND other.id IS DISTINCT FROM f.current_version_id) AS other_versions,
            (SELECT b.purge_group_id FROM cleanup_batches b WHERE b.file_id = f.id) AS batch_group,
            EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id) AS batch_open,
            EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id = f.id
-                     AND a.settled_at IS NULL) AS attempt_open
+                     AND a.settled_at IS NULL)
+           OR EXISTS (SELECT 1 FROM copy_attempts c WHERE c.file_id = f.id
+                     AND c.settled_at IS NULL) AS attempt_open
     FROM files f
     LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
     LEFT JOIN upload_attempts att ON att.id = cur.upload_attempt_id
+    LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
 """
 
 

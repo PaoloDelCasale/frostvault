@@ -3173,7 +3173,7 @@ def reconnect_vault_root(
         relocation_lock.release()
     # BackgroundTasks registration is non-I/O and cannot partially dispatch.
     # A crash before execution is recovered by scan_all_vaults on next start;
-    # relocation_state remains scan_required until local scan success.
+    # lifecycle stays reconnect_required until the local scan succeeds.
     background_tasks.add_task(scan_vault, dict(vault))
     return {
         "vault_id": vault_id,
