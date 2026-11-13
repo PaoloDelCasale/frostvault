@@ -31,7 +31,7 @@ def missing_key(version_id: Any) -> str:
 
 
 def conflict_key(file_id: Any, version_id: Any) -> str:
-    return f"{CONFLICT_KEY_PREFIX}{file_id}:{version_id}"
+    return notification_service.cloud_only_conflict_key(file_id, version_id)
 
 
 def _now_iso() -> str:
@@ -146,15 +146,11 @@ def settle_cloud_only_copies(
     ).fetchall()
     summary = {"identical": 0, "conflicts": 0, "released": int(released or 0), "resolved": 0}
     for row in held:
-        key = conflict_key(row["file_id"], row["held_version_id"])
-        if _is_open(connection, key):
-            continue
-        notification_service.set_problem(
-            connection, key=key, event=INCIDENT_KIND_CLOUD_ONLY_CONFLICT,
-            vault_id=int(row["vault_id"]), active=True,
-            params={"path": str(row["path"]), "observed_at": stamp},
+        summary["conflicts"] += notification_service.enqueue_cloud_only_conflict(
+            connection, vault_id=int(row["vault_id"]), file_id=row["file_id"],
+            held_version_id=row["held_version_id"], path=str(row["path"]),
+            observed_at=stamp,
         )
-        summary["conflicts"] += 1
     return summary
 
 

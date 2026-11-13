@@ -343,7 +343,7 @@ def queue_auto_uploads(
     Explicit retry does not edit history or revive cancelled work. The caller
     holds the Vault admission lock; the same catalog admission dedupes inserts.
     """
-    from ..catalog import ArchiveCatalog
+    from ..catalog import ArchiveCatalog, awaiting_rename_analysis_sql
     from .vault_paths import safe_local_path
 
     policy = get_policy(connection, vault_id)
@@ -372,6 +372,8 @@ def queue_auto_uploads(
           AND f.local_presence='present'
           AND f.local_file_type='regular'
           AND f.held_version_id IS NULL
+          -- A possible rename is not a new file until its digest decides (#621).
+          AND NOT {awaiting_rename_analysis_sql("f")}
           AND NOT (
               f.matched_version_id IS NOT NULL
               AND f.local_sha256 IS NOT NULL

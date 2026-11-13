@@ -153,13 +153,15 @@ class OutboundDeliveryClientTests(unittest.TestCase):
 
     def test_existing_incidents_reach_both_channels_once(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
-            for incident_id, enqueue in enumerate((
-                notifications.enqueue_archive_version_missing,
-                notifications.enqueue_cloud_only_conflict,
-            ), start=1):
-                incident = {"id": incident_id, "vault_id": 2, "path": "a.txt"}
-                self.assertEqual(enqueue(connection, incident=incident), 1)
-                self.assertEqual(enqueue(connection, incident=incident), 0)
+            incident = {"id": 1, "vault_id": 2, "path": "a.txt"}
+            self.assertEqual(notifications.enqueue_archive_version_missing(
+                connection, incident=incident), 1)
+            self.assertEqual(notifications.enqueue_archive_version_missing(
+                connection, incident=incident), 0)
+            conflict = {"vault_id": 2, "file_id": "f", "held_version_id": "v",
+                        "path": "a.txt", "observed_at": "2026-11-13T10:00:00+00:00"}
+            self.assertEqual(notifications.enqueue_cloud_only_conflict(connection, **conflict), 1)
+            self.assertEqual(notifications.enqueue_cloud_only_conflict(connection, **conflict), 0)
             self.assertEqual(len(notifications.list_in_app_notifications(connection)), 2)
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS total FROM notification_deliveries WHERE channel='email'"

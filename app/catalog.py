@@ -191,6 +191,35 @@ def _within_rename_window(left: Any, right: Any) -> bool:
     return abs(start - end) <= AUTO_RENAME_WINDOW
 
 
+def awaiting_rename_analysis_sql(alias: str) -> str:
+    """A new Local Copy that may be a Local Copy renamed without a scan (#621).
+
+    It never had cloud content or a Job, has no fingerprint yet, and has the
+    size of a fingerprinted Local Copy that went missing within the rename
+    window. Its digest must decide whether it is that file before any
+    automatic upload treats it as a new Vault File (ADR-0001).
+    """
+    window = int(AUTO_RENAME_WINDOW.total_seconds())
+    return f"""(
+        {alias}.local_sha256 IS NULL
+        AND {alias}.cloud_since IS NULL
+        AND {alias}.held_version_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM jobs own WHERE own.file_id={alias}.id)
+        AND EXISTS (
+            SELECT 1 FROM files source
+            WHERE source.vault_id={alias}.vault_id AND source.id<>{alias}.id
+              AND source.local_presence='missing'
+              AND source.local_file_type='regular'
+              AND source.local_sha256 IS NOT NULL
+              AND source.held_version_id IS NULL
+              AND source.local_size={alias}.local_size
+              AND source.local_observed_at
+                  BETWEEN {alias}.local_observed_at - interval '{window} seconds'
+                      AND {alias}.local_observed_at + interval '{window} seconds'
+        )
+    )"""
+
+
 def _version_dict(row: Mapping[str, Any], prefix: str, version_id: Any) -> dict[str, Any] | None:
     if version_id is None:
         return None
@@ -566,6 +595,43 @@ class ArchiveCatalog:
                 "generation": int(row["generation"]),
                 "size": row["local_size"],
                 "mtime_ns": row["local_mtime_ns"],
+            }
+            for row in rows
+        ]
+
+    def local_copies_to_identify(self, vault_id: int) -> list[dict[str, Any]]:
+        """Unfingerprinted Local Copies whose digest decides what they are (#621).
+
+        Content back at a cloud-only path (identical: the Local Copy again;
+        different: a Cloud-only Conflict) and a new Local Copy that may be a
+        rename. The watcher hashes them once stable, outside any write
+        transaction, and publishes with the ``generation`` read here.
+        """
+        rows = self.connection.execute(
+            f"""
+            SELECT f.id, f.path, f.generation, f.local_size, f.local_mtime_ns,
+                   COALESCE(f.local_content_observed_at, f.local_observed_at)
+                       AS content_observed_at,
+                   f.held_version_id IS NOT NULL AS held
+            FROM files f
+            WHERE f.vault_id=%s
+              AND f.local_presence='present'
+              AND f.local_file_type='regular'
+              AND f.local_sha256 IS NULL
+              AND (f.held_version_id IS NOT NULL OR {awaiting_rename_analysis_sql("f")})
+            ORDER BY f.path
+            """,
+            (vault_id,),
+        ).fetchall()
+        return [
+            {
+                "vault_file_id": str(row["id"]),
+                "path": row["path"],
+                "generation": int(row["generation"]),
+                "size": row["local_size"],
+                "mtime_ns": row["local_mtime_ns"],
+                "content_observed_at": row["content_observed_at"],
+                "held": bool(row["held"]),
             }
             for row in rows
         ]
