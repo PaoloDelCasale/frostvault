@@ -1,7 +1,7 @@
 """Explicit Reconnect folder (#427), retaining the pinned-root scan machinery.
 
-The historic relocation_state columns now represent the mandatory reconnect
-scan gate. An accepted mount fingerprint belongs only to the selected Vault;
+``vaults.lifecycle='reconnect_required'`` is the mandatory reconnect scan
+gate (ADR-0035); the previous root is kept only in the audit event. An accepted mount fingerprint belongs only to the selected Vault;
 shared Source Volume enrollment is never silently replaced.
 """
 from __future__ import annotations
@@ -98,7 +98,7 @@ def reconcile_vault_root_identities() -> int:
             """
             SELECT id, source_root FROM vaults
             WHERE root_identity IS NULL AND root_released_at IS NULL
-              AND decommission_state='active' AND relocation_state='ready'
+              AND lifecycle='active'
             """
         ).fetchall()
         for row in rows:
@@ -242,7 +242,7 @@ def _reconnect_vault_root(
         reason = "not_found" if str(exc) == "vault_not_found" else "protection_stopped"
         raise VaultRelocationError(reason) from exc
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
-    if vault.get("decommission_state", "active") != "active" or vault.get("root_released_at"):
+    if vault["lifecycle"] not in {"active", "reconnect_required"} or vault.get("root_released_at"):
         raise VaultRelocationError(
             "protection_stopped",
             "A folder whose protection has stopped cannot be reconnected",
@@ -278,11 +278,11 @@ def _reconnect_vault_root(
     connection.execute(
         """
         UPDATE vaults
-        SET source_root=%s, relocation_state='scan_required', relocation_previous_root=%s,
+        SET source_root=%s, lifecycle='reconnect_required',
             root_identity_version=%s, root_identity=%s, reconnect_volume_fingerprint=%s
         WHERE id=%s AND source_root=%s
         """,
-        (str(destination), previous_root, ROOT_IDENTITY_VERSION, identity, fingerprint,
+        (str(destination), ROOT_IDENTITY_VERSION, identity, fingerprint,
          vault_id, previous_root),
     )
     if after_update is not None:
@@ -322,11 +322,12 @@ def prepare_reconnect_local_scan(connection: Any, vault_id: int) -> None:
     succeeded first. The ordinary missing-to-present observation installs the
     current cloud hold; files that remain absent must not acquire a conflict.
     """
+    # A new generation invalidates every in-flight digest of the old root.
     connection.execute(
         """
-        UPDATE local_copies lc SET presence='missing', plaintext_sha256=NULL,
-            matched_archive_version_id=NULL, cloud_only_version_id=NULL
-        WHERE lc.vault_file_id IN (SELECT id FROM vault_files WHERE vault_id=%s)
+        UPDATE files SET local_presence='missing', local_sha256=NULL,
+            matched_version_id=NULL, held_version_id=NULL, generation=generation + 1
+        WHERE vault_id=%s AND local_presence IS NOT NULL
         """, (vault_id,),
     )
     request_vault_rebuild(connection, vault_id)
@@ -337,8 +338,8 @@ def complete_relocation_scan(
 ) -> None:
     connection.execute(
         """
-        UPDATE vaults SET relocation_state='ready', relocation_previous_root=NULL
-        WHERE id=%s AND relocation_state='scan_required'
+        UPDATE vaults SET lifecycle='active'
+        WHERE id=%s AND lifecycle='reconnect_required'
         """,
         (vault_id,),
     )
@@ -355,8 +356,5 @@ def local_work_suspended(vault: dict[str, Any]) -> bool:
     vault_id = vault.get("id", vault.get("vault_id"))
     return (
         (vault_id is not None and int(vault_id) in _runtime_suspended_vaults)
-        or (
-            str(vault["lifecycle"]) == "reconnect_required" if "lifecycle" in vault
-            else str(vault.get("relocation_state") or "ready") != "ready"
-        )
+        or str(vault.get("lifecycle") or vault.get("vault_lifecycle") or "active") == "reconnect_required"
     )

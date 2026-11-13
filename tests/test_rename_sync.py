@@ -1,1502 +1,257 @@
-"""Synchronize file and folder renames (issue #19).
+"""Rename Jobs on the rebuilt model (#595, ADR-0035).
 
-Seams under test:
-- Rename analysis and confirmation in the catalog moved to
-  ``tests/test_catalog_rename`` (#587); this module keeps the cloud side.
-- Rename Job worker (process_jobs_once) — cloud copy/verify/delete-marker
-  observed through Job status, Archive Version integrity/keys, and Delete
-  Markers. System boundaries mocked: managed upload and S3.
-- HTTP file history — continuous versions across old and new keys.
+Real admission, claim and ``storage.process_job`` on a disposable PostgreSQL 16
+database; the S3 transport is the synthetic ``VersionedProvider`` (exact
+VersionIds, server-side CopyObject, counted requests). Current is always
+produced by a real upload Job first. Renames in the catalog live in
+``tests.test_catalog_rename``.
+
+Covered: the copy names the exact verified Current (key + VersionId) and is
+attributed by its own token; Current changes only once the copy is verified;
+the old key's version is removed afterwards by exact VersionId; the Local Copy
+is matched only through a fresh digest of the real local bytes. A crash after
+the provider accepted the copy, an expired lease and a takeover by another Job
+reconcile from S3 and never copy again; an unsent copy is proven absent first;
+a foreign write keeps every copy and blocks; a cold Current needs an explicit
+restore; a suspended Vault (root change) waits and resumes.
 """
-
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
-
-import hashlib
 import os
-import tempfile
 import unittest
-from contextlib import contextmanager
-from pathlib import Path
-from tests.snapshot_s3_stub import VersionedS3Stub
-from types import SimpleNamespace
+import uuid
 from unittest.mock import patch
 
-# Windows test hosts lack the Linux open flags imported by vault decommission.
-for _flag, _value in (
-    ("O_DIRECTORY", 0x10000),
-    ("O_NOFOLLOW", 0x20000),
-    ("O_CLOEXEC", 0x80000),
-):
-    if not hasattr(os, _flag):
-        setattr(os, _flag, _value)
-
+from app import storage
 from app.catalog import ArchiveCatalog
-
-from app.main import queue_jobs
-from app.storage import process_jobs_once
-from tests.test_database import run_alembic
-
-
-DIGEST_A = hashlib.sha256(b"content-a").hexdigest()
-DIGEST_B = hashlib.sha256(b"content-b").hexdigest()
-
-
-def _sha256_hex(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _seed_vault(connection, *, vault_id: int = 2, source_root: str = "/source") -> None:
-    connection.execute(
-        """
-        INSERT INTO users(
-            id, username, display_name, password_hash
-        ) VALUES (1, 'owner', 'Owner', 'hash')
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO vaults(
-            id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, 'docs', 'Docs', %s, 'bucket', 'docs')
-        """,
-        (vault_id, source_root),
-    )
-
-
-def _prepare_renamed_plain_file(
-    root: Path,
-    *,
-    old_path: str,
-    new_path: str,
-    payload: bytes,
-    confirm: bool = True,
-) -> tuple[Path, Path, str]:
-    source = root / "source"
-    source.mkdir()
-    target = source / new_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(payload)
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
-    assert migrated.returncode == 0, migrated.stderr
-    digest = _sha256_hex(payload)
-    with PostgresConnection(str(database_path)) as connection:
-        _seed_vault(connection, source_root=str(source))
-        from app.services.vault_relocation import enroll_vault_root_identity
-        enroll_vault_root_identity(connection, 2, str(source))
-        catalog = ArchiveCatalog(connection)
-        file_id = catalog.observe_local_copy(
-            vault_id=2,
-            path=old_path,
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=target.stat().st_mtime_ns,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        version_id = catalog.record_archive_version(
-            vault_id=2,
-            path=old_path,
-            object_key=f"docs/{old_path}",
-            provider_version_id="old-s3-version",
-            size=len(payload),
-            storage_class="STANDARD",
-            etag="old-etag",
-            uploaded_at="2026-07-21T10:01:00+00:00",
-            observed_at="2026-07-21T10:01:00+00:00",
-            scan_id="2026-07-21T10:01:00+00:00",
-            origin="upload",
-        )
-        catalog.mark_version_verified(
-            version_id,
-            plaintext_sha256=digest,
-            verified_at="2026-07-21T10:02:00+00:00",
-        )
-        catalog.set_local_fingerprint(
-            vault_id=2,
-            path=old_path,
-            plaintext_sha256=digest,
-            matched_archive_version_id=version_id,
-        )
-        catalog.mark_local_copy_missing(
-            file_id, observed_at="2026-07-21T11:00:00+00:00"
-        )
-        catalog.observe_local_copy(
-            vault_id=2,
-            path=new_path,
-            file_type="regular",
-            size=len(payload),
-            mtime_ns=target.stat().st_mtime_ns,
-            observed_at="2026-07-21T11:00:00+00:00",
-        )
-        catalog.set_local_fingerprint(
-            vault_id=2,
-            path=new_path,
-            plaintext_sha256=digest,
-            matched_archive_version_id=None,
-        )
-        if confirm:
-            catalog.confirm_file_rename(
-                vault_file_id=file_id,
-                new_path=new_path,
-                changed_at="2026-07-21T11:05:00+00:00",
-                vault_id=2,
-            )
-    return source, database_path, file_id
-
-
-def _write_versioned_download(
-    *,
-    payload: bytes,
-    expected_key: str,
-    expected_version_id: str,
-    calls: list[dict[str, str]],
-):
-    def download_file(
-        Bucket: str,
-        Key: str,
-        Filename: str,
-        ExtraArgs: dict | None = None,
-        Callback=None,
-        Config=None,
-    ) -> None:
-        version_id = str((ExtraArgs or {}).get("VersionId") or "")
-        calls.append({"Bucket": Bucket, "Key": Key, "VersionId": version_id})
-        if Key != expected_key:
-            raise RuntimeError(f"unexpected download key {Key}")
-        if version_id != expected_version_id:
-            raise RuntimeError(
-                "exact VersionId is required for rename verification"
-            )
-        target = Path(Filename)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        if Callback is not None:
-            Callback(len(payload))
-
-    return download_file
-
-
-@contextmanager
-def _rename_worker(
-    database_path: Path,
-    *,
-    payload: bytes,
-    old_key: str,
-    new_key: str,
-):
-    upload_calls: list[tuple[str, ...]] = []
-    deleted_keys: list[dict[str, str]] = []
-    head_calls: list[dict[str, str]] = []
-    download_calls: list[dict[str, str]] = []
-
-    def fake_sdk_upload(*args, **kwargs) -> None:
-        command = tuple(str(arg) for arg in args if not callable(arg))
-        upload_calls.append(command)
-        if command[:1] != ("upload",) or len(command) < 3:
-            return
-        origin, destination = command[1], command[2]
-        if ":" in origin and not Path(origin).exists():
-            raise RuntimeError(
-                "plain rename verification must pin S3 VersionId, not the current key"
-            )
-
-    def fake_head_object(**kwargs):
-        requested = str(kwargs.get("VersionId") or "")
-        head_calls.append(
-            {
-                "Bucket": kwargs["Bucket"],
-                "Key": kwargs["Key"],
-                "VersionId": requested,
-            }
-        )
-        if kwargs["Key"] == old_key:
-            if requested and requested != "old-s3-version":
-                raise RuntimeError("missing old VersionId")
-            return {
-                "VersionId": "old-s3-version",
-                "ContentLength": len(payload),
-                "StorageClass": "STANDARD",
-                "ETag": '"old-etag"',
-            }
-        if kwargs["Key"] != new_key:
-            raise RuntimeError(f"unexpected head key {kwargs['Key']}")
-        if requested and requested != "new-s3-version":
-            raise RuntimeError("missing new VersionId")
-        return {
-            "VersionId": "new-s3-version",
-            "ContentLength": len(payload),
-            "StorageClass": "STANDARD",
-            "ETag": '"new-etag"',
-        }
-
-    def fake_delete_object(**kwargs):
-        deleted_keys.append(
-            {
-                "Bucket": kwargs["Bucket"],
-                "Key": kwargs["Key"],
-                "VersionId": kwargs.get("VersionId") or "",
-            }
-        )
-        return {"VersionId": "delete-marker-1", "DeleteMarker": True}
-
-    database_settings = SimpleNamespace(
-        database_dsn=database_dsn(str(database_path)),
-    )
-    worker_settings = SimpleNamespace(
-        operation_concurrency=1,
-        restore_poll_interval=900,
-    )
-    with patch("app.database.settings", database_settings):
-        with (
-            patch("app.storage.settings", worker_settings),
-            patch("app.storage.validate_cloud_vault"),
-            mock_sdk_upload( side_effect=fake_sdk_upload),
-            patch(
-                "app.storage.s3_client",
-                return_value=VersionedS3Stub(
-                    initial_versions={old_key: {"old-s3-version"}},
-                    head_object=fake_head_object,
-                    delete_object=fake_delete_object,
-                    download_file=_write_versioned_download(
-                        payload=payload,
-                        expected_key=new_key,
-                        expected_version_id="new-s3-version",
-                        calls=download_calls,
-                    ),
-                ),
-            ),
-        ):
-            yield upload_calls, deleted_keys, head_calls, download_calls
-
-
-class RenameCloudJobTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from app import storage
-
-        storage.cancelled_jobs.clear()
-
-    def test_plain_rename_verifies_new_key_before_purging_old_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-plain"
-            old_path = "reports/old-name.txt"
-            new_path = "archive/new-name.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs(new_path, "rename", 2, 1)
-                self.assertEqual(queued["item_count"], 1)
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (upload_calls, deleted_keys, head_calls, download_calls):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, new_path)
-                versions = catalog.list_versions(2, new_path)
-                markers = connection.execute(
-                    """
-                    SELECT object_key, provider_version_id
-                    FROM delete_markers
-                    WHERE vault_file_id=%s
-                    ORDER BY created_at
-                    """,
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(observed["id"], file_id)
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(len(versions), 2)
-            by_key = {row["object_key"]: row for row in versions}
-            self.assertEqual(by_key[old_key]["integrity"], "verified")
-            self.assertEqual(by_key[new_key]["integrity"], "verified")
-            self.assertEqual(by_key[new_key]["plaintext_sha256"], _sha256_hex(payload))
-            self.assertEqual(
-                [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [],
-            )
-            self.assertEqual(
-                deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
-            )
-            self.assertEqual(
-                [call["Key"] for call in head_calls],
-                [new_key, new_key, new_key],
-            )
-            self.assertEqual(head_calls[1]["VersionId"], "new-s3-version")
-            self.assertEqual(
-                download_calls,
-                [
-                    {
-                        "Bucket": "bucket",
-                        "Key": new_key,
-                        "VersionId": "new-s3-version",
-                    }
-                ],
-            )
-            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
-            self.assertFalse(
-                any(
-                    str(arg).startswith("--s3-version-id=")
-                    for call in upload_calls
-                    for arg in call
-                )
-            )
-
-    def test_bug_002_rename_purge_detects_concurrent_version(self) -> None:
-        """[BUG-002][Req: REQ-004] unknown cloud content cannot authorize purge.
-
-        After verifying the new key, a listing at the old key contains a newer
-        uncatalogued VersionId. Preserve it and fail without any deletion.
-        """
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-concurrent"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-
-            deleted: list[str] = []
-            head_keys: list[str] = []
-            download_calls: list[dict[str, str]] = []
-
-            def fake_head_object(**kwargs):
-                head_keys.append(kwargs["Key"])
-                if kwargs["Key"] == old_key:
-                    return {
-                        "VersionId": "old-s3-concurrent",
-                        "ContentLength": len(payload),
-                        "StorageClass": "STANDARD",
-                        "ETag": '"old-etag"',
-                    }
-                return {
-                    "VersionId": "new-s3-version",
-                    "ContentLength": len(payload),
-                    "StorageClass": "STANDARD",
-                    "ETag": '"new-etag"',
-                }
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload(),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"old-s3-concurrent"}},
-                            head_object=fake_head_object,
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {
-                                "VersionId": "delete-marker-wrong",
-                                "DeleteMarker": True,
-                            },
-                            download_file=_write_versioned_download(
-                                payload=payload,
-                                expected_key=new_key,
-                                expected_version_id="new-s3-version",
-                                calls=download_calls,
-                            ),
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                markers = connection.execute(
-                    "SELECT id FROM delete_markers WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(deleted, [])
-            self.assertEqual(markers, [])
-            self.assertEqual(job["status"], "failed")
-            self.assertIn("Upload reconciliation blocked", job["message"] or "")
-            self.assertEqual(head_keys, [new_key, new_key, new_key])
-            self.assertEqual(
-                download_calls[0]["VersionId"],
-                "new-s3-version",
-            )
-
-    def test_failed_verification_never_hides_the_old_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-mismatch"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-
-            deleted: list[str] = []
-            download_calls: list[dict[str, str]] = []
-
-            def fake_download_file(
-                Bucket: str,
-                Key: str,
-                Filename: str,
-                ExtraArgs: dict | None = None,
-                Callback=None,
-                Config=None,
-            ) -> None:
-                version_id = str((ExtraArgs or {}).get("VersionId") or "")
-                download_calls.append(
-                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
-                )
-                target = Path(Filename)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(b"tampered-cloud-bytes")
-                if Callback is not None:
-                    Callback(len(b"tampered-cloud-bytes"))
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload(),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"old-s3-version"}},
-                            head_object=lambda **_: {
-                                "VersionId": "new-s3-version",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            },
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {"VersionId": "delete-marker-1", "DeleteMarker": True},
-                            download_file=fake_download_file,
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                versions = catalog.list_versions(2, new_path)
-                markers = connection.execute(
-                    "SELECT id FROM delete_markers WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(deleted, [])
-            self.assertEqual(markers, [])
-            self.assertEqual(job["status"], "failed")
-            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            by_key = {row["object_key"]: row for row in versions}
-            self.assertEqual(by_key[old_key]["integrity"], "verified")
-            self.assertEqual(by_key[new_key]["integrity"], "mismatch")
-
-    def test_rename_cancellation_leaves_old_key_accessible(self) -> None:
-        from app.storage import OperationCancelled, cancel_jobs
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-cancel"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            job_id_holder: dict[str, int] = {}
-
-            def cancelling_sdk_upload(*args, **kwargs) -> None:
-                cancel_jobs([job_id_holder["id"]])
-                raise OperationCancelled("Rename stopped")
-
-            deleted: list[str] = []
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with PostgresConnection(str(database_path)) as connection:
-                    job_id_holder["id"] = connection.execute(
-                        "SELECT id FROM jobs WHERE path=%s",
-                        (new_path,),
-                    ).fetchone()["id"]
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=cancelling_sdk_upload),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            head_object=lambda **_: {
-                                "VersionId": "new-s3-version",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            },
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {"VersionId": "delete-marker-1", "DeleteMarker": True},
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, new_path)
-                versions = catalog.list_versions(2, new_path)
-                markers = connection.execute(
-                    "SELECT id FROM delete_markers WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(job["status"], "cancelled")
-            self.assertEqual(deleted, [])
-            self.assertEqual(markers, [])
-            self.assertEqual(observed["id"], file_id)
-            self.assertEqual(len(versions), 1)
-            self.assertEqual(versions[0]["object_key"], f"docs/{old_path}")
-            self.assertEqual(versions[0]["integrity"], "verified")
-
-
-class PlaintextNamespaceRenameTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from app import storage
-
-        storage.cancelled_jobs.clear()
-
-    def test_readable_rename_verifies_new_key_before_purging_old_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source"
-            source.mkdir()
-            payload = b"secret-rename"
-            old_path = "old-secret.txt"
-            new_path = "new-secret.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            target = source / new_path
-            target.write_bytes(payload)
-            digest = _sha256_hex(payload)
-            database_path = root / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
-                        2, 'secret', 'Secret', %s, 'bucket', 'docs')
-                    """,
-                    (str(source),),
-                )
-                from app.services.vault_relocation import enroll_vault_root_identity
-                enroll_vault_root_identity(connection, 2, str(source))
-                catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
-                    vault_id=2,
-                    path=old_path,
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=target.stat().st_mtime_ns,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path=old_path,
-                    object_key=old_key,
-                    provider_version_id="plain-old",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="old",
-                    uploaded_at="2026-07-21T10:01:00+00:00",
-                    observed_at="2026-07-21T10:01:00+00:00",
-                    scan_id="2026-07-21T10:01:00+00:00",
-                    origin="upload",
-                )
-                catalog.mark_version_verified(
-                    version_id,
-                    plaintext_sha256=digest,
-                    verified_at="2026-07-21T10:02:00+00:00",
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=2,
-                    path=old_path,
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=version_id,
-                )
-                catalog.mark_local_copy_missing(
-                    file_id, observed_at="2026-07-21T11:00:00+00:00"
-                )
-                catalog.observe_local_copy(
-                    vault_id=2,
-                    path=new_path,
-                    file_type="regular",
-                    size=len(payload),
-                    mtime_ns=target.stat().st_mtime_ns,
-                    observed_at="2026-07-21T11:00:00+00:00",
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=2,
-                    path=new_path,
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=None,
-                )
-                catalog.confirm_file_rename(
-                    vault_file_id=file_id,
-                    new_path=new_path,
-                    changed_at="2026-07-21T11:05:00+00:00",
-                    vault_id=2,
-                )
-
-            upload_calls: list[tuple[str, ...]] = []
-            download_calls: list[dict[str, str]] = []
-
-            def fake_sdk_upload(*args, **kwargs) -> None:
-                command = tuple(str(arg) for arg in args if not callable(arg))
-                upload_calls.append(command)
-                if command[:1] != ("upload",) or len(command) < 3:
-                    return
-                origin, destination = command[1], command[2]
-                if ":" in origin and not Path(origin).exists():
-                    Path(destination).parent.mkdir(parents=True, exist_ok=True)
-                    Path(destination).write_bytes(payload)
-
-            deleted: list[str] = []
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with (
-                    patch(
-                        "app.storage.settings",
-                        SimpleNamespace(
-                            operation_concurrency=1,
-                            restore_poll_interval=900,
-                        ),
-                    ),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=fake_sdk_upload),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"plain-old"}},
-                            head_object=lambda **kwargs: {
-                                "VersionId": (
-                                    "plain-old"
-                                    if kwargs["Key"] == old_key
-                                    else "plain-new"
-                                ),
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            },
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {
-                                "VersionId": "plain-delete-marker",
-                                "DeleteMarker": True,
-                            },
-                            download_file=_write_versioned_download(
-                                payload=payload, expected_key=new_key,
-                                expected_version_id="plain-new", calls=download_calls,
-                            ),
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, new_path)
-                versions = catalog.list_versions(2, new_path)
-                markers = connection.execute(
-                    """
-                    SELECT object_key, provider_version_id
-                    FROM delete_markers WHERE vault_file_id=%s
-                    """,
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(observed["id"], file_id)
-            self.assertEqual(job["status"], "completed")
-            by_key = {row["object_key"]: row for row in versions}
-            self.assertEqual(by_key[old_key]["integrity"], "verified")
-            self.assertEqual(by_key[new_key]["integrity"], "verified")
-            self.assertEqual(new_key, f"docs/{new_path}")
-            self.assertEqual(deleted, [old_key])
-            self.assertEqual(
-                [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [],
-            )
-            self.assertEqual(download_calls, [{"Bucket": "bucket", "Key": new_key, "VersionId": "plain-new"}])
-
-
-class RenameRestartTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from app import storage
-
-        storage.cancelled_jobs.clear()
-
-    def test_interrupted_cleaning_rename_resumes_without_losing_old_key(self) -> None:
-        from app.storage import reconcile_interrupted_jobs
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-resume"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            digest = _sha256_hex(payload)
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                new_version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path=new_path,
-                    object_key=new_key,
-                    provider_version_id="new-s3-version",
-                    size=len(payload),
-                    storage_class="STANDARD",
-                    etag="new-etag",
-                    uploaded_at="2026-07-21T11:10:00+00:00",
-                    observed_at="2026-07-21T11:10:00+00:00",
-                    scan_id="2026-07-21T11:10:00+00:00",
-                    origin="upload",
-                )
-                catalog.mark_version_verified(
-                    new_version_id,
-                    plaintext_sha256=digest,
-                    verified_at="2026-07-21T11:11:00+00:00",
-                )
-                old_version = connection.execute(
-                    """
-                    SELECT id FROM archive_versions
-                    WHERE vault_file_id=%s AND object_key=%s
-                    """,
-                    (file_id, old_key),
-                ).fetchone()
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
-                        group_id, group_path, total_bytes, transferred_bytes,
-                        message
-                    ) VALUES (
-                        2, %s, %s, %s, 'rename', 'cleaning', 1,
-                        '2026-07-21T11:12:00+00:00', '2026-07-21T11:12:00+00:00',
-                        'group-1', %s, %s, 0, 'Hiding the previous cloud key'
-                    )
-                    """,
-                    (
-                        file_id,
-                        old_version["id"],
-                        new_path,
-                        new_path,
-                        len(payload),
-                    ),
-                )
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            deleted: list[str] = []
-            upload_calls: list[tuple[str, ...]] = []
-            download_calls: list[dict[str, str]] = []
-
-            def fake_head_object(**kwargs):
-                key = kwargs["Key"]
-                requested = str(kwargs.get("VersionId") or "")
-                if key == old_key:
-                    if requested and requested != "old-s3-version":
-                        raise RuntimeError("missing old VersionId")
-                    return {
-                        "VersionId": "old-s3-version",
-                        "ContentLength": len(payload),
-                        "StorageClass": "STANDARD",
-                        "ETag": '"old-etag"',
-                    }
-                if key == new_key:
-                    if requested and requested != "new-s3-version":
-                        raise RuntimeError("missing new VersionId")
-                    return {
-                        "VersionId": "new-s3-version",
-                        "ContentLength": len(payload),
-                        "StorageClass": "STANDARD",
-                        "ETag": '"new-etag"',
-                    }
-                raise RuntimeError(f"unexpected head key {key}")
-
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
-                self.assertEqual(summary["requeued"], 1)
-                with (
-                    patch(
-                        "app.storage.settings",
-                        SimpleNamespace(
-                            operation_concurrency=1,
-                            restore_poll_interval=900,
-                        ),
-                    ),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload(
-                        side_effect=lambda *args, **kwargs: upload_calls.append(
-                            tuple(str(arg) for arg in args if not callable(arg))
-                        ),
-                    ),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"old-s3-version"}},
-                            head_object=fake_head_object,
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {
-                                "VersionId": "delete-marker-resume",
-                                "DeleteMarker": True,
-                            },
-                            download_file=_write_versioned_download(
-                                payload=payload,
-                                expected_key=new_key,
-                                expected_version_id="new-s3-version",
-                                calls=download_calls,
-                            ),
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(2, new_path)
-                markers = connection.execute(
-                    """
-                    SELECT object_key, provider_version_id
-                    FROM delete_markers WHERE vault_file_id=%s
-                    """,
-                    (file_id,),
-                ).fetchall()
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-                version_count = connection.execute(
-                    "SELECT COUNT(*) AS n FROM archive_versions WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchone()["n"]
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(deleted, [old_key])
-            self.assertEqual(version_count, 2)
-            self.assertEqual(len(versions), 2)
-            self.assertEqual(upload_calls, [])
-            self.assertEqual(download_calls, [])
-            self.assertEqual(
-                [(row["object_key"], row["provider_version_id"]) for row in markers],
-                [],
-            )
-
-
-def _insert_destination_version(
-    database_path: Path,
-    *,
-    file_id: str,
-    path: str,
-    object_key: str,
-    provider_version_id: str,
-    digest: str | None,
-    payload_size: int,
-    integrity: str = "verified",
-    availability: str = "available",
-) -> str:
-    with PostgresConnection(str(database_path)) as connection:
-        catalog = ArchiveCatalog(connection)
-        version_id = catalog.record_archive_version(
-            vault_id=2,
-            path=path,
-            object_key=object_key,
-            provider_version_id=provider_version_id,
-            size=payload_size,
-            storage_class="STANDARD",
-            etag="dest-etag",
-            uploaded_at="2026-07-21T11:10:00+00:00",
-            observed_at="2026-07-21T11:10:00+00:00",
-            scan_id="2026-07-21T11:10:00+00:00",
-            origin="upload",
-        )
-        if integrity == "verified":
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=str(digest),
-                verified_at="2026-07-21T11:11:00+00:00",
-            )
-        if availability != "available":
+from app.services import vault_relocation
+from app.services.s3_copy import COPY_TOKEN_KEY
+from tests import test_upload_worker as fixtures
+from tests.test_upload_worker import A, B, sha
+
+ORIGINAL_MTIME_NS = 1_700_000_000_123_456_789
+
+
+class _Crash(storage.WorkerStopping):
+    """The worker process dies at a chosen provider stage."""
+
+
+class CopyWorkerFixture(unittest.TestCase):
+    setUp = fixtures.UploadWorkerTests.setUp
+    db = fixtures.UploadWorkerTests.db
+    observe = fixtures.UploadWorkerTests.observe
+    write = fixtures.UploadWorkerTests.write
+    queue = fixtures.UploadWorkerTests.queue
+    claim = fixtures.UploadWorkerTests.claim
+    run_job = fixtures.UploadWorkerTests.run_job
+    job = fixtures.UploadWorkerTests.job
+    file_row = fixtures.UploadWorkerTests.file_row
+    rows = fixtures.UploadWorkerTests.rows
+    version = fixtures.UploadWorkerTests.version
+    assert_current = fixtures.UploadWorkerTests.assert_current
+
+    def protected(self, payload: bytes = A) -> dict:
+        self.write(payload, mtime_ns=ORIGINAL_MTIME_NS)
+        job_id = self.queue()
+        self.run_job(job_id)
+        return self.assert_current(job_id, payload)
+
+    def admit(self, action: str, path: str, **kwargs) -> int:
+        with self.db() as connection:
+            job_ids, _bytes, eligible = ArchiveCatalog(connection).queue_jobs(
+                vault_id=2, path=path, action=action, requested_at=storage.now_iso(),
+                group_id=str(uuid.uuid4()), is_directory=False, **kwargs)
+        self.assertEqual((len(job_ids), eligible), (1, 1), f"{action} must be admitted")
+        return job_ids[0]
+
+    def expire(self, job_id: int, status: str = "queued") -> None:
+        """Leave the Job as a crashed worker would: held, with an expired lease."""
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status=%s WHERE id=%s", (status, job_id))
             connection.execute(
-                """
-                UPDATE archive_versions
-                SET availability=%s, availability_checked_at=%s
-                WHERE id=%s
-                """,
-                (availability, "2026-07-21T11:12:00+00:00", version_id),
-            )
-        return version_id
+                """INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+                   VALUES (%s, %s, now() - interval '2 hours', now() - interval '1 hour')
+                   ON CONFLICT (job_id) DO UPDATE SET claimed_at=EXCLUDED.claimed_at,
+                       expires_at=EXCLUDED.expires_at""",
+                (job_id, str(uuid.uuid4())))
+
+    def crash_at(self, stage: str) -> None:
+        previous = self.provider.hook
+        fired = []
+
+        def hook(name, **kwargs):
+            previous(name, **kwargs)
+            if name == stage and not fired:
+                fired.append(name)
+                raise _Crash(stage)
+        self.provider.hook = hook
+
+    def attempts(self) -> list[dict]:
+        return self.rows("SELECT * FROM copy_attempts ORDER BY created_at")
 
 
-def _insert_old_key_marker(database_path: Path, *, file_id: str, old_key: str) -> None:
-    with PostgresConnection(str(database_path)) as connection:
-        ArchiveCatalog(connection).record_delete_marker(
-            vault_id=2,
-            path="new.txt",
-            object_key=old_key,
-            provider_version_id="existing-delete-marker",
-            created_at="2026-07-21T11:13:00+00:00",
-            observed_at="2026-07-21T11:13:00+00:00",
-        )
+class RenameWorkerTests(CopyWorkerFixture):
+    def rename(self, new_path: str = "renamed.txt") -> None:
+        target = self.source / new_path
+        os.replace(self.file, target)
+        self.file = target
+        with self.db() as connection:
+            ArchiveCatalog(connection).rename_file(
+                self.file_id, new_path=new_path, changed_at=storage.now_iso(), vault_id=2)
+        self.old_key, self.key = self.key, f"vaults/{self.uuid}/{new_path}"
 
+    def assert_renamed(self, job_id: int, before: dict, *, matched: bool = True) -> dict:
+        current = self.assert_current(job_id, A, matched=matched)
+        self.assertNotEqual(current["id"], before["id"])
+        self.assertIsNotNone(current["copy_attempt_id"])
+        self.assertEqual(self.provider.objects[self.key, current["provider_version_id"]][1][COPY_TOKEN_KEY],
+                         str(self.attempts()[-1]["token"]))
+        # Exact cleanup of the old key's version, after the new Current.
+        self.assertIn((self.old_key, before["provider_version_id"]), self.provider.deleted)
+        self.assertEqual(self.rows("SELECT id FROM archive_versions WHERE file_id=%s", self.file_id),
+                         [{"id": current["id"]}])
+        self.assertEqual(self.provider.copies, 1, "a copy is never sent twice")
+        self.assertEqual(self.provider.puts, 1, "a rename never uploads")
+        return current
 
-class RenameDestinationProofTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from app import storage
+    def test_rename_copies_the_exact_current_and_removes_the_old_key_exactly(self) -> None:
+        before = self.protected()
+        sources = []
+        self.provider.hook = lambda stage, **kw: sources.append(kw["source"]) if stage == "before_copy" else None
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.run_job(job_id)
+        self.assert_renamed(job_id, before)
+        self.assertEqual(sources, [(self.old_key, before["provider_version_id"])])
+        attempt = self.attempts()[0]
+        self.assertEqual((attempt["purpose"], attempt["outcome"], attempt["source_provider_version_id"]),
+                         ("rename", "landed", before["provider_version_id"]))
 
-        storage.cancelled_jobs.clear()
+    def test_local_copy_matches_only_through_a_fresh_local_digest(self) -> None:
+        before = self.protected()
+        self.rename()
+        # The bytes at the new path changed after the rename observation: the
+        # remote digest never stands in for them.
+        self.file.write_bytes(B + b" longer")
+        job_id = self.admit("rename", "renamed.txt")
+        self.run_job(job_id)
+        self.assert_renamed(job_id, before, matched=False)
+        self.assertIsNone(self.file_row()["matched_version_id"])
 
-    def test_rename_does_not_reuse_missing_destination(self) -> None:
-        """A->B->A->B: a missing prior destination cannot authorize hide."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-missing-dest"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            missing_id = _insert_destination_version(
-                database_path,
-                file_id=file_id,
-                path=new_path,
-                object_key=new_key,
-                provider_version_id="missing-s3-version",
-                digest=_sha256_hex(payload),
-                payload_size=len(payload),
-                availability="missing",
-            )
+    def test_crash_after_the_copy_landed_resumes_from_its_token_without_copying_again(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.crash_at("copied")
+        self.run_job(job_id)
+        self.assertEqual(self.provider.copies, 1)
+        self.assertIsNotNone(self.attempts()[0]["send_started_at"])
+        self.assertIsNone(self.file_row()["replacing_version_id"])
+        self.assertEqual(self.file_row()["current_version_id"], before["id"])
+        self.expire(job_id)
+        self.run_job(job_id)
+        self.assert_renamed(job_id, before)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs(new_path, "rename", 2, 1)
-                self.assertEqual(queued["item_count"], 1)
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (upload_calls, deleted_keys, head_calls, download_calls):
-                    process_jobs_once()
+    def test_another_job_takes_over_the_started_copy(self) -> None:
+        before = self.protected()
+        self.rename()
+        first = self.admit("rename", "renamed.txt")
+        self.crash_at("copied")
+        self.run_job(first)
+        with self.db() as connection:
+            connection.execute("DELETE FROM job_leases WHERE job_id=%s", (first,))
+            connection.execute("UPDATE jobs SET status='failed', finished_at=now() WHERE id=%s", (first,))
+        second = self.admit("rename", "renamed.txt")
+        self.run_job(second)
+        self.assert_renamed(second, before)
+        self.assertEqual(self.attempts()[0]["job_id"], second)
 
-            with PostgresConnection(str(database_path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                versions = catalog.list_versions(2, new_path)
-                job = connection.execute(
-                    "SELECT status, archive_version_id FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-                missing = connection.execute(
-                    "SELECT availability FROM archive_versions WHERE id=%s",
-                    (missing_id,),
-                ).fetchone()
+    def test_database_retries_replay_db_units_only_never_the_copy(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        plan = {"INSERT INTO copy_attempts": 1, "SET send_started_at": 1,
+                "INSERT INTO copy_receipts": 1, "outcome='landed'": 1,
+                "SET replacing_version_id": 1, "SET current_version_id": 1}
+        hits: list[str] = []
+        real = storage.db
+        with patch.object(storage, "db", side_effect=lambda: fixtures._FlakyCommit(real(), plan, hits)):
+            self.run_job(job_id)
+        self.assert_renamed(job_id, before)
+        self.assertEqual(sorted(set(hits)), sorted(plan), "every unit must hit one commit failure")
+        self.assertEqual(len(self.rows("SELECT * FROM copy_receipts")), 1)
 
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(missing["availability"], "missing", "Unproven absence is not deletion authority")
-            self.assertEqual(
-                deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
-            )
-            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
-            by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["missing-s3-version"]["availability"], "missing", "Catalog projection must agree: unproven absence is not deletion authority")
-            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
-            self.assertEqual(by_provider["new-s3-version"]["availability"], "available")
-            self.assertNotEqual(job["archive_version_id"], missing_id)
-            self.assertEqual(
-                [call["Key"] for call in head_calls if call["VersionId"] == "missing-s3-version"],
-                [],
-            )
+    def test_a_crash_after_promotion_still_removes_the_old_key_exactly(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        with patch.object(storage, "cleanup_superseded_upload", side_effect=_Crash("cleanup")):
+            self.run_job(job_id)
+        self.assertEqual(self.provider.deleted, [])
+        self.assertEqual(self.version(self.file_row()["current_version_id"])["object_key"], self.key)
+        self.expire(job_id)
+        self.run_job(job_id)
+        self.assertEqual(self.job(job_id)["status"], "completed")
+        self.assertEqual(self.provider.deleted, [(self.old_key, before["provider_version_id"])])
+        self.assertEqual(self.provider.copies, 1)
 
-    def test_rename_verification_binds_download_to_recorded_version(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-version-bind"
-            concurrent = b"concurrent-writer-v3"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            current_version = {"id": "new-s3-version"}
-            download_calls: list[dict[str, str]] = []
-            deleted: list[str] = []
+    def test_an_unsent_copy_is_proven_absent_before_a_new_attempt(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.crash_at("before_copy")
+        self.run_job(job_id)
+        self.assertEqual(self.provider.copies, 0)
+        self.expire(job_id)
+        self.run_job(job_id)
+        self.assert_renamed(job_id, before)
+        first, second = self.attempts()
+        self.assertEqual((first["outcome"], first["no_write_operation"]), ("no_write", "ProvenAbsent"))
+        self.assertEqual(second["outcome"], "landed")
 
-            def fake_head_object(**kwargs):
-                key = kwargs["Key"]
-                requested = str(kwargs.get("VersionId") or "")
-                if key == old_key:
-                    return {
-                        "VersionId": "old-s3-version",
-                        "ContentLength": len(payload),
-                        "StorageClass": "STANDARD",
-                        "ETag": '"old-etag"',
-                    }
-                if requested:
-                    if requested != "new-s3-version":
-                        raise RuntimeError("unexpected pinned VersionId")
-                    return {
-                        "VersionId": "new-s3-version",
-                        "ContentLength": len(payload),
-                        "StorageClass": "STANDARD",
-                        "ETag": '"new-etag"',
-                    }
-                observed = current_version["id"]
-                if observed == "new-s3-version":
-                    current_version["id"] = "new-s3-v3"
-                return {
-                    "VersionId": observed,
-                    "ContentLength": len(payload if observed == "new-s3-version" else concurrent),
-                    "StorageClass": "STANDARD",
-                    "ETag": '"new-etag"',
-                }
+    def test_a_foreign_write_keeps_every_copy_and_blocks(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.crash_at("before_copy")
+        self.run_job(job_id)
+        foreign = self.provider.add(self.key, b"someone else")
+        self.expire(job_id)
+        self.run_job(job_id)
+        job = self.job(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("ambiguous_send", self.file_row()["reconciliation_block"] or job["message"])
+        self.assertEqual(self.file_row()["current_version_id"], before["id"])
+        self.assertEqual(self.provider.deleted, [])
+        self.assertIn((self.key, foreign), self.provider.objects)
+        self.assertIsNone(self.attempts()[0]["settled_at"])
 
-            def fake_download_file(
-                Bucket: str,
-                Key: str,
-                Filename: str,
-                ExtraArgs: dict | None = None,
-                Callback=None,
-                Config=None,
-            ) -> None:
-                version_id = str((ExtraArgs or {}).get("VersionId") or "")
-                download_calls.append(
-                    {"Bucket": Bucket, "Key": Key, "VersionId": version_id}
-                )
-                body = payload if version_id == "new-s3-version" else concurrent
-                target = Path(Filename)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(body)
-                if Callback is not None:
-                    Callback(len(body))
+    def test_a_cold_current_needs_an_explicit_restore(self) -> None:
+        before = self.protected()
+        self.provider.classes[self.key, before["provider_version_id"]] = "GLACIER"
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.run_job(job_id)
+        job = self.job(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("restore it explicitly", job["message"])
+        self.assertEqual((self.provider.copies, self.attempts()), (0, []))
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with (
-                    patch(
-                        "app.storage.settings",
-                        SimpleNamespace(
-                            operation_concurrency=1,
-                            restore_poll_interval=900,
-                        ),
-                    ),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload(),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            initial_versions={old_key: {"old-s3-version"}},
-                            head_object=fake_head_object,
-                            delete_object=lambda **kwargs: deleted.append(kwargs["Key"])
-                            or {
-                                "VersionId": "delete-marker-1",
-                                "DeleteMarker": True,
-                            },
-                            download_file=fake_download_file,
-                        ),
-                    ),
-                ):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(2, new_path)
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(deleted, [old_key])
-            self.assertEqual(
-                download_calls,
-                [
-                    {
-                        "Bucket": "bucket",
-                        "Key": new_key,
-                        "VersionId": "new-s3-version",
-                    }
-                ],
-            )
-            by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
-            self.assertEqual(
-                by_provider["new-s3-version"]["plaintext_sha256"],
-                _sha256_hex(payload),
-            )
-            self.assertNotIn("new-s3-v3", by_provider)
-
-    def test_rename_already_completed_requires_live_destination(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-already"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs(new_path, "rename", 2, 1)
-                self.assertEqual(queued["item_count"], 1)
-            live_id = _insert_destination_version(
-                database_path,
-                file_id=file_id,
-                path=new_path,
-                object_key=new_key,
-                provider_version_id="new-s3-version",
-                digest=_sha256_hex(payload),
-                payload_size=len(payload),
-            )
-            _insert_old_key_marker(database_path, file_id=file_id, old_key=old_key)
-            with patch("app.database.settings", database_settings):
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (upload_calls, deleted_keys, head_calls, download_calls):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                job = connection.execute(
-                    "SELECT status, message_key, archive_version_id FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(job["message_key"], "job.rename_verified")
-            self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
-            self.assertEqual(upload_calls, [])
-            self.assertEqual(download_calls, [])
-            self.assertEqual(job["archive_version_id"], live_id)
-            self.assertEqual(
-                [call["VersionId"] for call in head_calls],
-                ["new-s3-version", "new-s3-version"],
-            )
-
-    def test_missing_destination_with_marker_recopies_before_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-restore-dest"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            _insert_destination_version(
-                database_path,
-                file_id=file_id,
-                path=new_path,
-                object_key=new_key,
-                provider_version_id="missing-s3-version",
-                digest=_sha256_hex(payload),
-                payload_size=len(payload),
-                availability="missing",
-            )
-            _insert_old_key_marker(database_path, file_id=file_id, old_key=old_key)
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(new_path, "rename", 2, 1)
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (upload_calls, deleted_keys, _head_calls, download_calls):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(2, new_path)
-                job = connection.execute(
-                    "SELECT status, message_key FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-                markers = connection.execute(
-                    "SELECT provider_version_id FROM delete_markers WHERE vault_file_id=%s",
-                    (file_id,),
-                ).fetchall()
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(job["message_key"], "job.rename_verified")
-            self.assertEqual(deleted_keys, [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}])
-            self.assertTrue(any(call[:1] == ("upload",) for call in upload_calls))
-            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
-            self.assertEqual(
-                [row["provider_version_id"] for row in markers],
-                [],
-            )
-
-    def test_different_digest_destination_is_not_reused(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-current"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs(new_path, "rename", 2, 1)
-                self.assertEqual(queued["item_count"], 1)
-            stale_id = _insert_destination_version(
-                database_path,
-                file_id=file_id,
-                path=new_path,
-                object_key=new_key,
-                provider_version_id="stale-s3-version",
-                digest=_sha256_hex(b"other-content"),
-                payload_size=13,
-            )
-            with patch("app.database.settings", database_settings):
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (_upload_calls, deleted_keys, head_calls, download_calls):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(2, new_path)
-                job = connection.execute(
-                    "SELECT status, archive_version_id FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(
-                deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
-            )
-            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            self.assertNotEqual(job["archive_version_id"], stale_id)
-            by_provider = {row["provider_version_id"]: row for row in versions}
-            self.assertEqual(by_provider["stale-s3-version"]["id"], stale_id)
-            self.assertEqual(by_provider["new-s3-version"]["integrity"], "verified")
-            self.assertEqual(
-                [call["VersionId"] for call in head_calls if call["VersionId"] == "stale-s3-version"],
-                [],
-            )
-
-    def test_interrupted_verifying_rename_resumes_exact_version(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = b"rename-verify-resume"
-            old_path = "old.txt"
-            new_path = "new.txt"
-            old_key = f"docs/{old_path}"
-            new_key = f"docs/{new_path}"
-            _source, database_path, file_id = _prepare_renamed_plain_file(
-                root,
-                old_path=old_path,
-                new_path=new_path,
-                payload=payload,
-            )
-            unverified_id = _insert_destination_version(
-                database_path,
-                file_id=file_id,
-                path=new_path,
-                object_key=new_key,
-                provider_version_id="new-s3-version",
-                digest=None,
-                payload_size=len(payload),
-                integrity="unverified",
-            )
-            with PostgresConnection(str(database_path)) as connection:
-                old_version = connection.execute(
-                    """
-                    SELECT id FROM archive_versions
-                    WHERE vault_file_id=%s AND object_key=%s
-                    """,
-                    (file_id, old_key),
-                ).fetchone()
-                connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_by, requested_at, updated_at,
-                        group_id, group_path, total_bytes, transferred_bytes,
-                        message
-                    ) VALUES (
-                        2, %s, %s, %s, 'rename', 'queued', 1,
-                        '2026-07-21T11:12:00+00:00', '2026-07-21T11:12:00+00:00',
-                        'group-1', %s, %s, 0, 'Verifying the new cloud key'
-                    )
-                    """,
-                    (
-                        file_id,
-                        old_version["id"],
-                        new_path,
-                        new_path,
-                        len(payload),
-                    ),
-                )
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                with _rename_worker(
-                    database_path,
-                    payload=payload,
-                    old_key=old_key,
-                    new_key=new_key,
-                ) as (upload_calls, deleted_keys, _head_calls, download_calls):
-                    process_jobs_once()
-
-            with PostgresConnection(str(database_path)) as connection:
-                version = connection.execute(
-                    "SELECT integrity, plaintext_sha256 FROM archive_versions WHERE id=%s",
-                    (unverified_id,),
-                ).fetchone()
-                job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
-                    (new_path,),
-                ).fetchone()
-
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(version["integrity"], "verified")
-            self.assertEqual(version["plaintext_sha256"], _sha256_hex(payload))
-            self.assertEqual(upload_calls, [])
-            self.assertEqual(download_calls[0]["VersionId"], "new-s3-version")
-            self.assertEqual(
-                deleted_keys,
-                [{"Bucket": "bucket", "Key": old_key, "VersionId": "old-s3-version"}],
-            )
+    def test_a_vault_waiting_for_reconnect_holds_the_rename_then_resumes(self) -> None:
+        before = self.protected()
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        claimed = self.claim(job_id)
+        # The root changes after the claim: the target fence holds the copy.
+        with self.db() as connection:
+            connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=2")
+        storage.process_job(claimed)
+        self.assertEqual(self.job(job_id)["status"], "queued")
+        self.assertEqual(self.provider.copies, 0)
+        with self.db() as connection:
+            vault_relocation.complete_relocation_scan(connection, 2)
+        self.run_job(job_id)
+        self.assert_renamed(job_id, before)
 
 
 if __name__ == "__main__":

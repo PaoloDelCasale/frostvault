@@ -19,6 +19,9 @@ class VersionedProvider:
         self.multiparts = []
         self.multipart_listings = 0
         self.aborted = []
+        self.classes = {}
+        self.restores = {}
+        self.copies = 0
         self.hook = lambda stage, **kwargs: None
 
     def add(self, key, payload, metadata=None, *, version=None):
@@ -57,7 +60,9 @@ class VersionedProvider:
         data, metadata = self.objects[Key, VersionId]
         return {"VersionId": VersionId, "ContentLength": len(data), "Metadata": dict(metadata),
                 "ChecksumSHA256": base64.b64encode(hashlib.sha256(data).digest()).decode(),
-                "ChecksumType": "FULL_OBJECT", "ETag": '"not-proof"', "StorageClass": "STANDARD"}
+                "ChecksumType": "FULL_OBJECT", "ETag": '"not-proof"',
+                "StorageClass": self.classes.get((Key, VersionId), "STANDARD"),
+                **({"Restore": self.restores[Key, VersionId]} if (Key, VersionId) in self.restores else {})}
 
     def get_object(self, *, Bucket, Key, VersionId):
         self.gets += 1
@@ -85,6 +90,26 @@ class VersionedProvider:
         self.aborted.append((Key, UploadId))
         return {}
 
+    def copy_object(self, *, Bucket, Key, CopySource, StorageClass="STANDARD", Metadata=None,
+                    MetadataDirective="COPY", **kwargs):
+        """Server-side copy of an exact source VersionId (never latest)."""
+        source = (CopySource["Key"], CopySource["VersionId"])
+        self.hook("before_copy", key=Key, source=source, metadata=Metadata)
+        data, metadata = self.objects[source]
+        if self.classes.get(source) in {"GLACIER", "DEEP_ARCHIVE"} and 'ongoing-request="false"' not in self.restores.get(source, ""):
+            raise AssertionError("an unrestored archive source cannot be copied")
+        self.copies += 1
+        version = self.add(Key, data, Metadata if MetadataDirective == "REPLACE" else metadata)
+        self.classes[Key, version] = StorageClass
+        response = {"VersionId": version, "CopyObjectResult": {
+            "ETag": '"copy"', "ChecksumSHA256": base64.b64encode(hashlib.sha256(data).digest()).decode()}}
+        self.hook("copied", version=version)
+        return response
+
+    def restore_object(self, *, Bucket, Key, VersionId, RestoreRequest):
+        self.restores[Key, VersionId] = 'ongoing-request="true"'
+        return {}
+
     def get_object_tagging(self, **kwargs):
         return {"TagSet": []}
 
@@ -97,7 +122,7 @@ class VersionedProvider:
 
     def list_object_versions(self, *, Bucket, Prefix, **kwargs):
         self.hook("list", key=Prefix)
-        return {"Versions": [{"Key": k, "VersionId": v, "Size": len(self.objects[k, v][0]), "StorageClass": "STANDARD", "LastModified": datetime(2026, 11, 1, tzinfo=timezone.utc)} for k, v in sorted(self.objects) if k.startswith(Prefix)],
+        return {"Versions": [{"Key": k, "VersionId": v, "Size": len(self.objects[k, v][0]), "StorageClass": self.classes.get((k, v), "STANDARD"), "LastModified": datetime(2026, 11, 1, tzinfo=timezone.utc)} for k, v in sorted(self.objects) if k.startswith(Prefix)],
                 "DeleteMarkers": [{"Key": k, "VersionId": v} for k, v in sorted(self.markers) if k.startswith(Prefix)], "IsTruncated": False}
 
     def delete_object(self, *, Bucket, Key, VersionId):

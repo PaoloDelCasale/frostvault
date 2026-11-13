@@ -39,6 +39,7 @@ BASELINE_TABLES = {
     "vault_operation_policies", "bulk_upload_admissions", "bulk_upload_exclusions",
     "cleanup_batches", "cleanup_candidates",
     "upload_remediations", "upload_remediation_jobs", "upload_remediation_sweep",
+    "copy_attempts", "copy_receipts", "copy_multiparts", "source_volumes",
     "directory_aggregates", "vault_catalog_revisions", "catalog_events",
     "vault_component_health", "cloud_preflight_state",
 }
@@ -343,7 +344,7 @@ class BaselineSchemaTests(unittest.TestCase):
         self.assertEqual(referenced, {
             "vault_targets", "vaults", "files", "archive_versions", "job_groups", "jobs",
             "notifications", "upload_snapshots", "upload_attempts", "bulk_upload_admissions",
-            "cleanup_batches", "upload_remediations",
+            "cleanup_batches", "upload_remediations", "copy_attempts",
         })
         # No per-user attribution survives anywhere (#586).
         attribution = {

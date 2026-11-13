@@ -48,6 +48,9 @@ Archive Version and Job tables and add their own:
 - ``cleanup_batches``, ``cleanup_candidates``: the frozen cleanup of what a
   verified keeper superseded, deleted by exact VersionId; a superseded Archive
   Version row is removed only together with its completed proof (#591).
+- ``copy_attempts``, ``copy_receipts``, ``copy_multiparts``: server-side
+  copies (rename, storage-class change, Vault move) with their frozen exact
+  source, destination and expected proof, independent of the Job (#595).
 
 Native types throughout: ``uuid``, ``timestamptz``, ``bytea`` digests,
 ``bigint`` nanosecond mtimes and ``COLLATE "C"`` textual keys.
@@ -105,6 +108,19 @@ $$;
 CREATE TRIGGER vault_targets_immutable
     BEFORE UPDATE OR DELETE ON vault_targets
     FOR EACH ROW EXECUTE FUNCTION vault_targets_immutable();
+
+-- Source Volume identity (#427, #595): the mount fingerprint accepted for
+-- each ``/sources/<alias>``. A different fingerprint suspends local work of
+-- every Vault on it until Reconnect Folder explicitly accepts the new root.
+CREATE TABLE source_volumes (
+    alias text COLLATE "C" PRIMARY KEY,
+    fingerprint_version text COLLATE "C" NOT NULL,
+    expected_fingerprint text COLLATE "C" NOT NULL,
+    first_seen_at timestamptz NOT NULL,
+    last_seen_at timestamptz NOT NULL,
+    last_alert_token text COLLATE "C",
+    CONSTRAINT source_volumes_alias_ck CHECK (alias <> '' AND alias <> 'managed')
+);
 
 -- lifecycle:
 --   active              protected; local and cloud work run unless paused
@@ -400,6 +416,10 @@ CREATE TABLE archive_versions (
     verification_fallback text COLLATE "C",
     verification_egress_bytes bigint,
     upload_attempt_id uuid,
+    -- A version produced by a server-side copy of another exact version
+    -- (rename to the new path key, storage-class change, Vault move, #595)
+    -- reaches its expected proof through its landed copy attempt instead.
+    copy_attempt_id uuid,
     -- The last observed cloud restore of this exact VersionId (Recovery,
     -- #594): requested and in progress, or a readable temporary copy until
     -- restore_expiry. It never decides integrity or availability.
@@ -409,6 +429,10 @@ CREATE TABLE archive_versions (
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT archive_versions_file_scope_uq UNIQUE (id, file_id),
     CONSTRAINT archive_versions_upload_attempt_uq UNIQUE (upload_attempt_id),
+    CONSTRAINT archive_versions_copy_attempt_uq UNIQUE (copy_attempt_id),
+    CONSTRAINT archive_versions_one_producer_ck CHECK (
+        upload_attempt_id IS NULL OR copy_attempt_id IS NULL
+    ),
     CONSTRAINT archive_versions_object_version_uq UNIQUE (object_key, provider_version_id),
     CONSTRAINT archive_versions_object_key_ck CHECK (object_key <> ''),
     CONSTRAINT archive_versions_provider_version_ck CHECK (provider_version_id <> ''),
@@ -456,7 +480,9 @@ BEGIN
        OR (OLD.provider_version_id IS NOT NULL
            AND NEW.provider_version_id IS DISTINCT FROM OLD.provider_version_id)
        OR (OLD.upload_attempt_id IS NOT NULL
-           AND NEW.upload_attempt_id IS DISTINCT FROM OLD.upload_attempt_id) THEN
+           AND NEW.upload_attempt_id IS DISTINCT FROM OLD.upload_attempt_id)
+       OR (OLD.copy_attempt_id IS NOT NULL
+           AND NEW.copy_attempt_id IS DISTINCT FROM OLD.copy_attempt_id) THEN
         RAISE EXCEPTION 'an Archive Version keeps its file and exact cloud identity'
             USING ERRCODE = 'restrict_violation';
     END IF;
@@ -465,7 +491,8 @@ END
 $$;
 
 CREATE TRIGGER archive_versions_identity_immutable
-    BEFORE UPDATE OF file_id, object_key, provider_version_id, upload_attempt_id
+    BEFORE UPDATE OF file_id, object_key, provider_version_id, upload_attempt_id,
+        copy_attempt_id
     ON archive_versions
     FOR EACH ROW EXECUTE FUNCTION archive_versions_identity_immutable();
 
@@ -823,10 +850,13 @@ CREATE TABLE job_restores (
     CONSTRAINT job_restores_days_ck CHECK (days >= 1)
 );
 
+-- colder_only: a whole-Vault move along the saved Storage Plan (#595). It
+-- never warms and never requests a restore; a manual change may do both.
 CREATE TABLE job_storage_class_changes (
     job_id bigint PRIMARY KEY,
     action text COLLATE "C" NOT NULL DEFAULT 'storage-class',
     target_storage_class text COLLATE "C" NOT NULL,
+    colder_only boolean NOT NULL DEFAULT false,
     CONSTRAINT job_storage_class_changes_job_fk FOREIGN KEY (job_id, action)
         REFERENCES jobs (id, action) ON DELETE CASCADE,
     CONSTRAINT job_storage_class_changes_action_ck CHECK (action = 'storage-class'),
@@ -1469,6 +1499,275 @@ CREATE TRIGGER upload_multiparts_guard
     BEFORE UPDATE OR DELETE ON upload_multiparts
     FOR EACH ROW EXECUTE FUNCTION upload_multiparts_guard();
 
+-- Server-side copies (#595): a rename copies Current to the key of the new
+-- path, a storage-class change or Vault move copies it in place to another
+-- class. A copy attempt freezes, before any provider request, the exact
+-- source (key and VersionId of the verified Current, never latest/HEAD), the
+-- destination key and class, the expected proof (the source's verified digest
+-- and size), the path epoch, the Source Volume root, the provider endpoint
+-- and the destination inventory; its token travels in the copied object's
+-- metadata. send_started_at is committed before CopyObject or
+-- CreateMultipartUpload and is never cleared: once set, this attempt never
+-- sends again (a retry reconciles from S3). Settlement is written once, like
+-- an upload attempt's. The landed version becomes the file's replacement in
+-- progress through copy_attempt_id: the old copy stays Current until the new
+-- one is verified, and is then cleaned up by exact VersionId.
+-- job_id is the Job that opened it; collecting that Job keeps the attempt.
+CREATE TABLE copy_attempts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    vault_id bigint NOT NULL,
+    file_id uuid NOT NULL,
+    job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
+    purpose text COLLATE "C" NOT NULL,
+    source_key text COLLATE "C" NOT NULL,
+    source_provider_version_id text COLLATE "C" NOT NULL,
+    destination_key text COLLATE "C" NOT NULL,
+    storage_class text COLLATE "C" NOT NULL,
+    size bigint NOT NULL,
+    plaintext_sha256 bytea NOT NULL,
+    path text COLLATE "C" NOT NULL,
+    path_since timestamptz NOT NULL,
+    source_root text COLLATE "C" NOT NULL,
+    root_identity text COLLATE "C",
+    provider text COLLATE "C" NOT NULL,
+    token uuid NOT NULL DEFAULT gen_random_uuid(),
+    inventory_versions text[] COLLATE "C" NOT NULL,
+    inventory_markers text[] COLLATE "C" NOT NULL,
+    composite_checksum text COLLATE "C",
+    created_at timestamptz NOT NULL DEFAULT now(),
+    send_started_at timestamptz,
+    settled_at timestamptz,
+    outcome text COLLATE "C",
+    no_write_operation text COLLATE "C",
+    landed_version_id text COLLATE "C",
+    CONSTRAINT copy_attempts_token_uq UNIQUE (token),
+    CONSTRAINT copy_attempts_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT copy_attempts_file_fk FOREIGN KEY (file_id, vault_id)
+        REFERENCES files (id, vault_id) ON DELETE RESTRICT,
+    CONSTRAINT copy_attempts_purpose_ck CHECK (purpose IN ('rename', 'storage-class')),
+    CONSTRAINT copy_attempts_keys_ck CHECK (
+        source_key <> '' AND destination_key <> '' AND source_provider_version_id <> ''
+        AND (purpose = 'rename') = (source_key <> destination_key)
+    ),
+    CONSTRAINT copy_attempts_class_ck CHECK (storage_class <> ''),
+    CONSTRAINT copy_attempts_size_ck CHECK (size BETWEEN 0 AND 5497558138880),
+    CONSTRAINT copy_attempts_sha256_ck CHECK (octet_length(plaintext_sha256) = 32),
+    CONSTRAINT copy_attempts_path_ck CHECK (path <> '' AND provider <> ''),
+    CONSTRAINT copy_attempts_outcome_ck CHECK (outcome IN ('unsent', 'no_write', 'landed')),
+    CONSTRAINT copy_attempts_settlement_ck CHECK (
+        (outcome IS NULL) = (settled_at IS NULL)
+        AND COALESCE(outcome = 'no_write', false) = (no_write_operation IS NOT NULL)
+        AND COALESCE(outcome = 'landed', false) = (landed_version_id IS NOT NULL)
+        AND COALESCE(outcome = 'unsent', false) = (
+            outcome IS NOT NULL AND send_started_at IS NULL
+        )
+    ),
+    CONSTRAINT copy_attempts_no_write_ck CHECK (
+        no_write_operation IN ('CopyObject', 'CreateMultipartUpload', 'ProvenAbsent')
+    ),
+    CONSTRAINT copy_attempts_landed_version_ck CHECK (
+        landed_version_id <> '' AND landed_version_id <> 'null'
+        AND landed_version_id <> source_provider_version_id
+    )
+);
+
+-- At most one unsettled copy per Vault File.
+CREATE UNIQUE INDEX copy_attempts_open_file_uq ON copy_attempts (file_id)
+    WHERE settled_at IS NULL;
+CREATE INDEX copy_attempts_file_idx ON copy_attempts (file_id);
+CREATE INDEX copy_attempts_job_idx ON copy_attempts (job_id) WHERE job_id IS NOT NULL;
+
+-- Raw CopyObject / CompleteMultipartUpload responses, journaled immediately
+-- on their own connection: append-only, independent of the Job and of the
+-- attempt's settlement; never publication or deletion authority.
+CREATE TABLE copy_receipts (
+    attempt_id uuid NOT NULL REFERENCES copy_attempts(id) ON DELETE CASCADE,
+    receipt_sha256 bytea NOT NULL,
+    response jsonb NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT copy_receipts_pkey PRIMARY KEY (attempt_id, receipt_sha256),
+    CONSTRAINT copy_receipts_sha256_ck CHECK (octet_length(receipt_sha256) = 32),
+    CONSTRAINT copy_receipts_response_ck CHECK (jsonb_typeof(response) = 'object')
+);
+
+-- Multipart copy UploadIds, journaled before the first UploadPartCopy: the
+-- only authority to abort one exactly.
+CREATE TABLE copy_multiparts (
+    attempt_id uuid NOT NULL REFERENCES copy_attempts(id) ON DELETE CASCADE,
+    upload_id text COLLATE "C" NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    CONSTRAINT copy_multiparts_pkey PRIMARY KEY (attempt_id, upload_id),
+    CONSTRAINT copy_multiparts_upload_id_ck CHECK (upload_id <> '')
+);
+
+ALTER TABLE archive_versions
+    ADD CONSTRAINT archive_versions_copy_attempt_fk
+        FOREIGN KEY (copy_attempt_id, file_id)
+        REFERENCES copy_attempts (id, file_id) ON DELETE RESTRICT;
+
+-- A copied Archive Version is the exact landed identity of its attempt.
+CREATE FUNCTION archive_versions_copy_identity() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.copy_attempt_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM copy_attempts c
+        WHERE c.id = NEW.copy_attempt_id AND c.file_id = NEW.file_id
+          AND c.outcome = 'landed'
+          AND c.landed_version_id = NEW.provider_version_id
+          AND c.destination_key = NEW.object_key
+          AND c.size = NEW.size
+    ) THEN
+        RAISE EXCEPTION 'a copied Archive Version is the exact landed identity of its attempt'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER archive_versions_copy_identity
+    BEFORE INSERT OR UPDATE OF copy_attempt_id ON archive_versions
+    FOR EACH ROW EXECUTE FUNCTION archive_versions_copy_identity();
+
+-- Copy attempts: opened by a rename or storage-class Job of the same file,
+-- from the file's verified Current at its exact identity, to the key of the
+-- frozen path (rename) or in place, never beside an unsettled upload send.
+-- Identity is immutable; the composite checksum is written once before the
+-- send; send-start and settlement are written once; a later Job of the same
+-- file and purpose may adopt it; open uncertainty is never collected.
+CREATE FUNCTION copy_attempts_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM files f
+            JOIN archive_versions cur ON cur.id = f.current_version_id
+            JOIN vaults v ON v.id = f.vault_id
+            JOIN jobs j ON j.id = NEW.job_id AND j.file_id = f.id AND j.vault_id = f.vault_id
+            WHERE f.id = NEW.file_id AND f.vault_id = NEW.vault_id
+              AND j.action = NEW.purpose
+              AND cur.integrity = 'verified'
+              AND cur.object_key = NEW.source_key
+              AND cur.provider_version_id = NEW.source_provider_version_id
+              AND cur.plaintext_sha256 = NEW.plaintext_sha256
+              AND cur.size = NEW.size
+              AND f.replacing_version_id IS NULL
+              AND f.path = NEW.path AND f.path_since = NEW.path_since
+              AND (NEW.purpose <> 'rename'
+                   OR NEW.destination_key = 'vaults/' || v.uuid::text || '/' || f.path)
+        ) THEN
+            RAISE EXCEPTION 'a copy starts from the verified Current of its own Vault File'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM upload_attempts WHERE file_id = NEW.file_id AND settled_at IS NULL
+        ) THEN
+            RAISE EXCEPTION 'a copy never overlaps an unsettled upload'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.send_started_at IS NOT NULL OR NEW.settled_at IS NOT NULL THEN
+            RAISE EXCEPTION 'a copy attempt starts unsent and unsettled'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.settled_at IS NULL
+           OR EXISTS (
+               SELECT 1 FROM copy_multiparts
+               WHERE attempt_id = OLD.id AND closed_at IS NULL
+           )
+           OR EXISTS (
+               SELECT 1 FROM copy_receipts
+               WHERE attempt_id = OLD.id
+                 AND (OLD.outcome <> 'landed'
+                      OR (response ->> 'VersionId') IS DISTINCT FROM OLD.landed_version_id)
+           ) THEN
+            RAISE EXCEPTION 'a copy attempt with open uncertainty is never collected'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.purpose, NEW.source_key,
+        NEW.source_provider_version_id, NEW.destination_key, NEW.storage_class, NEW.size,
+        NEW.plaintext_sha256, NEW.path, NEW.path_since, NEW.source_root, NEW.root_identity,
+        NEW.provider, NEW.token, NEW.inventory_versions, NEW.inventory_markers, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.vault_id, OLD.file_id, OLD.purpose, OLD.source_key,
+        OLD.source_provider_version_id, OLD.destination_key, OLD.storage_class, OLD.size,
+        OLD.plaintext_sha256, OLD.path, OLD.path_since, OLD.source_root, OLD.root_identity,
+        OLD.provider, OLD.token, OLD.inventory_versions, OLD.inventory_markers, OLD.created_at)
+       OR (NEW.job_id IS NOT NULL AND NEW.job_id IS DISTINCT FROM OLD.job_id
+           AND NOT EXISTS (
+               SELECT 1 FROM jobs WHERE id = NEW.job_id AND file_id = OLD.file_id
+                 AND action = OLD.purpose
+           ))
+       OR (OLD.composite_checksum IS NOT NULL
+           AND NEW.composite_checksum IS DISTINCT FROM OLD.composite_checksum)
+       OR (OLD.send_started_at IS NOT NULL AND (
+           NEW.send_started_at IS DISTINCT FROM OLD.send_started_at
+           OR NEW.composite_checksum IS DISTINCT FROM OLD.composite_checksum))
+       OR (OLD.settled_at IS NOT NULL AND (
+           (NEW.settled_at, NEW.outcome, NEW.no_write_operation, NEW.landed_version_id,
+            NEW.send_started_at)
+           IS DISTINCT FROM
+           (OLD.settled_at, OLD.outcome, OLD.no_write_operation, OLD.landed_version_id,
+            OLD.send_started_at)
+       )) THEN
+        RAISE EXCEPTION 'copy attempt history is immutable'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER copy_attempts_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON copy_attempts
+    FOR EACH ROW EXECUTE FUNCTION copy_attempts_guard();
+
+-- Receipts are append-only; they go only with their collected attempt.
+CREATE FUNCTION copy_receipts_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' OR EXISTS (
+        SELECT 1 FROM copy_attempts WHERE id = OLD.attempt_id
+    ) THEN
+        RAISE EXCEPTION 'copy receipts are append-only'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER copy_receipts_immutable
+    BEFORE UPDATE OR DELETE ON copy_receipts
+    FOR EACH ROW EXECUTE FUNCTION copy_receipts_immutable();
+
+-- A journaled multipart copy is only closed (completed or aborted).
+CREATE FUNCTION copy_multiparts_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT 1 FROM copy_attempts WHERE id = OLD.attempt_id) THEN
+            RAISE EXCEPTION 'a journaled multipart copy goes only with its attempt'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.attempt_id, NEW.upload_id, NEW.created_at)
+       IS DISTINCT FROM (OLD.attempt_id, OLD.upload_id, OLD.created_at)
+       OR (OLD.closed_at IS NOT NULL AND NEW.closed_at IS DISTINCT FROM OLD.closed_at) THEN
+        RAISE EXCEPTION 'a journaled multipart copy is only closed'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER copy_multiparts_guard
+    BEFORE UPDATE OR DELETE ON copy_multiparts
+    FOR EACH ROW EXECUTE FUNCTION copy_multiparts_guard();
+
 -- Cleanup of a replacement (#591, ADR-0035): once a verified keeper is the
 -- file's Current, the versions it superseded are deleted from S3 by exact
 -- VersionId. The batch is frozen in one transaction before any DELETE: its
@@ -1609,12 +1908,15 @@ BEGIN
                 JOIN files f ON f.id = av.file_id
                 JOIN cleanup_batches b ON b.id = NEW.batch_id
                 JOIN jobs j ON j.group_id = b.purge_group_id AND j.file_id = f.id
-                JOIN upload_attempts a ON a.id = av.upload_attempt_id
+                LEFT JOIN upload_attempts a ON a.id = av.upload_attempt_id
+                LEFT JOIN copy_attempts ca ON ca.id = av.copy_attempt_id
                 WHERE av.id = NEW.archive_version_id AND av.file_id = NEW.file_id
                   AND av.id = f.current_version_id AND j.archive_version_id = av.id
                   AND j.action = 'cloud-purge' AND j.status = 'cleaning'
                   AND av.integrity = 'verified'
-                  AND a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id
+                  AND ((a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id)
+                       OR (ca.outcome = 'landed'
+                           AND ca.landed_version_id = av.provider_version_id))
             ) THEN
                 RAISE EXCEPTION 'a cloud deletion grant is the consented Current of its file'
                     USING ERRCODE = 'restrict_violation';
@@ -1626,13 +1928,16 @@ BEGIN
             FROM archive_versions av
             JOIN files f ON f.id = av.file_id
             JOIN cleanup_batches b ON b.id = NEW.batch_id
-            JOIN upload_attempts a ON a.id = av.upload_attempt_id
+            LEFT JOIN upload_attempts a ON a.id = av.upload_attempt_id
+            LEFT JOIN copy_attempts ca ON ca.id = av.copy_attempt_id
             WHERE av.id = NEW.archive_version_id AND av.file_id = NEW.file_id
               AND av.id <> b.keeper_id
               AND av.id IS DISTINCT FROM f.current_version_id
               AND av.id IS DISTINCT FROM f.replacing_version_id
               AND av.integrity <> 'mismatch'
-              AND a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id
+              AND ((a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id)
+                   OR (ca.outcome = 'landed'
+                       AND ca.landed_version_id = av.provider_version_id))
         ) THEN
             RAISE EXCEPTION 'a cleanup candidate is a superseded application write of its file'
                 USING ERRCODE = 'restrict_violation';

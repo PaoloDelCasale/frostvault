@@ -28,6 +28,8 @@ from app.services import notifications, worker_errors
 from app.services.catalog_events import record_catalog_revision
 from app.services.database_retry import is_retryable_transaction_error
 from app.services.problems import report_problem
+from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 
 STAMP = "2026-11-06T10:00:00+00:00"
@@ -43,16 +45,10 @@ class DatabaseCase(unittest.TestCase):
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
         with PostgresConnection(self.path) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash)"
-                " VALUES (1,'owner','Owner','hash')"
-            )
+            insert_owner(connection)
             for vault_id in (2, 3):
-                connection.execute(
-                    "INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)"
-                    " VALUES (%s,%s,%s,%s,'bucket',%s)",
-                    (vault_id, f"v{vault_id}", f"V{vault_id}", f"/tmp/v{vault_id}", f"p{vault_id}"),
-                )
+                seed_vault(connection, vault_id=vault_id, source_root=f"/tmp/v{vault_id}",
+                           name=f"V{vault_id}")
 
     def seed_unflushed(self, vault_id=2, count=3):
         """Committed catalog rows with durable dirty marks and NO aggregates."""
@@ -194,7 +190,7 @@ class WorkerErrorLoggingTests(DatabaseCase):
 
     def test_exception_is_logged_even_when_no_owner_exists_to_notify(self):
         with PostgresConnection(self.path) as connection:
-            connection.execute("DELETE FROM users")
+            connection.execute("DELETE FROM owner")
             with self.assertLogs("app.services.worker_errors", level="ERROR"):
                 worker_errors.record_worker_error(connection, component="startup", exc=RuntimeError("x"))
 
@@ -239,7 +235,7 @@ class WatcherRecoveryTests(DatabaseCase):
 
     def open_problem_count(self):
         with PostgresConnection(self.path) as connection:
-            return notifications.count_open_problems(connection, user_id=1)
+            return notifications.count_open_problems(connection)
 
     def test_retryable_error_classification_covers_deadlock(self):
         self.assertTrue(is_retryable_transaction_error(psycopg.errors.DeadlockDetected()))

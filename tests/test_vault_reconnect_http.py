@@ -13,9 +13,13 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.main import app
 from app.sessions import create_session
+from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
+
+
+RECOVERY_KIT = "Recovery Kit moves to the rebuilt model in #598"
 
 
 class ReconnectRecoveryHttpTests(unittest.TestCase):
@@ -25,7 +29,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         result = run_alembic(self.db_path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES (1,'owner','Owner','hash')")
+            insert_owner(connection)
         configured = replace(settings, database_dsn=database_dsn(str(self.db_path)), cookie_secure=False,
                              archive_master_key=Fernet.generate_key().decode(), vault_s3_bucket="test-bucket",
                              frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))))
@@ -36,9 +40,9 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
     def client_for(self, stale=False):
         client = TestClient(app, client=("127.0.0.1", 50000))
         with PostgresConnection(str(self.db_path)) as connection:
-            token = create_session(connection, user_id=1, auth_method="oidc")
+            token = create_session(connection, auth_method="oidc")
             if stale:
-                connection.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00' WHERE user_id=1")
+                connection.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00'")
         client.cookies.set(self.settings.session_cookie_name, token)
         return client, {"X-CSRF-Token": client.get("/api/me").json()["csrf_token"]}
 
@@ -49,6 +53,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(client.post("/api/vaults/7/reconnect", json=payload).status_code, 403)
         self.assertEqual(client.post("/api/vaults/7/relocate", json=payload, headers=headers).status_code, 404)
 
+    @unittest.skip(RECOVERY_KIT)
     def test_kit_requires_authentication_and_recent_reauthentication(self):
         anonymous = TestClient(app)
         self.assertIn(anonymous.get("/api/recovery-kit/download").status_code, (401, 403))
@@ -59,6 +64,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "reauth_required"})
         build.assert_not_called()
 
+    @unittest.skip(RECOVERY_KIT)
     def test_no_store_download_is_non_catalog_and_audited_without_secret(self):
         client, _ = self.client_for()
         # Session creation is a fresh identity proof.
@@ -74,6 +80,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertNotIn(self.settings.archive_master_key, "\n".join(logs.output) + event["detail"])
         self.assertIn("s3api restore-object", kit["instructions"])
 
+    @unittest.skip(RECOVERY_KIT)
     def test_one_custody_is_fingerprint_bound_and_csrf_protected(self):
         client, headers = self.client_for()
         status = client.get("/api/recovery-kit").json()

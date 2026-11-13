@@ -233,6 +233,21 @@ def _source_object_tagging(
     return urlencode(tags) if tags else None
 
 
+COPY_TOKEN_KEY = "frostvault-move"
+
+
+def copy_metadata(source_head: dict[str, Any], token: str) -> dict[str, str]:
+    """The source's metadata with this copy's token instead of its upload token.
+
+    The source's own upload token names the attempt that wrote the source, not
+    this copy: it is dropped so no reconciliation can attribute the copy to it.
+    """
+    metadata = {k: v for k, v in (source_head.get("Metadata") or {}).items()
+                if k != "frostvault-upload"}
+    metadata[COPY_TOKEN_KEY] = token
+    return metadata
+
+
 def _multipart_source_checksum(
     client: Any, *, bucket: str, object_key: str, version_id: str,
     size: int, expected_sha256: str, check_active: Callable[[str], None],
@@ -285,8 +300,18 @@ def _multipart_copy_storage_class(
     source_head: dict[str, Any],
     check_active: Callable[[str], None] | None = None,
     intent_token: str | None = None,
+    source_key: str | None = None,
+    on_upload_id: Callable[[str], None] | None = None,
+    on_response: Callable[[dict[str, Any]], None] | None = None,
 ) -> str | None:
-    """Copy one exact S3 Version with multipart UploadPartCopy operations."""
+    """Copy one exact S3 Version with multipart UploadPartCopy operations.
+
+    ``source_key`` (default ``object_key``) is the exact source key; the
+    UploadId is handed to ``on_upload_id`` before the first part, so it can be
+    journaled as the only authority to abort it, and the completion response to
+    ``on_response`` as soon as it returns.
+    """
+    source_key = source_key or object_key
     if size_bytes <= S3_SINGLE_COPY_MAX_BYTES:
         raise ValueError("Multipart storage-class copy requires an oversized object")
 
@@ -303,7 +328,7 @@ def _multipart_copy_storage_class(
     tagging = _source_object_tagging(
         client,
         bucket=bucket,
-        object_key=object_key,
+        object_key=source_key,
         version_id=source_version_id,
     )
     create_kwargs: dict[str, Any] = {
@@ -314,7 +339,7 @@ def _multipart_copy_storage_class(
         "ChecksumType": "COMPOSITE" if intent_token else S3_COPY_CHECKSUM_TYPE,
     }
     if intent_token:
-        create_kwargs["Metadata"] = {**(source_head.get("Metadata") or {}), "frostvault-move": intent_token}
+        create_kwargs["Metadata"] = copy_metadata(source_head, intent_token)
     if tagging:
         # UploadPartCopy does not inherit tags from its source Version. The
         # tag set must be supplied when the multipart upload is initiated.
@@ -340,11 +365,13 @@ def _multipart_copy_storage_class(
         upload_id = initiated.get("UploadId")
         if not upload_id:
             raise RuntimeError("S3 did not return a multipart UploadId")
+        if on_upload_id is not None:
+            on_upload_id(str(upload_id))
 
         parts: list[dict[str, Any]] = []
         copy_source = {
             "Bucket": bucket,
-            "Key": object_key,
+            "Key": source_key,
             "VersionId": source_version_id,
         }
         for part_number in range(1, part_count + 1):
@@ -392,6 +419,8 @@ def _multipart_copy_storage_class(
         # Completion makes the upload no longer abortable.  A missing VersionId
         # is handled by the destination read-back, not by guessing the source.
         upload_id = None
+        if on_response is not None:
+            on_response(dict(completed))
         return completed.get("VersionId")
     except BaseException as exc:
         if upload_id:
@@ -419,8 +448,15 @@ def _copy_storage_class_version(
     source_head: dict[str, Any],
     check_active: Callable[[str], None] | None = None,
     intent_token: str | None = None,
+    source_key: str | None = None,
+    on_upload_id: Callable[[str], None] | None = None,
+    on_response: Callable[[dict[str, Any]], None] | None = None,
 ) -> str | None:
-    """Use CopyObject for small objects and exact multipart copy for large ones."""
+    """Use CopyObject for small objects and exact multipart copy for large ones.
+
+    The source is always the exact ``source_version_id`` of ``source_key``
+    (default ``object_key``: a copy in place), never latest.
+    """
     if source_size > S3_SINGLE_COPY_MAX_BYTES:
         return _multipart_copy_storage_class(
             client,
@@ -432,10 +468,13 @@ def _copy_storage_class_version(
             size_bytes=source_size,
             source_head=source_head,
             intent_token=intent_token,
+            source_key=source_key,
+            on_upload_id=on_upload_id,
+            on_response=on_response,
         )
     extra: dict[str, Any] = {}
     if intent_token:
-        extra["Metadata"] = {**(source_head.get("Metadata") or {}), "frostvault-move": intent_token}
+        extra["Metadata"] = copy_metadata(source_head, intent_token)
         for field in ("CacheControl", "ContentDisposition", "ContentEncoding", "ContentLanguage", "ContentType", "Expires"):
             if source_head.get(field) is not None:
                 extra[field] = source_head[field]
@@ -446,7 +485,7 @@ def _copy_storage_class_version(
         Key=object_key,
         CopySource={
             "Bucket": bucket,
-            "Key": object_key,
+            "Key": source_key or object_key,
             "VersionId": source_version_id,
         },
         StorageClass=target_class,
@@ -455,6 +494,8 @@ def _copy_storage_class_version(
         ChecksumAlgorithm=S3_COPY_CHECKSUM_ALGORITHM,
         **extra,
     )
+    if on_response is not None:
+        on_response(dict(copy_result))
     return copy_result.get("VersionId")
 
 

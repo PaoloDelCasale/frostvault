@@ -25,6 +25,9 @@ from .vault_paths import expected_cloud_key
 
 TOKEN_KEY = "frostvault-upload"
 ABSENT_OPERATION = 'ProvenAbsent'
+# Jobs whose provider writes run under this target fence: uploads, and the
+# server-side copies of rename and storage-class/Vault move (#595).
+TARGET_ACTIONS = frozenset({"upload", "rename", "storage-class"})
 # Conditions that resolve by themselves: the Job waits queued, nothing is blocked
 # or notified, and it restarts once the condition clears.
 WAIT_REASONS = frozenset({"vault_suspended"})
@@ -232,7 +235,9 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
                   j.status AS job_status, j.file_id AS job_file_id, j.vault_id AS job_vault_id,
                   j.action AS job_action,
                   EXISTS (SELECT 1 FROM jobs other WHERE other.file_id=f.id AND other.id<>%(job)s
-                          AND other.status NOT IN ('failed','cancelled','completed')) AS busy
+                          AND other.status NOT IN ('failed','cancelled','completed')) AS busy,
+                  EXISTS (SELECT 1 FROM copy_attempts c WHERE c.file_id=f.id
+                          AND c.settled_at IS NULL) AS copying
            FROM files f
            JOIN vaults v ON v.id=f.vault_id
            JOIN vault_targets t ON t.id=v.target_id
@@ -243,13 +248,15 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
         raise UploadBlocked("owner_cancelled")
     if row and row["job_status"] in {"failed", "completed"}:
         raise UploadBlocked("already_resolved")
-    if (not vault or not row or row["job_status"] is None or row["job_action"] != "upload"
+    if (not vault or not row or row["job_status"] is None or row["job_action"] not in TARGET_ACTIONS
             or str(row["job_file_id"]) != str(job["file_id"]) or row["job_vault_id"] != job["vault_id"]
             or key != expected_cloud_key(row["path"], f"vaults/{vault['uuid']}")):
         raise UploadBlocked("identity_changed")
     if vault["lifecycle"] != "active":
         raise UploadBlocked("vault_suspended")
-    if row["busy"]:
+    if row["busy"] or (row["copying"] and row["job_action"] == "upload"):
+        # An unsettled server-side copy (#595) is reconciled by its own
+        # purpose before any upload may send to the file.
         raise UploadBlocked("active_operation")
     if row["held_version_id"]:
         raise UploadBlocked("cloud_only_conflict")
