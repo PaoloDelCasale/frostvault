@@ -1,3 +1,29 @@
+"""Storage worker and cleanup regressions on the rebuilt model (ADR-0035).
+
+Removed (they asserted the mocked SQL of the v0.5 tables), with equivalent
+database-backed coverage:
+
+- ``test_restart_preserves_final_recovery_destination_and_requeues_absent_work``
+  -> ``test_recovery_worker.test_restart_adopts_the_exact_destination_without_downloading``,
+  ``test_restart_requeues_an_absent_destination_and_downloads_once``,
+  ``test_restart_removes_sdk_partial_restore_residue_too`` and
+  ``test_recovery_verification.test_restart_requeues_absent_destination_and_removes_only_owned_temps``.
+- ``test_restart_requeues_upload_and_completes_finished_cleanup``
+  -> ``test_recovery_worker.test_restart_requeues_an_interrupted_upload_without_a_send`` and
+  ``test_restart_completes_a_free_space_whose_unlink_finished``.
+- ``test_cloud_scan_records_the_exact_s3_version`` and
+  ``test_cloud_versions_have_deterministic_internal_order``: a cloud listing no
+  longer imports unknown objects or numbers versions (ADR-0035) ->
+  ``test_cloud_scan_batching.test_unknown_versions_are_counted_never_recorded_or_attributed``,
+  ``test_complete_listing_marks_unseen_missing`` and
+  ``test_catalog_files`` (no ``version_number`` ordering in the catalog).
+- The ``process_upload`` case of ``test_cancelled_operations_do_not_start``
+  -> ``test_job_scheduler.test_cancelled_queued_job_is_not_started`` and
+  ``test_upload_pipeline_postgres.test_cancel_lease_loss_and_shutdown_while_waiting_cannot_arm_or_publish``.
+- ``test_restart_fails_unproven_storage_class_claim_closed``: an interrupted
+  class change now resumes and reconciles its copy attempt by receipt or token
+  (#595) -> ``test_storage_class_change_worker.test_a_crash_after_the_copy_landed_and_restart_never_copy_again``.
+"""
 from __future__ import annotations
 
 from tests.postgres import PostgresConnection, database_dsn
@@ -44,6 +70,8 @@ from app.storage import (
     scan_cloud,
 )
 from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect, seed_vault
+from tests.owner_fixtures import insert_owner, insert_vault
 
 
 class RecordingConnection:
@@ -66,6 +94,9 @@ class QueryResult:
 
     def fetchone(self):
         return self.row
+
+    def fetchall(self):
+        return [self.row] if self.row is not None else []
 
 
 class JobQueueResult:
@@ -125,18 +156,6 @@ class JobQueueConnection(RecordingConnection):
         return JobQueueResult([])
 
 
-class ReconcileConnection(RecordingConnection):
-    def __init__(self, jobs: list[dict[str, object]]) -> None:
-        super().__init__()
-        self.jobs = jobs
-
-    def execute(self, sql: str, params=()):
-        self.statements.append((sql, tuple(params)))
-        if "SELECT j.*, v.source_root" in sql:
-            return JobQueueResult(self.jobs)
-        return QueryResult(None)
-
-
 class CancelGroupConnection(RecordingConnection):
     def __init__(self, *, automatic_cleanup: bool = False) -> None:
         super().__init__()
@@ -144,13 +163,12 @@ class CancelGroupConnection(RecordingConnection):
 
     def execute(self, sql: str, params=()):
         self.statements.append((sql, tuple(params)))
-        if self.automatic_cleanup and "SELECT id, path, requested_by" in sql:
+        if self.automatic_cleanup and "SELECT j.id, f.path, j.archive_version_id" in sql:
             return JobQueueResult(
                 [
                     {
                         "id": 10,
                         "path": "docs/file.txt",
-                        "requested_by": 1,
                         "archive_version_id": "version-1",
                     }
                 ]
@@ -181,13 +199,7 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-                    """,
-                    (str(source),),
-                )
+                seed_vault(connection, source_root=str(source))
             test_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),
             )
@@ -222,13 +234,7 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-                    """,
-                    (str(source),),
-                )
+                seed_vault(connection, source_root=str(source))
 
             test_settings = SimpleNamespace(
                 database_dsn=database_dsn(str(database_path)),
@@ -252,12 +258,7 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
+                seed_vault(connection)
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="concurrent.txt",
@@ -265,155 +266,22 @@ class StorageCleanupTests(unittest.TestCase):
                     size=1,
                     mtime_ns=1,
                     observed_at="2026-07-21T10:00:01+00:00",
-                    seen_at="watcher-generation",
+                    seen_at="2026-07-21T10:00:01+00:00",  # the watcher's generation
                 )
                 ArchiveCatalog(connection).mark_unseen_local_copies_missing(
                     vault_id=2,
-                    seen_at="older-scan-generation",
+                    seen_at="2026-07-21T10:00:00+00:00",  # the older scan's generation
                     observed_at="2026-07-21T10:00:02+00:00",
                     scan_started_at="2026-07-21T10:00:00+00:00",
                 )
                 observed = connection.execute(
                     """
-                    SELECT lc.presence
-                    FROM local_copies lc
-                    JOIN vault_files vf ON vf.id=lc.vault_file_id
-                    JOIN file_paths fp ON fp.vault_file_id=vf.id
-                    WHERE vf.vault_id=2 AND fp.valid_to IS NULL
-                      AND fp.path='concurrent.txt'
+                    SELECT local_presence AS presence FROM files
+                    WHERE vault_id=2 AND path='concurrent.txt'
                     """
                 ).fetchone()
 
             self.assertEqual(observed["presence"], "present")
-
-    def test_cloud_scan_records_the_exact_s3_version(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-
-            page = {
-                "Versions": [
-                    {
-                        "Key": "docs/reports/annual.txt",
-                        "VersionId": "s3-version-2",
-                        "Size": 21,
-                        "StorageClass": "STANDARD",
-                        "ETag": '"etag-2"',
-                        "LastModified": datetime(2026, 7, 21, 8, 0, tzinfo=timezone.utc),
-                    }
-                ],
-                "DeleteMarkers": [],
-            }
-            paginator = SimpleNamespace(paginate=lambda **_: [page])
-
-            def get_paginator(name: str):
-                self.assertEqual(name, "list_object_versions")
-                return paginator
-
-            test_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with (
-                patch("app.database.settings", test_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch(
-                    "app.storage.s3_client",
-                    return_value=SimpleNamespace(get_paginator=get_paginator),
-                ),
-            ):
-                count = scan_cloud(
-                    {
-                        "id": 2,
-                        "s3_bucket": "bucket",
-                        "s3_prefix": "docs",
-
-                    },
-                    "2026-07-21T10:00:00+00:00",
-                )
-
-            with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "reports/annual.txt"
-                )
-
-            self.assertEqual(count, 1)
-            self.assertEqual(
-                observed["latest_version"]["provider_version_id"],
-                "s3-version-2",
-            )
-            self.assertEqual(observed["latest_version"]["availability"], "available")
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
-
-    def test_cloud_versions_have_deterministic_internal_order(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-
-            page = {
-                "Versions": [
-                    {
-                        "Key": "docs/report.txt",
-                        "VersionId": "newest",
-                        "Size": 20,
-                        "LastModified": datetime(2026, 7, 21, 9, 0, tzinfo=timezone.utc),
-                    },
-                    {
-                        "Key": "docs/report.txt",
-                        "VersionId": "oldest",
-                        "Size": 10,
-                        "LastModified": datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc),
-                    },
-                ],
-            }
-            client = SimpleNamespace(
-                get_paginator=lambda _: SimpleNamespace(paginate=lambda **__: [page])
-            )
-            test_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with (
-                patch("app.database.settings", test_settings),
-                patch("app.storage.validate_cloud_vault"),
-                patch("app.storage.s3_client", return_value=client),
-            ):
-                scan_cloud(
-                    {
-                        "id": 2,
-                        "s3_bucket": "bucket",
-                        "s3_prefix": "docs",
-
-                    },
-                    "2026-07-21T10:00:00+00:00",
-                )
-
-            with PostgresConnection(str(database_path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(
-                    2, "report.txt"
-                )
-
-            self.assertEqual(
-                [
-                    (version["version_number"], version["provider_version_id"])
-                    for version in versions
-                ],
-                [(2, "newest"), (1, "oldest")],
-            )
 
     def test_upload_job_targets_a_stable_vault_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -421,19 +289,8 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
+                insert_owner(connection)
+                seed_vault(connection)
                 ArchiveCatalog(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
@@ -463,20 +320,8 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO users(
-                        id, username, display_name, password_hash
-                    ) VALUES (1, 'owner', 'Owner', 'hash')
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-                    """,
-                    (str(source),),
-                )
+                insert_owner(connection)
+                seed_vault(connection, source_root=str(source))
                 from app.services.vault_relocation import enroll_vault_root_identity
                 enroll_vault_root_identity(connection, 2, str(source))
                 ArchiveCatalog(connection).observe_local_copy(
@@ -518,12 +363,15 @@ class StorageCleanupTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
 
+            # Without a completed read-back the sent version stays Replacing:
+            # catalogued, unverified, never Current (ADR-0035).
+            self.assertIsNone(observed["current_version"])
             self.assertEqual(
-                observed["latest_version"]["provider_version_id"],
+                observed["replacing_version"]["provider_version_id"],
                 "s3-version-1",
             )
-            self.assertEqual(observed["latest_version"]["integrity"], "unverified")
-            self.assertEqual(observed["latest_version"]["availability"], "available")
+            self.assertEqual(observed["replacing_version"]["integrity"], "unverified")
+            self.assertEqual(observed["replacing_version"]["availability"], "available")
 
     def test_filesystem_events_update_only_changed_catalog_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -547,13 +395,7 @@ class StorageCleanupTests(unittest.TestCase):
             migrated = run_alembic(database_path)
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
             with PostgresConnection(str(database_path)) as database:
-                database.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-                    """,
-                    (str(source),),
-                )
+                seed_vault(database, source_root=str(source))
                 ArchiveCatalog(database).observe_local_copy(
                     vault_id=2,
                     path="docs/deleted.txt",
@@ -592,7 +434,8 @@ class StorageCleanupTests(unittest.TestCase):
 
     def test_cancelled_operations_do_not_start(self) -> None:
         operations = (
-            (987654, process_upload, "Upload stopped"),
+            # The upload entry is claim-fenced in the database instead (#597):
+            # see test_job_scheduler.test_cancelled_queued_job_is_not_started.
             (987655, process_recover, "Recovery stopped"),
             (987656, process_free_space, "Freeing local space stopped"),
         )
@@ -674,183 +517,6 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(processed, 3)
         self.assertEqual(max_active, 3)
 
-    def test_restart_preserves_final_recovery_destination_and_requeues_absent_work(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            complete = source / "docs" / "complete.txt"
-            incomplete = source / "docs" / "incomplete.txt"
-            complete.parent.mkdir(parents=True)
-            complete.write_bytes(b"complete")
-            restore_token = "a" * 32
-            abandoned = incomplete.with_name(
-                f".{incomplete.name}.restore-{restore_token}.tmp"
-            )
-            abandoned.write_bytes(b"partial")
-            legacy_partial = incomplete.with_name(
-                f".{incomplete.name}.restore-{restore_token}.tmp.random.partial"
-            )
-            legacy_partial.write_bytes(b"partial")
-            jobs = [
-                {
-                    "id": 10,
-                    "vault_id": 2,
-                    "path": "docs/complete.txt",
-                    "action": "recover",
-                    "status": "downloading",
-                    "requested_at": "2026-07-20T19:00:00+00:00",
-                    "total_bytes": 8,
-                    "source_root": str(source),
-                },
-                {
-                    "id": 11,
-                    "vault_id": 2,
-                    "path": "docs/incomplete.txt",
-                    "action": "recover",
-                    "status": "downloading",
-                    "requested_at": "2026-07-20T19:00:01+00:00",
-                    "total_bytes": 20,
-                    "source_root": str(source),
-                },
-            ]
-            connection = ReconcileConnection(jobs)
-
-            with (
-                patch("app.storage.db", return_value=connection),
-                patch("app.storage.now_iso", return_value="2026-07-20T19:30:00+00:00"),
-            ):
-                summary = reconcile_interrupted_jobs()
-
-            self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 1})
-            self.assertFalse(abandoned.exists())
-            self.assertFalse(legacy_partial.exists())
-            self.assertTrue(complete.exists())
-            queued_ids = [
-                params[-1]
-                for sql, params in connection.statements
-                if "UPDATE jobs SET status='queued'" in sql
-            ]
-            self.assertEqual(sorted(queued_ids), [11])
-
-    def test_restart_requeues_upload_and_completes_finished_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            source.mkdir()
-            jobs = [
-                {
-                    "id": 20,
-                    "vault_id": 2,
-                    "path": "docs/upload.txt",
-                    "action": "upload",
-                    "status": "uploading",
-                    "requested_at": "2026-07-20T19:00:00+00:00",
-                    "total_bytes": 10,
-                    "source_root": str(source),
-                },
-                {
-                    "id": 21,
-                    "vault_id": 2,
-                    "vault_file_id": "vault-file-21",
-                    "path": "docs/deleted.txt",
-                    "action": "free-space",
-                    "status": "cleaning",
-                    "requested_at": "2026-07-20T19:00:01+00:00",
-                    "total_bytes": 15,
-                    "source_root": str(source),
-                },
-            ]
-            connection = ReconcileConnection(jobs)
-
-            with (
-                patch("app.storage.db", return_value=connection),
-                patch("app.storage.now_iso", return_value="2026-07-20T19:30:00+00:00"),
-            ):
-                summary = reconcile_interrupted_jobs()
-
-            self.assertEqual(summary, {"completed": 1, "requeued": 1, "failed": 0})
-            job_updates = [
-                (sql, params)
-                for sql, params in connection.statements
-                if "UPDATE jobs SET status=" in sql
-            ]
-            self.assertTrue(
-                any("status='queued'" in sql and params[-1] == 20 for sql, params in job_updates)
-            )
-            self.assertTrue(
-                any("status='completed'" in sql and params[-1] == 21 for sql, params in job_updates)
-            )
-
-    def test_restart_fails_unproven_storage_class_claim_closed(self) -> None:
-        """Issue #193: a copy-stage Job without provider proof is not retried."""
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "app.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    INSERT INTO vaults(
-                        id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', '/source', 'bucket', 'docs')
-                    """
-                )
-                catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
-                    vault_id=2,
-                    path="report.txt",
-                    file_type="regular",
-                    size=10,
-                    mtime_ns=1,
-                    observed_at="2026-07-21T10:00:00+00:00",
-                )
-                version_id = catalog.record_archive_version(
-                    vault_id=2,
-                    path="report.txt",
-                    object_key="docs/report.txt",
-                    provider_version_id="s3-v1",
-                    size=10,
-                    storage_class="STANDARD",
-                    etag="etag",
-                    uploaded_at="2026-07-21T10:00:00+00:00",
-                    observed_at="2026-07-21T10:00:00+00:00",
-                    scan_id="scan",
-                )
-                job_id = connection.execute(
-                    """
-                    INSERT INTO jobs(
-                        vault_id, vault_file_id, archive_version_id, path,
-                        action, status, requested_at, updated_at,
-                        target_storage_class, claim_token, claimed_at,
-                        claim_expires_at
-                    ) VALUES (
-                        2, %s, %s, 'report.txt',
-                        'storage-class', 'uploading',
-                        '2026-07-21T10:01:00+00:00', '2026-07-21T10:01:00+00:00',
-                        'STANDARD_IA', 'dead-worker',
-                        '2026-07-21T10:01:00+00:00', '2000-01-01T00:00:00+00:00'
-                    ) RETURNING id
-                    """,
-                    (file_id, version_id),
-                ).fetchone()["id"]
-
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
-
-            self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
-            with PostgresConnection(str(database_path)) as connection:
-                job = connection.execute(
-                    """
-                    SELECT status, claim_token, claimed_at, claim_expires_at
-                    FROM jobs WHERE id=%s
-                    """,
-                    (job_id,),
-                ).fetchone()
-            self.assertEqual(job["status"], "failed")
-            self.assertIsNone(job["claim_token"])
-            self.assertIsNone(job["claimed_at"])
-            self.assertIsNone(job["claim_expires_at"])
-
     def test_bug_006_startup_preserves_free_space_claims(self) -> None:
         """[BUG-006][Req: REQ-009] free-space claims survive startup cleanup+reconcile.
 
@@ -876,11 +542,11 @@ class StorageCleanupTests(unittest.TestCase):
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at, total_bytes
+                        vault_id, file_id, action, status, origin,
+                        requested_at, updated_at, total_bytes
                     ) VALUES (
-                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
-                        1, '2026-07-21T10:05:00+00:00',
+                        2, %s, 'free-space', 'cleaning', 'manual',
+                        '2026-07-21T10:05:00+00:00',
                         '2026-07-21T10:05:00+00:00', %s
                     )
                     RETURNING id
@@ -941,11 +607,11 @@ class StorageCleanupTests(unittest.TestCase):
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(
-                        vault_id, vault_file_id, path, action, status,
-                        requested_by, requested_at, updated_at, total_bytes
+                        vault_id, file_id, action, status, origin,
+                        requested_at, updated_at, total_bytes
                     ) VALUES (
-                        2, %s, 'docs/file.txt', 'free-space', 'cleaning',
-                        1, '2026-07-21T10:05:00+00:00',
+                        2, %s, 'free-space', 'cleaning', 'manual',
+                        '2026-07-21T10:05:00+00:00',
                         '2026-07-21T10:05:00+00:00', %s
                     )
                     RETURNING id
@@ -1074,7 +740,6 @@ class StorageCleanupTests(unittest.TestCase):
         cleanup_scheduler.assert_called_once_with(
             connection,
             vault_id=987,
-            requested_by=42,
         )
 
     def cleanup_fixture(self, directory: str):
@@ -1092,21 +757,8 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         digest = hashlib.sha256(b"content").hexdigest()
         with PostgresConnection(str(database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(
-                    id, username, display_name, password_hash
-                ) VALUES (1, 'owner', 'Owner', 'hash')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (
-                    2, 'docs', 'Docs', %s, 'bucket-test', 'archive')
-                """,
-                (str(source),),
-            )
+            insert_owner(connection)
+            insert_vault(connection, id=2, name="Docs", source_root=str(source), bucket="bucket-test")
             from app.services.vault_relocation import enroll_vault_root_identity
             enroll_vault_root_identity(connection, 2, str(source))
             catalog = ArchiveCatalog(connection)
@@ -1118,29 +770,9 @@ class StorageCleanupTests(unittest.TestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            version_id = catalog.record_archive_version(
-                vault_id=2,
-                path="docs/file.txt",
-                object_key="archive/docs/file.txt.bin",
-                provider_version_id="s3-version-1",
-                size=target.stat().st_size,
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-07-21T10:00:00+00:00",
-                observed_at="2026-07-21T10:00:00+00:00",
-                scan_id="2026-07-21T10:00:00+00:00",
-            )
-            catalog.mark_version_verified(
-                version_id,
-                plaintext_sha256=digest,
-                verified_at="2026-07-21T10:01:00+00:00",
-            )
-            catalog.set_local_fingerprint(
-                vault_id=2,
-                path="docs/file.txt",
-                plaintext_sha256=digest,
-                matched_archive_version_id=version_id,
-            )
+            fingerprint(catalog, 2, "docs/file.txt", digest)
+            protect(catalog, 2, "docs/file.txt", digest, provider_version_id="s3-version-1",
+                    created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:01:00+00:00")
         return target, database_path
 
     def test_free_space_queues_background_jobs(self) -> None:
@@ -1218,7 +850,6 @@ class StorageCleanupTests(unittest.TestCase):
                 queued = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc),
                 )
 
@@ -1256,7 +887,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "SELECT event FROM notifications ORDER BY id"
                 ).fetchall()
             self.assertEqual(file_row["local_copy"]["presence"], "missing")
-            self.assertEqual(file_row["latest_version"]["availability"], "available")
+            self.assertEqual(file_row["current_version"]["availability"], "available")
             self.assertEqual(
                 events,
                 [
@@ -1321,7 +952,6 @@ class StorageCleanupTests(unittest.TestCase):
                 queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc),
                 )
 
@@ -1391,7 +1021,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "changed")
             head_object.assert_called_once_with(
                 Bucket="bucket-test",
-                Key="archive/docs/file.txt.bin",
+                Key="vaults/x/docs/file.txt",  # the exact key of Current
                 VersionId="s3-version-1",
             )
             with patch("app.database.settings", database_settings):
