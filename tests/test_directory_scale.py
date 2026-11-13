@@ -861,49 +861,72 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
     def test_cloud_deletion_purge_invalidates_counts_and_actions(self) -> None:
         from app.services import cloud_deletion as cloud_deletion_service
 
-        file_id = self._seed_both_file(path="purge/me.bin")
-        version_id = self.connection.execute(
-            "SELECT id FROM archive_versions WHERE provider_version_id='v-1'"
-        ).fetchone()["id"]
-        # Minimal cloud_deletion_items row for the purge bookkeeping seam.
-        self.connection.execute(
-            """
-            INSERT INTO jobs(
-                vault_id, vault_file_id, path, action, status,
-                requested_by, requested_at, updated_at
-            ) VALUES (
-                2, %s, 'purge/me.bin', 'cloud-purge', 'running',
-                NULL, '2026-07-21T10:00:00+00:00', '2026-07-21T10:00:00+00:00'
-            )
-            """,
-            (file_id,),
+        # A Cloud-only file whose Current is an exact landed upload of its key.
+        path = "purge/me.bin"
+        digest = bytes.fromhex("a" * 64)
+        file_id = self.catalog.observe_local_copy(
+            vault_id=2, path=path, file_type="regular", size=100, mtime_ns=1,
+            observed_at="2026-07-21T10:00:00+00:00",
         )
-        job_id = self.connection.execute("SELECT id FROM jobs").fetchone()["id"]
-        self.connection.execute(
-            """
-            INSERT INTO cloud_deletion_items(
-                job_id, vault_id, vault_file_id, kind, archive_version_id,
-                object_key, provider_version_id, status, updated_at
-            ) VALUES (
-                %s, 2, %s, 'version', %s, 'docs/purge/me.bin', 'v-1',
-                'pending', '2026-07-21T10:00:00+00:00'
-            )
-            """,
-            (job_id, file_id, version_id),
-        )
-        item_id = self.connection.execute(
-            "SELECT id FROM cloud_deletion_items"
+        uuid_ = self.connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
+        row = self.connection.execute("SELECT * FROM files WHERE id=%s", (file_id,)).fetchone()
+        snapshot = self.connection.execute(
+            """INSERT INTO upload_snapshots(vault_id, file_id, path, path_since, source_root,
+                   provider, local_generation, size, mtime_ns, plaintext_sha256, part_size,
+                   part_sha256, verification)
+               VALUES (2, %s, %s, %s, '/source', 'p', %s, 100, 1, %s, 8388608, ARRAY[%s::bytea],
+                       's3_checksum') RETURNING id""",
+            (file_id, path, row["path_since"], row["generation"], digest, digest),
         ).fetchone()["id"]
-        cloud_deletion_service.mark_item_deleted(
-            self.connection,
-            item_id=int(item_id),
-            updated_at="2026-07-21T11:00:00+00:00",
+        attempt = self.connection.execute(
+            """INSERT INTO upload_attempts(snapshot_id, file_id, inventory_versions,
+                   inventory_markers) VALUES (%s, %s, '{}', '{}') RETURNING id""",
+            (snapshot, file_id),
+        ).fetchone()["id"]
+        self.connection.execute("UPDATE upload_attempts SET send_started_at=now() WHERE id=%s", (attempt,))
+        self.connection.execute(
+            """UPDATE upload_attempts SET settled_at=now(), outcome='landed', landed_version_id='v-1'
+               WHERE id=%s""", (attempt,))
+        self.connection.execute("UPDATE upload_snapshots SET closed_at=now() WHERE id=%s", (snapshot,))
+        version_id = self.catalog.begin_replacement(
+            file_id, object_key=f"vaults/{uuid_}/{path}", provider_version_id="v-1",
+            size=100, storage_class="STANDARD", upload_attempt_id=str(attempt),
+        )
+        self.catalog.promote_replacement(
+            file_id, archive_version_id=version_id, plaintext_sha256=digest.hex(),
+            verified_at="2026-07-21T10:00:00+00:00", local_generation=row["generation"],
+        )
+        self.catalog.mark_local_copy_missing(file_id, observed_at="2026-07-21T10:30:00+00:00")
+        aggregates.flush_directory_aggregates(self.connection, vault_id=2)
+        before = self.catalog.list_files_page(2)["items"][0]
+        self.assertEqual(before["available_actions"]["cloud-purge"], 1)
+        self.assertEqual(before["cloud_size"], 100)
+        # The claimed consent, its frozen grant and the recorded deletion.
+        group = self.connection.execute(
+            "INSERT INTO job_groups(vault_id, path) VALUES (2, %s) RETURNING id", (path,),
+        ).fetchone()["id"]
+        self.connection.execute(
+            "INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'test')", (group,))
+        job = self.connection.execute(
+            """INSERT INTO jobs(vault_id, file_id, archive_version_id, group_id, action, status)
+               VALUES (2, %s, %s, %s, 'cloud-purge', 'cleaning') RETURNING *""",
+            (file_id, version_id, group),
+        ).fetchone()
+        vault = cloud_deletion_service.lock_vault(self.connection, 2)
+        cloud_deletion_service.freeze_grants(
+            self.connection, vault=vault, group_id=str(group), jobs=[job], provider="p",
+        )
+        cloud_deletion_service.record_deleted(
+            self.connection, jobs=[job], at="2026-07-21T11:00:00+00:00", actor="system",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"][0]
-        self.assertEqual(after["state"], "pending")
-        self.assertEqual(after["available_actions"]["cloud-purge"], 0)
-        self.assertEqual(after["cloud_size"], 0)
+        after = self.catalog.list_files_page(2)["items"]
+        self.assertEqual(
+            self.connection.execute("SELECT count(*) AS n FROM archive_versions").fetchone()["n"], 0,
+        )
+        for item in after:
+            self.assertEqual(item["available_actions"]["cloud-purge"], 0)
+            self.assertEqual(item["cloud_size"], 0)
 
     def test_direct_local_copy_fingerprint_update_invalidates_actions(self) -> None:
         self._seed_both_file(path="hash/me.bin")

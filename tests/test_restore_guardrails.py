@@ -46,6 +46,7 @@ from app.storage import process_jobs_once
 from tests.test_database import run_alembic
 from tests.test_recovery_verification import (
     _FakeBody,
+    _add_cloud_only_version,
     _prepare_cloud_only_version,
 )
 
@@ -156,7 +157,7 @@ class HighImpactApprovalTests(unittest.TestCase):
             client.head_object.assert_not_called()
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
-                    "SELECT status, message, pending_until FROM jobs WHERE path=%s",
+                    "SELECT j.status, j.message, rr.approval_deadline AS pending_until FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE f.path=%s",
                     ("huge.bin",),
                 ).fetchone()
             self.assertEqual(job["status"], "pending_approval")
@@ -240,8 +241,8 @@ class HighImpactApprovalTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
-                    SELECT status, pending_until, estimated_cost_eur
-                    FROM jobs WHERE path=%s
+                    SELECT j.status, rr.approval_deadline AS pending_until, rr.estimated_cost_eur
+                    FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE f.path=%s
                     """,
                     ("priced.bin",),
                 ).fetchone()
@@ -264,39 +265,10 @@ def _add_cloud_only_file(
     database_path: Path, *, relative_path: str, storage_class: str
 ) -> str:
     """Seed one more verified, locally released file in Vault 2."""
-    with PostgresConnection(str(database_path)) as connection:
-        catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
-            vault_id=2,
-            path=relative_path,
-            file_type="regular",
-            size=1,
-            mtime_ns=1_700_000_000_000_000_000,
-            observed_at="2026-07-21T10:00:00+00:00",
-        )
-        file_row = catalog.get_file_by_path(2, relative_path)
-        catalog.mark_local_copy_missing(
-            file_row["id"], observed_at="2026-07-21T11:00:00+00:00"
-        )
-        version_id = catalog.record_archive_version(
-            vault_id=2,
-            path=relative_path,
-            object_key=f"docs/{relative_path}",
-            provider_version_id=f"s3-{relative_path}",
-            size=1,
-            storage_class=storage_class,
-            etag="etag",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="2026-07-21T10:00:00+00:00",
-            origin="upload",
-        )
-        catalog.mark_version_verified(
-            version_id,
-            plaintext_sha256=hashlib.sha256(b"x").hexdigest(),
-            verified_at="2026-07-21T10:01:00+00:00",
-        )
-    return version_id
+    return _add_cloud_only_version(
+        database_path, relative_path=relative_path, payload=b"x", storage_class=storage_class,
+        provider_version_id=f"s3-{relative_path}", object_key=f"docs/{relative_path}",
+    )
 
 
 class DirectoryRestoreTierTests(unittest.TestCase):
@@ -324,7 +296,7 @@ class DirectoryRestoreTierTests(unittest.TestCase):
     def _jobs(self, database_path: Path) -> dict[str, dict]:
         with PostgresConnection(str(database_path)) as connection:
             rows = connection.execute(
-                "SELECT path, restore_tier, restore_days FROM jobs WHERE action='recover'"
+                "SELECT f.path, jr.tier AS restore_tier, jr.days AS restore_days FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE j.action='recover'"
             ).fetchall()
         return {row["path"]: dict(row) for row in rows}
 
@@ -538,8 +510,8 @@ class GroupRestoreApprovalTests(unittest.TestCase):
         with PostgresConnection(str(self.database_path)) as connection:
             rows = connection.execute(
                 """
-                SELECT path, status, pending_until, approved_at, estimated_cost_eur
-                FROM jobs WHERE action='recover'
+                SELECT f.path, j.status, rr.approval_deadline AS pending_until, rr.approved_at, rr.estimated_cost_eur
+                FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE j.action='recover'
                 """
             ).fetchall()
         return {row["path"]: dict(row) for row in rows}

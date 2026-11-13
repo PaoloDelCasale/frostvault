@@ -84,7 +84,10 @@ SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.held_version_id,
        cur.integrity AS current_integrity,
        (SELECT a.id FROM upload_attempts a WHERE a.file_id = f.id
           AND a.settled_at IS NULL AND a.send_started_at IS NOT NULL) AS attempt_id,
-       EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id) AS cleanup_open,
+       EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id
+                 AND b.keeper_id IS NOT NULL) AS cleanup_open,
+       EXISTS (SELECT 1 FROM jobs d WHERE d.file_id = f.id AND d.action = 'cloud-purge'
+                 AND d.status NOT IN {_TERMINAL_SQL}) AS pending_deletion,
        EXISTS (SELECT 1 FROM archive_versions av WHERE av.file_id = f.id
                  AND av.id IS DISTINCT FROM f.current_version_id
                  AND av.id IS DISTINCT FROM f.replacing_version_id) AS superseded,
@@ -321,6 +324,10 @@ def _suspension(connection: Any, state: dict[str, Any], vault: dict[str, Any],
         return "identity_changed"
     if state["held_version_id"]:
         return "cloud_only_conflict"
+    if state.get("pending_deletion"):
+        # A Delayed Cloud Deletion of the file is pending or running: its
+        # consent or the revocation by a reappearance decides first.
+        return "pending_deletion"
     health = connection.execute(
         "SELECT last_error FROM vault_component_health WHERE vault_id=%s AND component='source'",
         (vault["id"],)).fetchone()

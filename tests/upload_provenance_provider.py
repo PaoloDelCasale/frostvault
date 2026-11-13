@@ -109,6 +109,18 @@ class VersionedProvider:
         self.hook("after_delete", key=Key, version=VersionId)
         return {"VersionId": VersionId}
 
+    def delete_objects(self, *, Bucket, Delete):
+        """Exact-version batch delete: absent versions are reported deleted, like S3."""
+        objects = [(o["Key"], o["VersionId"]) for o in Delete["Objects"]]
+        self.delete_requests += 1
+        self.hook("delete_objects", objects=objects)
+        for key, version in objects:
+            self.deletes += 1
+            self.deleted.append((key, version))
+            self.objects.pop((key, version), None)
+        self.hook("after_delete_objects", objects=objects)
+        return {} if Delete.get("Quiet") else {"Deleted": [{"Key": k, "VersionId": v} for k, v in objects]}
+
 
 def provider_attempt(snapshot, *, token, bucket="bucket", key="key", provider,
                      inventory=None, send_started=True):

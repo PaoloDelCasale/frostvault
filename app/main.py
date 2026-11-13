@@ -2495,20 +2495,20 @@ def recover_estimate(
     logical_path = "" if selection else safe_relative_path(action.path).as_posix()
     if action.is_directory or selection:
         # Current only: an explicit reference, never the latest available
-        # version. Restore progress of a version belongs to Recovery (#594).
+        # version; its restore progress keeps a pending restore unpriced.
         scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(
             selection or [(logical_path, True)], column="f.path",
         )
         with db() as connection:
             classes = connection.execute(
-                f"""SELECT cur.storage_class, NULL::text AS restore_state, sum(cur.size) AS bytes
+                f"""SELECT cur.storage_class, cur.restore_state, sum(cur.size) AS bytes
                 FROM files f JOIN archive_versions cur ON cur.id=f.current_version_id
                 WHERE f.vault_id=%s AND {scope_sql}
                   AND cur.integrity='verified' AND cur.availability='available'
                   AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.file_id=f.id
                       AND pending.status NOT IN ('completed','failed','cancelled'))
                   AND coalesce(f.local_presence, 'missing')<>'present'
-                GROUP BY cur.storage_class
+                GROUP BY cur.storage_class, cur.restore_state
                 """,
                 [vault["id"], *scope_params],
             ).fetchall()

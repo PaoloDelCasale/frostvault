@@ -101,6 +101,24 @@ def _cleanup_state(row: Mapping[str, Any]) -> str | None:
     return "in_progress" if row["cleanup_batch_id"] is not None else "waiting"
 
 
+def _restore_expiry(value: Any) -> datetime | None:
+    """The provider's restore expiry (an HTTP date or ISO text), or None."""
+    if value is None or isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _only_cloud_copy_sql(file_alias: str) -> str:
     """The verified, available Current a reappearing Local Copy must respect.
 
@@ -612,6 +630,70 @@ class ArchiveCatalog:
             return False
         self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
         return True
+
+    def publish_recovered_local_copy(
+        self,
+        vault_file_id: str,
+        *,
+        generation: int,
+        archive_version_id: str,
+        plaintext_sha256: str | bytes,
+        size: int,
+        mtime_ns: int,
+        recovered_at: Any,
+    ) -> dict[str, Any] | None:
+        """Publish a recovered Local Copy: observation, digest and ``recovered_at``.
+
+        One compare-and-swap (#594) on the generation the recovery read, under
+        the scan lock, before it published the file: a newer observation or a
+        rename wins and nothing is written (None). The digest is the one the
+        recovery proved against the exact Archive Version; the copy is matched
+        only when that version is still the file's verified, available
+        Current, never an older one. Content that is not Current's stays held
+        when Current is the only copy, like any reappearance.
+        """
+        digest = _digest(plaintext_sha256)
+        stamp = _required_timestamp(recovered_at)
+        matched = """(
+            SELECT cur.id FROM archive_versions cur
+            WHERE cur.id = f.current_version_id
+              AND cur.id = %(version)s
+              AND cur.integrity = 'verified'
+              AND cur.availability = 'available'
+              AND cur.plaintext_sha256 = %(digest)s
+        )"""
+        row = self.connection.execute(
+            f"""
+            UPDATE files f
+            SET generation = f.generation + 1,
+                local_presence = 'present', local_file_type = 'regular',
+                local_size = %(size)s, local_mtime_ns = %(mtime_ns)s,
+                local_sha256 = %(digest)s,
+                matched_version_id = {matched},
+                held_version_id = CASE
+                    WHEN {matched} IS NULL THEN {_only_cloud_copy_sql("f")}
+                END,
+                pending_since = CASE
+                    WHEN {matched} IS NOT NULL THEN NULL ELSE f.pending_since
+                END,
+                local_seen_at = %(stamp)s, local_observed_at = %(stamp)s,
+                local_content_observed_at = %(stamp)s,
+                local_recovered_at = %(stamp)s
+            WHERE f.id = %(id)s
+              AND f.generation = %(generation)s
+              AND f.local_presence IS DISTINCT FROM 'present'
+            RETURNING f.vault_id, f.path, f.matched_version_id
+            """,
+            {
+                "digest": digest, "version": archive_version_id, "stamp": stamp,
+                "size": int(size), "mtime_ns": int(mtime_ns), "id": vault_file_id,
+                "generation": int(generation),
+            },
+        ).fetchone()
+        if row is None:
+            return None
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+        return dict(row)
 
     def mark_unseen_local_copies_missing(
         self,
@@ -1316,10 +1398,15 @@ class ArchiveCatalog:
                 av.verification_method,
                 av.verification_fallback AS verification_fallback_reason,
                 av.verification_egress_bytes,
-                av.upload_attempt_id
+                av.upload_attempt_id,
+                av.restore_state,
+                av.restore_expiry,
+                jr.tier AS restore_tier,
+                jr.days AS restore_days
             FROM jobs j
             JOIN files f ON f.id = j.file_id
             LEFT JOIN job_uploads ju ON ju.job_id = j.id
+            LEFT JOIN job_restores jr ON jr.job_id = j.id
             LEFT JOIN archive_versions av ON av.id = j.archive_version_id
             WHERE j.id=%s
             """,
@@ -1343,33 +1430,35 @@ class ArchiveCatalog:
         archive_version_id: str,
         *,
         state: str | None,
-        expiry: str | None,
-        checked_at: str,
+        expiry: Any,
+        checked_at: Any,
         storage_class: str | None = None,
     ) -> None:
-        owned = self.connection.execute(
+        """Record the observed cloud restore of one exact Archive Version.
+
+        ``state`` is ``restoring``, ``available`` or None (no restore needed or
+        observed); ``expiry`` is the provider's expiry of the temporary copy,
+        kept only while it is available. Integrity and availability are never
+        touched (#594).
+        """
+        if state == "not_requested":
+            state = None
+        row = self.connection.execute(
             """
-            SELECT vault_id, vault_file_id
-            FROM archive_versions
-            WHERE id=%s
-            """,
-            (archive_version_id,),
-        ).fetchone()
-        self.connection.execute(
-            """
-            UPDATE archive_versions
+            UPDATE archive_versions av
             SET restore_state=%s,
-                restore_expiry=%s,
+                restore_expiry=CASE WHEN %s::text='available' THEN %s::timestamptz END,
                 restore_checked_at=%s,
-                storage_class=COALESCE(%s, storage_class)
-            WHERE id=%s
+                storage_class=COALESCE(%s, av.storage_class)
+            FROM files f
+            WHERE av.id=%s AND f.id=av.file_id
+            RETURNING f.vault_id, f.id AS file_id
             """,
-            (state, expiry, checked_at, storage_class, archive_version_id),
-        )
-        if owned is not None:
-            self._mark_file_aggregates_dirty(
-                int(owned["vault_id"]), owned["vault_file_id"]
-            )
+            (state, state, _restore_expiry(expiry), _required_timestamp(checked_at),
+             storage_class, archive_version_id),
+        ).fetchone()
+        if row is not None:
+            self._mark_file_aggregates_dirty(int(row["vault_id"]), str(row["file_id"]))
 
     def update_version_storage_placement(
         self,
@@ -1481,9 +1570,10 @@ class ArchiveCatalog:
             SELECT role.role, av.id, av.object_key, av.provider_version_id,
                    av.size, av.storage_class, av.plaintext_sha256, av.integrity,
                    av.availability, av.availability_checked_at, av.verified_at,
-                   av.verification_method, av.verification_fallback,
+                   av.restore_state, av.restore_expiry, av.verification_method, av.verification_fallback,
                    av.verification_egress_bytes, av.created_at,
-                   ({_REQUESTED_VERIFICATION_SQL}) AS upload_verification_requested
+                   ({_REQUESTED_VERIFICATION_SQL.replace("cur.", "av.")})
+                       AS upload_verification_requested
             FROM files f
             CROSS JOIN LATERAL (VALUES
                 ('current', f.current_version_id),
@@ -1514,6 +1604,8 @@ class ArchiveCatalog:
                 "availability": row["availability"],
                 "availability_checked_at": row["availability_checked_at"],
                 "verified_at": row["verified_at"],
+                "restore_state": row["restore_state"],
+                "restore_expiry": row["restore_expiry"],
                 "created_at": row["created_at"],
                 "upload_verification_requested": row["upload_verification_requested"],
                 "verification_method": row["verification_method"],
@@ -2765,7 +2857,11 @@ class ArchiveCatalog:
         claim_token: str,
         now: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Load a complete, still-live cloud-purge claim and its pending items."""
+        """Load a complete, still-live cloud-purge claim and its consented targets.
+
+        One item per member Job: its file, the exact Current it consented to
+        (``archive_version_id``) and that version's key and VersionId.
+        """
         lead = self.connection.execute(
             """
             SELECT vault_id, group_id
@@ -2794,16 +2890,17 @@ class ArchiveCatalog:
         ).fetchall()
         if not all_active or not all(row["owned"] for row in all_active):
             return [], []
-        job_ids = [int(row["id"]) for row in all_active]
-        placeholders = ", ".join(["%s"] * len(job_ids))
         items = self.connection.execute(
-            f"""
-            SELECT * FROM cloud_deletion_items
-            WHERE job_id IN ({placeholders})
-              AND status IN ('pending', 'failed')
-            ORDER BY id
+            """
+            SELECT j.id, j.vault_id, j.file_id, j.group_id, j.archive_version_id,
+                   j.origin, f.path, av.object_key, av.provider_version_id, av.size
+            FROM jobs j
+            JOIN files f ON f.id = j.file_id
+            LEFT JOIN archive_versions av ON av.id = j.archive_version_id
+            WHERE j.id = ANY(%s::bigint[])
+            ORDER BY j.requested_at ASC, j.id ASC
             """,
-            job_ids,
+            ([int(row["id"]) for row in all_active],),
         ).fetchall()
         return all_active, items
 

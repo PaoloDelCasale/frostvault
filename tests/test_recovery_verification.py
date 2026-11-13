@@ -40,6 +40,8 @@ from app.storage import (
     process_jobs_once,
     reconcile_interrupted_jobs,
 )
+from app.services.vault_relocation import enroll_vault_root_identity
+from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
 
 
@@ -106,30 +108,31 @@ def _prepare_cloud_only_version(
     provider_version_id: str = "s3-version-1",
     object_key: str | None = None,
 ) -> tuple[Path, Path, str]:
+    """A Vault 2 (``Docs``) whose file's verified Current is Cloud-only (#594)."""
     source = root / "source"
     source.mkdir()
     database_path = root / "catalog.db"
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
-    digest = _sha256_hex(payload)
-    key = object_key or f"docs/{relative_path}"
     with PostgresConnection(str(database_path)) as connection:
-        connection.execute(
-            """
-            INSERT INTO users(
-                id, username, display_name, password_hash
-            ) VALUES (1, 'owner', 'Owner', 'hash')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-            """,
-            (str(source),),
-        )
+        seed_vault(connection, vault_id=2, source_root=str(source))
+        enroll_vault_root_identity(connection, 2, str(source))
+    version_id = _add_cloud_only_version(
+        database_path, relative_path=relative_path, payload=payload,
+        storage_class=storage_class, provider_version_id=provider_version_id,
+        object_key=object_key or f"docs/{relative_path}",
+    )
+    return source, database_path, version_id
+
+
+def _add_cloud_only_version(
+    database_path: Path, *, relative_path: str, payload: bytes, storage_class: str,
+    provider_version_id: str, object_key: str,
+) -> str:
+    """One more file of Vault 2 whose verified Current is its only copy."""
+    with PostgresConnection(str(database_path)) as connection:
         catalog = ArchiveCatalog(connection)
-        catalog.observe_local_copy(
+        file_id = catalog.observe_local_copy(
             vault_id=2,
             path=relative_path,
             file_type="regular",
@@ -137,29 +140,18 @@ def _prepare_cloud_only_version(
             mtime_ns=1_700_000_000_000_000_000,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        file_row = catalog.get_file_by_path(2, relative_path)
-        catalog.mark_local_copy_missing(
-            file_row["id"], observed_at="2026-07-21T11:00:00+00:00"
+        generation = catalog.get_file_by_path(2, relative_path)["generation"]
+        version_id = catalog.begin_replacement(
+            file_id, object_key=object_key, provider_version_id=provider_version_id,
+            size=len(payload), storage_class=storage_class,
+            created_at="2026-07-21T10:00:00+00:00",
         )
-        version_id = catalog.record_archive_version(
-            vault_id=2,
-            path=relative_path,
-            object_key=key,
-            provider_version_id=provider_version_id,
-            size=len(payload),
-            storage_class=storage_class,
-            etag="etag",
-            uploaded_at="2026-07-21T10:00:00+00:00",
-            observed_at="2026-07-21T10:00:00+00:00",
-            scan_id="2026-07-21T10:00:00+00:00",
-            origin="upload",
+        catalog.promote_replacement(
+            file_id, archive_version_id=version_id, plaintext_sha256=_sha256_hex(payload),
+            verified_at="2026-07-21T10:01:00+00:00", local_generation=generation,
         )
-        catalog.mark_version_verified(
-            version_id,
-            plaintext_sha256=digest,
-            verified_at="2026-07-21T10:01:00+00:00",
-        )
-    return source, database_path, version_id
+        catalog.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
+    return version_id
 
 
 def _run_plain_recover(

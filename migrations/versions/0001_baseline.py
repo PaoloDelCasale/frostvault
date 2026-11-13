@@ -400,6 +400,12 @@ CREATE TABLE archive_versions (
     verification_fallback text COLLATE "C",
     verification_egress_bytes bigint,
     upload_attempt_id uuid,
+    -- The last observed cloud restore of this exact VersionId (Recovery,
+    -- #594): requested and in progress, or a readable temporary copy until
+    -- restore_expiry. It never decides integrity or availability.
+    restore_state text COLLATE "C",
+    restore_expiry timestamptz,
+    restore_checked_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT archive_versions_file_scope_uq UNIQUE (id, file_id),
     CONSTRAINT archive_versions_upload_attempt_uq UNIQUE (upload_attempt_id),
@@ -425,6 +431,12 @@ CREATE TABLE archive_versions (
     ),
     CONSTRAINT archive_versions_verification_egress_ck CHECK (
         verification_egress_bytes >= 0
+    ),
+    CONSTRAINT archive_versions_restore_state_ck CHECK (
+        restore_state IN ('restoring', 'available')
+    ),
+    CONSTRAINT archive_versions_restore_expiry_ck CHECK (
+        restore_expiry IS NULL OR restore_state = 'available'
     ),
     CONSTRAINT archive_versions_verified_ck CHECK (
         integrity <> 'verified' OR (
@@ -1466,11 +1478,18 @@ CREATE TRIGGER upload_multiparts_guard
 -- that Job keeps the batch, and any later upload Job of the file resumes it
 -- without another PUT. One open batch per Vault File; a batch exists only while
 -- open: its completion removes the candidate versions and the batch together.
+--
+-- Delayed Cloud Deletion (#594) uses the same proof with no keeper: a batch of
+-- purge_group_id is frozen when its claimed cloud-purge Job runs, after the
+-- seven-day delay, and grants exactly the Current the Owner consented to
+-- (the Job's archive_version_id). Its open grant may be revoked (removed)
+-- while its exact deletion is not recorded; nothing else ever joins it.
 CREATE TABLE cleanup_batches (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     vault_id bigint NOT NULL,
     file_id uuid NOT NULL,
-    keeper_id uuid NOT NULL,
+    keeper_id uuid,
+    purge_group_id uuid REFERENCES job_groups(id) ON DELETE RESTRICT,
     job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
     provider text COLLATE "C" NOT NULL,
     path_since timestamptz NOT NULL,
@@ -1483,10 +1502,13 @@ CREATE TABLE cleanup_batches (
         REFERENCES files (id, vault_id) ON DELETE RESTRICT,
     CONSTRAINT cleanup_batches_keeper_fk FOREIGN KEY (keeper_id, file_id)
         REFERENCES archive_versions (id, file_id) ON DELETE RESTRICT,
-    CONSTRAINT cleanup_batches_provider_ck CHECK (provider <> '')
+    CONSTRAINT cleanup_batches_provider_ck CHECK (provider <> ''),
+    CONSTRAINT cleanup_batches_authority_ck CHECK ((keeper_id IS NULL) <> (purge_group_id IS NULL))
 );
 
 CREATE INDEX cleanup_batches_job_idx ON cleanup_batches (job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX cleanup_batches_purge_group_idx ON cleanup_batches (purge_group_id)
+    WHERE purge_group_id IS NOT NULL;
 
 -- One exact deletion grant: a superseded application write of the file (its
 -- landed upload attempt names the exact VersionId and token), never the
@@ -1512,6 +1534,26 @@ LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
         NEW.created_at := now();
+        IF NEW.purge_group_id IS NOT NULL THEN
+            -- A claimed cloud-purge Job of a Delayed Cloud Deletion request
+            -- consented to this very Current, and no Local Copy is present.
+            IF NOT EXISTS (
+                SELECT 1 FROM files f
+                JOIN archive_versions c ON c.id = f.current_version_id
+                JOIN jobs j ON j.file_id = f.id AND j.vault_id = f.vault_id
+                JOIN cloud_purge_requests r ON r.group_id = j.group_id
+                WHERE f.id = NEW.file_id AND f.vault_id = NEW.vault_id
+                  AND j.group_id = NEW.purge_group_id AND j.action = 'cloud-purge'
+                  AND j.status = 'cleaning' AND j.archive_version_id = c.id
+                  AND c.integrity = 'verified' AND f.replacing_version_id IS NULL
+                  AND f.held_version_id IS NULL
+                  AND (f.local_presence IS NULL OR f.local_presence = 'missing')
+            ) THEN
+                RAISE EXCEPTION 'a cloud deletion grants only the consented Current of a claimed purge'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NEW;
+        END IF;
         IF NOT EXISTS (
             SELECT 1 FROM files f JOIN archive_versions k ON k.id = f.current_version_id
             WHERE f.id = NEW.file_id AND f.vault_id = NEW.vault_id
@@ -1529,11 +1571,11 @@ BEGIN
         END IF;
         RETURN OLD;
     END IF;
-    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.keeper_id, NEW.provider, NEW.path_since,
-        NEW.source_root, NEW.root_identity, NEW.created_at)
+    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.keeper_id, NEW.purge_group_id, NEW.provider,
+        NEW.path_since, NEW.source_root, NEW.root_identity, NEW.created_at)
        IS DISTINCT FROM
-       (OLD.id, OLD.vault_id, OLD.file_id, OLD.keeper_id, OLD.provider, OLD.path_since,
-        OLD.source_root, OLD.root_identity, OLD.created_at)
+       (OLD.id, OLD.vault_id, OLD.file_id, OLD.keeper_id, OLD.purge_group_id, OLD.provider,
+        OLD.path_since, OLD.source_root, OLD.root_identity, OLD.created_at)
        OR (NEW.job_id IS NOT NULL AND NEW.job_id IS DISTINCT FROM OLD.job_id) THEN
         RAISE EXCEPTION 'a cleanup batch is frozen'
             USING ERRCODE = 'restrict_violation';
@@ -1557,6 +1599,28 @@ BEGIN
             RAISE EXCEPTION 'a cleanup batch is frozen'
                 USING ERRCODE = 'restrict_violation';
         END IF;
+        IF EXISTS (
+            SELECT 1 FROM cleanup_batches WHERE id = NEW.batch_id AND purge_group_id IS NOT NULL
+        ) THEN
+            -- The consented Current itself, an application write of this file.
+            IF NEW.deleted_at IS NOT NULL OR NOT EXISTS (
+                SELECT 1
+                FROM archive_versions av
+                JOIN files f ON f.id = av.file_id
+                JOIN cleanup_batches b ON b.id = NEW.batch_id
+                JOIN jobs j ON j.group_id = b.purge_group_id AND j.file_id = f.id
+                JOIN upload_attempts a ON a.id = av.upload_attempt_id
+                WHERE av.id = NEW.archive_version_id AND av.file_id = NEW.file_id
+                  AND av.id = f.current_version_id AND j.archive_version_id = av.id
+                  AND j.action = 'cloud-purge' AND j.status = 'cleaning'
+                  AND av.integrity = 'verified'
+                  AND a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id
+            ) THEN
+                RAISE EXCEPTION 'a cloud deletion grant is the consented Current of its file'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            RETURN NEW;
+        END IF;
         IF NEW.deleted_at IS NOT NULL OR NOT EXISTS (
             SELECT 1
             FROM archive_versions av
@@ -1576,7 +1640,10 @@ BEGIN
         RETURN NEW;
     END IF;
     IF TG_OP = 'DELETE' THEN
-        IF OLD.deleted_at IS NULL THEN
+        IF OLD.deleted_at IS NULL AND NOT EXISTS (
+            -- A cloud deletion grant not executed may be revoked.
+            SELECT 1 FROM cleanup_batches WHERE id = OLD.batch_id AND purge_group_id IS NOT NULL
+        ) THEN
             RAISE EXCEPTION 'an open cleanup grant is never collected'
                 USING ERRCODE = 'restrict_violation';
         END IF;
