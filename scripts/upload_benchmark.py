@@ -172,14 +172,17 @@ def main(argv=None):
     require(shas["baseline"] == BASELINE_SHA, "Baseline must be the fixed v0.5.3 SHA")
     for root in roots.values():
         require(not git(root, "status", "--porcelain", "--untracked-files=no"), "Compared checkout must have no tracked modifications")
-    fixtures = {hashlib.sha256((root / "tests/postgres.py").read_bytes()).hexdigest() for root in roots.values()}
-    require(len(fixtures) == 1, "Both checkouts must use identical real PostgreSQL fixtures")
+    # Each checkout migrates with its own real fixture: v0.6 rebuilt the schema
+    # (ADR-0035), so the fixture API differs, not what a sample runs against
+    # (a fresh clone of the head template on the same disposable PG16 server).
+    fixtures = {label: hashlib.sha256((root / "tests/postgres.py").read_bytes()).hexdigest()
+                for label, root in roots.items()}
     harness = Path(__file__).resolve().parent
     digest = hashlib.sha256(b"".join((harness / name).read_bytes() for name in HARNESS_FILES)).hexdigest()
     output = args.output.resolve()
     output.mkdir(parents=True)
     manifest = {"baseline_sha": shas["baseline"], "candidate_sha": shas["candidate"], "harness_sha256": digest,
-                "postgres_fixture_sha256": next(iter(fixtures)), "python": platform.python_version(),
+                "postgres_fixture_sha256": fixtures, "python": platform.python_version(),
                 "dependencies": {name: importlib.metadata.version(name)
                                  for name in ("psycopg", "psycopg-pool", "boto3", "botocore", "s3transfer")},
                 "requirements_sha256": {label: hashlib.sha256((root / "requirements.txt").read_bytes()).hexdigest()

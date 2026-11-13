@@ -87,6 +87,10 @@ class Probe:
                 labels += ["renewal.update_attempts"]
             if "transferred_bytes" in assignments:
                 labels += ["progress.update_attempts"]
+        # v0.6 (ADR-0035) keeps the lease in its own row.
+        lease_update = re.search(r"\bupdate (?:public\.)?job_leases (?:as \w+ |\w+ )?set (.*)", shape)
+        if lease_update and "expires_at" in lease_update.group(1).split(" where ", 1)[0]:
+            labels += ["renewal.update_attempts"]
         with self.lock:
             for label in labels:
                 self.counts[f"{scope}.{label}"] += 1

@@ -76,9 +76,21 @@ def run_sample(config):
                           for key in ("fsync", "synchronous_commit", "full_page_writes")}
             require(version // 10000 == 16, "PG16 is required")
             require(all(value == "on" for value in durability.values()), "Durability must stay on")
-            connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES(1,'owner','Owner','test-only')")
-            connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
-                VALUES(2,'docs','Docs',%s,'benchmark-only','docs')""", (str(source),))
+            # The fixed baseline (v0.5.3) and the candidate (v0.6, ADR-0035)
+            # have different schemas: the harness seeds and validates each one
+            # with its own SQL; the timed work is the same process_job path.
+            rebuilt = connection.execute(
+                "SELECT to_regclass('public.vault_targets') IS NOT NULL AS rebuilt").fetchone()["rebuilt"]
+            if rebuilt:
+                connection.execute("INSERT INTO owner(id,display_name,password_hash) VALUES(1,'Owner','test-only')")
+                target = connection.execute("""INSERT INTO vault_targets(provider,bucket,region)
+                    VALUES('s3','benchmark-only','us-east-1') RETURNING id""").fetchone()["id"]
+                connection.execute("INSERT INTO vaults(id,target_id,name,source_root) VALUES(2,%s,'Docs',%s)",
+                                   (target, str(source)))
+            else:
+                connection.execute("INSERT INTO users(id,username,display_name,password_hash) VALUES(1,'owner','Owner','test-only')")
+                connection.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
+                    VALUES(2,'docs','Docs',%s,'benchmark-only','docs')""", (str(source),))
             enroll_vault_root_identity(connection, 2, str(source))
         stack.enter_context(patch.object(database, "settings", SimpleNamespace(
             database_dsn=dsn, operation_concurrency=concurrency)))
@@ -105,12 +117,22 @@ def run_sample(config):
                     target.write_bytes(payload)
                     catalog.observe_local_copy(vault_id=2, path=path, file_type="regular",
                         size=len(payload), mtime_ns=target.stat().st_mtime_ns, observed_at=storage.now_iso())
-                    file_id = connection.execute("""SELECT vault_file_id FROM file_paths
-                        WHERE vault_id=2 AND path=%s AND valid_to IS NULL""", (path,)).fetchone()["vault_file_id"]
-                    job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                        requested_by,requested_at,updated_at,total_bytes,upload_verification_requested)
-                        VALUES(2,%s,%s,'upload','queued',1,%s,%s,%s,%s) RETURNING id""",
-                        (file_id, path, storage.now_iso(), storage.now_iso(), len(payload), config["mode"])).fetchone()
+                    if rebuilt:
+                        file_id = connection.execute("SELECT id FROM files WHERE vault_id=2 AND path=%s",
+                                                     (path,)).fetchone()["id"]
+                        job = connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
+                            requested_at,updated_at,total_bytes)
+                            VALUES(2,%s,'upload','queued',%s,%s,%s) RETURNING id""",
+                            (file_id, storage.now_iso(), storage.now_iso(), len(payload))).fetchone()
+                        connection.execute("INSERT INTO job_uploads(job_id,verification_mode) VALUES(%s,%s)",
+                                           (job["id"], config["mode"]))
+                    else:
+                        file_id = connection.execute("""SELECT vault_file_id FROM file_paths
+                            WHERE vault_id=2 AND path=%s AND valid_to IS NULL""", (path,)).fetchone()["vault_file_id"]
+                        job = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
+                            requested_by,requested_at,updated_at,total_bytes,upload_verification_requested)
+                            VALUES(2,%s,%s,'upload','queued',1,%s,%s,%s,%s) RETURNING id""",
+                            (file_id, path, storage.now_iso(), storage.now_iso(), len(payload), config["mode"])).fetchone()
                     jobs.append(job["id"])
                     expected[path] = hashlib.sha256(payload).hexdigest()
                 aggregates.flush_directory_aggregates(connection, vault_id=2)
@@ -147,8 +169,18 @@ def run_sample(config):
                                 break
                             require(time.perf_counter() < deadline, "Claim failed to acquire")
                             time.sleep(0.002)
-                        job = claimer.execute("""SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix
-                            FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s""", (job_id,)).fetchone()
+                        if rebuilt:
+                            # The scheduler's Job row: the narrow Job with its
+                            # File path, Vault and target, plus the claim.
+                            job = claimer.execute("""SELECT j.*,f.path,v.source_root,v.uuid AS vault_uuid,
+                                v.name AS vault_name,v.lifecycle AS vault_lifecycle,t.bucket AS s3_bucket
+                                FROM jobs j JOIN files f ON f.id=j.file_id JOIN vaults v ON v.id=j.vault_id
+                                JOIN vault_targets t ON t.id=v.target_id WHERE j.id=%s""", (job_id,)).fetchone()
+                            job = {**job, "claim_token": claimed["claim_token"],
+                                   "claim_expires_at": claimed["claim_expires_at"]}
+                        else:
+                            job = claimer.execute("""SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix
+                                FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s""", (job_id,)).fetchone()
                         claimer.commit()
                     require(bool(job["claim_token"]), "Job must be really claimed")
                     handler_started = time.perf_counter()
@@ -175,6 +207,8 @@ def run_sample(config):
                     "claim_seconds": distribution(claim_latency)}
 
         def validate(jobs, expected):
+            if rebuilt:
+                return validate_rebuilt(jobs, expected)
             with PostgresConnection(identity) as connection:
                 rows = connection.execute("""SELECT j.path,j.status,j.claim_token,j.archive_version_id,
                     j.upload_plaintext_sha256,j.upload_snapshot_json,j.upload_verification_requested,
@@ -208,6 +242,56 @@ def run_sample(config):
                 require(len(actual_puts) == len(jobs) and set(actual_puts) == current, "Extra PUT or wrong exact identity")
                 version_count = connection.execute("""SELECT count(*) AS n FROM archive_versions
                     WHERE vault_file_id IN (SELECT vault_file_id FROM jobs WHERE id=ANY(%s))""", (jobs,)).fetchone()["n"]
+                require(version_count == len(jobs), "Unexpected catalog Archive Version count")
+                if config["mode"] == "read_back":
+                    require(current.issubset(set(provider.gets)), "Missing independent exact GET")
+                else:
+                    require(not any(item in current for item in provider.gets), "Unexpected checksum fallback GET")
+                after = {key: connection.execute(f"SHOW {key}").fetchone()[key] for key in durability}
+                require(after == durability, "Durability changed")
+            return {"completed_after_cleanup": len(rows), "exact_verified_versions": len(rows),
+                    "extra_puts": 0, "bytes_per_file": 10240}
+
+        def validate_rebuilt(jobs, expected):
+            with PostgresConnection(identity) as connection:
+                rows = connection.execute("""SELECT f.path,j.status,j.archive_version_id,ju.verification_mode,
+                    (SELECT count(*) FROM job_leases l WHERE l.job_id=j.id) AS leases,
+                    s.plaintext_sha256 AS snapshot_sha256,s.size AS snapshot_size,
+                    av.id AS version_id,av.object_key,av.provider_version_id,av.size,av.plaintext_sha256,
+                    av.integrity,av.availability,av.verification_method,
+                    f.current_version_id,f.matched_version_id,f.replacing_version_id,
+                    a.outcome,a.settled_at,a.landed_version_id,
+                    (SELECT count(*) FROM upload_receipts ur WHERE ur.attempt_id=a.id) AS receipts,
+                    (SELECT count(*) FROM upload_attempts x WHERE x.job_id=j.id) AS attempts,
+                    (SELECT count(*) FROM cleanup_batches b WHERE b.file_id=f.id) AS open_cleanups
+                    FROM jobs j JOIN files f ON f.id=j.file_id JOIN job_uploads ju ON ju.job_id=j.id
+                    JOIN upload_snapshots s ON s.id=ju.snapshot_id
+                    JOIN archive_versions av ON av.id=j.archive_version_id
+                    JOIN upload_attempts a ON a.id=av.upload_attempt_id AND a.job_id=j.id
+                    WHERE j.id=ANY(%s)""", (jobs,)).fetchall()
+                require(len(rows) == len(jobs), "Missing catalog/attempt outcome")
+                for row in rows:
+                    digest = expected[row["path"]]
+                    require(row["status"] == "completed" and row["leases"] == 0, "Job is not completed/released")
+                    require(row["settled_at"] is not None and row["outcome"] == "landed"
+                            and row["landed_version_id"] == row["provider_version_id"], "Attempt not settled as landed")
+                    require(row["open_cleanups"] == 0, "Completion preceded cleanup")
+                    require(row["receipts"] == 1 and row["attempts"] == 1, "Expected one attempt and one immutable receipt")
+                    require(row["integrity"] == "verified" and row["availability"] == "available", "Wrong integrity/availability")
+                    require(row["current_version_id"] == row["version_id"] == row["matched_version_id"]
+                            and row["replacing_version_id"] is None, "Local Copy not matched to Current")
+                    require(row["size"] == row["snapshot_size"] == 10240, "Wrong cloud length")
+                    require(bytes(row["plaintext_sha256"]).hex() == bytes(row["snapshot_sha256"]).hex() == digest,
+                            "Wrong independent digest")
+                    require(row["verification_mode"] == row["verification_method"] == config["mode"], "Verification mode drift/fallback")
+                    identity_key = ("benchmark-only", row["object_key"], row["provider_version_id"])
+                    require(identity_key in provider.objects, "Wrong exact VersionId")
+                    require(hashlib.sha256(provider.objects[identity_key][0]).hexdigest() == digest, "Wrong exact provider content")
+                current = {("benchmark-only", row["object_key"], row["provider_version_id"]) for row in rows}
+                actual_puts = list(provider.puts)
+                require(len(actual_puts) == len(jobs) and set(actual_puts) == current, "Extra PUT or wrong exact identity")
+                version_count = connection.execute("""SELECT count(*) AS n FROM archive_versions
+                    WHERE file_id IN (SELECT file_id FROM jobs WHERE id=ANY(%s))""", (jobs,)).fetchone()["n"]
                 require(version_count == len(jobs), "Unexpected catalog Archive Version count")
                 if config["mode"] == "read_back":
                     require(current.issubset(set(provider.gets)), "Missing independent exact GET")
