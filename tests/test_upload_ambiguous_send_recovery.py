@@ -5,19 +5,21 @@ leave a file in ``ambiguous_send`` forever, and a transient condition must not b
 reported as ``identity_changed``. TEST_POSTGRES_URL is mandatory (disposable PG16).
 """
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
 
 from app import storage
+from app.catalog import ArchiveCatalog
 from app.services import notifications, upload_provenance as provenance
 from app.services import upload_remediation as remediation
 from app.services.vault_relocation import VaultRelocationError
 from tests import test_upload_provenance_worker as fixtures
 from tests.postgres import PostgresConnection
+from tests.upload_support import job_row
 
-KEY = "docs/report.txt"
 
 
 class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
@@ -27,6 +29,11 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
     row = fixtures.UploadProvenanceWorkerTests.row
     assert_keeper = fixtures.UploadProvenanceWorkerTests.assert_keeper
     http_client = fixtures.UploadProvenanceWorkerTests.http_client
+    observe_content = fixtures.UploadProvenanceWorkerTests.observe_content
+
+    @property
+    def KEY(self):
+        return self.key
 
     def db(self):
         return PostgresConnection(self.db_path)
@@ -37,7 +44,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def retry_is_due(self, job):
         with self.db() as connection:
-            connection.execute("UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE id=%s", (job,))
+            connection.execute("UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE id=%s", (job,))
 
     def fail_before_provider_request(self, error):
         """Send is committed, then the process loses its dependency before any request."""
@@ -57,7 +64,8 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def jobs(self):
         with self.db() as connection:
-            return connection.execute("SELECT id,status,upload_reconcile_only,message FROM jobs ORDER BY id").fetchall()
+            return connection.execute("""SELECT j.id,j.status,ju.reconcile_only AS upload_reconcile_only,j.message
+                FROM jobs j LEFT JOIN job_uploads ju ON ju.job_id=j.id ORDER BY j.id""").fetchall()
 
     def notification_events(self):
         with self.db() as connection:
@@ -65,7 +73,16 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def intent(self):
         with self.db() as connection:
-            return connection.execute("SELECT * FROM upload_intents").fetchone()
+            # The file's open attempt (else its last settled one), with the
+            # former intent flags; timestamps can tie, so openness decides.
+            return connection.execute("""SELECT a.*, a.send_started_at IS NOT NULL AS send_started,
+                a.settled_at IS NOT NULL AS settled FROM upload_attempts a
+                ORDER BY a.settled_at IS NULL DESC, a.created_at DESC, a.settled_at DESC LIMIT 1""").fetchone()
+
+    def sends(self):
+        with self.db() as connection:
+            return [(r["outcome"], r["no_write_operation"]) for r in connection.execute(
+                "SELECT outcome,no_write_operation FROM upload_attempts WHERE send_started_at IS NOT NULL ORDER BY send_started_at")]
 
     def test_database_connection_loss_retries_the_job_and_absence_restarts_the_upload(self):
         job = self.fail_before_provider_request(psycopg.OperationalError("connection is bad: Network is unreachable"))
@@ -94,7 +111,8 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         with patch.object(provenance, "mark_send_started", side_effect=psycopg.OperationalError("connection is bad")):
             self.run_job(resumed)
         self.assertEqual(self.row(resumed)["status"], "retrying")
-        self.assertFalse(self.intent()["send_started"])
+        # No new send was journaled: the only send is the settled, proven-absent one.
+        self.assertEqual(self.sends(), [("no_write", "ProvenAbsent")])
         with self.db() as connection:
             episode = connection.execute("SELECT state,resolved_by_job_id,current_job_id FROM upload_remediations").fetchone()
             # The file is not protected yet: the episode stays open and linked.
@@ -107,13 +125,14 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual((self.provider.puts, self.provider.deletes), (1, 0))
         with self.db() as connection:
             episode = connection.execute("SELECT * FROM upload_remediations").fetchone()
-            self.assertEqual((episode["state"], episode["phase"], episode["resolved_by_job_id"]), ("resolved", "completed", resumed))
-            self.assertIsNotNone(episode["cleanup_inventory_job_id"])
-            self.assertEqual(connection.execute("SELECT completed_at IS NOT NULL done FROM snapshot_cleanup_inventories WHERE job_id=%s", (episode["cleanup_inventory_job_id"],)).fetchone()["done"], True)
+            self.assertEqual((episode["state"], episode["resolved_by_job_id"]), ("resolved", resumed))
+            self.assertIsNotNone(episode["closed_at"])
+            # The keeper's cleanup left nothing open (#591).
+            self.assertIsNone(connection.execute("SELECT 1 FROM cleanup_batches").fetchone())
             notifications.reconcile_problem_states(connection)
             self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()["problem_status"], "resolved")
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_receipts WHERE response_json LIKE %s", ("%NoWriteOperation%",)).fetchone()["n"], 1)
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_attempts WHERE outcome='no_write'").fetchone()["n"], 1)
         self.assertEqual([j["status"] for j in self.jobs()], ["failed", "completed"])
         self.assertTrue(self.intent()["settled"])
         self.assertEqual(client.post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 0})
@@ -130,9 +149,10 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
             self.run_job(resumed)
         self.assertEqual(self.row(resumed)["status"], "retrying")
         with self.db() as connection:
-            episode = connection.execute("SELECT state,phase,reason FROM upload_remediations").fetchone()
-            self.assertEqual((episode["state"], episode["phase"]), ("retrying", "verification"))
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            episode = connection.execute("SELECT state,reason,closed_at FROM upload_remediations").fetchone()
+            # Still verifying the absence: open, retrying, no failure reason.
+            self.assertEqual((episode["state"], episode["closed_at"]), ("retrying", None))
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
         self.assertEqual([n["event"] for n in self.notification_events()].count("upload_reconciliation"), 0)
         self.retry_is_due(resumed)
         self.run_job(resumed)
@@ -141,7 +161,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def test_a_listed_incomplete_multipart_keeps_the_send_ambiguous_and_never_puts(self):
         job = self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.provider.multiparts.append((KEY, "in-flight-upload"))
+        self.provider.multiparts.append((self.KEY, "in-flight-upload"))
         client = self.http_client()
         self.assertEqual(client.post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
@@ -152,7 +172,9 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
         intent = self.intent()
         self.assertTrue(intent["send_started"])
-        self.assertEqual(intent["blocked_reason"], "ambiguous_send")
+        self.assertFalse(intent["settled"])
+        with self.db() as connection:
+            self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "ambiguous_send")
         self.assertEqual(self.row(job)["status"], "failed")
 
     def test_reconcile_names_the_real_reason_instead_of_identity_changed_for_an_active_job(self):
@@ -191,14 +213,16 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
     def test_transient_source_check_failure_after_send_started_recovers_without_failure(self):
         # The check inside the transfer wrapper runs after the send was journaled.
         job = self.queue()
-        original = storage._require_upload_source_identity
+        original = storage._upload_source_root_check
         calls = []
-        def flaky(candidate):
-            calls.append(1)
-            if len(calls) == 2:
+        def flaky(candidate, vault):
+            # Only the filesystem check right before the PUT, on the Vault row
+            # the committed send-started unit handed over.
+            if vault is not None and vault is candidate.get("_upload_source_vault") and not calls:
+                calls.append(1)
                 raise storage.SourceVolumeUnavailable("Source Volume identity could not be read")
-            return original(candidate)
-        with patch("app.storage._require_upload_source_identity", side_effect=flaky):
+            return original(candidate, vault)
+        with patch("app.storage._upload_source_root_check", side_effect=flaky):
             self.assertFalse(self.run_job(job))
         row = self.row(job)
         self.assertEqual((row["status"], row["retry_count"]), ("retrying", 0), row["message"])
@@ -241,7 +265,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
         self.assertTrue(self.intent()["send_started"])
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT reason FROM snapshot_reconciliation_blocks").fetchone()["reason"], "list_permission_denied")
+            self.assertEqual(connection.execute("SELECT reconciliation_block FROM files WHERE reconciliation_block IS NOT NULL").fetchone()["reconciliation_block"], "list_permission_denied")
             self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
         self.assertNotIn("S3 readiness", row["message"])
 
@@ -272,7 +296,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
                 invalidate.assert_called_once()
                 self.assertNotEqual(self.row(resumed)["status"], "failed", self.row(resumed)["message"])
                 with self.db() as connection:
-                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+                    self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
 
     def test_credential_errors_on_a_listing_still_use_the_readiness_gate(self):
         from app.services import cloud_preflight_gate
@@ -296,7 +320,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         row = self.row(resumed)
         self.assertEqual(row["status"], "retrying", row["message"])
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
         self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
         self.retry_is_due(resumed)
         self.run_job(resumed)
@@ -308,7 +332,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         if foreign_version:
             # Something is listed for the key, so reconciliation must HEAD it.
-            self.provider.add(KEY, b"another writer", {})
+            self.provider.add(self.KEY, b"another writer", {})
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         return max(j["id"] for j in self.jobs())
 
@@ -328,7 +352,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertNotIn("S3 readiness", row["message"])
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT reason FROM snapshot_reconciliation_blocks").fetchone()["reason"], "read_permission_denied")
+            self.assertEqual(connection.execute("SELECT reconciliation_block FROM files WHERE reconciliation_block IS NOT NULL").fetchone()["reconciliation_block"], "read_permission_denied")
             self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
 
     def test_403_on_the_version_head_goes_to_the_gate_when_the_probe_fails(self):
@@ -340,7 +364,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         invalidate.assert_called_once()
         self.assertNotEqual(self.row(resumed)["status"], "failed", self.row(resumed)["message"])
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
 
     def test_403_on_the_put_fails_only_that_file_with_the_missing_permission(self):
         from app.services import cloud_preflight_gate
@@ -360,10 +384,10 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertIn("write_permission_denied", row["message"])
         self.assertIn("s3:PutObject", row["message"])
         self.assertEqual(self.provider.puts, 0)
-        # Nothing was stored: the refusal is journaled, no durable reconciliation block remains.
-        self.assertFalse(self.intent()["send_started"])
+        # Nothing was stored: the refusal settles the send as a no-write, no durable reconciliation block remains.
+        self.assertEqual(self.sends(), [("no_write", "PutObject")])
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
             self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='cloud_preflight_blocked'").fetchone())
         self.provider.hook = lambda *args, **kwargs: None
         retried = self.queue_fresh()
@@ -400,7 +424,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
                 row = self.row(resumed)
                 self.assertEqual(row["status"], "retrying", row["message"])
                 with self.db() as connection:
-                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+                    self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
                 self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
                 self.retry_is_due(resumed)
         self.run_job(resumed)
@@ -418,13 +442,13 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
             self.run_job(job)
             row = self.row(job)
             self.assertEqual((row["status"], row["retry_count"], row["message_key"]), ("retrying", 0, "job.source_volume_waiting"))
-            first = json.loads(row["message_params"])
+            first = row["message_params"]
             self.assertEqual(first["attempt"], 1)
-            self.assertGreater(datetime.fromisoformat(row["retry_after"]), datetime.now(timezone.utc))
+            self.assertGreater(row["run_after"], datetime.now(timezone.utc))
             self.assertNotIn("source_volume_unavailable", [n["event"] for n in self.notification_events()])
             self.retry_is_due(job)
             self.run_job(job)
-            second = json.loads(self.row(job)["message_params"])
+            second = self.row(job)["message_params"]
             self.assertEqual((second["attempt"], second["since"]), (2, first["since"]))
             # The outage is now older than the threshold.
             old = (datetime.now(timezone.utc) - timedelta(seconds=storage.SOURCE_VOLUME_NOTIFY_AFTER_SECONDS + 60)).isoformat()
@@ -448,7 +472,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         job = self.queue()
         with patch("app.storage.vault_relocation.root_identity", side_effect=VaultRelocationError("inaccessible", "volume not mounted")):
             self.run_job(job)
-            params = json.loads(self.row(job)["message_params"])
+            params = self.row(job)["message_params"]
             old = (datetime.now(timezone.utc) - timedelta(seconds=storage.SOURCE_VOLUME_NOTIFY_AFTER_SECONDS + 60)).isoformat()
             with self.db() as connection:
                 connection.execute("UPDATE jobs SET message_params=%s WHERE id=%s", (json.dumps({**params, "since": old}), job))
@@ -497,11 +521,11 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(storage.sweep_source_volume_problems(), 1)
         self.assertEqual(self.source_volume_problem_status(), ["resolved"])
 
-    def test_a_cold_storage_403_on_the_historical_get_stays_proof_unavailable_and_never_reaches_the_gate(self):
+    def test_a_cold_storage_unattributed_version_blocks_without_a_get_and_never_reaches_the_gate(self):
         # S3 answers 403 InvalidObjectState to the GET of an archived (Glacier) version.
         from botocore.exceptions import ClientError
         from app.services import cloud_preflight_gate
-        self.provider.add(KEY, fixtures.A, version="cold-orphan")
+        self.provider.add(self.KEY, fixtures.A, version="cold-orphan")
         def archived(stage, **kwargs):
             if stage == "get":
                 raise ClientError({"Error": {"Code": "InvalidObjectState", "Message": "provider text"},
@@ -513,24 +537,37 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         invalidate.assert_not_called()
         row = self.row(job)
         self.assertEqual(row["status"], "failed", row["message"])
-        self.assertEqual((self.provider.deletes, len(self.provider.objects)), (0, 2))
+        # #591: an object no landed attempt wrote is never read back nor
+        # deleted, so its cold storage class never reaches a GET or the gate.
+        self.assertEqual((self.provider.gets, self.provider.deletes, len(self.provider.objects)), (0, 0, 2))
         with self.db() as connection:
             state = provenance.describe(connection, vault_id=2, path="report.txt")
-        self.assertEqual(state["reason"], "proof_unavailable")
-        self.assertIn("explicit restore", state["remedy"])
+        self.assertEqual(state["reason"], "inventory_changed")
 
-    def rearmed_then_stopped(self):
-        """Absence is proven (intent re-armed, nothing sent), then the Job stops before sending."""
+    def rearmed_then_stopped(self, *, cancel=False):
+        """Absence is proven (nothing sent), then the Job stops before sending.
+
+        ``cancel``: the Owner cancels it right after the absence is recorded;
+        else it fails right before arming the new send.
+        """
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
-        with patch.object(provenance, "mark_send_started", side_effect=RuntimeError("stopped before the send")):
-            self.run_job(resumed)
-        self.assertEqual(self.row(resumed)["status"], "failed")
-        intent = self.intent()
-        self.assertFalse(intent["send_started"])
-        self.assertFalse(intent["settled"])
+        if cancel:
+            original = provenance.record_no_write
+            def cancel_after_proof(*args, **kwargs):
+                settled = original(*args, **kwargs)
+                storage.cancel_jobs([resumed])  # the Owner's cancel signal, same process
+                return settled
+            with patch.object(provenance, "record_no_write", side_effect=cancel_after_proof):
+                self.run_job(resumed)
+        else:
+            with patch.object(provenance, "mark_send_started", side_effect=RuntimeError("stopped before the send")):
+                self.run_job(resumed)
+        self.assertEqual(self.row(resumed)["status"], "cancelled" if cancel else "failed")
+        # The only send is the settled proven-absent one; no new send was journaled.
+        self.assertEqual(self.sends(), [("no_write", "ProvenAbsent")])
         self.assertEqual(self.provider.puts, 0)
         return resumed
 
@@ -545,7 +582,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(row["status"], "completed", row["message"])
         self.assertEqual(self.provider.puts, 1)
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_intents WHERE NOT settled").fetchone()["n"], 0)
+            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_attempts WHERE settled_at IS NULL").fetchone()["n"], 0)
 
     def test_rearmed_intent_of_a_failed_job_does_not_block_the_next_upload(self):
         resumed = self.rearmed_then_stopped()
@@ -558,9 +595,9 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         completed = max(j["id"] for j in self.jobs())
         with self.db() as connection:
             row = connection.execute("SELECT * FROM upload_remediations").fetchone()
-            self.assertEqual((row["state"], row["phase"], row["reason"]), ("resolved", "completed", None))
+            self.assertEqual((row["state"], row["reason"]), ("resolved", None))
             self.assertEqual(row["resolved_by_job_id"], completed)
-            self.assertIsNotNone(row["cleanup_inventory_job_id"])
+            self.assertIsNotNone(row["closed_at"])
             notifications.reconcile_problem_states(connection)
             for job in (original, resumed):
                 failed = connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()
@@ -571,21 +608,25 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.rearmed_then_stopped()
         self.assertEqual(self.episode()["state"], "blocked")
         with self.db() as connection:
-            connection.execute("INSERT INTO snapshot_reconciliation_blocks(vault_file_id,reason,updated_at) SELECT vault_file_id,'identity_changed','2026-01-01T00:00:00+00:00' FROM upload_remediations")
+            # #592: the work is the file's live state. A send proven absent and
+            # never restarted leaves none, so nothing is pending or resumable.
             state = provenance.describe(connection, vault_id=2, path="report.txt")
-            self.assertTrue(state["pending"])
+            self.assertFalse(state["pending"], state)
             self.assertFalse(state["can_resume"], state)
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+            # The first explicit retry finds the work void and admits nothing;
+            # from then on the episode never takes a retry slot again.
+            self.assertEqual(remediation.retry_vault(connection, vault, 1, "2026-01-02T00:00:00+00:00"), 0)
+            self.assertEqual(self.provider.puts, 0)
             with patch.object(remediation, "TARGET_BATCH", 1), patch.object(remediation, "admit") as admit:
-                self.assertEqual(remediation.retry_vault(connection, vault, 1, "2026-01-02T00:00:00+00:00"), 0)
+                self.assertEqual(remediation.retry_vault(connection, vault, 1, "2026-01-03T00:00:00+00:00"), 0)
                 admit.assert_not_called()
-            sweep_rows = connection.execute(f"SELECT count(*) n FROM upload_remediations r WHERE NOT {remediation.VOID_SQL}").fetchone()["n"]
+            # A void episode is never due: the sweep never reads it.
+            sweep_rows = connection.execute("SELECT count(*) n FROM upload_remediations r WHERE r.closed_at IS NULL AND r.due_at <> 'infinity'").fetchone()["n"]
             self.assertEqual(sweep_rows, 0)
 
     def test_rearmed_intent_of_a_cancelled_job_does_not_block_the_next_upload(self):
-        resumed = self.rearmed_then_stopped()
-        with self.db() as connection:
-            connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (resumed,))
+        self.rearmed_then_stopped(cancel=True)
         self.assert_next_upload_is_not_blocked()
 
     def test_an_unsent_intent_is_refreshed_when_the_cloud_inventory_changed_meanwhile(self):
@@ -598,7 +639,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row(job)["status"], "retrying")
         stale = self.intent()
         self.assertFalse(stale["send_started"])
-        self.provider.add(KEY, b"written by someone else", version="external-1")
+        self.provider.add(self.KEY, b"written by someone else", version="external-1")
         self.retry_is_due(job)
         self.run_job(job)
         # The send itself proceeds from a re-pinned intent. Cleanup of the pinned
@@ -606,11 +647,13 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(self.provider.puts, 1)
         self.assertNotIn("identity_changed", self.row(job)["message"])
         with self.db() as connection:
-            intents = connection.execute("SELECT * FROM upload_intents").fetchall()
-        self.assertEqual(len(intents), 1)
-        self.assertTrue(intents[0]["send_started"])
-        self.assertIn("external-1", intents[0]["inventory_json"])
-        self.assertNotEqual(intents[0]["token"], stale["token"])
+            attempts = connection.execute("SELECT * FROM upload_attempts ORDER BY created_at").fetchall()
+        # The stale attempt is closed unsent; the send is a new attempt with a
+        # new token, pinned on the fresh inventory.
+        self.assertEqual([(a["outcome"], a["send_started_at"] is not None) for a in attempts],
+                         [("unsent", False), ("landed", True)])
+        self.assertIn("external-1", attempts[1]["inventory_versions"])
+        self.assertNotEqual(str(attempts[1]["token"]), str(stale["token"]))
 
     def remediation_job(self):
         self.stable_content()
@@ -635,7 +678,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual(self.episode()["current_job_id"], resumed)
         self.assertEqual((self.episode()["state"], self.episode()["reason"]), ("suspended", "source_volume_unavailable"))
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
         self.assertEqual([n["event"] for n in self.notification_events()], before)
         self.retry_is_due(resumed)
         self.run_job(resumed)
@@ -645,16 +688,22 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
     def test_a_job_of_a_suspended_vault_waits_and_restarts_when_the_vault_is_reactivated(self):
         _, resumed = self.remediation_job()
         with self.db() as connection:
-            connection.execute("UPDATE vaults SET enabled=FALSE WHERE id=2")
-        self.run_job(resumed)
+            connection.execute("UPDATE vaults SET paused=TRUE WHERE id=2")
+        # A paused Vault holds its Jobs at the claim: the remediation Job is
+        # never claimed and keeps waiting queued, with its episode open.
+        with self.db() as connection:
+            self.assertIsNone(ArchiveCatalog(connection).claim_job(
+                job_id=resumed, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
+                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                restore_due_before=storage.now_iso()))
         row = self.row(resumed)
         self.assertEqual(row["status"], "queued", row["message"])
-        self.assertEqual(self.episode()["reason"], "vault_suspended")
+        self.assertEqual(self.episode()["current_job_id"], resumed)
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
         self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
         with self.db() as connection:
-            connection.execute("UPDATE vaults SET enabled=TRUE WHERE id=2")
+            connection.execute("UPDATE vaults SET paused=FALSE WHERE id=2")
         self.run_job(resumed)
         self.assert_keeper(resumed)
         self.assertEqual(self.episode()["state"], "resolved")
@@ -666,7 +715,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         row = self.row(job)
         self.assertNotEqual(row["status"], "failed", row["message"])
         with self.db() as connection:
-            self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
         self.assertNotIn("upload_reconciliation", [n["event"] for n in self.notification_events()])
 
     def set_auto_upload(self, enabled, **changes):
@@ -693,7 +742,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
-        self.assertTrue(self.row(resumed)["upload_reconcile_only"])
+        self.assertTrue(next(j for j in self.jobs() if j["id"] == resumed)["upload_reconcile_only"])
         # Real policy: protection is paused after the attempt was claimed, while
         # the absence proof reads the bucket.
         paused = []
@@ -710,7 +759,9 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
         intent = self.intent()
         self.assertTrue(intent["send_started"])
-        self.assertEqual(intent["blocked_reason"], "protection_paused")
+        self.assertFalse(intent["settled"])
+        with self.db() as connection:
+            self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "protection_paused")
         # Once protection is resumed the same explicit reconcile proves absence and sends.
         self.set_auto_upload(True)
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
@@ -721,7 +772,7 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
 
     def job_with_vault(self, job):
         with self.db() as connection:
-            return connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job,)).fetchone()
+            return job_row(connection, job)
 
     def test_a_job_that_is_already_over_names_its_own_state_and_leaves_no_block(self):
         for status, reason in (("cancelled", "owner_cancelled"), ("failed", "already_resolved"), ("completed", "already_resolved")):
@@ -731,11 +782,11 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
                     connection.execute("UPDATE jobs SET status=%s WHERE id=%s", (status, job))
                 current = self.job_with_vault(job)
                 with self.db() as connection, self.assertRaises(provenance.UploadBlocked) as raised:
-                    provenance.target(connection, current, key="docs/report.txt", provider="p")
+                    provenance.target(connection, current, key=self.KEY, provider="p")
                 self.assertEqual(raised.exception.reason, reason)
                 storage._record_upload_reconciliation_block(current, reason)
                 with self.db() as connection:
-                    self.assertIsNone(connection.execute("SELECT 1 FROM snapshot_reconciliation_blocks").fetchone())
+                    self.assertIsNone(connection.execute("SELECT 1 FROM files WHERE reconciliation_block IS NOT NULL").fetchone())
                     self.assertIsNone(connection.execute("SELECT 1 FROM notifications WHERE event='upload_reconciliation'").fetchone())
 
     def test_resuming_an_episode_that_is_already_resolved_says_already_resolved(self):
@@ -745,24 +796,27 @@ class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
         with self.db() as connection:
             episode = connection.execute("SELECT id FROM upload_remediations").fetchone()["id"]
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-            for remediation_id, reason in ((episode, "already_resolved"), ("no-such-episode", "proof_unavailable")):
+            for remediation_id, reason in ((episode, "already_resolved"), (str(uuid.uuid4()), "proof_unavailable")):
                 with self.assertRaises(provenance.UploadBlocked) as raised:
                     remediation.schedule_resume(connection, vault=vault, path="report.txt", user_id=1,
                                                 timestamp="2026-01-01T00:00:00+00:00", remediation_id=remediation_id)
                 self.assertEqual(raised.exception.reason, reason)
 
     def test_a_superseded_keeper_is_reported_as_target_superseded_not_identity_changed(self):
-        from app.services import snapshot_cleanup
+        # A Job linked to a verified version that a newer keeper replaced as
+        # Current: its target is superseded, the file identity did not change.
+        from app.services import upload_execution
         job = self.queue()
         self.run_job(job)
         keeper = self.assert_keeper(job)
-        with self.db() as connection:
-            newer = dict(connection.execute("SELECT * FROM archive_versions WHERE id=%s", (keeper["id"],)).fetchone())
-            newer.update(id="newer-version", version_number=keeper["version_number"] + 1, provider_version_id="newer-provider-version")
-            columns = list(newer)
-            connection.execute(f"INSERT INTO archive_versions({','.join(columns)}) VALUES ({','.join(['%s'] * len(columns))})", [newer[c] for c in columns])
-            with self.assertRaises(provenance.UploadBlocked) as raised:
-                snapshot_cleanup._keeper(connection, self.job_with_vault(job), keeper["id"])
+        self.observe_content(b"newer content\n")
+        newer = self.queue_fresh()
+        # The superseded row stays until its cleanup proof completes.
+        with patch("app.storage.cleanup_superseded_upload"):
+            self.run_job(newer)
+        self.assertNotEqual(self.assert_keeper(newer)["id"], keeper["id"])
+        with self.db() as connection, self.assertRaises(provenance.UploadBlocked) as raised:
+            upload_execution._linked_version(connection, job_row(connection, job), None)
         self.assertEqual(raised.exception.reason, "target_superseded")
 
     def test_an_observed_root_replacement_still_fails_as_identity_changed(self):

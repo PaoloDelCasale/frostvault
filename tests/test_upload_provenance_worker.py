@@ -48,21 +48,23 @@ B = b"immutable content B"
 
 
 def prepare_unsent(case, job_id):
-    """Legacy/crash fixture: an already committed prepared-but-unsent intent.
+    """Crash fixture: a committed prepared-but-unsent attempt.
 
-    Fresh UploadExecution commits prepare+send-started atomically, so injecting
-    a failure in mark_send_started no longer manufactures this historical state.
-    Keep exercising its immutability and closure with real persisted facts.
+    UploadExecution commits prepare+send-started in one unit, so a failure in
+    mark_send_started never leaves this state behind; a DB retry between the
+    two units can. Keep exercising its refresh and closure with real facts.
     """
     snapshot, _ = storage.prepare_upload_snapshot(case.file, lambda: None)
     with PostgresConnection(case.db_path) as connection:
-        job = connection.execute("SELECT j.*,v.source_root,v.s3_bucket,v.s3_prefix FROM jobs j JOIN vaults v ON v.id=j.vault_id WHERE j.id=%s", (job_id,)).fetchone()
+        job = job_row(connection, job_id)
         pinned = provenance.target(connection, job,
-            key=storage.expected_cloud_key(job["path"], job["s3_prefix"]),
+            key=f"vaults/{job['vault_uuid']}/{job['path']}",
             provider=provenance.provider_identity(case.provider))
-        ArchiveCatalog(connection).set_upload_snapshot(job_id, snapshot_json=snapshot.as_json())
+        detail = connection.execute(
+            "SELECT ju.verification_mode, f.generation FROM job_uploads ju JOIN files f ON f.id=%s "
+            "WHERE ju.job_id=%s", (job["file_id"], job_id)).fetchone()
         return provenance.prepare(connection, job, pinned=pinned, snapshot=snapshot,
-            requested=job["upload_verification_requested"],
+            requested=detail["verification_mode"], local_generation=detail["generation"],
             before={"versions": [], "markers": []}, timestamp=storage.now_iso())
 
 
