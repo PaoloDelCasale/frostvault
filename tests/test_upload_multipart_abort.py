@@ -12,7 +12,6 @@ from app.services import upload_provenance as provenance
 from tests import test_upload_ambiguous_send_recovery as recovery
 from tests import test_upload_provenance_worker as fixtures
 
-KEY = recovery.KEY
 
 
 class UploadMultipartAbortTests(unittest.TestCase):
@@ -29,30 +28,33 @@ class UploadMultipartAbortTests(unittest.TestCase):
     intent = recovery.UploadAmbiguousSendRecoveryTests.intent
     denied = recovery.UploadAmbiguousSendRecoveryTests.denied
     bucket_probe = recovery.UploadAmbiguousSendRecoveryTests.bucket_probe
+    observe_content = fixtures.UploadProvenanceWorkerTests.observe_content
 
     def interrupted_multipart(self, *, journaled=True, foreign=False):
         """An ambiguous send whose sender left an incomplete multipart upload behind."""
         self.stable_content()
         job = self.fail_before_provider_request(RuntimeError("worker crashed after CreateMultipartUpload"))
         intent = self.intent()
-        self.provider.multiparts.append((KEY, "own-upload"))
+        self.provider.multiparts.append((self.key, "own-upload"))
         if journaled:
             provenance.journal_multipart(storage.db, intent["id"], "own-upload", storage.now_iso())
         if foreign:
-            self.provider.multiparts.append((KEY, "foreign-upload"))
+            self.provider.multiparts.append((self.key, "foreign-upload"))
         self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
         return job, max(j["id"] for j in self.jobs())
 
     def multiparts(self):
         with self.db() as connection:
-            return [(r["upload_id"], r["state"]) for r in connection.execute("SELECT upload_id,state FROM upload_multiparts ORDER BY upload_id").fetchall()]
+            return [(r["upload_id"], r["state"]) for r in connection.execute(
+                "SELECT upload_id, CASE WHEN closed_at IS NULL THEN 'open' ELSE 'closed' END AS state "
+                "FROM upload_multiparts ORDER BY upload_id").fetchall()]
 
     def test_the_journaled_upload_is_aborted_and_the_upload_is_sent_again(self):
         _original, resumed = self.interrupted_multipart()
         self.assertEqual(self.multiparts(), [("own-upload", "open")])
         self.run_job(resumed)
         self.assert_keeper(resumed)
-        self.assertEqual(self.provider.aborted, [(KEY, "own-upload")])
+        self.assertEqual(self.provider.aborted, [(self.key, "own-upload")])
         self.assertEqual(self.provider.multiparts, [])
         self.assertEqual((self.provider.puts, self.provider.deletes), (1, 0))
         self.assertEqual(self.multiparts(), [("own-upload", "closed")])
@@ -65,7 +67,7 @@ class UploadMultipartAbortTests(unittest.TestCase):
         self.assertEqual(row["status"], "failed")
         self.assertIn("ambiguous_send", row["message"])
         self.assertEqual(self.provider.aborted, [])
-        self.assertEqual(self.provider.multiparts, [(KEY, "own-upload")])
+        self.assertEqual(self.provider.multiparts, [(self.key, "own-upload")])
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
         self.assertEqual(self.multiparts(), [])
 
@@ -73,8 +75,8 @@ class UploadMultipartAbortTests(unittest.TestCase):
         _original, resumed = self.interrupted_multipart(foreign=True)
         self.run_job(resumed)
         self.assertIn("ambiguous_send", self.row(resumed)["message"])
-        self.assertEqual(self.provider.aborted, [(KEY, "own-upload")])
-        self.assertEqual(self.provider.multiparts, [(KEY, "foreign-upload")])
+        self.assertEqual(self.provider.aborted, [(self.key, "own-upload")])
+        self.assertEqual(self.provider.multiparts, [(self.key, "foreign-upload")])
         self.assertEqual(self.provider.puts, 0)
         self.assertEqual(self.multiparts(), [("own-upload", "closed")])
 
@@ -113,22 +115,23 @@ class UploadMultipartAbortTests(unittest.TestCase):
 
     def test_settling_an_unstarted_intent_closes_its_rows(self):
         self.stable_content()
-        self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
+        # A committed attempt whose send was never armed (a DB retry between units).
+        fixtures.prepare_unsent(self, self.queue())
         intent = self.intent()
         provenance.journal_multipart(storage.db, intent["id"], "refused-abort", storage.now_iso())
         with self.db() as connection:
-            connection.execute("UPDATE upload_intents SET send_started=FALSE WHERE id=%s", (intent["id"],))
-            provenance._settle_unstarted(connection, intent["vault_file_id"])
+            provenance._close_abandoned(connection, intent["file_id"], storage.now_iso())
         self.assertEqual(self.multiparts(), [("refused-abort", "closed")])
-        self.assertTrue(self.intent()["settled"])
+        self.assertEqual((self.intent()["settled"], self.intent()["outcome"]), (True, "unsent"))
 
     def test_a_started_unsettled_intent_keeps_its_rows(self):
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         intent = self.intent()
         provenance.journal_multipart(storage.db, intent["id"], "live-obligation", storage.now_iso())
-        with self.db() as connection:
-            provenance._settle_unstarted(connection, intent["vault_file_id"])
+        with self.db() as connection, self.assertRaises(provenance.UploadBlocked) as refused:
+            provenance._close_abandoned(connection, intent["file_id"], storage.now_iso())
+        self.assertEqual(refused.exception.reason, "ambiguous_send")
         self.assertEqual(self.multiparts(), [("live-obligation", "open")])
 
     def test_the_journal_is_written_before_the_first_part_and_closed_on_completion(self):
@@ -138,12 +141,12 @@ class UploadMultipartAbortTests(unittest.TestCase):
         def upload(client, **kwargs):
             kwargs["on_multipart"]("created", "live-upload")
             with self.db() as connection:
-                seen.append(connection.execute("SELECT state FROM upload_multiparts WHERE upload_id='live-upload'").fetchone()["state"])
+                seen.append(connection.execute("SELECT CASE WHEN closed_at IS NULL THEN 'open' ELSE 'closed' END AS state FROM upload_multiparts WHERE upload_id='live-upload'").fetchone()["state"])
             kwargs["on_multipart"]("closed", "live-upload")
             return self.provider.upload(client, **kwargs)
         with patch("app.storage.upload_file", side_effect=upload):
             self.run_job(job)
-        self.assertEqual(seen, ["open"])
+        self.assertEqual(seen, ["open"], self.row(job)["message"])
         self.assertEqual(self.multiparts(), [("live-upload", "closed")])
         self.assert_keeper(job)
 
