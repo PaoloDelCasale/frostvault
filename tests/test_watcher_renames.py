@@ -17,7 +17,7 @@ from unittest.mock import patch
 from watchfiles import Change
 
 from app import storage
-from app.services import catalog_incidents
+from app.services import catalog_incidents, job_scheduler
 from app.services import notifications as notification_service
 from tests import test_auto_upload_watcher as watcher_fixtures
 from tests.upload_provenance_provider import VersionedProvider
@@ -104,8 +104,13 @@ class WatcherRenameTests(unittest.TestCase):
         self.assertEqual(self.queue(), 0, "a rename is never admitted as a new upload")
         self.assertEqual([(j["action"], j["status"]) for j in self.jobs()],
                          [("upload", "completed"), ("rename", "queued")])
+        rename = self.jobs()[-1]
+        # Nobody asked for it: system work at the automatic tier (#629).
+        self.assertEqual(rename["origin"], "automatic")
+        self.assertEqual(job_scheduler.job_priority(rename), job_scheduler.AUTOMATIC_PRIORITY)
         self.assertEqual(self.run_jobs(provider), 1)
         self.assertEqual(self.jobs()[-1]["status"], "completed", self.jobs()[-1]["message"])
+        self.assertEqual(self.jobs()[-1]["origin"], "automatic")
         self.assert_moved(provider, before, "d/ren-a.bin", "d/ren-b.bin")
         self.assertEqual(provider.puts, 1, "no second PUT")
         self.assertEqual(provider.copies, 1)
@@ -122,8 +127,8 @@ class WatcherRenameTests(unittest.TestCase):
         self.watch((Change.deleted, "d4/cx"), (Change.added, "d4/cy"))
         self.advance(300)
         self.assertEqual(self.queue(), 0)
-        self.assertEqual(sorted(j["action"] for j in self.jobs() if j["status"] == "queued"),
-                         ["rename"] * 3)
+        self.assertEqual(sorted((j["action"], j["origin"]) for j in self.jobs() if j["status"] == "queued"),
+                         [("rename", "automatic")] * 3)
         self.assertEqual(self.run_jobs(provider), 3)
         for old, row in before.items():
             self.assert_moved(provider, row, old, old.replace("d4/cx/", "d4/cy/"))

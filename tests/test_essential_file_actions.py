@@ -61,6 +61,9 @@ class EssentialFileActionTests(CopyWorkerFixture):
         summary = storage.apply_auto_renames(self.vault())
         self.assertEqual((summary["confirmed"], summary["queued"]), (1, 1))
         (job,) = self.jobs("rename")
+        # A rename confirmed by the scan is system work, never the Owner's (#629).
+        self.assertEqual([row["origin"] for row in self.rows(
+            "SELECT origin FROM jobs WHERE id=%s", job["id"])], ["automatic"])
         self.provider.deleted.clear()
         self.run_job(job["id"])
         self.key = self.new_key

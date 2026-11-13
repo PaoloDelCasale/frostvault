@@ -2053,14 +2053,17 @@ def _apply_auto_renames(
         summary["confirmed"] += 1
 
     for path in confirmed_paths:
+        # A rename the Owner made on disk: system work, never an Owner
+        # operation in priority, audit or Activity (#629).
         job_ids, _total, eligible = catalog.queue_jobs(
-                vault_id=vault["id"],
-                path=path,
-                action="rename",
-                    requested_at=now_iso(),
-                group_id=uuid.uuid4().hex,
-                is_directory=False,
-            )
+            vault_id=vault["id"],
+            path=path,
+            action="rename",
+            requested_at=now_iso(),
+            group_id=uuid.uuid4().hex,
+            is_directory=False,
+            origin="automatic",
+        )
         if job_ids:
             summary["queued"] += len(job_ids)
         elif eligible:
@@ -2200,6 +2203,7 @@ def _identify_new_local_copies(
                 requested_at=now_iso(),
                 group_id=uuid.uuid4().hex,
                 is_directory=False,
+                origin="automatic",
             )
             summary["queued"] += len(job_ids)
         if "root_identity" in vault:
