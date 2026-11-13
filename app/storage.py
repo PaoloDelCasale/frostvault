@@ -5124,6 +5124,24 @@ async def upload_remediation_loop() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+async def history_retention_loop() -> None:
+    # Retention of closed history (#596): short keyset batches on a dedicated
+    # DB-only executor; it deletes database rows only.
+    from .services import history_retention
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-retention")
+    try:
+        while True:
+            try:
+                await loop.run_in_executor(executor, history_retention.collect, db)
+                await loop.run_in_executor(executor, _note_worker_ok, "history_retention")
+            except Exception as exc:
+                await asyncio.to_thread(_report_worker_error, "history_retention", exc)
+            await asyncio.sleep(history_retention.POLL_SECONDS)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 async def bulk_upload_admission_loop() -> None:
     # Durable state lives in PostgreSQL, not this executor. One tick advances
     # bounded transactions independently of transfer slots/cloud readiness.

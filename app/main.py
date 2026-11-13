@@ -155,6 +155,7 @@ from .storage import (
     cloud_preflight_loop,
     upload_remediation_loop,
     bulk_upload_admission_loop,
+    history_retention_loop,
     drain_background_executors,
     stop_background_executors,
     now_iso,
@@ -213,7 +214,8 @@ async def lifespan(_: FastAPI):
     protection_stop_service.reconcile_all()
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
              asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop()),
-             asyncio.create_task(bulk_upload_admission_loop())]
+             asyncio.create_task(bulk_upload_admission_loop()),
+             asyncio.create_task(history_retention_loop())]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     shutdown_state.register_producers(tasks)

@@ -45,7 +45,8 @@ async def lifespan(app):
         ):
             patches.enter_context(patch(f"app.main.{name}"))
         for name in ("background_loop", "auto_upload_loop", "cloud_preflight_loop",
-                     "upload_remediation_loop", "filesystem_watch_loop"):
+                     "upload_remediation_loop", "history_retention_loop",
+                     "filesystem_watch_loop"):
             patches.enter_context(patch(f"app.main.{name}", idle_producer))
         patches.enter_context(patch("app.main.settings", SimpleNamespace(filesystem_watch_enabled=True)))
         patches.enter_context(patch("app.services.catalog_event_stream.stream_tick_snapshot", return_value=StreamTickSnapshot(
