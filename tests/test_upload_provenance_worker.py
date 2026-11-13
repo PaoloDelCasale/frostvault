@@ -756,6 +756,121 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertTrue(foreign_writes <= set(self.provider.objects))
         self.assertTrue(foreign_writes.isdisjoint(self.provider.deleted))
 
+    def test_marker_never_bypasses_replacement_consent(self):
+        self.provider.markers[self.key,"marker"] = True
+        job = self.queue(); self.run_job(job)
+        self.assertEqual(self.row(job)["status"],"failed")
+        self.assertEqual(self.provider.deletes,0)
+        self.assertIn((self.key,"marker"),self.provider.markers)
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(provenance.describe(connection,vault_id=2,path="report.txt")["reason"],"markers_present")
+
+    def test_stop_protection_and_incompatible_deletion_exclude_resume(self):
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
+        original = self.queue(); self.run_job(original)
+        self.provider.hook = lambda *args, **kwargs: None
+        with PostgresConnection(self.db_path) as connection:
+            vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
+            connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
+        with PostgresConnection(self.db_path) as connection:
+            with self.assertRaises(provenance.UploadBlocked):
+                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute("UPDATE vaults SET lifecycle='active' WHERE id=2")
+            group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (2) RETURNING id").fetchone()["id"]
+            connection.execute("INSERT INTO jobs(vault_id,file_id,group_id,action,status,run_after) VALUES (2,%s,%s,'cloud-purge','pending_delay',now() + interval '1 day')", (self.file_id, group))
+        with PostgresConnection(self.db_path) as connection:
+            self.assertFalse(provenance.describe(connection,vault_id=2,path="report.txt")["can_resume"])
+            with self.assertRaises(provenance.UploadBlocked):
+                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+        self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
+
+    def test_cloud_only_conflict_after_ack_cannot_publish_or_cleanup(self):
+        keeper, keeper_version = self.seed_keeper()
+        self.observe_content(B)
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
+        job = self.queue(); self.run_job(job)
+        with PostgresConnection(self.db_path) as connection:
+            connection.execute("UPDATE files SET held_version_id=%s WHERE id=%s", (keeper,self.file_id))
+        with PostgresConnection(self.db_path) as connection:
+            vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
+            with self.assertRaises(provenance.UploadBlocked):
+                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+        self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
+        self.assertIn((self.key,keeper_version),self.provider.objects)
+        self.assertIsNone(self.row(job)["archive_version_id"])
+
+    def test_cancel_during_historical_get_preserves_all_copies(self):
+        # The cleanup's listing is where a historical GET used to be: a cancel
+        # there stops the cleanup before any DELETE and keeps every copy.
+        keeper, keeper_version = self.seed_keeper()
+        self.observe_content(B)
+        job = self.queue()
+        listings = []
+        def cancel(stage, **kwargs):
+            if stage == "list" and self.provider.puts and not listings:
+                listings.append(1)
+                storage.cancel_jobs([job])
+        self.provider.hook = cancel
+        self.run_job(job)
+        self.assertEqual(self.row(job)["status"], "cancelled")
+        self.assertEqual(self.provider.deletes, 0)
+        self.assertEqual(len(self.provider.objects), 2)
+
+    def test_proof_metadata_integrity_and_local_CAS_retry_as_one_DB_unit(self):
+        # Verification evidence, integrity, Current and the Local Copy CAS
+        # commit in one fenced unit: a serialization abort replays only that
+        # unit, never the filesystem observation or the provider.
+        publish = ArchiveCatalog.promote_replacement
+        transactions = []
+        def promote(catalog, file_id, **kwargs):
+            publish(catalog, file_id, **kwargs)
+            transactions.append(catalog.connection.execute("SELECT txid_current() AS id").fetchone()["id"])
+            row = catalog.connection.execute(
+                """SELECT av.verification_method, av.integrity, f.matched_version_id=av.id AS matched
+                   FROM archive_versions av JOIN files f ON f.current_version_id=av.id WHERE f.id=%s""",
+                (file_id,)).fetchone()
+            self.assertEqual(row, {"verification_method": "s3_checksum", "integrity": "verified", "matched": True})
+            if len(transactions) == 1:
+                catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'proof commit abort' USING ERRCODE='40001'; END $$")
+        job = self.queue()
+        with patch.object(ArchiveCatalog, "promote_replacement", promote), \
+                patch.object(storage, "prepare_upload_snapshot", wraps=storage.prepare_upload_snapshot) as hashed:
+            self.run_job(job)
+        self.assert_keeper(job)
+        self.assertEqual(len(transactions), 2)
+        self.assertEqual(hashed.call_count, 1, "A DB retry cannot replay filesystem observation")
+        self.assertEqual((self.provider.puts, self.provider.gets), (1, 0))
+
+    def test_unavailable_source_volume_suspends_already_written_resume(self):
+        self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
+        original = self.queue(); self.run_job(original)
+        with patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False,volume_health="missing")):
+            resumed = self.resume()
+        self.assertEqual(self.row(resumed)["status"], "retrying")
+        self.assertIsNone(self.row(resumed)["archive_version_id"])
+        self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
+
+    def test_db_transaction_and_commit_retry_never_replays_provider(self):
+        for code in ("40P01", "40001"):
+            with self.subTest(sqlstate=code):
+                # Nontransactional sequence survives the failed COMMIT, unlike a
+                # row-based counter which would fail forever after rollback.
+                with PostgresConnection(self.db_path) as connection:
+                    connection.execute(f"CREATE SEQUENCE fail_{code}")
+                    connection.execute(f"""CREATE FUNCTION fail_receipt_{code}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('fail_{code}')=1 THEN RAISE EXCEPTION 'commit fault' USING ERRCODE='{code}'; END IF; RETURN NEW; END $$""")
+                    connection.execute(f"CREATE CONSTRAINT TRIGGER receipt_commit_fault AFTER INSERT ON upload_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_receipt_{code}()")
+                job = self.queue()
+                puts_before = self.provider.puts
+                self.run_job(job)
+                self.assert_keeper(job)
+                self.assertEqual(self.provider.puts - puts_before, 1)
+                with PostgresConnection(self.db_path) as connection:
+                    connection.execute("DROP TRIGGER receipt_commit_fault ON upload_receipts")
+                    # A fresh local generation earns ordinary upload admission.
+                    self.file.write_bytes(B if code == "40P01" else A)
+                    ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=self.file.stat().st_size, mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+
     def queue_path(self, path):
         queued = queue_jobs(path, "upload", 2, 1)
         self.assertEqual(queued["item_count"], 1)
