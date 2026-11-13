@@ -167,11 +167,13 @@ started it is never asked again.
 _Avoid_: Confirmation, Per-file approval
 
 **Scheduling Tier**:
-The order in which the worker serves runnable Jobs: Owner operations (restore,
-free-space, rename, storage-class, cloud purge) first, then uploads the Owner
-asked for, then anything admitted automatically (automatic uploads and cleanups).
-Vaults share the workers fairly inside a tier, and work that has waited long
-enough moves up a tier.
+The order in which the worker serves runnable Jobs. Inside a Vault: Owner
+operations (restore, free-space, rename, storage-class, cloud purge) first, then
+uploads the Owner asked for, then anything admitted automatically (automatic
+uploads and cleanups). Across Vaults: Owner operations first, then one shared
+tier where uploads the Owner asked for and anything admitted automatically
+compete as equals. Vaults share the workers fairly inside a tier, and work that
+has waited long enough moves up a tier.
 _Avoid_: Priority queue, Lane
 
 **Removed File Closure**:

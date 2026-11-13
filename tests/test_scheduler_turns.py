@@ -330,3 +330,126 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self._insert_upload_job(vault_id=10, path='b.txt')
         rows = self.observe(1800)
         self.assertEqual(select_fair_jobs(rows, limit=1)[0]['id'], auto)
+
+
+class CrossVaultUploadTierTests(unittest.TestCase):
+    """Issue #618 / ADR-0037: Owner-before-automatic holds only inside a Vault."""
+
+    def test_manual_backlog_in_one_vault_does_not_hold_back_automatic_uploads_of_another(self):
+        from collections import deque
+        concurrency = 16
+        manual = deque(dict(id=i, vault_id=3, action='upload', origin='manual',
+                            requested_at=f'2026-11-13T18:00:00.{i:06d}+00:00')
+                       for i in range(1, 16001))
+        automatic = [dict(id=100000 + i, vault_id=4, action='upload', origin='automatic',
+                          requested_at=f'2026-11-13T18:54:{i:02d}+00:00')
+                     for i in range(20)]
+        # Vault 3's bulk upload already holds every worker when Vault 4's files arrive.
+        running = deque(manual.popleft() for _ in range(concurrency))
+        claims: list[int] = []
+        held_by_4: list[int] = []
+        while automatic and len(claims) < 200:
+            running.popleft()  # the oldest running Job finishes, one slot opens
+            active: dict[int, int] = {}
+            for job in running:
+                active[job['vault_id']] = active.get(job['vault_id'], 0) + 1
+            # Per-Vault candidate windows, no aging credit at all.
+            candidates = list(manual)[:concurrency] + automatic
+            pick = select_fair_jobs(candidates, limit=1, active_by_vault=active)[0]
+            if pick['vault_id'] == 4:
+                automatic.remove(pick)
+            else:
+                manual.popleft()
+            running.append(pick)
+            claims.append(pick['vault_id'])
+            held_by_4.append(sum(1 for job in running if job['vault_id'] == 4))
+        self.assertEqual(automatic, [])
+        # Vault 4 takes the first freed slots until both Vaults hold half of
+        # the workers, then keeps its fair share while it has work: served
+        # continuously, not one Job every 15 minutes.
+        self.assertEqual(claims[:8], [4] * 8)
+        self.assertGreaterEqual(min(held_by_4[7:]), concurrency // 2 - 1)
+        self.assertLessEqual(len(claims), 3 * 20)
+
+    def test_owner_operations_still_precede_every_upload_across_vaults(self):
+        owner = dict(id=1, vault_id=3, action='free-space', origin='manual',
+                     requested_at='2026-11-13T19:00:00+00:00')
+        manual = dict(id=2, vault_id=4, action='upload', origin='manual',
+                      requested_at='2026-11-13T18:00:00+00:00')
+        auto = dict(id=3, vault_id=5, action='upload', origin='automatic',
+                    requested_at='2026-11-13T17:00:00+00:00', scheduler_wait_seconds=900)
+        order = [job['id'] for job in select_fair_jobs([manual, auto, owner], limit=3,
+                                                       active_by_vault={3: 5})]
+        self.assertEqual(order[0], 1)
+        # Only the existing aged-turn exception lets an upload pass Owner work.
+        auto['scheduler_wait_seconds'] = 1800
+        self.assertEqual(select_fair_jobs([manual, auto, owner], limit=1)[0]['id'], 3)
+
+    def test_inside_a_vault_owner_uploads_still_precede_automatic_work(self):
+        auto = dict(id=1, vault_id=4, action='upload', origin='automatic',
+                    requested_at='2026-11-13T17:00:00+00:00', scheduler_wait_seconds=1800)
+        manual = dict(id=2, vault_id=4, action='upload', origin='manual',
+                      requested_at='2026-11-13T19:00:00+00:00')
+        self.assertEqual([j['id'] for j in select_fair_jobs([auto, manual], limit=2)], [2, 1])
+
+
+class CrossVaultUploadTierDbTests(_SchedulerDbMixin, unittest.TestCase):
+    """The catalog windows and lease counts give Vault 20 its share (#618)."""
+
+    stamp = '2026-11-13T19:00:00+00:00'
+
+    def add_jobs(self, vault_id, count, origin):
+        ids = []
+        with PostgresConnection(self.path) as connection:
+            catalog = ArchiveCatalog(connection)
+            for index in range(count):
+                file_id = catalog.observe_local_copy(
+                    vault_id=vault_id, path=f'{origin}/{index:03d}.bin', file_type='regular',
+                    size=1, mtime_ns=1, observed_at='2026-07-01T00:00:00+00:00')
+                requested = f'2026-11-13T18:{0 if origin == "manual" else 54}:{index % 60:02d}+00:00'
+                ids.append(int(connection.execute(
+                    """INSERT INTO jobs(vault_id, file_id, action, status, origin,
+                                        requested_at, updated_at)
+                       VALUES (%s, %s, 'upload', 'queued', %s, %s, %s) RETURNING id""",
+                    (vault_id, file_id, origin, requested, requested)).fetchone()['id']))
+        return ids
+
+    def test_freed_slots_go_to_the_automatic_vault_while_a_manual_backlog_runs(self):
+        manual = self.add_jobs(10, 40, 'manual')
+        automatic = self.add_jobs(20, 20, 'automatic')
+        with PostgresConnection(self.path) as connection:
+            catalog = ArchiveCatalog(connection)
+            for job_id in manual[:16]:
+                self.assertIsNotNone(catalog.claim_job(
+                    job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.stamp,
+                    claim_expires_at='2026-11-13T20:00:00+00:00', now=self.stamp,
+                    restore_due_before=self.stamp))
+            # Eight of Vault 10's Jobs finish: eight slots open.
+            connection.execute("UPDATE jobs SET status='completed' WHERE id = ANY(%s)", (manual[:8],))
+        with PostgresConnection(self.path) as connection:
+            catalog = ArchiveCatalog(connection)
+            rows = catalog.list_claimable_jobs(now=self.stamp, restore_due_before=self.stamp,
+                                               limit=160, per_vault_limit=16)
+            active = catalog.active_job_counts(now=self.stamp)
+        self.assertEqual(active, {10: 8})
+        # SQL rows already follow the cross-Vault tier: both Vaults' uploads share it.
+        self.assertEqual({row['vault_id'] for row in rows}, {10, 20})
+        picked = select_fair_jobs(rows, limit=8, active_by_vault=active)
+        self.assertEqual([job['id'] for job in picked], automatic[:8])
+
+    def test_sql_tiers_mirror_python(self):
+        from app.services.job_scheduler import cross_vault_tier
+        pairs = [(action, origin)
+                 for action in ('upload', 'recover', 'free-space', 'rename', 'cloud-purge', 'storage-class')
+                 for origin in ('manual', 'automatic')]
+        values = ', '.join(['(%s, %s)'] * len(pairs))
+        with PostgresConnection(self.path) as connection:
+            rows = connection.execute(
+                f"SELECT j.action, j.origin, {ArchiveCatalog._SCHEDULING_TIER_SQL} AS base, "
+                f"{ArchiveCatalog._CROSS_VAULT_TIER_SQL} AS cross_vault "
+                f"FROM (VALUES {values}) AS j(action, origin)",
+                [value for pair in pairs for value in pair]).fetchall()
+        for row in rows:
+            job = {'action': row['action'], 'origin': row['origin']}
+            self.assertEqual(row['base'], job_priority(job), job)
+            self.assertEqual(row['cross_vault'], cross_vault_tier(job), job)

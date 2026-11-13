@@ -2094,10 +2094,16 @@ class ArchiveCatalog:
         """
         return predicate, [*params, now, now, now]
 
-    # SQL twin of ``job_scheduler.job_priority`` (alias ``j``): 0 Owner
-    # operations, 1 uploads the Owner asked for, 2 anything admitted automatically.
+    # SQL twin of ``job_scheduler.job_priority`` (alias ``j``), the order inside
+    # a Vault: 0 Owner operations, 1 uploads the Owner asked for, 2 anything
+    # admitted automatically. Candidate windows are cut per Vault and per tier.
     _SCHEDULING_TIER_SQL = (
         "CASE WHEN j.origin='automatic' THEN 2 WHEN j.action<>'upload' THEN 0 ELSE 1 END"
+    )
+    # SQL twin of ``job_scheduler.cross_vault_tier`` (ADR-0037): across Vaults
+    # Owner uploads and automatic work share tier 1.
+    _CROSS_VAULT_TIER_SQL = (
+        "CASE WHEN j.origin<>'automatic' AND j.action<>'upload' THEN 0 ELSE 1 END"
     )
 
     @staticmethod
@@ -2124,10 +2130,12 @@ class ArchiveCatalog:
         installation: a Vault holding thousands of older Jobs, or Jobs the worker
         cannot run, must not push every other Vault's work (or its own uploads
         behind a flood of Owner operations) out of the candidate set (issues
-        #493, #500). Tiers match ``job_scheduler.job_priority``. ``exclude_job_ids`` removes candidates
-        the worker already found not runnable *before* the window is cut.
-        ``limit`` defaults the per-Vault window, not a global cut: every eligible
-        Vault must be visible to the turn selector, including aged tier-2 work.
+        #493, #500). Windows follow ``job_scheduler.job_priority``; rows are
+        ordered by ``job_scheduler.cross_vault_tier`` (ADR-0037).
+        ``exclude_job_ids`` removes candidates the worker already found not
+        runnable *before* the window is cut. ``limit`` defaults the per-Vault
+        window, not a global cut: every eligible Vault must be visible to the
+        turn selector, including its automatic work.
         Each row carries the File's current path and its Vault's root and bucket.
         """
         if limit <= 0:
@@ -2173,7 +2181,7 @@ class ArchiveCatalog:
             ) j
             JOIN files f ON f.id = j.file_id
             WHERE v.lifecycle IN ('active', 'stopping') {idle_filter}
-            ORDER BY {tier} ASC,
+            ORDER BY {self._CROSS_VAULT_TIER_SQL} ASC, {tier} ASC,
                      j.requested_at ASC, j.id ASC
             """,
             [*params, excluded, *([now] if unserved_only else [])],

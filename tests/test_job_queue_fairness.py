@@ -865,6 +865,54 @@ class CancelPendingHttpTests(QueueFixture):
         self.advance(300)
         self.assertEqual(self.queue(2), 0)
 
+    def queue_manual(self, name):
+        group_id = str(uuid.uuid4())
+        with self.db() as connection:
+            job_ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+                vault_id=2, path=name, action="upload",
+                requested_at=self.clock.isoformat(), group_id=group_id, is_directory=False,
+            )
+        return job_ids[0], group_id
+
+    def test_owner_cancelled_manual_uploads_are_not_requeued_automatically(self):
+        # Issue #618: cancelling a manual upload must not hand the same files
+        # to automatic protection; they come back only when their content changes.
+        self.write(2, "manual/a.jpg")
+        self.write(2, "single/b.jpg")
+        first, _ = self.queue_manual("manual/a.jpg")
+        _, group = self.queue_manual("single/b.jpg")
+        self.assertEqual(self.cancel("manual").json()["cancelled_count"], 1)
+        response = self.client.post("/api/upload/cancel", json={"group_id": group},
+                                    params={"vault_id": 2}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual({row["path"]: (row["origin"], row["status"]) for row in self.jobs(2)
+                          if row["path"] in {"manual/a.jpg", "single/b.jpg"}},
+                         {"manual/a.jpg": ("manual", "cancelled"),
+                          "single/b.jpg": ("manual", "cancelled")})
+        self.advance(300)
+        self.assertEqual(self.queue(2), 0)
+        self.advance(10)
+        self.write(2, "manual/a.jpg", b"changed content")
+        self.advance(300)
+        self.assertEqual(self.queue(2), 1)
+        requeued = [row for row in self.jobs(2) if row["status"] == "queued"
+                    and row["path"] == "manual/a.jpg"]
+        self.assertEqual([row["origin"] for row in requeued], ["automatic"])
+        self.assertNotEqual(requeued[0]["id"], first)
+
+    def test_manual_uploads_closed_without_an_owner_cancel_do_not_hold_automatic_admission(self):
+        self.write(2, "manual/failed.jpg")
+        self.write(2, "manual/removed.jpg")
+        failed, _ = self.queue_manual("manual/failed.jpg")
+        removed, _ = self.queue_manual("manual/removed.jpg")
+        with self.db() as connection:
+            connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (failed,))
+            connection.execute(
+                "UPDATE jobs SET status='cancelled', message_key='job.upload_file_removed' "
+                "WHERE id=%s", (removed,))
+        self.advance(300)
+        self.assertEqual(self.queue(2), 2)
+
     def test_folder_scope_matches_the_folder_and_its_children_only(self):
         self.write(2, "foo/x.jpg")
         self.write(2, "foobar/y.jpg")

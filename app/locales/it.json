@@ -22,7 +22,7 @@
   "activity.current_work": "Lavoro osservato attualmente, non percentuale di completamento di un lotto. I file conclusi escono dai totali. I tempi dipendono da contenuti invariati; velocità e stima di completamento affidabili non sono disponibili.",
   "activity.unavailable": "Impossibile aggiornare l’attività. Gli eventuali conteggi mostrati risalgono all’ultima osservazione riuscita.",
   "activity.cancel_pending": "Annulla i caricamenti in sospeso di questo Vault",
-  "activity.cancel_pending_confirm": "Annullare i caricamenti non iniziati e interrompere la preparazione di nuovi caricamenti per questo Vault? I caricamenti in corso e gli invii ambigui mantengono i propri controlli. Le copie locali e cloud restano intatte.",
+  "activity.cancel_pending_confirm": "Annullare i caricamenti non iniziati e interrompere la preparazione di nuovi caricamenti per questo Vault? I caricamenti in corso e gli invii ambigui mantengono i propri controlli. Le copie locali e cloud restano intatte. Il caricamento automatico salta i file annullati finché non cambiano.",
   "activity.cancel_pending_done": "{count} caricamenti annullati",
   "move.title": "Sposta ora tutto il Vault",
   "move.help": "Si spostano solo le copie correnti verificate verso una classe più fredda del piano salvato. I file già uguali o più freddi e quelli con lavori in corso vengono saltati. Le sorgenti Glacier richiedono il ripristino esplicito della versione esatta: questa azione non richiede ripristini e non scalda contenuti.",

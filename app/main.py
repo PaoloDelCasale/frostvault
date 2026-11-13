@@ -2885,8 +2885,9 @@ def cancel_pending_uploads(
     Only uploads that never started are cancelled: running or verifying ones,
     reconcile-only attempts, jobs with a started or recorded send and jobs of a
     remediation episode are left to their own cancel and Resume, so an ambiguous
-    send is never closed for good by a bulk action. A cancelled automatic upload
-    is not re-queued until the file's content changes, like a single cancel.
+    send is never closed for good by a bulk action. A cancelled upload, manual or
+    automatic, is not re-queued automatically until the file's content changes,
+    like a single cancel (#618).
     """
     folder = normalize_directory(action.path, api=True)
     from .services import bulk_upload_admission

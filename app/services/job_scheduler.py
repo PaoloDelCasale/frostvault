@@ -1,4 +1,4 @@
-"""Deterministic, fair selection of runnable Vault turns (ADR-0026)."""
+"""Deterministic, fair selection of runnable Vault turns (ADR-0026, ADR-0037)."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -13,10 +13,11 @@ AGING_SECONDS = 900.0
 
 
 def job_priority(job: Mapping[str, Any]) -> int:
-    """Base tier: Owner operations, Owner uploads, then automatic work.
+    """Base tier *inside a Vault*: Owner operations, Owner uploads, then automatic work.
 
     Bulk manual uploads remain manual. Aging never changes this order inside
-    a Vault, nor the durable origin of a Job.
+    a Vault, nor the durable origin of a Job. Across Vaults see
+    :func:`cross_vault_tier` (ADR-0037).
     """
     if job.get("origin") == "automatic":
         return AUTOMATIC_PRIORITY
@@ -35,6 +36,30 @@ def effective_priority(job: Mapping[str, Any], now: datetime | None = None) -> i
     return max(USER_OPERATION_PRIORITY, job_priority(job) - int(waited // AGING_SECONDS))
 
 
+def cross_vault_tier(job: Mapping[str, Any]) -> int:
+    """Tier at which a Vault's turn competes with other Vaults (ADR-0037).
+
+    Owner operations still come first; uploads the Owner asked for and work
+    admitted automatically share one tier, so a manual backlog in one Vault
+    never holds another Vault's automatic protection back.
+    """
+    return min(job_priority(job), MANUAL_UPLOAD_PRIORITY)
+
+
+def effective_cross_vault_tier(job: Mapping[str, Any]) -> int:
+    """Cross-Vault tier after aging: only the aged-turn exception reaches tier 0.
+
+    A manual turn reaches the Owner-operation tier after one aging interval,
+    an automatic one after two, exactly as before ADR-0037.
+    """
+    return min(effective_priority(job), MANUAL_UPLOAD_PRIORITY)
+
+
+def turn_is_aged(job: Mapping[str, Any]) -> bool:
+    """True when banked credit lets this turn outrank its cross-Vault tier."""
+    return effective_cross_vault_tier(job) < cross_vault_tier(job)
+
+
 def select_fair_jobs(
     jobs: Sequence[Mapping[str, Any]],
     *,
@@ -44,7 +69,8 @@ def select_fair_jobs(
 ) -> list[Mapping[str, Any]]:
     """Select turns, preserving base-tier/oldest-first order inside each Vault.
 
-    Equal-tier turns prefer fewer live leases, then the longest-unserved turn
+    Across Vaults turns compete at their cross-Vault tier (ADR-0037): Owner
+    operations, then every upload and automatic work together. Equal-tier turns prefer fewer live leases, then the longest-unserved turn
     (including concurrency 1, where every active count can be zero). A turn's
     credit is spent by its first nomination in this pass; later backlog entries
     compete at their base tier. Only the catalog's successful conditional claim
@@ -61,7 +87,8 @@ def select_fair_jobs(
     def vault_key(vault_id: Any) -> tuple:
         head = by_vault[vault_id][position[vault_id]]
         waited = float(head.get("scheduler_wait_seconds") or 0) if position[vault_id] == 0 else 0.0
-        tier = effective_priority(head) if position[vault_id] == 0 else job_priority(head)
+        tier = (effective_cross_vault_tier(head) if position[vault_id] == 0
+                else cross_vault_tier(head))
         return (
             tier,
             int(active.get(vault_id, 0)),
