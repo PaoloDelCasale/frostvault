@@ -7,6 +7,7 @@ Seams under test:
 """
 from __future__ import annotations
 
+from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
@@ -21,7 +22,6 @@ from fastapi.testclient import TestClient
 from app import main
 from app.config import settings
 
-from app.security import hash_password
 from app.services import metadata_backups
 from app.sessions import create_session, csrf_token_for
 from tests.test_database import run_alembic
@@ -43,13 +43,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
 
         self.master_key = Fernet.generate_key().decode("ascii")
         with PostgresConnection(str(self.database_path)) as connection:
-            self.admin_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('admin', 'Admin', %s) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Admin", password=self.PASSWORD)
 
         self.test_settings = replace(
             settings,
@@ -84,13 +78,13 @@ class MetadataBackupHttpTests(unittest.TestCase):
             app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
         )
 
-    def _authenticate(self, user_id: int, *, reauth: bool = True) -> None:
+    def _authenticate(self, *, reauth: bool = True) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
+            raw_token = create_session(connection, auth_method="oidc")
             if reauth:
                 connection.execute(
-                    "UPDATE sessions SET reauth_at=%s WHERE user_id=%s",
-                    ("2099-01-01T00:00:00+00:00", user_id),
+                    "UPDATE sessions SET reauth_at=%s",
+                    ("2099-01-01T00:00:00+00:00",),
                 )
             csrf_token = csrf_token_for(connection, raw_token)
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
@@ -102,7 +96,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
         self.assertEqual(listed.status_code, 401, listed.text)
 
     def test_owner_can_run_list_and_download_backup(self) -> None:
-        self._authenticate(self.admin_id)
+        self._authenticate()
         ran = self.client.post(
             "/api/general/metadata-backups/run",
             json={"reason": "operator requested backup"},

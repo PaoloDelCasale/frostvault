@@ -9,6 +9,7 @@ uptime instead of to when the task really last ran.
 
 from __future__ import annotations
 
+from tests.owner_fixtures import insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 
 import math
@@ -117,10 +118,7 @@ class PersistedAgesTests(unittest.TestCase):
     def test_ages_come_from_durable_records_and_the_scan_is_always_due(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
-                connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",
-                    (vault_id, f"v{vault_id}", f"V{vault_id}"),
-                )
+                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(
@@ -139,7 +137,7 @@ class PersistedAgesTests(unittest.TestCase):
                 INSERT INTO metadata_backup_runs(
                     created_at, finished_at, reason, backend, status, verified_at
                 ) VALUES
-                    (%s, %s, 'pre_upgrade', 'postgresql', 'succeeded', NULL),
+                    (%s, %s, 'manual', 'postgresql', 'succeeded', NULL),
                     (%s, %s, 'scheduled', 'postgresql', 'verified', %s)
                 """,
                 (
@@ -155,17 +153,14 @@ class PersistedAgesTests(unittest.TestCase):
         self.assertIsNone(ages["scan"])
         # The Vault audited longest ago drives the next audit pass.
         self.assertEqual(ages["audit"], 3 * 24 * 60 * 60)
-        # A pre-upgrade backup does not count as the scheduled one.
+        # A manual backup does not count as the scheduled one.
         self.assertEqual(ages["backup"], 20 * 60 * 60)
         self.assertEqual(ages["backup_verify"], 6 * 60 * 60)
 
     def test_one_vault_without_an_audit_record_makes_the_audit_due(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             for vault_id in (1, 2):
-                connection.execute(
-                    "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (%s, %s, %s, '/source', 'bucket', 'p')",
-                    (vault_id, f"v{vault_id}", f"V{vault_id}"),
-                )
+                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(

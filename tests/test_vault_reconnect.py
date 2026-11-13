@@ -276,14 +276,16 @@ class VaultReconnectTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE vault_id=7").fetchone()["n"], 0)
         self.assertEqual(self.row()["lifecycle"], "reconnect_required")
 
-    @unittest.skip("Metadata restore and Recovery Kit move to the rebuilt model in #598")
     def test_manual_restore_invalidates_local_authority_and_stale_jobs(self):
         from app.storage import scan_vault
         with PostgresConnection(str(self.db_path)) as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
-            connection.execute("INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at) VALUES (7,%s,'a','recover','queued','now','now')", (file_id,))
+            connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'recover','queued')", (file_id,))
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
-            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone()["status"], "cancelled")
+            job = connection.execute("SELECT status, finished_at FROM jobs").fetchone()
+            self.assertEqual(job["status"], "cancelled")
+            self.assertIsNotNone(job["finished_at"])
+        self.assertEqual(self.row()["lifecycle"], "reconnect_required")
         self.assertEqual(vault_relocation.reconcile_vault_root_identities(), 0)
         with patch("app.storage.scan_cloud") as cloud, patch("app.storage.scan_tree") as tree:
             result = scan_vault(self.row())
@@ -292,32 +294,58 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertIsNone(self.row()["root_identity"])
         self.reconnect()  # No stale Job can strand reconnect indefinitely.
 
-    @unittest.skip("Metadata restore and Recovery Kit move to the rebuilt model in #598")
+    def test_manual_restore_withdraws_deletion_consent_without_starving_later_uploads(self):
+        with PostgresConnection(str(self.db_path)) as connection:
+            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (7) RETURNING id").fetchone()["id"]
+            connection.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'no longer needed')", (group,))
+            connection.execute("""INSERT INTO jobs(vault_id,file_id,group_id,action,status,run_after)
+                VALUES (7,%s,%s,'cloud-purge','pending_delay', now() + interval '7 days')""", (file_id, group))
+            connection.execute("UPDATE vaults SET paused=true WHERE id=7")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+            purge = connection.execute("SELECT status, message FROM jobs WHERE action='cloud-purge'").fetchone()
+            self.assertEqual(purge["status"], "cancelled")
+            self.assertIn("Metadata restored", purge["message"])
+            # The withdrawn consent leaves no active work holding the file.
+            connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'upload','queued')", (file_id,))
+            vault = connection.execute("SELECT lifecycle, paused FROM vaults WHERE id=7").fetchone()
+        self.assertEqual((vault["lifecycle"], vault["paused"]), ("reconnect_required", True))
+
+    def test_manual_restore_keeps_a_stopping_vault_stopped(self):
+        with PostgresConnection(str(self.db_path)) as connection:
+            connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=7")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_vaults").fetchone()["n"], 0)
+        self.assertEqual(self.row()["lifecycle"], "stopping")
+
     def test_stale_catalog_reconnect_protected_cloud_only_conflict_no_cloud_deletes(self):
         # A is the restored catalog; only B remains remotely after a verified
         # replacement. Even identical local size/mtime cannot retain A's digest.
         content = {"same.jpg": b"new!", "missing.jpg": b"only", "conflict.jpg": b"safe"}
         (self.new / "same.jpg").write_bytes(content["same.jpg"])
         (self.new / "conflict.jpg").write_bytes(b"oops")
+        old_digest = hashlib.sha256(b"old!").digest()
         with PostgresConnection(str(self.db_path)) as connection:
-            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
             catalog = ArchiveCatalog(connection)
             for path in content:
-                version = catalog.record_archive_version(vault_id=7, path=path, object_key="vaults/11111111-1111-1111-1111-111111111111/" + path,
-                    provider_version_id="old-" + path, size=4, storage_class="STANDARD", etag="old", uploaded_at="2026-11-01T10:00:00+00:00",
-                    observed_at="2026-11-01T10:00:00+00:00", scan_id="old")
-                catalog.mark_version_verified(version, plaintext_sha256=hashlib.sha256(b"old!").hexdigest(), verified_at="2026-11-01T10:00:00+00:00")
                 local = self.new / path
                 stat = local.stat() if local.exists() else SimpleNamespace(st_size=4, st_mtime_ns=1)
-                catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=stat.st_size,
-                                           mtime_ns=stat.st_mtime_ns, observed_at="2026-11-01T10:00:00+00:00")
-                catalog.set_local_fingerprint(vault_id=7, path=path, plaintext_sha256=hashlib.sha256(b"old!").hexdigest(), matched_archive_version_id=version)
+                file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=stat.st_size,
+                                                     mtime_ns=stat.st_mtime_ns, observed_at="2026-11-01T10:00:00+00:00")
+                version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/" + path,
+                    provider_version_id="old-" + path, size=4, storage_class="STANDARD", created_at="2026-11-01T10:00:00+00:00")
+                catalog.promote_replacement(file_id, archive_version_id=version, plaintext_sha256=old_digest,
+                                            verified_at="2026-11-01T10:00:00+00:00")
+                connection.execute("UPDATE files SET local_sha256=%s, matched_version_id=current_version_id WHERE id=%s",
+                                   (old_digest, file_id))
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3(content)
         reconnected = self.reconnect()
         result = self.scan(reconnected, s3)
         self.assertEqual(result["local"], 2, result)
         self.assertEqual(s3.deleted, [])
         self.assertEqual(len(s3.reads), 3)
+        self.assertTrue(all(read["VersionId"] == "new-" + read["Key"].rsplit("/", 1)[1] for read in s3.reads))
         with PostgresConnection(str(self.db_path)) as connection:
             rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
             self.assertEqual(rows["same.jpg"]["state"], "protected")
@@ -327,12 +355,49 @@ class VaultReconnectTests(unittest.TestCase):
             notice = kit_status(connection)["metadata_restore"]
             self.assertEqual(notice["backup_created_at"], "2026-11-02T10:00:00+00:00")
             self.assertEqual(notice["updated_files"], 3)
-            versions = connection.execute("SELECT availability FROM archive_versions WHERE provider_version_id LIKE 'new-%'").fetchall()
-            self.assertTrue(all(v["availability"] == "available" for v in versions))
-        self.assertEqual(self.row()["relocation_state"], "ready")
+            current = connection.execute(
+                "SELECT av.provider_version_id, av.availability, av.integrity, av.verification_method "
+                "FROM files f JOIN archive_versions av ON av.id=f.current_version_id WHERE f.vault_id=7").fetchall()
+            self.assertEqual(sorted(v["provider_version_id"] for v in current), ["new-conflict.jpg", "new-missing.jpg", "new-same.jpg"])
+            self.assertTrue(all((v["availability"], v["integrity"], v["verification_method"]) == ("available", "verified", "read_back") for v in current))
+            # The restored versions were not deleted: they stay as superseded rows.
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions WHERE provider_version_id LIKE 'old-%'").fetchone()["n"], 3)
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_vaults").fetchone()["n"], 0)
+        self.assertEqual(self.row()["lifecycle"], "active")
         self.scan(s3=s3)
         with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 3)
+
+    def test_restore_reconciliation_never_imports_unknown_paths_or_cold_versions(self):
+        content = {"known.jpg": b"new!", "unknown.jpg": b"else"}
+        with PostgresConnection(str(self.db_path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            file_id = catalog.observe_local_copy(vault_id=7, path="known.jpg", file_type="regular", size=4,
+                                                 mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
+            version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/known.jpg",
+                provider_version_id="old-known.jpg", size=4, storage_class="STANDARD")
+            catalog.promote_replacement(file_id, archive_version_id=version,
+                                        plaintext_sha256=hashlib.sha256(b"old!").digest(), verified_at="2026-11-01T10:00:00+00:00")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3(content)
+        cold = s3.get_paginator
+        def glacier(_name):
+            pages = list(cold(_name).paginate())
+            for item in pages[0]["Versions"]:
+                item["StorageClass"] = "DEEP_ARCHIVE"
+            return SimpleNamespace(paginate=lambda **kwargs: iter(pages))
+        s3.get_paginator = glacier
+        result = self.scan(self.reconnect(), s3)
+        self.assertEqual(result["reconnect_suspended"], 1)
+        self.assertEqual(s3.reads, [])
+        self.assertEqual(self.row()["lifecycle"], "reconnect_required")
+        s3.get_paginator = cold
+        self.scan(s3=s3)
+        self.assertEqual([read["Key"].rsplit("/", 1)[1] for read in s3.reads], ["known.jpg"])
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual([r["path"] for r in connection.execute("SELECT path FROM files WHERE vault_id=7")], ["known.jpg"])
+            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
+        self.assertEqual(self.row()["lifecycle"], "active")
 
 
 if __name__ == "__main__": unittest.main()

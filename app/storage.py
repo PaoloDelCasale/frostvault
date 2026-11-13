@@ -1004,6 +1004,7 @@ def scan_cloud(
     prefix = vault_prefix(vault["uuid"])
     kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": prefix}
     listed: list[tuple[str, str, str]] = []
+    latest: dict[str, dict[str, Any]] = {}
     markers = 0
     invalid_keys = False
     for page in paginator.paginate(**kwargs):
@@ -1019,7 +1020,12 @@ def scan_cloud(
                 object_key, str(item["VersionId"]),
                 str(item.get("StorageClass") or "STANDARD"),
             ))
+            if reconnect:
+                _note_latest_listed_version(latest, item)
         markers += len(page.get("DeleteMarkers", []))
+        if reconnect:
+            for marker in page.get("DeleteMarkers", []):
+                _note_latest_listed_version(latest, {**marker, "_delete_marker": True})
     if reconnect and invalid_keys:
         raise RuntimeError("Cloud listing is ambiguous; reconnect remains suspended")
 
@@ -1080,8 +1086,133 @@ def scan_cloud(
                 observed_at=scan_id,
             )
     if reconnect:
+        _reconcile_restored_cloud(vault, scan_id, latest, prefix=prefix)
         _verify_reconnected_cloud(vault, scan_id)
     return count
+
+
+def _note_latest_listed_version(latest: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
+    """Keep the newest listed entry per key (``IsLatest``, else LastModified)."""
+    key = str(item["Key"])
+    seen = latest.get(key)
+    if item.get("IsLatest") is True:
+        latest[key] = item
+        return
+    if seen is not None and seen.get("IsLatest") is True:
+        return
+    if seen is None or (
+        item.get("LastModified") is not None
+        and (seen.get("LastModified") is None or item["LastModified"] > seen["LastModified"])
+    ):
+        latest[key] = item
+
+
+def _reconcile_restored_cloud(
+    vault: dict[str, Any], scan_id: str, latest: dict[str, dict[str, Any]], *, prefix: str,
+) -> int:
+    """First Reconnect after a manual metadata restore: catch up the cloud.
+
+    The restored catalog predates the backup; a catalogued file may have been
+    replaced in the cloud afterwards (its old Current possibly already
+    cleaned up). Only for a Vault queued by ``record_metadata_restore``, and
+    only for a key of a file the catalog already knows, the newest listed
+    version that the catalog does not know becomes the file's replacement in
+    progress and then Current after its exact VersionId has been read and
+    hashed (read-back proof). Nothing is deleted, no unknown path is imported,
+    and a cold or unreadable version leaves the reconnect suspended.
+    """
+    from .services import recovery_kit
+
+    vault_id = int(vault["id"])
+    with db() as connection:
+        if not recovery_kit.restore_reconciliation_pending(connection, vault_id):
+            return 0
+        rows = connection.execute(
+            """
+            SELECT f.id, f.path, f.replacing_version_id
+            FROM files f WHERE f.vault_id=%s AND f.cloud_since IS NOT NULL
+            """,
+            (vault_id,),
+        ).fetchall()
+        known = {
+            (str(row["object_key"]), str(row["provider_version_id"]))
+            for row in connection.execute(
+                """
+                SELECT av.object_key, av.provider_version_id
+                FROM archive_versions av JOIN files f ON f.id = av.file_id
+                WHERE f.vault_id=%s AND av.provider_version_id IS NOT NULL
+                """,
+                (vault_id,),
+            ).fetchall()
+        }
+    files = {str(row["path"]): row for row in rows}
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for object_key, item in latest.items():
+        if item.get("_delete_marker"):
+            continue
+        path = object_key_to_path(object_key, prefix)
+        row = files.get(path) if path is not None else None
+        if row is None or (object_key, str(item["VersionId"])) in known:
+            continue
+        candidates.append((row, item))
+    client = s3_client() if candidates else None
+    reconciled = 0
+    for row, item in candidates:
+        if not _cloud_scan_still_current(vault, scan_id):
+            raise RuntimeError("Reconnect scan superseded")
+        storage_class = str(item.get("StorageClass") or "STANDARD")
+        if storage_class in {"GLACIER", "DEEP_ARCHIVE"}:
+            # Reading needs a cloud restore first; Current stays unlocated
+            # and the reconnect suspended, never elected without a proof.
+            continue
+        file_id = str(row["id"])
+        version_id = str(item["VersionId"])
+        size = int(item.get("Size") or 0)
+        with db() as connection:
+            catalog = ArchiveCatalog(connection)
+            if row["replacing_version_id"] is not None:
+                catalog.abandon_replacement(
+                    file_id, archive_version_id=str(row["replacing_version_id"]),
+                )
+            archive_version_id = catalog.begin_replacement(
+                file_id, object_key=str(item["Key"]), provider_version_id=version_id,
+                size=size, storage_class=storage_class,
+            )
+            catalog.record_verification_evidence(
+                archive_version_id, method="read_back", fallback=None, egress_bytes=size,
+            )
+        digest = hashlib.sha256()
+        read = 0
+        response = client.get_object(
+            Bucket=vault["s3_bucket"], Key=str(item["Key"]), VersionId=version_id,
+        )
+        if str(response.get("VersionId") or version_id) != version_id:
+            raise RuntimeError("S3 returned another version; reconnect remains suspended")
+        body = response["Body"]
+        try:
+            for chunk in iter(lambda: body.read(1024 * 1024), b""):
+                digest.update(chunk)
+                read += len(chunk)
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+        with db() as connection:
+            catalog = ArchiveCatalog(connection)
+            if read != size:
+                catalog.abandon_replacement(
+                    file_id, archive_version_id=archive_version_id,
+                    mismatch=True, checked_at=now_iso(),
+                )
+                raise RuntimeError("Cloud version size differs from its listing")
+            catalog.promote_replacement(
+                file_id, archive_version_id=archive_version_id,
+                plaintext_sha256=digest.digest(), verified_at=now_iso(),
+            )
+            catalog.mark_archive_versions_listed([archive_version_id], scan_id=scan_id)
+            recovery_kit.remember_cloud_update(connection, file_id)
+        reconciled += 1
+    return reconciled
 
 
 def _verify_reconnected_cloud(vault: dict[str, Any], scan_id: str) -> None:

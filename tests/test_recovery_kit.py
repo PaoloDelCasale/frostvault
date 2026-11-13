@@ -73,19 +73,22 @@ class RecoveryKitTests(unittest.TestCase):
         self.assertNotEqual(_watch_root_signature(before), _watch_root_signature({**before, "root_identity": "inode-b"}))
         self.assertNotEqual(_watch_root_signature(before), _watch_root_signature({**before, "reconnect_volume_fingerprint": "mount-b"}))
 
-    def test_manual_restore_retires_deletion_items_before_cancelling_jobs(self):
+    def test_manual_restore_cancels_every_open_job_after_suspending_vaults(self):
         connection = Mock()
-        # The schema guard itself is covered on PostgreSQL by tests.test_database.
+        # The schema guard itself is covered on PostgreSQL by tests.test_database;
+        # the behaviour on the rebuilt schema by tests.test_vault_reconnect.
         with patch.object(recovery_kit, "require_current_schema"):
             recovery_kit.record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         statements = [" ".join(call.args[0].split()) for call in connection.execute.call_args_list]
-        items = [sql for sql in statements if sql.startswith("UPDATE cloud_deletion_items")]
-        self.assertEqual(len(items), 1, "Cancelled restore Jobs must not leave pending deletion consent")
-        self.assertIn("status='skipped'", items[0])
-        self.assertIn("status IN ('pending','failed')", items[0])
-        self.assertIn("action='cloud-purge'", items[0])
-        self.assertIn("status<>'completed'", items[0])
-        self.assertLess(statements.index(items[0]), next(i for i, sql in enumerate(statements) if sql.startswith("UPDATE jobs")))
+        vaults = next(i for i, sql in enumerate(statements) if sql.startswith("UPDATE vaults"))
+        jobs = [sql for sql in statements if sql.startswith("UPDATE jobs")]
+        self.assertEqual(len(jobs), 1)
+        # Every nonterminal Job, including a pending cloud-purge consent.
+        self.assertIn("status='cancelled'", jobs[0])
+        self.assertIn("WHERE status NOT IN ('completed','failed','cancelled')", jobs[0])
+        self.assertIn("lifecycle='reconnect_required'", statements[vaults])
+        self.assertLess(vaults, statements.index(jobs[0]))
+        self.assertFalse(any("cloud_deletion_items" in sql for sql in statements))
 
     def test_manual_restore_rejects_an_undated_manifest_before_mutating(self):
         connection = Mock()

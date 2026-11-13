@@ -94,19 +94,22 @@ with db() as connection:
     record_metadata_restore(connection, json.loads(Path('restore-manifest.json').read_text())['created_at'])
 PY
    Registration invalidates active Vault local/mount observations and cancels
-   stale nonterminal Jobs without touching local/S3 bytes. Unfinished deletion
-   targets are retired; completed deletion evidence is retained. Request wanted
-   work again after reconnect; stopped folders remain stopped.
+   stale nonterminal Jobs without touching local/S3 bytes. Pending Delayed
+   Cloud Deletions are withdrawn; completed cleanup evidence is retained.
+   Request wanted work again after reconnect; stopped folders remain stopped.
 6. Configure AWS, OIDC_* and BOOTSTRAP_ADMIN_* securely. The Emergency Password
    is accepted only from loopback/allowed LAN. Start FrostVault, then explicitly
    Reconnect folder for EACH Vault, selecting the new Source Volume and directory.
    S3 is reconciled first without deleting cloud copies; a mandatory full local
    scan rehashes everything. Matching files become Protected, absent files
    Cloud-only, different files Cloud-only Conflicts (no automatic replacement).
-   Failed/incomplete scans stay suspended and retryable. Newly discovered cloud
-   versions need exact-version content verification; cold objects may first need
-   the restore request below. Review the durable backup-date/updated-files warning.
-   No in-app cloud-only catalog reconstruction exists.
+   Failed/incomplete scans stay suspended and retryable. A newer cloud version
+   of a catalogued file (uploaded after the backup) becomes Current only after
+   its exact VersionId is read and hashed; a cold one first needs the restore
+   request below, and the reconnect stays suspended until then. Objects at
+   paths the restored catalog does not know are never imported or deleted.
+   Review the durable backup-date/updated-files warning. No in-app cloud-only
+   catalog reconstruction exists.
 
 EMERGENCY ROUTE: files only, no usable metadata backup
 The objects are original bytes with readable names under vaults/<uuid>/path.
@@ -152,19 +155,27 @@ def build_recovery_kit(config: Any = None) -> bytes:
     }, ensure_ascii=False, indent=2).encode("utf-8")
 
 
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
+
 def kit_status(connection: Any, config: Any = None) -> dict[str, Any]:
     try:
         fingerprint = kit_fingerprint(config)
     except RecoveryKitUnavailable:
         fingerprint = None
     custody = connection.execute("SELECT * FROM recovery_kit_custody WHERE id=1").fetchone()
-    restore = connection.execute("SELECT * FROM metadata_restore_state WHERE id=1").fetchone()
+    restore = connection.execute("SELECT * FROM metadata_restore WHERE id=1").fetchone()
     count = connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_updates").fetchone()["n"]
     acknowledged = bool(fingerprint and custody and custody["fingerprint"] == fingerprint)
     return {"configured": fingerprint is not None, "fingerprint": fingerprint,
             "custody_acknowledged": acknowledged,
-            "acknowledged_at": custody["acknowledged_at"] if acknowledged else None,
-            "metadata_restore": {"backup_created_at": restore["backup_created_at"],
+            "acknowledged_at": _iso(custody["acknowledged_at"]) if acknowledged else None,
+            "metadata_restore": {"backup_created_at": _iso(restore["backup_created_at"]),
                                  "updated_files": int(count)} if restore else None}
 
 
@@ -178,48 +189,72 @@ def acknowledge_custody(connection: Any, fingerprint: str, config: Any = None) -
         """, (fingerprint, now_iso()))
 
 
+RESTORE_CANCEL_MESSAGE = "Metadata restored; request this operation again after reconnect"
+
+
 def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
     """Manual restore seam; invoke only against the restored isolated database.
 
     The schema guard runs first: a restored catalog that is not at this
     release's revision is refused before any write (ADR-0035).
+
+    The app must be stopped. Old Jobs and local inode/mtime evidence cannot
+    acquire authority on a replacement server, even if pathnames still match:
+
+    - every allocated, not stopping Vault enters ``reconnect_required`` with
+      no accepted root identity, and is queued for the cloud reconciliation
+      of its first Reconnect;
+    - every nonterminal Job is cancelled. Cancelling a ``cloud-purge`` Job
+      withdraws its deletion consent: no deletion survives the restore. A
+      stopping Vault stays stopping; its purge must be requested again;
+    - nothing touches local files or S3. Completed cleanup and deletion
+      evidence (rows already removed with their proof) stays as it is.
     """
     stamp = datetime.fromisoformat(backup_created_at)
     if stamp.tzinfo is None:
         raise ValueError("Backup date must include its timezone")
     require_current_schema(connection)
-    # The app must be stopped. Old Jobs and local inode/mtime evidence cannot
-    # acquire authority on a replacement server, even if pathnames still match.
+    recorded = now_iso()
     connection.execute("""
-        UPDATE vaults SET relocation_state='scan_required', root_identity=NULL,
-            reconnect_volume_fingerprint=NULL
-        WHERE decommission_state='active' AND root_released_at IS NULL
+        UPDATE vaults SET lifecycle='reconnect_required', root_identity=NULL,
+            root_identity_version=NULL, reconnect_volume_fingerprint=NULL
+        WHERE lifecycle IN ('active','reconnect_required')
         """)
-    # Revoked Jobs must not leave item-level consent blocking uploads after
-    # reconnect. Retire unfinished targets, including abandoned terminal Jobs,
-    # before cancelling Jobs; retain deleted evidence and never contact S3.
+    connection.execute("DELETE FROM metadata_restore_vaults")
     connection.execute("""
-        UPDATE cloud_deletion_items SET status='skipped', updated_at=%s
-        WHERE status IN ('pending','failed') AND job_id IN (
-            SELECT id FROM jobs WHERE action='cloud-purge' AND status<>'completed')
-        """, (now_iso(),))
+        INSERT INTO metadata_restore_vaults(vault_id)
+        SELECT id FROM vaults WHERE lifecycle='reconnect_required'
+        """)
     connection.execute("""
-        UPDATE jobs SET status='cancelled', updated_at=%s,
-            message='Metadata restored; request this operation again after reconnect',
-            message_key=NULL, message_params=NULL
+        UPDATE jobs SET status='cancelled', updated_at=%s, finished_at=%s,
+            message=%s, message_key=NULL, message_params=NULL
         WHERE status NOT IN ('completed','failed','cancelled')
-        """, (now_iso(),))
+        """, (recorded, recorded, RESTORE_CANCEL_MESSAGE))
     connection.execute("DELETE FROM metadata_restore_updates")
     connection.execute("""
-        INSERT INTO metadata_restore_state(id, backup_created_at, recorded_at) VALUES (1,%s,%s)
+        INSERT INTO metadata_restore(id, backup_created_at, recorded_at) VALUES (1,%s,%s)
         ON CONFLICT(id) DO UPDATE SET backup_created_at=excluded.backup_created_at,
             recorded_at=excluded.recorded_at
-        """, (stamp.astimezone(timezone.utc).isoformat(), now_iso()))
+        """, (stamp.astimezone(timezone.utc).isoformat(), recorded))
 
 
-def remember_cloud_update(connection: Any, vault_file_id: str) -> None:
+def restore_reconciliation_pending(connection: Any, vault_id: int) -> bool:
+    """Whether this Vault's Reconnect still reconciles a metadata restore."""
+    return connection.execute(
+        "SELECT 1 FROM metadata_restore_vaults WHERE vault_id=%s", (int(vault_id),),
+    ).fetchone() is not None
+
+
+def finish_restore_reconciliation(connection: Any, vault_id: int) -> None:
+    connection.execute(
+        "DELETE FROM metadata_restore_vaults WHERE vault_id=%s", (int(vault_id),),
+    )
+
+
+def remember_cloud_update(connection: Any, file_id: str) -> None:
+    """Count a Vault File found updated in the cloud after the restored backup."""
     connection.execute("""
-        INSERT INTO metadata_restore_updates(vault_file_id, observed_at)
-        SELECT %s,%s WHERE EXISTS (SELECT 1 FROM metadata_restore_state WHERE id=1)
-        ON CONFLICT(vault_file_id) DO NOTHING
-        """, (vault_file_id, now_iso()))
+        INSERT INTO metadata_restore_updates(file_id, observed_at)
+        SELECT %s,%s WHERE EXISTS (SELECT 1 FROM metadata_restore WHERE id=1)
+        ON CONFLICT(file_id) DO NOTHING
+        """, (file_id, now_iso()))
