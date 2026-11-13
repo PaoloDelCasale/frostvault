@@ -28,7 +28,12 @@ Authority is a frozen batch (``cleanup_batches`` / ``cleanup_candidates``):
 
 Without superseded versions and without ``keeper_id`` nothing is done. With a
 keeper the postcondition is still checked: an unknown object at the keeper's
-key blocks completion.
+key blocks completion. With nothing to delete that check is one complete
+listing of the keeper's key (#622).
+
+No provider request here runs while an upload catalog permit is held: every
+DB unit is entered and left around the listings and DELETEs, never across
+them, so S3 latency never occupies a Vault's catalog slot (#622).
 """
 from __future__ import annotations
 
@@ -134,6 +139,32 @@ def _require_known(observed: dict[str, dict[str, list[str]]], allowed: set[tuple
             raise UploadBlocked("inventory_changed")
 
 
+def _require_sole(observed: dict[str, list[str]], keeper_version: str) -> None:
+    """The postcondition: the keeper is the only version at its key, no marker."""
+    if observed["markers"]:
+        raise UploadBlocked("markers_present")
+    if keeper_version not in observed["versions"]:
+        raise UploadBlocked("keeper_missing")
+    if observed["versions"] != [keeper_version]:
+        raise UploadBlocked("inventory_changed")
+
+
+def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any], *,
+                        client: Any, bucket: str) -> None:
+    """Check the postcondition of a keeper that superseded nothing (#622).
+
+    The publication unit that made ``keeper`` Current found no other version
+    of the file and no open batch, so there is nothing to freeze or delete:
+    one complete listing of the keeper's key must show the keeper alone. An
+    unknown object there (an external writer, a send of another file that may
+    have landed) still blocks completion, as in ``cleanup``.
+    """
+    if keeper["object_key"] != worker._upload_key(job):
+        raise UploadBlocked("identity_changed")
+    _require_sole(provenance.inventory(client, bucket, keeper["object_key"]),
+                  keeper["provider_version_id"])
+
+
 def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any) -> None:
     """Delete exactly what ``keeper_id`` superseded, then remove the rows with the proof.
 
@@ -194,6 +225,11 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
     allowed = set(candidates) | {keep}
     keys = {keep[0]} | {object_key for object_key, _ in candidates}
     bucket = pinned["bucket"]
+    if not candidates and batch is None:
+        # Nothing to freeze or delete: the first and the final listing would
+        # be the same check back to back. One listing is the postcondition.
+        _require_sole(provenance.inventory(client, bucket, keep[0]), keep[1])
+        return
     observed = _listing(client, bucket, keys)
     _require_known(observed, allowed, keep)
 

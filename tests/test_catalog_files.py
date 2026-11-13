@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import psycopg
 
@@ -408,6 +409,30 @@ class ExplicitStateTests(_Fixture):
         protect(self.catalog, 2, "a.txt", DIGEST_A)
         # Becoming protected ends the pending state in the same write.
         self.assertIsNone(self.file("a.txt")["pending_since"])
+
+    def test_unchanged_pending_timers_are_never_rewritten(self) -> None:
+        """A long queue costs no write per call (#622): only starts and ends."""
+        first = self.observe("a.txt")
+        second = self.observe("b.txt")
+        self.catalog.record_pending_files(2, {first: T0, second: T0})
+        self.connection.commit()
+        before = self.connection.execute(
+            "SELECT id, xmin::text AS xmin FROM files WHERE vault_id=2 ORDER BY id").fetchall()
+        statements = []
+        execute = psycopg.Connection.execute
+
+        def counting(connection, sql, *args, **kwargs):
+            statements.append(" ".join(str(sql).split()))
+            return execute(connection, sql, *args, **kwargs)
+        with patch.object(psycopg.Connection, "execute", counting):
+            durable = self.catalog.record_pending_files(2, {first: T2, second: T2})
+        self.connection.commit()
+        self.assertEqual({key: value.isoformat() for key, value in durable.items()},
+                         {first: T0, second: T0})
+        self.assertEqual([sql.split()[0] for sql in statements], ["SELECT"])
+        after = self.connection.execute(
+            "SELECT id, xmin::text AS xmin FROM files WHERE vault_id=2 ORDER BY id").fetchall()
+        self.assertEqual(before, after, "no row version was written")
 
     def test_reconciliation_block_is_explicit(self) -> None:
         file_id = self.observe()

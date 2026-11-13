@@ -189,7 +189,13 @@ class UploadExecution:
                 self._prove(run)
                 self._verify(run)
             self._publish(run)
-            w.cleanup_superseded_upload(job, keeper_id=run.version.id, client=run.client)
+            if run.extra.get("superseding", True):
+                w.cleanup_superseded_upload(job, keeper_id=run.version.id, client=run.client)
+            else:
+                # Nothing to delete: only the postcondition is owed, one listing
+                # and no catalog unit (#622).
+                w.require_sole_keeper(job, run.version.target(), client=run.client,
+                                      bucket=run.extra["pin"]["bucket"])
             self._complete(run)
             return UploadOutcome(int(job["id"]), "completed", run.version.id)
         except w.OperationCancelled:
@@ -261,12 +267,16 @@ class UploadExecution:
                     provenance.bind_for_resume(connection, job["id"], attempt, reconcile_only=None)
             # One read of the file row: the pre-hash observation, the version
             # linked to the Job or in progress, and whether a cleanup is open.
+            # Whether the catalog ever wrote the key decides if a send needs a
+            # listed inventory before its PUT (#622, ADR-0038).
+            key = w._upload_key(job)
             observation = connection.execute(
                 f"""SELECT f.generation, f.local_presence, f.local_file_type, f.local_size,
                            f.local_mtime_ns, COALESCE(j.archive_version_id, f.replacing_version_id)
-                           AS linked_version_id, {RESUME_NEEDED_SQL} AS cleanup_pending
+                           AS linked_version_id, {RESUME_NEEDED_SQL} AS cleanup_pending,
+                           {provenance.KEY_WRITTEN_SQL} AS key_written
                     FROM files f JOIN jobs j ON j.id=%s WHERE f.id=%s""",
-                (job["id"], job["file_id"])).fetchone()
+                (key, key, job["id"], job["file_id"])).fetchone()
             version = _linked_version(connection, job, attempt, observation)
             if version is not None:
                 catalog.link_job_version(job["id"], version.id)
@@ -276,6 +286,8 @@ class UploadExecution:
 
         (detail, run.attempt, run.version, vault, run.extra["pin"], run.extra["observation"],
          problem, run.extra["cleanup_pending"]) = self._db(job, load, shared=True)
+        observation = run.extra["observation"]
+        run.extra["key_never_written"] = bool(observation is not None and not observation["key_written"])
         w._upload_source_root_check(job, vault)
         if problem:
             w._resolve_source_volume_problem(job)
@@ -510,9 +522,16 @@ class UploadExecution:
         key = w.expected_cloud_key(job["path"], f"vaults/{job['vault_uuid']}")
         # The pin _load read; prepare compares it with the live target again.
         pinned = {**run.extra["pin"], "key": key, "provider": provider}
-        before = provenance.inventory(client, pinned["bucket"], key)
-        if before != provenance.inventory(client, pinned["bucket"], key):
-            raise provenance.UploadBlocked("inventory_changed")
+        if run.extra.get("key_never_written"):
+            # The catalog never sent to this key: nothing it could replace or
+            # reconcile is there, so no listing is owed before the PUT. The
+            # post-publication listing still blocks on anything unknown at the
+            # key (ADR-0038).
+            before = provenance.presumed_empty_inventory()
+        else:
+            before = provenance.inventory(client, pinned["bucket"], key)
+            if before != provenance.inventory(client, pinned["bucket"], key):
+                raise provenance.UploadBlocked("inventory_changed")
 
         def prepare_send(catalog: Any) -> provenance.UploadAttempt:
             # Recheck after any catalog-capacity/row-lock wait, before arming.
@@ -714,9 +733,17 @@ class UploadExecution:
             connection = catalog.connection
             if run.verification is not None:
                 catalog.record_verification_evidence(version.id, **run.verification)
+            # Whether the new Current supersedes anything: any other version of
+            # the file or an open cleanup batch. Versions are only added under
+            # this row lock, so the answer holds until the Job completes.
             row = connection.execute(
-                "SELECT current_version_id, replacing_version_id FROM files WHERE id=%s FOR UPDATE",
-                (job["file_id"],)).fetchone()
+                """SELECT f.current_version_id, f.replacing_version_id,
+                          (EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id)
+                           OR EXISTS (SELECT 1 FROM archive_versions av
+                                      WHERE av.file_id = f.id AND av.id <> %s)) AS superseding
+                   FROM files f WHERE f.id=%s FOR UPDATE OF f""",
+                (version.id, job["file_id"])).fetchone()
+            run.extra["superseding"] = bool(row["superseding"])
             if run.snapshot is not None and run.generation is not None and run.observed is not None:
                 catalog.publish_local_fingerprint(
                     job["file_id"], generation=run.generation,
