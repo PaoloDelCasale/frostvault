@@ -357,6 +357,9 @@ CREATE TABLE bulk_upload_exclusions (
 );
 
 -- Unique, unambiguous rename matches look files up by digest.
+-- History retention (#596): File rows a purge left without cloud content.
+CREATE INDEX files_uncovered_idx ON files (id)
+    WHERE current_version_id IS NULL AND cloud_since IS NOT NULL;
 CREATE INDEX files_rename_digest_idx ON files (vault_id, local_sha256)
     WHERE local_sha256 IS NOT NULL;
 
@@ -771,6 +774,8 @@ CREATE INDEX jobs_vault_status_idx ON jobs (vault_id, status);
 CREATE INDEX jobs_group_idx ON jobs (group_id, requested_at, id) WHERE group_id IS NOT NULL;
 CREATE INDEX jobs_archive_version_idx ON jobs (archive_version_id)
     WHERE archive_version_id IS NOT NULL;
+-- History retention (#596) walks terminal Jobs oldest first.
+CREATE INDEX jobs_finished_idx ON jobs (finished_at, id) WHERE finished_at IS NOT NULL;
 
 -- A Job keeps its Vault, File, action, origin and request for life; a
 -- terminal Job never runs again; finished_at is stamped when it ends.
@@ -1193,6 +1198,8 @@ CREATE TABLE upload_snapshots (
 -- only after the previous one is closed or reconciled.
 CREATE UNIQUE INDEX upload_snapshots_open_file_uq ON upload_snapshots (file_id)
     WHERE closed_at IS NULL;
+CREATE INDEX upload_snapshots_closed_idx ON upload_snapshots (closed_at, id)
+    WHERE closed_at IS NOT NULL;
 
 ALTER TABLE job_uploads
     ADD CONSTRAINT job_uploads_snapshot_fk FOREIGN KEY (snapshot_id)
@@ -1261,6 +1268,8 @@ CREATE UNIQUE INDEX upload_attempts_landed_uq ON upload_attempts (snapshot_id)
 CREATE INDEX upload_attempts_snapshot_idx ON upload_attempts (snapshot_id);
 CREATE INDEX upload_attempts_file_idx ON upload_attempts (file_id);
 CREATE INDEX upload_attempts_job_idx ON upload_attempts (job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX upload_attempts_settled_idx ON upload_attempts (settled_at, id)
+    WHERE settled_at IS NOT NULL;
 
 -- Raw provider receipts, journaled immediately on their own connection: an
 -- append-only fact independent of the Job, its cancellation, the worker's
@@ -1576,6 +1585,8 @@ CREATE UNIQUE INDEX copy_attempts_open_file_uq ON copy_attempts (file_id)
     WHERE settled_at IS NULL;
 CREATE INDEX copy_attempts_file_idx ON copy_attempts (file_id);
 CREATE INDEX copy_attempts_job_idx ON copy_attempts (job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX copy_attempts_settled_idx ON copy_attempts (settled_at, id)
+    WHERE settled_at IS NOT NULL;
 
 -- Raw CopyObject / CompleteMultipartUpload responses, journaled immediately
 -- on their own connection: append-only, independent of the Job and of the
@@ -2052,6 +2063,14 @@ CREATE INDEX upload_remediations_open_due_idx ON upload_remediations (vault_id, 
 CREATE INDEX upload_remediations_file_idx ON upload_remediations (file_id, created_at);
 CREATE INDEX upload_remediations_current_job_idx ON upload_remediations (current_job_id)
     WHERE current_job_id IS NOT NULL;
+-- History retention (#596): closed episodes by age, and the SET NULL keys
+-- of collected Jobs and attempts.
+CREATE INDEX upload_remediations_closed_idx ON upload_remediations (closed_at, id)
+    WHERE closed_at IS NOT NULL;
+CREATE INDEX upload_remediations_resolved_job_idx ON upload_remediations (resolved_by_job_id)
+    WHERE resolved_by_job_id IS NOT NULL;
+CREATE INDEX upload_remediations_attempt_idx ON upload_remediations (attempt_id)
+    WHERE attempt_id IS NOT NULL;
 
 -- A closed episode is history: it never reopens, and its budget never shrinks.
 CREATE FUNCTION upload_remediations_guard() RETURNS trigger

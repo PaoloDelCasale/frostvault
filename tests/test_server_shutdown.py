@@ -104,7 +104,7 @@ class ServerShutdownTests(unittest.TestCase):
                     output = log.read()
                     self.assertEqual(result, expected_exit, output)
                     self.assertLess(elapsed, 3, output)
-                    self.assertEqual(output.count("fixture: producer stopped"), 5, output)
+                    self.assertEqual(output.count("fixture: producer stopped"), 6, output)
                     if expected_exit:
                         self.assertIn("Process shutdown deadline exceeded", output)
                     else:

@@ -149,6 +149,14 @@ class Settings:
     metadata_backup_interval_seconds: int = max(
         0, int(os.getenv("METADATA_BACKUP_INTERVAL_SECONDS", str(24 * 60 * 60)))
     )
+    # Retention of closed operational history (#596, ADR-0035): terminal Jobs
+    # and read/resolved notifications, then audit events. Only database rows
+    # are collected; local files, cloud objects and backups never are.
+    job_retention_days: int = max(1, int(os.getenv("JOB_RETENTION_DAYS", "30")))
+    notification_retention_days: int = max(
+        1, int(os.getenv("NOTIFICATION_RETENTION_DAYS", "30"))
+    )
+    audit_retention_days: int = max(1, int(os.getenv("AUDIT_RETENTION_DAYS", "90")))
     metadata_backup_s3_prefix: str = os.getenv(
         "METADATA_BACKUP_S3_PREFIX", "system/backups/"
     )
