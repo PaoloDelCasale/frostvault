@@ -106,7 +106,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cycles[2][0], [v["id"] for v in vaults] * 2)
             self.assertEqual([call.args[0] for call in submit.call_args_list], ["scan", "scan"])
             queries = [call.args[0] for call in connection.execute.call_args_list]
-            self.assertTrue(any("enabled=TRUE AND decommission_state='active'" in sql for sql in queries))
+            self.assertTrue(any("v.lifecycle='active'" in sql for sql in queries))
 
 
 if __name__ == "__main__":

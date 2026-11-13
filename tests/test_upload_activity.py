@@ -29,7 +29,7 @@ class UploadActivityTests(unittest.TestCase):
     def test_only_aggregate_rows_leave_sql_and_no_write_or_provider_calls(self):
         connection = Mock()
         connection.execute.return_value.fetchall.side_effect = [
-            [{'id': 9, 'name': 'Photos', 'enabled': True, 'decommission_state': 'active', 'relocation_state': 'ready'}],
+            [{'id': 9, 'name': 'Photos', 'lifecycle': 'active'}],
             [{'vault_id': 9, 'stage': 'uploading', 'files': 1500, 'bytes': 15000, 'transferred_bytes': 4000}],
             [{'stage': 'stability_wait', 'files': 2000, 'bytes': 24000,
               'next_stable_at': datetime(2026, 11, 6, 10, 5, tzinfo=timezone.utc)}],
@@ -44,7 +44,7 @@ class UploadActivityTests(unittest.TestCase):
         self.assertTrue(all(query.startswith(('SELECT', 'WITH')) for query in queries))
         self.assertIn('GROUP BY', queries[1])
         self.assertIn('GROUP BY', queries[3])
-        self.assertIn('lc.content_observed_at', queries[3])
+        self.assertIn('f.local_content_observed_at', queries[3])
         self.assertNotIn('pending_since', queries[3])
 
     def test_job_stage_query_reads_the_preflight_gate_in_the_same_aggregate(self):

@@ -17,8 +17,8 @@ from .job_admission import TERMINAL_JOB_STATUSES
 
 
 def _object_prefix(vault: dict[str, Any]) -> str:
-    prefix = str(vault.get("s3_prefix") or "").strip("/")
-    return f"{prefix}/" if prefix else ""
+    from .vaults import vault_prefix
+    return vault_prefix(vault["uuid"])
 
 
 def _now_iso() -> str:
@@ -30,10 +30,7 @@ def _list_cloud_versions(
     vault: dict[str, Any],
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], set[tuple[str, str]]]:
     paginator = client.get_paginator("list_object_versions")
-    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"]}
-    prefix = _object_prefix(vault)
-    if prefix:
-        kwargs["Prefix"] = prefix
+    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": _object_prefix(vault)}
     versions: dict[tuple[str, str], dict[str, Any]] = {}
     markers: set[tuple[str, str]] = set()
     for page in paginator.paginate(**kwargs):
@@ -48,16 +45,15 @@ def _active_upload_file_ids(connection: Any, vault_id: int) -> set[str]:
     placeholders = ",".join(["%s"] * len(TERMINAL_JOB_STATUSES))
     rows = connection.execute(
         f"""
-        SELECT DISTINCT vault_file_id
+        SELECT DISTINCT file_id
         FROM jobs
         WHERE vault_id=%s
           AND action='upload'
-          AND vault_file_id IS NOT NULL
           AND status NOT IN ({placeholders})
         """,
         (vault_id, *TERMINAL_JOB_STATUSES),
     ).fetchall()
-    return {str(row["vault_file_id"]) for row in rows if row["vault_file_id"]}
+    return {str(row["file_id"]) for row in rows}
 
 
 def audit_vault_catalog(
@@ -72,26 +68,18 @@ def audit_vault_catalog(
     Incomplete listings raise before any availability mutation so they cannot
     open false missing-archive incidents.
     """
-    audit_started = _now_iso()
+    audit_started = datetime.now(timezone.utc)
     cloud_versions, cloud_markers = _list_cloud_versions(client, vault)
+    # Only versions the catalog knows exactly (object key + VersionId) are
+    # compared; an unknown object or marker is reported, never attributed.
     catalog_versions = connection.execute(
         """
-        SELECT av.id, av.vault_id, av.vault_file_id, av.object_key,
+        SELECT av.id, f.vault_id, av.file_id, av.object_key,
                av.provider_version_id, av.storage_class,
-               av.availability, av.discovered_at,
-               fp.path
+               av.availability, av.created_at, f.path
         FROM archive_versions av
-        LEFT JOIN file_paths fp
-          ON fp.vault_file_id=av.vault_file_id AND fp.valid_to IS NULL
-        WHERE av.vault_id=%s AND av.availability != 'purged'
-        """,
-        (vault["id"],),
-    ).fetchall()
-    catalog_markers = connection.execute(
-        """
-        SELECT object_key, provider_version_id
-        FROM delete_markers
-        WHERE vault_id=%s
+        JOIN files f ON f.id = av.file_id
+        WHERE f.vault_id=%s
         """,
         (vault["id"],),
     ).fetchall()
@@ -103,7 +91,7 @@ def audit_vault_catalog(
         "missing_in_cloud": 0,
         "missing_in_catalog": 0,
         "storage_class_drift": 0,
-        "missing_delete_markers": 0,
+        "missing_delete_markers": len(cloud_markers),
         "command_ok": 1,
         "healthy": 1,
         "incidents_opened": 0,
@@ -120,58 +108,44 @@ def audit_vault_catalog(
         seen.add(key)
         cloud = cloud_versions.get(key)
         if cloud is None:
-            if str(row["vault_file_id"]) in active_uploads:
+            if str(row["file_id"]) in active_uploads:
                 continue
-            discovered = str(row["discovered_at"] or "")
-            if discovered > audit_started:
+            if row["created_at"] > audit_started:
                 continue
             report["missing_in_cloud"] += 1
-            missing_rows.append(dict(row))
+            missing_rows.append({**dict(row), "id": str(row["id"])})
             if row["availability"] != "missing":
                 connection.execute(
-                    "UPDATE archive_versions SET availability='missing' WHERE id=%s",
-                    (row["id"],),
+                    "UPDATE archive_versions SET availability='missing', "
+                    "availability_checked_at=%s WHERE id=%s",
+                    (audit_started, row["id"]),
                 )
                 dirty_version_ids.append(str(row["id"]))
             continue
 
         storage_class = cloud.get("StorageClass") or "STANDARD"
-        became_available = False
         if storage_class != (row["storage_class"] or "STANDARD"):
             report["storage_class_drift"] += 1
-            source = "discovered"
+        if (
+            storage_class != (row["storage_class"] or "STANDARD")
+            or row["availability"] != "available"
+        ):
             connection.execute(
                 """
                 UPDATE archive_versions
-                SET storage_class=%s,
-                    storage_class_source=%s,
-                    availability='available'
+                SET storage_class=%s, availability='available',
+                    availability_checked_at=%s
                 WHERE id=%s
                 """,
-                (storage_class, source, row["id"]),
+                (storage_class, audit_started, row["id"]),
             )
             dirty_version_ids.append(str(row["id"]))
-            became_available = True
-        elif row["availability"] != "available":
-            connection.execute(
-                "UPDATE archive_versions SET availability='available' WHERE id=%s",
-                (row["id"],),
-            )
-            dirty_version_ids.append(str(row["id"]))
-            became_available = True
-        if became_available:
-            restored_ids.append(str(row["id"]))
+            if row["availability"] != "available":
+                restored_ids.append(str(row["id"]))
 
     for key in cloud_versions:
         if key not in seen:
             report["missing_in_catalog"] += 1
-
-    catalog_marker_keys = {
-        (row["object_key"], row["provider_version_id"]) for row in catalog_markers
-    }
-    for key in cloud_markers:
-        if key not in catalog_marker_keys:
-            report["missing_delete_markers"] += 1
 
     if dirty_version_ids:
         invalidate_for_archive_version_ids(connection, dirty_version_ids)
@@ -194,11 +168,12 @@ def audit_vault_catalog(
 def audit_all_vaults(connection_factory: Any, client_factory: Any) -> list[dict[str, Any]]:
     """Run catalog audits for every enabled vault."""
     with connection_factory() as connection:
+        from .vaults import VAULT_ROW_SQL
         vaults = connection.execute(
-            """
-            SELECT * FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
-            ORDER BY id
+            f"""
+            {VAULT_ROW_SQL}
+            WHERE v.lifecycle='active'
+            ORDER BY v.id
             """
         ).fetchall()
     reports: list[dict[str, Any]] = []

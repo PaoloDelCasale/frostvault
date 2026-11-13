@@ -134,7 +134,6 @@ export type {
   SourceDirectoryOccupation,
   ArchiveListItem,
   ArchiveVersionItem,
-  ArchiveVersionSummary,
   AuthMethod,
   CloudDeletionPreview,
   CloudDeletionSettings,

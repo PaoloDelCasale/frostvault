@@ -14,7 +14,8 @@ from .lifecycle_profiles import (
 
 def load_vault_plan(connection: Any, vault_id: int) -> LifecycleProfile:
     row = connection.execute(
-        "SELECT storage_plan_json FROM vaults WHERE id=%s", (vault_id,),
+        "SELECT storage_plan::text AS storage_plan_json FROM vaults WHERE id=%s",
+        (vault_id,),
     ).fetchone()
     if row is None:
         raise ValueError("Vault not found")
@@ -28,7 +29,7 @@ def set_vault_plan(
     if not validation.ok:
         raise ValueError("; ".join(validation.errors))
     connection.execute(
-        "UPDATE vaults SET storage_plan_json=%s WHERE id=%s",
+        "UPDATE vaults SET storage_plan=%s::jsonb WHERE id=%s",
         (profile_to_json(profile), vault_id),
     )
     return validation
@@ -42,7 +43,12 @@ def sync_lifecycle_rules_for_bucket(connection: Any, client: Any, *, bucket: str
     )
 
     rows = connection.execute(
-        "SELECT uuid, s3_prefix, storage_plan_json FROM vaults WHERE s3_bucket=%s ORDER BY uuid",
+        """
+        SELECT v.uuid, 'vaults/' || v.uuid::text || '/' AS s3_prefix,
+               v.storage_plan::text AS storage_plan_json
+        FROM vaults v JOIN vault_targets t ON t.id = v.target_id
+        WHERE t.bucket=%s ORDER BY v.uuid
+        """,
         (bucket,),
     ).fetchall()
     plans = [(row, profile_from_json(row["storage_plan_json"])) for row in rows]

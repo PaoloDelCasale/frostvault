@@ -8,7 +8,7 @@ import type { ShellCapabilities } from "@/layout/types";
 const caps: ShellCapabilities = {
   locale: "en",
   locales: ["en"],
-  vaults: [{ id: 1, slug: "test", name: "Test Archive" }],
+  vaults: [{ id: 1, uuid: "test", name: "Test Archive" }],
 };
 
 describe("Skip link", () => {

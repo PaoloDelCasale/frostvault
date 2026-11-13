@@ -26,10 +26,15 @@ from app.services.component_health import (
     record_component_health,
     runtime_fields_from_health,
 )
+from app.services import notifications
+from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
 class CatalogIncidentTests(unittest.TestCase):
+    """Missing-version problems are notifications derived from availability (#593)."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -37,40 +42,27 @@ class CatalogIncidentTests(unittest.TestCase):
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (1, 'docs', 'Docs', '/source', 'bucket', 'vaults/uuid')
-                """
-            )
+            insert_owner(connection)
+            seed_vault(connection, vault_id=1)
+            self.vault = dict(connection.execute(
+                "SELECT id, uuid FROM vaults WHERE id=1"
+            ).fetchone(), s3_bucket="bucket")
             catalog = ArchiveCatalog(connection)
-            self.version_id = catalog.record_archive_version(
-                vault_id=1,
-                path="docs/report.pdf",
-                object_key="vaults/uuid/docs/report.pdf",
-                provider_version_id="v1",
-                size=10,
-                storage_class="STANDARD",
-                etag="etag",
-                uploaded_at="2026-01-01T00:00:00+00:00",
-                observed_at="2026-01-01T00:00:00+00:00",
-                scan_id="2026-01-01T00:00:00+00:00",
+            catalog.observe_local_copy(
+                vault_id=1, path="docs/report.pdf", file_type="regular",
+                size=10, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00",
             )
-            catalog.mark_version_verified(
-                self.version_id,
-                plaintext_sha256="a" * 64,
-                verified_at="2026-01-01T00:01:00+00:00",
-            )
-            self.file_id = connection.execute(
-                "SELECT vault_file_id FROM archive_versions WHERE id=%s",
-                (self.version_id,),
-            ).fetchone()["vault_file_id"]
+            digest = sha256_hex(b"report")
+            fingerprint(catalog, 1, "docs/report.pdf", digest)
+            self.version_id = protect(catalog, 1, "docs/report.pdf", digest)
+            self.file_id = catalog.get_file_by_path(1, "docs/report.pdf")["id"]
+            self.key = "vaults/x/docs/report.pdf"
+
+    def _problems(self, connection) -> list[dict]:
+        return connection.execute(
+            "SELECT event, dedupe_key, problem_status, resolved_at, message_params "
+            "FROM notifications ORDER BY id"
+        ).fetchall()
 
     def _paginator(self, versions: list[dict], markers: list[dict] | None = None):
         pages = [{"Versions": versions, "DeleteMarkers": markers or []}]
@@ -87,113 +79,77 @@ class CatalogIncidentTests(unittest.TestCase):
         return client
 
     def test_missing_archive_audit_opens_deduped_durable_alert(self) -> None:
-        vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
         client = self._empty_client()
         with PostgresConnection(str(self.path)) as connection:
-            report = audit_vault_catalog(connection, vault, client)
-            first = connection.execute(
-                "SELECT id, status, path FROM catalog_incidents"
-            ).fetchall()
-            notes = connection.execute(
-                "SELECT event, dedupe_key FROM notifications"
-            ).fetchall()
+            report = audit_vault_catalog(connection, self.vault, client)
+            notes = self._problems(connection)
         self.assertEqual(report["missing_in_cloud"], 1)
         self.assertEqual(report["healthy"], 0)
         self.assertEqual(report["command_ok"], 1)
         self.assertEqual(report["incidents_opened"], 1)
-        self.assertEqual(len(first), 1)
-        self.assertEqual(first[0]["status"], "open")
-        self.assertEqual(first[0]["path"], "docs/report.pdf")
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]["event"], "archive_version_missing")
+        self.assertEqual(notes[0]["dedupe_key"], f"missing:{self.version_id}")
+        self.assertEqual(notes[0]["problem_status"], "open")
+        self.assertEqual(notes[0]["message_params"]["path"], "docs/report.pdf")
 
         with PostgresConnection(str(self.path)) as connection:
-            report = audit_vault_catalog(connection, vault, client)
-            incidents = connection.execute(
-                "SELECT id, status FROM catalog_incidents"
-            ).fetchall()
-            notes = connection.execute("SELECT id FROM notifications").fetchall()
+            report = audit_vault_catalog(connection, self.vault, client)
+            self.assertEqual(notifications.count_open_problems(connection), 1)
+            notes = self._problems(connection)
         self.assertEqual(report["incidents_opened"], 0)
-        self.assertEqual(len(incidents), 1)
-        self.assertEqual(incidents[0]["status"], "open")
         self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["problem_status"], "open")
 
     def test_incident_survives_reopen_and_resolves_when_listed(self) -> None:
-        vault = {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"}
         with PostgresConnection(str(self.path)) as connection:
-            audit_vault_catalog(connection, vault, self._empty_client())
+            audit_vault_catalog(connection, self.vault, self._empty_client())
         with PostgresConnection(str(self.path)) as connection:
-            row = connection.execute(
-                "SELECT status FROM catalog_incidents"
-            ).fetchone()
-            self.assertEqual(row["status"], "open")
+            self.assertEqual(notifications.count_open_problems(connection), 1)
             client = Mock()
             client.get_paginator.return_value = self._paginator(
-                [
-                    {
-                        "Key": "vaults/uuid/docs/report.pdf",
-                        "VersionId": "v1",
-                        "Size": 10,
-                        "StorageClass": "STANDARD",
-                        "ETag": '"etag"',
-                        "IsLatest": True,
-                    }
-                ]
+                [{"Key": self.key, "VersionId": "v1", "Size": 10,
+                  "StorageClass": "STANDARD", "IsLatest": True}]
             )
-            client.get_object_tagging.return_value = {"TagSet": []}
-            report = audit_vault_catalog(connection, vault, client)
-            incident = connection.execute(
-                "SELECT status, resolved_at FROM catalog_incidents"
-            ).fetchone()
+            report = audit_vault_catalog(connection, self.vault, client)
+            note = self._problems(connection)[0]
         self.assertEqual(report["healthy"], 1)
         self.assertEqual(report["incidents_resolved"], 1)
-        self.assertEqual(incident["status"], "resolved")
-        self.assertIsNotNone(incident["resolved_at"])
+        self.assertEqual(note["problem_status"], "resolved")
+        self.assertIsNotNone(note["resolved_at"])
 
-    def test_authorized_purge_does_not_open_incident(self) -> None:
+    def test_problem_closes_from_the_version_state_alone(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
+            audit_vault_catalog(connection, self.vault, self._empty_client())
+            # A later listing (any observation) locates the exact version again.
             connection.execute(
-                "UPDATE archive_versions SET availability='purged' WHERE id=%s",
+                "UPDATE archive_versions SET availability='available' WHERE id=%s",
                 (self.version_id,),
             )
-            report = audit_vault_catalog(
-                connection,
-                {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"},
-                self._empty_client(),
-            )
-            incidents = connection.execute(
-                "SELECT id FROM catalog_incidents"
-            ).fetchall()
-        self.assertEqual(report["missing_in_cloud"], 0)
-        self.assertEqual(incidents, [])
+            self.assertEqual(notifications.count_open_problems(connection), 0)
+            self.assertEqual(self._problems(connection)[0]["problem_status"], "resolved")
 
     def test_concurrent_upload_does_not_mark_missing_or_alert(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             connection.execute(
                 """
                 INSERT INTO jobs(
-                    vault_id, vault_file_id, path, action, status,
-                    requested_by, requested_at, updated_at
-                ) VALUES (1, %s, 'docs/report.pdf', 'upload', 'uploading', 1,
+                    vault_id, file_id, action, status, origin,
+                    requested_at, updated_at
+                ) VALUES (1, %s, 'upload', 'uploading', 'manual',
                           '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')
                 """,
                 (self.file_id,),
             )
-            report = audit_vault_catalog(
-                connection,
-                {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"},
-                self._empty_client(),
-            )
+            report = audit_vault_catalog(connection, self.vault, self._empty_client())
             availability = connection.execute(
                 "SELECT availability FROM archive_versions WHERE id=%s",
                 (self.version_id,),
             ).fetchone()["availability"]
-            incidents = connection.execute(
-                "SELECT id FROM catalog_incidents"
-            ).fetchall()
+            notes = self._problems(connection)
         self.assertEqual(report["missing_in_cloud"], 0)
         self.assertEqual(availability, "available")
-        self.assertEqual(incidents, [])
+        self.assertEqual(notes, [])
 
     def test_incomplete_listing_does_not_mutate_or_alert(self) -> None:
         class BrokenPaginator:
@@ -204,20 +160,14 @@ class CatalogIncidentTests(unittest.TestCase):
         client.get_paginator.return_value = BrokenPaginator()
         with PostgresConnection(str(self.path)) as connection:
             with self.assertRaisesRegex(RuntimeError, "listing truncated"):
-                audit_vault_catalog(
-                    connection,
-                    {"id": 1, "s3_bucket": "bucket", "s3_prefix": "vaults/uuid"},
-                    client,
-                )
+                audit_vault_catalog(connection, self.vault, client)
             availability = connection.execute(
                 "SELECT availability FROM archive_versions WHERE id=%s",
                 (self.version_id,),
             ).fetchone()["availability"]
-            incidents = connection.execute(
-                "SELECT id FROM catalog_incidents"
-            ).fetchall()
+            notes = self._problems(connection)
         self.assertEqual(availability, "available")
-        self.assertEqual(incidents, [])
+        self.assertEqual(notes, [])
 
     def test_component_health_survives_reopen(self) -> None:
         with PostgresConnection(str(self.path)) as connection:

@@ -77,7 +77,7 @@ class EssentialInterfaceTests(unittest.TestCase):
         self.assertIsInstance(preview["estimate"]["estimated_hours"], (float, int))
         self.assertEqual(preview["estimate"]["tier"], "Bulk")
         self.assertEqual(connection.execute.call_args.args[1], [2, "photos/"])
-        self.assertIn("starts_with(fp.path, %s)", connection.execute.call_args.args[0])
+        self.assertIn("starts_with(f.path, %s)", connection.execute.call_args.args[0])
         self.assertTrue(all(call.args[0].startswith("SELECT") for call in connection.execute.call_args_list))
 
     def test_explicit_live_stream_keeps_owner_revocation_gate_but_not_shared_selection(self):

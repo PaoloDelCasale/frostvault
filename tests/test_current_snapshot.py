@@ -25,6 +25,8 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
+from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner
 
 from app.main import queue_jobs
 from app.config import Settings
@@ -50,10 +52,7 @@ class SnapshotCreationTests(unittest.TestCase):
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'alice', 'Alice', 'hash')"
-            )
+            insert_owner(connection, display_name="Alice")
         self.settings = replace(
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
@@ -125,19 +124,8 @@ class CurrentSnapshotUploadTests(unittest.TestCase):
         database_path = root / "catalog.db"
         self.assertEqual(run_alembic(database_path).returncode, 0)
         with PostgresConnection(str(database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, display_name, password_hash)
-                VALUES (1, 'owner', 'Owner', 'hash')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-                """,
-                (str(source),)
-            )
+            insert_owner(connection)
+            seed_vault(connection, source_root=str(source))
             from app.services.vault_relocation import enroll_vault_root_identity
             enroll_vault_root_identity(connection, 2, str(source))
             ArchiveCatalog(connection).observe_local_copy(

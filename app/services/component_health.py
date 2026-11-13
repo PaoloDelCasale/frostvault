@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Mapping
 
 from .notifications import now_iso
@@ -42,7 +43,7 @@ def record_component_health(
     extra_json = json.dumps(dict(extra), sort_keys=True) if extra else None
     existing = connection.execute(
         """
-        SELECT last_success_at, last_error, last_verified_at, healthy, extra_json
+        SELECT last_success_at, last_error, last_verified_at, healthy, extra
         FROM vault_component_health
         WHERE vault_id=%s AND component=%s
         """,
@@ -63,7 +64,7 @@ def record_component_health(
             """
             UPDATE vault_component_health
             SET last_success_at=%s, last_error=%s, last_verified_at=%s,
-                healthy=%s, extra_json=%s, updated_at=%s
+                healthy=%s, extra=coalesce(%s::jsonb, extra), updated_at=%s
             WHERE vault_id=%s AND component=%s
             """,
             (
@@ -71,7 +72,7 @@ def record_component_health(
                 last_error,
                 last_verified,
                 healthy,
-                extra_json if extra_json is not None else existing["extra_json"],
+                extra_json,
                 stamp,
                 int(vault_id),
                 component,
@@ -82,8 +83,8 @@ def record_component_health(
         """
         INSERT INTO vault_component_health(
             vault_id, component, last_success_at, last_error, last_verified_at,
-            healthy, extra_json, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            healthy, extra, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, coalesce(%s::jsonb, '{}'::jsonb), %s)
         """,
         (
             int(vault_id),
@@ -98,11 +99,16 @@ def record_component_health(
     )
 
 
+def _iso(value: Any) -> str | None:
+    """timestamptz leaves the health projection once, as ISO-8601 text."""
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
 def load_vault_health(connection: Any, vault_id: int) -> dict[str, dict[str, Any]]:
     rows = connection.execute(
         """
         SELECT component, last_success_at, last_error, last_verified_at,
-               healthy, extra_json, updated_at
+               healthy, extra, updated_at
         FROM vault_component_health
         WHERE vault_id=%s
         """,
@@ -110,22 +116,14 @@ def load_vault_health(connection: Any, vault_id: int) -> dict[str, dict[str, Any
     ).fetchall()
     health: dict[str, dict[str, Any]] = {}
     for row in rows:
-        extra: dict[str, Any] = {}
-        raw = row["extra_json"]
-        if raw:
-            try:
-                parsed = json.loads(raw)
-            except (TypeError, ValueError):
-                parsed = {}
-            if isinstance(parsed, dict):
-                extra = parsed
+        extra = row["extra"] if isinstance(row["extra"], dict) else {}
         health[str(row["component"])] = {
-            "last_success_at": row["last_success_at"],
+            "last_success_at": _iso(row["last_success_at"]),
             "last_error": row["last_error"],
-            "last_verified_at": row["last_verified_at"],
+            "last_verified_at": _iso(row["last_verified_at"]),
             "healthy": None if row["healthy"] is None else bool(row["healthy"]),
             "extra": extra,
-            "updated_at": row["updated_at"],
+            "updated_at": _iso(row["updated_at"]),
         }
     return health
 

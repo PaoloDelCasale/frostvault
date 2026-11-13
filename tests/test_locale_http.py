@@ -14,7 +14,7 @@ from app.config import settings
 
 from app.i18n import LOCALE_COOKIE_NAME
 from app.main import app
-from app.security import hash_password
+from tests.owner_fixtures import insert_owner
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
@@ -27,16 +27,9 @@ class LocaleHttpTests(unittest.TestCase):
         migrated = run_alembic(database_path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        self.username = "alice"
         self.password = "correct horse battery"
         with PostgresConnection(str(database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', %s)
-                """,
-                (self.username, hash_password(self.password)),
-            )
+            insert_owner(connection, display_name="Alice", password=self.password)
 
         self.settings = replace(
             settings,
@@ -58,7 +51,7 @@ class LocaleHttpTests(unittest.TestCase):
     def _login(self) -> None:
         response = self.client.post(
             "/api/login",
-            json={"username": self.username, "password": self.password},
+            json={"password": self.password},
         )
         self.assertEqual(response.status_code, 200, response.text)
 

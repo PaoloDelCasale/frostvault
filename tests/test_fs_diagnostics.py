@@ -18,6 +18,8 @@ from app.config import settings
 
 from app.services import source_layout
 from app.services.fs_preflight import inspect_entry
+from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
@@ -34,12 +36,9 @@ class FilesystemProblemTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', %s, 'bucket', 'files')",
-                (str(self.root),),
-            )
-        self.vault = {"id": 9, "source_root": str(self.root)}
+            insert_owner(connection)
+            seed_vault(connection, vault_id=9, name="Files", source_root=str(self.root))
+        self.vault = {"id": 9, "source_root": str(self.root), "lifecycle": "active"}
         self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         self.patch = patch("app.database.settings", self.cfg)
         self.patch.start()
@@ -53,7 +52,7 @@ class FilesystemProblemTests(unittest.TestCase):
     def test_symlink_is_catalogued_as_unsupported_and_never_followed(self):
         (self.root / "ok.txt").write_text("hello")
         (self.root / "link.txt").symlink_to(self.root / "ok.txt")
-        self.assertEqual(storage.scan_tree(self.vault, "scan"), 2)
+        self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 2)
         with PostgresConnection(str(self.path)) as connection:
             rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(9)}
         self.assertTrue(rows["ok.txt"]["upload_eligible"])
@@ -65,10 +64,9 @@ class FilesystemProblemTests(unittest.TestCase):
         self.assertEqual(self.problems(), [])
 
     def test_every_unreadable_file_is_reported_beyond_old_sample_limit(self):
-        import json
         for number in range(40):
             (self.root / f"{number}.bin").write_bytes(b"data")
-        storage.scan_tree(self.vault, "before")
+        storage.scan_tree(self.vault, "2026-07-21T09:00:00+00:00")
         real_open = os.open
 
         def denied(path, *args, **kwargs):
@@ -81,11 +79,11 @@ class FilesystemProblemTests(unittest.TestCase):
                 self.assertEqual(storage.scan_tree(self.vault, scan), 0)
         problems = self.problems()
         self.assertEqual(len(problems), 40)  # all paths, deduplicated across scans
-        self.assertEqual({json.loads(p["message_params"])["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
+        self.assertEqual({p["message_params"]["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
         self.assertTrue(all(p["event"] == "file_unreadable" for p in problems))
         self.assertNotIn("sensitive exception", str(problems))
         with PostgresConnection(str(self.path)) as connection:
-            copies = connection.execute("SELECT presence FROM local_copies").fetchall()
+            copies = connection.execute("SELECT local_presence AS presence FROM files").fetchall()
         self.assertEqual(len(copies), 40)
         self.assertTrue(all(row["presence"] == "present" for row in copies))
 
@@ -97,12 +95,12 @@ class FilesystemProblemTests(unittest.TestCase):
                 raise PermissionError("denied")
             return original(path, *args, **kwargs)
         with patch.object(Path, "lstat", denied):
-            self.assertEqual(storage.scan_tree(self.vault, "scan"), 0)
+            self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 0)
         self.assertIn("stat.bin", str(self.problems()))
 
     def test_inaccessible_subtree_is_reported_and_never_marks_copies_missing(self):
         (self.root / "old.txt").write_text("data")
-        storage.scan_tree(self.vault, "before")
+        storage.scan_tree(self.vault, "2026-07-21T09:00:00+00:00")
         private = self.root / "private"
         private.mkdir()
         (self.root / "old.txt").rename(private / "old.txt")
@@ -115,7 +113,7 @@ class FilesystemProblemTests(unittest.TestCase):
             self.assertEqual(storage.scan_tree(self.vault, "incomplete"), 0)
         self.assertIn("private", str(self.problems()))
         with PostgresConnection(str(self.path)) as connection:
-            self.assertEqual(connection.execute("SELECT presence FROM local_copies").fetchone()["presence"], "present")
+            self.assertEqual(connection.execute("SELECT local_presence AS presence FROM files").fetchone()["presence"], "present")
 
     def test_watcher_checks_content_readability_not_just_stat(self):
         target = self.root / "watch.bin"
@@ -152,13 +150,12 @@ class FilesystemProblemTests(unittest.TestCase):
         problems = self.problems()
         self.assertEqual(len(problems), 1)
         self.assertEqual(problems[0]["event"], "file_name_unsupported")
-        import json
-        self.assertEqual(json.loads(problems[0]["message_params"])["path"], "bad\\udcff.jpg")
+        self.assertEqual(problems[0]["message_params"]["path"], "bad\\udcff.jpg")
 
     def test_hash_read_failure_also_reports_the_exact_path(self):
         target = self.root / "hash.bin"
         target.write_bytes(b"data")
-        storage.scan_tree(self.vault, "scan")
+        storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00")
         with patch("app.storage.hash_stable_regular_file", side_effect=PermissionError("denied")):
             self.assertEqual(storage._collect_local_fingerprint_updates(self.vault, self.root), [])
         self.assertIn("hash.bin", str(self.problems()))

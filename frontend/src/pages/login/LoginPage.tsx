@@ -25,7 +25,6 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     // The login screen has no authenticated Owner theme.
     setUserId(null);
   }, [setUserId]);
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,7 +35,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     setError(null);
     setSubmitting(true);
     try {
-      await loginWithPassword(username, password);
+      await loginWithPassword(password);
       onNavigate("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
@@ -62,17 +61,6 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
           <p className="mt-3 text-sm text-muted">{t("login.admin_recovery")}</p>
 
           <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
-            <FormField label={t("login.username")} htmlFor="login-username">
-              <FormInput
-                id="login-username"
-                name="username"
-                autoComplete="username"
-                required
-                autoFocus
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
-            </FormField>
             <FormField label={t("login.password")} htmlFor="login-password">
               <FormInput
                 id="login-password"
@@ -80,6 +68,7 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
                 type="password"
                 autoComplete="current-password"
                 required
+                autoFocus
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
               />

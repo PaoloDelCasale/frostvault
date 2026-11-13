@@ -4,6 +4,7 @@ import unittest
 from app.services.operation_policies import OperationPolicy, auto_upload_path_is_included, set_policy
 from app.services.upload_activity import _eligibility_sql, upload_activity
 from tests import test_protection_states as fixtures
+from tests.catalog_support import seed_vault
 
 NOW = datetime(2026, 11, 6, 10, tzinfo=timezone.utc)
 
@@ -12,21 +13,23 @@ class UploadActivityPostgresTests(unittest.TestCase):
     setUp = fixtures.ProtectionStatePostgresTests.setUp
     seed = fixtures.ProtectionStatePostgresTests.seed
 
-    def job(self, name, status, *, total=12, transferred=0, reconcile=False):
+    def job(self, name, status, *, total=12, transferred=0, reconcile=False, origin='manual'):
         file_id, _ = self.seed(name)
-        self.connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-            requested_at,updated_at,total_bytes,transferred_bytes,upload_reconcile_only)
-            VALUES (9,%s,%s,'upload',%s,%s,%s,%s,%s,%s)""",
-            (file_id, f'photos/{name}.jpg', status, NOW.isoformat(), NOW.isoformat(), total, transferred, reconcile))
+        job_id = self.connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
+            requested_at,updated_at,total_bytes,transferred_bytes,origin)
+            VALUES (9,%s,'upload',%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (file_id, status, NOW.isoformat(), NOW.isoformat(), total, transferred, origin)).fetchone()['id']
+        self.connection.execute(
+            "INSERT INTO job_uploads(job_id,verification_mode,reconcile_only) VALUES (%s,'s3_checksum',%s)",
+            (job_id, reconcile))
         return file_id
 
     def test_four_stages_progress_and_stability_uses_observed_content_not_pending_age(self):
         wait, _ = self.seed('wait')
-        self.connection.execute("UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s", ('2026-11-06T09:58:00+00:00', wait))
-        self.connection.execute("INSERT INTO protection_pending VALUES (%s,%s)", (wait, '2026-11-01T10:00:00Z'))
+        self.connection.execute("UPDATE files SET local_content_observed_at=%s, pending_since=%s WHERE id=%s", ('2026-11-06T09:58:00+00:00', '2026-11-01T10:00:00Z', wait))
         # A future preserved mtime also extends, never shortens, the deadline.
         future, _ = self.seed('future')
-        self.connection.execute("UPDATE local_copies SET mtime_ns=%s WHERE vault_file_id=%s", (int(NOW.timestamp() * 1e9) + 60_000_000_000, future))
+        self.connection.execute("UPDATE files SET local_mtime_ns=%s WHERE id=%s", (int(NOW.timestamp() * 1e9) + 60_000_000_000, future))
         self.job('queue', 'queued')
         self.job('retry', 'retrying')
         self.job('transfer', 'uploading', transferred=5)
@@ -36,8 +39,7 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.seed('ready')
         self.seed('protected', archive=True, verified=True)
         for status in ('completed', 'failed', 'cancelled'):
-            file_id = self.job(status, status)
-            self.connection.execute("UPDATE jobs SET origin='automatic' WHERE vault_file_id=%s", (file_id,))
+            self.job(status, status, origin='automatic')
         result = upload_activity(self.connection, now=NOW)
         total = result['global']
         self.assertEqual(total['stability_wait']['files'], 2)
@@ -84,15 +86,15 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.assertEqual(upload_activity(self.connection, now=NOW)['global']['uploading']['files'], 17)
 
     def test_global_vault_isolation_suspension_exclusions_and_read_only_scale(self):
-        self.connection.execute("INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix) VALUES (10,'second','Second','/second','bucket','second')")
+        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
         self.seed('waiting')
         self.seed('skip')
         self.seed('protected', archive=True, verified=True)
         set_policy(self.connection, 9, OperationPolicy(exclude_globs=('skip.jpg',)))
-        self.connection.execute("""INSERT INTO vault_files(id,vault_id,created_at)
-            SELECT 'activity-' || n,10,%s FROM generate_series(1,3000) n""", (NOW.isoformat(),))
-        self.connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at,total_bytes,transferred_bytes)
-            SELECT 10,id,id,'upload','uploading',%s,%s,100,30 FROM vault_files WHERE vault_id=10""", (NOW.isoformat(), NOW.isoformat()))
+        self.connection.execute("""INSERT INTO files(vault_id,path,path_since)
+            SELECT 10,'activity-' || n,%s FROM generate_series(1,3000) n""", (NOW.isoformat(),))
+        self.connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,requested_at,updated_at,total_bytes,transferred_bytes)
+            SELECT 10,id,'upload','uploading',%s,%s,100,30 FROM files WHERE vault_id=10""", (NOW.isoformat(), NOW.isoformat()))
         before = self.connection.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n']
         result = upload_activity(self.connection, now=NOW)
         self.assertEqual(result['global']['uploading']['files'], 3000)
@@ -126,5 +128,5 @@ class UploadActivityPostgresTests(unittest.TestCase):
             policy = OperationPolicy(include_globs=(pattern,))
             sql, params = _eligibility_sql(policy)
             for path in paths:
-                observed = self.connection.execute(f'SELECT {sql} AS included FROM (SELECT %s::text AS path) fp', [*params, path]).fetchone()['included']
+                observed = self.connection.execute(f'SELECT {sql} AS included FROM (SELECT %s::text AS path) f', [*params, path]).fetchone()['included']
                 self.assertEqual(observed, auto_upload_path_is_included(path, policy), (path, pattern))

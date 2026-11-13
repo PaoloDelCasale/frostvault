@@ -38,8 +38,8 @@ describe("plaintext Vault creation", () => {
       if (url === "/api/general/source-volumes") return Promise.resolve(json({ items: adopt ? [{ alias: "photos", health: "ok", access: "rw" }] : [] }));
       if (url.startsWith("/api/source-volumes/photos/browse")) return Promise.resolve(json({ volume_alias: "photos", relative_path: "albums", items: [{ name: "2024", relative_path: "albums/2024", navigable: true, selectable: true, occupation: null }] }));
       if (url === "/api/vaults" && init?.method === "POST") return Promise.resolve(fail
-        ? json({ message_key: "ui.vault_create.failed", detail: "Slug taken" }, 422)
-        : json({ id: 42, uuid: "vault-uuid", slug: "photos", name: "Photos", creation_mode: adopt ? "adopt" : "empty" }, 201));
+        ? json({ message_key: "ui.vault_create.failed", detail: "Invalid name" }, 422)
+        : json({ id: 42, uuid: "vault-uuid", name: "Photos", creation_mode: adopt ? "adopt" : "empty" }, 201));
       if (url === "/api/vaults/select") return Promise.resolve(json({ vault_id: 42 }));
       return Promise.reject(new Error(`Unexpected request ${url}`));
     });
@@ -57,10 +57,9 @@ describe("plaintext Vault creation", () => {
     await screen.findByRole("heading", { name: en["ui.vault_create.title"] });
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     await user.type(screen.getByRole("textbox", { name: en["ui.vault_create.name"] }), "Photos");
-    await user.type(screen.getByRole("textbox", { name: new RegExp(en["ui.vault_create.slug"], "i") }), "photos");
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
-    expect(payload()).toEqual({ name: "Photos", slug: "photos", creation_mode: "empty" });
+    expect(payload()).toEqual({ name: "Photos", creation_mode: "empty" });
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/recovery"))).toBe(false);
   });
 

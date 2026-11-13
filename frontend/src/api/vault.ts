@@ -1,5 +1,5 @@
 import { apiRequest } from "./client";
-import type { ArchiveListItem, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, OperationPolicy, RecoverEstimateResponse, JobsResponse, FileJobHistoryResponse, JobRecord } from "./types";
+import type { ArchiveListItem, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, OperationPolicy, RecoverEstimateResponse, JobsResponse, FileJobHistoryResponse, JobRecord, GeneralVault } from "./types";
 
 /** An immutable request scope. Never reads or changes the Session's selection.
  * The URL, including its scope, survives CSRF/reauth retries unchanged. */
@@ -32,7 +32,7 @@ export function vaultApi(vaultId: number) {
 }
 
 export type Overview = {
-  vaults: { id: number; slug: string; name: string; decommission_state: string; monthly_estimate: number; open_problem_count: number }[];
+  vaults: { id: number; uuid: string; name: string; lifecycle: GeneralVault["lifecycle"]; monthly_estimate: number; open_problem_count: number }[];
   open_problem_count: number; month: string; monthly_estimate: number; previous_month_delta: number | null;
   currency: string; pricing_effective_at: string; email_configured: boolean; last_verified_backup: string | null;
   cloud_preflight?: { status: "unknown" | "ready" | "blocked"; remediation: string | null; next_probe_at: string | null };

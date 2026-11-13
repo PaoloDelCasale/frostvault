@@ -86,11 +86,8 @@ def _json_object(value: Mapping[str, Any] | None, *, name: str, maximum: int) ->
     return encoded
 
 
-def _decode_object(value: str | None, *, name: str) -> dict[str, Any]:
-    try:
-        decoded = json.loads(value or "{}")
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Persisted {name} is not valid JSON") from exc
+def _decode_object(value: Any, *, name: str) -> dict[str, Any]:
+    decoded = {} if value is None else value
     if not isinstance(decoded, dict):
         raise RuntimeError(f"Persisted {name} is not a JSON object")
     return decoded
@@ -163,8 +160,12 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "revision": int(row["revision"]),
         "domain": row["domain"],
         "scope": row["scope"],
-        "payload": _decode_object(row.get("payload_json"), name="catalog event payload"),
-        "created_at": row["created_at"],
+        "payload": _decode_object(row.get("payload"), name="catalog event payload"),
+        # timestamptz leaves the store once, as ISO-8601 text.
+        "created_at": (
+            row["created_at"].isoformat()
+            if isinstance(row["created_at"], datetime) else row["created_at"]
+        ),
     }
 
 
@@ -237,14 +238,14 @@ class CatalogEventStore:
         self.connection.execute(
             """
             INSERT INTO catalog_events(
-                vault_id, revision, domain, scope, payload_json, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+                vault_id, revision, domain, scope, payload, created_at
+            ) VALUES (%s, %s, %s, %s, %s::jsonb, %s)
             """,
             (vault_id, revision, domain, scope, payload_json, created_at),
         )
         row = self.connection.execute(
             """
-            SELECT id, vault_id, revision, domain, scope, payload_json, created_at
+            SELECT id, vault_id, revision, domain, scope, payload, created_at
             FROM catalog_events
             WHERE vault_id=%s AND revision=%s
             """,
@@ -372,7 +373,7 @@ class CatalogEventStore:
         retained_from = int(state["retained_from_revision"]) if state else 1
         rows = self.connection.execute(
             """
-            SELECT id, vault_id, revision, domain, scope, payload_json, created_at
+            SELECT id, vault_id, revision, domain, scope, payload, created_at
             FROM catalog_events
             WHERE vault_id=%s AND revision>%s
             ORDER BY revision

@@ -17,6 +17,8 @@ from app.catalog import ArchiveCatalog
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from app.services.vaults import VAULT_ROW_SQL
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.snapshot_s3_stub import VersionedS3Stub
 
 
@@ -34,13 +36,13 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.clock = self.start
         self.access = SimpleNamespace(local_operations_allowed=True, volume_alias=None, volume_health="healthy")
         with self.db() as connection:
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
-            connection.execute("""
-                INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix,
-                                   root_identity, root_identity_version)
-                VALUES (2, 'photos', 'Photos', %s, 'test-bucket', 'photos', %s, %s)
-            """, (str(self.root), vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION))
-            self.vault = dict(connection.execute("SELECT * FROM vaults WHERE id=2").fetchone())
+            insert_owner(connection)
+            insert_vault(
+                connection, id=2, name="Photos", source_root=str(self.root), bucket="test-bucket",
+                root_identity=vault_relocation.root_identity(str(self.root)),
+                root_identity_version=vault_relocation.ROOT_IDENTITY_VERSION,
+            )
+            self.vault = dict(connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone())
         outer = self
 
         class Clock(datetime):

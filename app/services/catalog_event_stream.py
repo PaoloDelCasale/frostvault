@@ -159,7 +159,7 @@ def coalesced_catchup_from_connection(
     _count()
     rows = connection.execute(
         """
-        SELECT id, vault_id, revision, domain, scope, payload_json, created_at
+        SELECT id, vault_id, revision, domain, scope, payload, created_at
         FROM catalog_events
         WHERE vault_id=%s AND revision>%s
         ORDER BY revision
@@ -208,16 +208,7 @@ def coalesced_catchup_from_connection(
 
     decoded: list[dict[str, Any]] = []
     for row in visible:
-        payload_raw = row["payload_json"]
-        if isinstance(payload_raw, dict):
-            payload = payload_raw
-        else:
-            try:
-                payload = json.loads(payload_raw or "{}")
-            except (TypeError, json.JSONDecodeError):
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
+        payload = row["payload"] if isinstance(row["payload"], dict) else {}
         decoded.append(
             signal_from_event(
                 {
@@ -226,7 +217,7 @@ def coalesced_catchup_from_connection(
                     "domain": row["domain"],
                     "scope": row["scope"],
                     "payload": payload,
-                    "created_at": row["created_at"],
+                    "created_at": row["created_at"].isoformat(),
                     "has_gap": False,
                 }
             )

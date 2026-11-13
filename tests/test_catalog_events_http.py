@@ -19,7 +19,6 @@ from watchfiles import Change
 from app import main, storage
 from app.config import settings
 
-from app.security import hash_password
 from app.services.catalog_event_hub import (
     catalog_event_hub,
     coalesce_signals,
@@ -34,6 +33,8 @@ from app.services.catalog_event_stream import (
 from app.services.catalog_events import CatalogEventStore, record_catalog_revision
 from app.sessions import create_session, csrf_token_for, revoke_session, set_session_vault
 from app.storage import apply_filesystem_changes
+from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
@@ -106,20 +107,9 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(
-                "INSERT INTO users(id, username, display_name, password_hash) "
-                "VALUES (1, 'owner', 'Owner', %s)",
-                (hash_password("correct-horse-battery-staple"),),
-            )
-            connection.execute(
-                """
-                INSERT INTO vaults(
-                    id, slug, name, source_root, s3_bucket, s3_prefix) VALUES
-                (1, 'alpha', 'Alpha', %s, 'bucket', 'alpha'),
-                (2, 'beta', 'Beta', %s, 'bucket', 'beta')
-                """,
-                (str(self.source), str(self.source)),
-            )
+            insert_owner(connection, password="correct-horse-battery-staple")
+            seed_vault(connection, vault_id=1, name="Alpha", source_root=str(self.source))
+            seed_vault(connection, vault_id=2, name="Beta", source_root=str(self.root / "beta"))
 
         self.test_settings = replace(
             settings,
@@ -162,19 +152,16 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def _authenticate(self, user_id: int, *, vault_id: int | None) -> str:
         with PostgresConnection(str(self.db_path)) as connection:
-            raw_token = create_session(
-                connection, user_id=user_id, auth_method="local"
-            )
+            raw_token = create_session(connection, auth_method="local")
             csrf_token_for(connection, raw_token)
             session = connection.execute(
                 """
                 SELECT id, transition_version
                 FROM sessions
-                WHERE user_id=%s AND revoked_at IS NULL
+                WHERE revoked_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (user_id,),
             ).fetchone()
             if vault_id is not None:
                 set_session_vault(
@@ -190,10 +177,9 @@ class CatalogEventsHttpTests(unittest.TestCase):
             row = connection.execute(
                 """
                 SELECT id FROM sessions
-                WHERE user_id=%s AND revoked_at IS NULL
+                WHERE revoked_at IS NULL
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                (user_id,),
             ).fetchone()
         return str(row["id"])
 
@@ -228,8 +214,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         vault = {
             "id": 1,
             "source_root": str(self.source),
-            "relocation_state": "ready",
-            "decommission_state": "active",
+            "lifecycle": "active",
         }
         paths = []
         for index in range(5):
@@ -261,8 +246,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         vault = {
             "id": 1,
             "source_root": str(self.source),
-            "relocation_state": "ready",
-            "decommission_state": "active",
+            "lifecycle": "active",
         }
         existing = self.source / "kept.txt"
         existing.write_text("present", encoding="utf-8")
@@ -284,11 +268,8 @@ class CatalogEventsHttpTests(unittest.TestCase):
             self.assertEqual(CatalogEventStore(connection).current_revision(1), 1)
             presence = connection.execute(
                 """
-                SELECT lc.presence
-                FROM local_copies lc
-                JOIN vault_files vf ON vf.id=lc.vault_file_id
-                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                WHERE vf.vault_id=1 AND fp.path='kept.txt'
+                SELECT local_presence AS presence FROM files
+                WHERE vault_id=1 AND path='kept.txt'
                 """
             ).fetchone()
         self.assertEqual(presence["presence"], "present")
@@ -380,7 +361,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
             async def consume() -> None:
                 async for chunk in iter_catalog_event_sse(
                     vault_id=1,
-                    user_id=1,
                     session_id=self.owner_session_id,
                     resume_after=0,
                     subscribe=True,
@@ -435,7 +415,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
             async def consume() -> None:
                 async for chunk in iter_catalog_event_sse(
                     vault_id=1,
-                    user_id=1,
                     session_id=self.owner_session_id,
                     resume_after=0,
                     subscribe=True,
@@ -516,7 +495,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
             response = StreamingResponse(
                 iter_catalog_event_sse(
                     vault_id=1,
-                    user_id=1,
                     session_id=session_id,
                     resume_after=0,
                     subscribe=True,
@@ -592,7 +570,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         tick = stream_tick_snapshot(
             session_id=self.owner_session_id,
-            user_id=1,
             vault_id=1,
             after_revision=0,
         )
@@ -646,7 +623,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         tick = stream_tick_snapshot(
             session_id=self.owner_session_id,
-            user_id=1,
             vault_id=1,
             after_revision=0,
             max_events=MAX_CATCHUP_EVENTS,
@@ -670,7 +646,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
             async def consume() -> None:
                 async for chunk in iter_catalog_event_sse(
                     vault_id=1,
-                    user_id=1,
                     session_id=self.owner_session_id,
                     resume_after=0,
                     subscribe=True,
@@ -735,7 +710,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
         async def consume() -> None:
             async for chunk in iter_catalog_event_sse(
                 vault_id=1,
-                user_id=1,
                 session_id=self.owner_session_id,
                 resume_after=0,
                 subscribe=True,
@@ -788,7 +762,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         def bump_user_version() -> None:
             with PostgresConnection(str(self.db_path)) as connection:
                 connection.execute(
-                    "UPDATE users SET session_version=session_version+1 WHERE id=1"
+                    "UPDATE owner SET session_version=session_version+1 WHERE id=1"
                 )
 
         events = asyncio.run(self._consume_until_error(bump_user_version))
@@ -837,7 +811,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
             response = StreamingResponse(
                 iter_catalog_event_sse(
                     vault_id=1,
-                    user_id=1,
                     session_id=self.owner_session_id,
                     resume_after=0,
                     subscribe=True,

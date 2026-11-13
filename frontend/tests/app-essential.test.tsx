@@ -6,7 +6,7 @@ import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 
-const vaults = [{ id: 1, slug: "first", name: "First" }, { id: 2, slug: "second", name: "Second" }];
+const vaults = [{ id: 1, uuid: "first", name: "First" }, { id: 2, uuid: "second", name: "Second" }];
 const location = () => `${window.location.pathname}${window.location.search}`;
 
 describe("Owner app routing and shell (#512)", () => {
@@ -31,7 +31,7 @@ describe("Owner app routing and shell (#512)", () => {
         return jsonResponse({ states: second ? { protected: 5 } : { protected: 3, pending: 2 }, protection_state: second ? "protected" : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
       }
       if (url.startsWith("/api/problems") || url.startsWith("/api/general/vaults") || url.startsWith("/api/general/source-volumes")) return jsonResponse({ items: [] });
-      if (url.startsWith("/api/general")) return jsonResponse({ vaults: [{ id: 1, slug: "first", name: "First", decommission_state: "active", monthly_estimate: 0.5, open_problem_count: 1 }, { id: 2, slug: "second", name: "Second", decommission_state: "active", monthly_estimate: 0.25, open_problem_count: 0 }], open_problem_count: 1, month: "2026-11", monthly_estimate: 0.75, previous_month_delta: null, currency: "EUR", email_configured: false, last_verified_backup: null, cloud_preflight: blocked ? { status: "blocked", remediation: "Grant s3:GetBucketPublicAccessBlock", next_probe_at: null } : undefined });
+      if (url.startsWith("/api/general")) return jsonResponse({ vaults: [{ id: 1, uuid: "first", name: "First", lifecycle: "active", monthly_estimate: 0.5, open_problem_count: 1 }, { id: 2, uuid: "second", name: "Second", lifecycle: "active", monthly_estimate: 0.25, open_problem_count: 0 }], open_problem_count: 1, month: "2026-11", monthly_estimate: 0.75, previous_month_delta: null, currency: "EUR", email_configured: false, last_verified_backup: null, cloud_preflight: blocked ? { status: "blocked", remediation: "Grant s3:GetBucketPublicAccessBlock", next_probe_at: null } : undefined });
       if (url.startsWith("/api/files")) return jsonResponse({ items: [{ type: "file", name: "first.jpg", path: "first.jpg", state: "protected" }], total: 1 });
       if (url.startsWith("/api/notifications")) return jsonResponse({ items: [], unread_count: 0 });
       return jsonResponse({});

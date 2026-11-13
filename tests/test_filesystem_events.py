@@ -273,11 +273,9 @@ class WatcherSubtreeTests(unittest.TestCase):
             connection.execute.return_value.fetchone.return_value = None
             catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
             invalidated = []
-            def record_sql(sql, params=()):
-                if "plaintext_sha256=NULL" in sql:
-                    invalidated.extend(params[2])
-                return connection.execute.return_value
-            connection.execute.side_effect = record_sql
+            catalog.observe_local_copies_batch.side_effect = (
+                lambda **kw: invalidated.extend(kw.get("invalidate_paths") or ())
+            )
             stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
                 local_operations_allowed=True, volume_alias=None,

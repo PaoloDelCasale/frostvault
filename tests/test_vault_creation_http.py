@@ -16,6 +16,7 @@ from app.config import settings
 from app.main import app
 from app.services import source_layout
 from app.sessions import create_session
+from tests.owner_fixtures import insert_owner
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
 
@@ -40,15 +41,9 @@ class VaultCreationHttpTestCase(unittest.TestCase):
         source_layout.override_sources_root(self.sources_root)
         self.managed_root = source_layout.ensure_managed_directory()
 
-        self.username = "alice"
         with PostgresConnection(str(self.database_path)) as connection:
-            self.user_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES (%s, 'Alice', '') RETURNING id
-                """,
-                (self.username,),
-            ).fetchone()["id"]
+            insert_owner(connection, display_name="Alice")
+        self.user_id = 1
 
         overrides: dict[str, object] = {
             "database_dsn": database_dsn(str(self.database_path)),
@@ -71,11 +66,11 @@ class VaultCreationHttpTestCase(unittest.TestCase):
 
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
-    def _authenticate(self, client: TestClient, user_id: int) -> None:
+    def _authenticate(self, client: TestClient, user_id: int = 1) -> None:
         """Attach a live session cookie for ``user_id``, as if the user had
         already completed authentication (e.g. via OIDC)."""
         with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, user_id=user_id, auth_method="oidc")
+            raw_token = create_session(connection, auth_method="oidc")
         client.cookies.set(self.settings.session_cookie_name, raw_token)
 
     def _login(self) -> None:
@@ -84,12 +79,10 @@ class VaultCreationHttpTestCase(unittest.TestCase):
     def _csrf(self) -> str:
         return self.client.get("/api/me").json()["csrf_token"]
 
-    def _create(self, name: str, slug: str | None = None, csrf: str | None = None):
+    def _create(self, name: str, csrf: str | None = None):
         payload: dict[str, object] = {
             "name": name,
         }
-        if slug is not None:
-            payload["slug"] = slug
         headers = {"X-CSRF-Token": csrf if csrf is not None else self._csrf()}
         return self.client.post("/api/vaults", json=payload, headers=headers)
 
@@ -134,7 +127,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
     def test_create_and_select_flow_opens_the_new_archive(self) -> None:
         self._login()
-        response = self._create("My Archive", slug="my-archive")
+        response = self._create("My Archive")
         self.assertEqual(response.status_code, 201, response.text)
 
         selected = self.client.post(
@@ -149,7 +142,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         me = self.client.get("/api/me")
         self.assertEqual(me.status_code, 200, me.text)
         self.assertEqual(me.json()["vault"]["name"], "My Archive")
-        self.assertEqual(me.json()["vault"]["slug"], "my-archive")
+        self.assertNotIn("slug", me.json()["vault"])
 
     def test_the_owner_can_create_a_vault(self) -> None:
         self._login()
@@ -159,7 +152,6 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
         self.assertEqual(body["name"], "My Archive")
-        self.assertEqual(body["slug"], "my-archive")
         self.assertNotIn("role", body)
         self.assertEqual(len(body["uuid"]), 36)
 
@@ -177,10 +169,11 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         with patch("app.services.vaults.settings", replace(self.settings, archive_master_key="")):
             response = self._create("Readable")
         self.assertEqual(response.status_code, 201, response.text)
-        self.assertEqual(set(response.json()), {"id", "uuid", "slug", "name", "creation_mode"})
+        self.assertEqual(set(response.json()), {"id", "uuid", "name", "creation_mode"})
         with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT * FROM vaults WHERE id=%s", (response.json()["id"],)).fetchone()
-        self.assertEqual(row["s3_prefix"], f"vaults/{row['uuid']}/")
+        self.assertEqual(str(row["uuid"]), response.json()["uuid"])
+        self.assertNotIn("s3_prefix", row)
         self.assertFalse(any("crypt" in key or "custody" in key for key in row))
 
     def test_retired_encryption_options_and_recovery_routes_are_not_available(self) -> None:
@@ -240,32 +233,34 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         # Nothing was created as a side effect of the rejected request.
         self.assertEqual(self.client.get("/api/vaults").json()["items"], [])
 
-    def test_duplicate_slug_is_a_conflict(self) -> None:
+    def test_a_vault_has_no_slug_and_a_name_is_only_a_label(self) -> None:
         self._login()
-        first = self._create("Docs", slug="docs")
-        self.assertEqual(first.status_code, 201, first.text)
-
-        second = self._create("Docs Two", slug="docs")
-
-        self.assertEqual(second.status_code, 409, second.text)
-        self.assertEqual(second.json()["message_key"], "api.vault_name_taken")
-        self.assertNotIn("slug", second.json()["message"].lower())
+        self.assertEqual(self._create("Docs").status_code, 201)
+        second = self._create("Docs")
+        self.assertEqual(second.status_code, 201, second.text)
+        rejected = self.client.post(
+            "/api/vaults", json={"name": "Docs", "slug": "docs"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        listed = self.client.get("/api/vaults").json()["items"]
+        self.assertEqual({item["lifecycle"] for item in listed}, {"active"})
+        self.assertTrue(all("slug" not in item for item in listed))
 
     def test_creation_errors_are_localized_for_the_owner_locale(self) -> None:
         self._login()
-        self.assertEqual(self._create("Docs", slug="docs").status_code, 201)
         self.client.cookies.set("frostvault_locale", "it")
 
-        response = self._create("Docs Two", slug="docs")
+        response = self._create("   ")
 
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["message"], "Esiste già un Vault con questo nome. Scegline un altro.")
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(response.json()["message_key"], "api.vault_name_invalid")
         self.assertEqual(response.json()["detail"], response.json()["message"])
 
     def test_no_new_user_is_ever_provisioned_by_creating_a_vault(self) -> None:
         self._login()
         with PostgresConnection(str(self.database_path)) as connection:
-            before = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
+            before = connection.execute("SELECT COUNT(*) AS total FROM owner").fetchone()[
                 "total"
             ]
 
@@ -273,7 +268,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
         self.assertEqual(response.status_code, 201, response.text)
         with PostgresConnection(str(self.database_path)) as connection:
-            after = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()[
+            after = connection.execute("SELECT COUNT(*) AS total FROM owner").fetchone()[
                 "total"
             ]
         self.assertEqual(before, after)

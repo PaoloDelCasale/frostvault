@@ -57,7 +57,6 @@ export async function applySession(
 export async function emergencyPasswordLogin(page: Page): Promise<E2ECredentials> {
   const credentials = loadCredentials();
   await page.goto("/login");
-  await page.getByLabel(/username/i).fill(credentials.owner.username);
   await page.getByLabel(/password/i).fill(credentials.owner.password);
   await page.locator("form").getByRole("button", { name: /^sign in$|^accedi$/i }).click();
   // Sign-in lands on the Overview; the scenarios start inside the primary Vault.

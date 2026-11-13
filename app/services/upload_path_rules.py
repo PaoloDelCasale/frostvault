@@ -33,7 +33,7 @@ MAX_GLOBS_PER_POLICY = 100
 
 # Admission matches a path with its backslashes read as separators; the SQL
 # projection reads the same normalized text (a Linux name may contain "\\").
-PATH_SQL = "replace(fp.path, '\\', '/')"
+PATH_SQL = "replace(f.path, '\\', '/')"
 
 
 def _posix_are(body: str) -> str:
@@ -137,7 +137,7 @@ def _stored_regex(pattern: str) -> str | None:
 def eligibility_sql(policy: Any) -> tuple[str, list[str]]:
     """Informational projection of the admission path rules, parametrized AREs.
 
-    The SQL is true for paths (``fp.path``) the automatic upload may admit.
+    The SQL is true for paths (``f.path``) the automatic upload may admit.
     ``policy`` needs only ``include_globs`` and ``exclude_globs``; None means
     just the fixed noise exclusions. The result is never empty. A stored glob
     that cannot be translated safely (rejected today, but possibly saved

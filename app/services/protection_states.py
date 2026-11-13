@@ -1,8 +1,14 @@
 """Read-only protection vocabulary shared by browse, directory rollups and stats.
 
 These states are observations, never authorization for deleting either copy.
-The canonical aliases in SQL are vf (Vault File), lc (Local Copy), av (latest
-non-purged Archive Version, INCLUDING missing copies).
+The canonical aliases in SQL are ``f`` (the one ``files`` row of a Vault File,
+with its Local Copy and explicit states) and ``cur`` (its Current Snapshot,
+joined through ``f.current_version_id`` with :data:`CURRENT_JOIN_SQL`).
+
+Current is an explicit pointer, never "the latest version" chosen by ordering
+(ADR-0035): a file without Current has no recoverable cloud content, whatever
+other Archive Version rows (a replacement in progress, superseded versions
+awaiting exact cleanup) it still has.
 """
 from __future__ import annotations
 
@@ -17,28 +23,40 @@ from .upload_path_rules import inline_eligibility_sql
 # never followed, or a FIFO, socket or device). It is not a failure of
 # protection: like excluded it never counts against the Vault (#524).
 STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "excluded", "unsupported")
-LOCAL_EXISTS_SQL = "coalesce(lc.presence, 'missing') IN ('present', 'unsupported')"
+CURRENT_JOIN_SQL = "LEFT JOIN archive_versions cur ON cur.id = f.current_version_id"
+LOCAL_EXISTS_SQL = "coalesce(f.local_presence, 'missing') IN ('present', 'unsupported')"
+# Present implies a regular file (files_local_type_presence_ck); matched implies
+# a fingerprinted Local Copy equal to Current (files_matched_ck).
 PROTECTED_SQL = """(
-    lc.presence='present' AND lc.file_type='regular'
-    AND av.integrity='verified' AND av.availability='available'
-    AND lc.matched_archive_version_id=av.id
-    AND lc.plaintext_sha256 IS NOT NULL
-    AND lc.plaintext_sha256=av.plaintext_sha256
+    f.local_presence='present'
+    AND cur.integrity='verified' AND cur.availability='available'
+    AND f.matched_version_id=cur.id
+    AND f.local_sha256 IS NOT NULL
+    AND f.local_sha256=cur.plaintext_sha256
 )"""
+# The file's most recent upload Job failed (a Job, not an Archive Version: no
+# recoverable history is ever derived from this ordering).
 FAILED_UPLOAD_SQL = """coalesce((
     SELECT j.status FROM jobs j
-    WHERE j.vault_file_id=vf.id AND j.action='upload'
+    WHERE j.file_id=f.id AND j.action='upload'
     ORDER BY j.id DESC LIMIT 1
 ), '') = 'failed'"""
 PROBLEM_SQL = f"""(
-    av.availability='missing' OR av.integrity='mismatch'
-    OR lc.cloud_only_version_id IS NOT NULL
+    cur.availability='missing'
+    OR f.held_version_id IS NOT NULL
+    OR f.reconciliation_block IS NOT NULL
     OR (NOT coalesce({PROTECTED_SQL}, FALSE) AND ({FAILED_UPLOAD_SQL}))
 )"""
+# A file is listed while it has a Local Copy, a Current, a replacement in
+# progress or a blocked reconciliation: a missing Current stays visible.
+VISIBLE_SQL = f"""(({LOCAL_EXISTS_SQL})
+    OR f.current_version_id IS NOT NULL
+    OR f.replacing_version_id IS NOT NULL
+    OR f.reconciliation_block IS NOT NULL)"""
 
 
 def path_excluded_sql(policy: Any = None) -> str:
-    """True for a path the automatic upload never admits (needs alias ``fp``)."""
+    """True for a path the automatic upload never admits (needs alias ``f``)."""
     return f"NOT ({inline_eligibility_sql(policy)})"
 
 
@@ -51,26 +69,13 @@ def state_sql(policy: Any = None) -> str:
     """
     return f"""CASE
     WHEN {PROBLEM_SQL} THEN 'problem'
-    WHEN av.availability='unknown' THEN 'unconfirmed'
-    WHEN lc.presence='unsupported' THEN 'unsupported'
-    WHEN NOT ({LOCAL_EXISTS_SQL}) AND av.id IS NOT NULL THEN
-        CASE WHEN av.integrity='verified' AND av.availability='available'
-             THEN 'cloud_only' ELSE 'unconfirmed' END
+    WHEN cur.availability='unknown' THEN 'unconfirmed'
+    WHEN f.local_presence='unsupported' THEN 'unsupported'
+    WHEN NOT ({LOCAL_EXISTS_SQL}) AND cur.id IS NOT NULL THEN 'cloud_only'
     WHEN {PROTECTED_SQL} THEN 'protected'
-    WHEN lc.presence='present' AND {path_excluded_sql(policy)} THEN 'excluded'
+    WHEN f.local_presence='present' AND {path_excluded_sql(policy)} THEN 'excluded'
     ELSE 'pending'
 END"""
-
-
-# A missing snapshot must remain visible even with no Local Copy.
-VISIBLE_SQL = f"(({LOCAL_EXISTS_SQL}) OR av.id IS NOT NULL)"
-LATEST_JOIN_SQL = """
-    LEFT JOIN archive_versions av ON av.id=(
-        SELECT latest.id FROM archive_versions latest
-        WHERE latest.vault_file_id=vf.id AND latest.availability <> 'purged'
-        ORDER BY latest.version_number DESC LIMIT 1
-    )
-"""
 
 
 def aggregate_state(counts: Mapping[str, int]) -> str | None:
@@ -85,31 +90,49 @@ def aggregate_state(counts: Mapping[str, int]) -> str | None:
                  if counts.get(state, 0) > 0), None)
 
 
+def current_is_recoverable(row: Mapping[str, Any]) -> bool:
+    """Current exists, is verified and can be located: the one recoverable copy."""
+    return (
+        row.get("current_version_id") is not None
+        and row.get("integrity") == "verified"
+        and row.get("availability") == "available"
+    )
+
+
+def local_copy_matches_current(row: Mapping[str, Any]) -> bool:
+    """The present Local Copy is fingerprinted and matched to a verified Current."""
+    current = row.get("current_version_id")
+    return (
+        current is not None
+        and row.get("local_presence") == "present"
+        and row.get("matched_version_id") == current
+        and row.get("local_sha256") is not None
+        and row.get("local_sha256") == row.get("version_sha256")
+    )
+
+
 def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[str, Any]:
     """Overlay loss of observability without changing the catalog's last evidence."""
     known = str(row["protection_state"])
     last_known = known
     # Availability unknown does not erase the last full content verification.
     if known == "unconfirmed" and row.get("integrity") == "verified":
-        last_known = "protected" if (
-            row.get("local_presence") == "present"
-            and row.get("matched_archive_version_id") == row.get("archive_version_id")
-            and row.get("local_sha256") is not None
-            and row.get("local_sha256") == row.get("version_sha256")
-        ) else "cloud_only" if row.get("local_presence") not in {"present", "unsupported"} else (
-            "unsupported" if row.get("local_presence") == "unsupported" else
+        presence = row.get("local_presence")
+        if local_copy_matches_current(row):
+            last_known = "protected"
+        elif presence not in {"present", "unsupported"}:
+            last_known = "cloud_only"
+        elif presence == "unsupported":
+            last_known = "unsupported"
+        else:
             # Unknown availability hides the rule-based state; the path still tells.
-            "excluded" if row.get("path_excluded") else "pending"
-        )
+            last_known = "excluded" if row.get("path_excluded") else "pending"
     return {
         "state": "unconfirmed" if unconfirmed else known,
         "last_known_state": last_known,
         "last_known_at": row.get("protection_observed_at"),
         "previous_snapshot_protected": bool(
-            known in ("pending", "excluded", "unsupported") and (
-                int(row.get("recoverable_version_count") or 0) > 0
-                or (row.get("integrity") == "verified" and row.get("availability") == "available")
-            )
+            known in ("pending", "excluded", "unsupported") and current_is_recoverable(row)
         ),
     }
 

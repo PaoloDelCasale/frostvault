@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 
 from app.main import app
-from app.security import hash_password
+from tests.owner_fixtures import insert_owner, insert_vault
 from app.sessions import create_session
 from tests.test_database import run_alembic
 
@@ -123,20 +123,10 @@ class FrontendSpaHttpTests(unittest.TestCase):
         )
 
         with PostgresConnection(str(self.database_path)) as connection:
-            self.user_id = connection.execute(
-                """
-                INSERT INTO users(username, display_name, password_hash)
-                VALUES ('owner', 'Owner', %s) RETURNING id
-                """,
-                (hash_password(self.PASSWORD),),
-            ).fetchone()["id"]
-            self.vault_id = connection.execute(
-                """
-                INSERT INTO vaults(
-                    slug, name, source_root, s3_bucket, s3_prefix) VALUES ('docs', 'Docs Archive', '/source', 'bucket', 'docs')
-                RETURNING id
-                """
-            ).fetchone()["id"]
+            insert_owner(connection, password=self.PASSWORD)
+            self.vault_id = insert_vault(
+                connection, name="Docs Archive", source_root="/source"
+            )["id"]
 
         self.test_settings = replace(
             settings,
@@ -154,13 +144,9 @@ class FrontendSpaHttpTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
-    def _authenticate(self, user_id: int | None = None) -> None:
+    def _authenticate(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(
-                connection,
-                user_id=user_id if user_id is not None else self.user_id,
-                auth_method="oidc",
-            )
+            raw_token = create_session(connection, auth_method="oidc")
         self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
 
     def test_root_serves_spa_with_no_flag(self) -> None:
@@ -198,7 +184,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
         payload = response.json()
-        self.assertEqual(payload["username"], "owner")
+        self.assertEqual(payload["display_name"], "Owner")
         self.assertNotIn("spa-shell", response.text)
 
     def test_catalog_is_network_only_with_ordinary_session_authentication(self) -> None:

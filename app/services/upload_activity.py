@@ -25,7 +25,7 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     now = now or datetime.now(timezone.utc)
     stamp = now.isoformat()
     vaults = connection.execute(
-        """SELECT v.id,v.name,v.enabled,v.decommission_state,v.relocation_state,
+        """SELECT v.id,v.name,v.lifecycle,
             a.requests,a.selected_files,a.processed_files,a.admitted_files
         FROM vaults v LEFT JOIN (
             SELECT vault_id,count(*) AS requests,sum(selected_count) AS selected_files,
@@ -46,14 +46,15 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     for row in connection.execute("""
         WITH gate AS (SELECT COALESCE(
             (SELECT status='blocked' FROM cloud_preflight_state WHERE id=1), false) AS blocked)
-        SELECT vault_id, CASE
-            WHEN status IN ('verifying','cleaning') OR (status='uploading' AND
-                 (upload_reconcile_only OR message_key='job.purging_previous_snapshot')) THEN 'verifying'
-            WHEN status='uploading' AND NOT (gate.blocked AND COALESCE(transferred_bytes,0)<=0)
+        SELECT j.vault_id, CASE
+            WHEN j.status IN ('verifying','cleaning') OR (j.status='uploading' AND
+                 (coalesce(u.reconcile_only, false) OR j.message_key='job.purging_previous_snapshot')) THEN 'verifying'
+            WHEN j.status='uploading' AND NOT (gate.blocked AND COALESCE(j.transferred_bytes,0)<=0)
                  THEN 'uploading' ELSE 'queued' END AS stage,
-            count(*) AS files, COALESCE(sum(GREATEST(total_bytes,0)),0) AS bytes,
-            COALESCE(sum(LEAST(GREATEST(transferred_bytes,0),GREATEST(total_bytes,0))),0) AS transferred_bytes
-        FROM jobs CROSS JOIN gate WHERE action='upload' AND status NOT IN ('completed','failed','cancelled')
+            count(*) AS files, COALESCE(sum(GREATEST(j.total_bytes,0)),0) AS bytes,
+            COALESCE(sum(LEAST(GREATEST(j.transferred_bytes,0),GREATEST(j.total_bytes,0))),0) AS transferred_bytes
+        FROM jobs j LEFT JOIN job_uploads u ON u.job_id=j.id CROSS JOIN gate
+        WHERE j.action='upload' AND j.status NOT IN ('completed','failed','cancelled')
         GROUP BY 1,2
     """).fetchall():
         if row["vault_id"] in items:
@@ -63,33 +64,29 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     for vault in vaults:
         policy = get_policy(connection, vault["id"])
         item = items[vault["id"]]
-        if not (policy.auto_upload and vault["enabled"] and vault["decommission_state"] == "active"
-                and vault["relocation_state"] == "ready"):
+        if not (policy.auto_upload and vault["lifecycle"] == "active"):
             continue
         rules, params = _eligibility_sql(policy)
         # Match the durable admission observations, not the continuous
-        # protection_pending age (which intentionally never resets on writes).
+        # pending age (files.pending_since, which never resets on writes).
         rows = connection.execute(f"""
             WITH candidates AS (
-                SELECT lc.size, GREATEST(to_timestamp(lc.mtime_ns::double precision / 1000000000),
-                    COALESCE(lc.content_observed_at,lc.observed_at)::timestamptz)
+                SELECT f.local_size AS size, GREATEST(to_timestamp(f.local_mtime_ns::double precision / 1000000000),
+                    COALESCE(f.local_content_observed_at,f.local_observed_at))
                     + %s * interval '1 second' AS stable_at
-                FROM vault_files vf JOIN local_copies lc ON lc.vault_file_id=vf.id
-                JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                LEFT JOIN archive_versions av ON av.id=lc.matched_archive_version_id
-                WHERE vf.vault_id=%s AND vf.status='active' AND lc.presence='present'
-                    AND lc.file_type='regular' AND lc.cloud_only_version_id IS NULL
-                    AND (av.availability IS NULL OR av.availability<>'purged')
-                    AND NOT (lc.matched_archive_version_id IS NOT NULL AND lc.plaintext_sha256 IS NOT NULL
+                FROM files f
+                LEFT JOIN archive_versions av ON av.id=f.matched_version_id
+                WHERE f.vault_id=%s AND f.local_presence='present'
+                    AND f.local_file_type='regular' AND f.held_version_id IS NULL
+                    AND NOT (f.matched_version_id IS NOT NULL AND f.local_sha256 IS NOT NULL
                         AND av.integrity IS NOT DISTINCT FROM 'verified'
                         AND av.availability IS NOT DISTINCT FROM 'available'
-                        AND av.plaintext_sha256 IS NOT DISTINCT FROM lc.plaintext_sha256)
-                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
+                        AND av.plaintext_sha256 IS NOT DISTINCT FROM f.local_sha256)
+                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id
                         AND j.status NOT IN ('completed','failed','cancelled'))
-                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id AND j.action='upload'
+                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id AND j.action='upload'
                         AND j.origin='automatic' AND j.status IN ('failed','cancelled')
-                        AND j.requested_at>=COALESCE(lc.content_observed_at,lc.observed_at))
-                    AND NOT EXISTS (SELECT 1 FROM cloud_deletion_items d WHERE d.vault_file_id=vf.id AND d.status='pending')
+                        AND j.requested_at>=COALESCE(f.local_content_observed_at,f.local_observed_at))
                     AND {rules}
             ) SELECT CASE WHEN stable_at > %s::timestamptz THEN 'stability_wait' ELSE 'queued' END AS stage,
                 count(*) AS files, COALESCE(sum(GREATEST(size,0)),0) AS bytes,

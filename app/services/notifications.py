@@ -699,19 +699,29 @@ _JOB_FAILED_GROUP_RESOLUTION = """
           AND NOT {resolution}
     )
 """
+# A missing-version problem closes once a listing locates that exact version
+# again (or the version is gone through an authorized cleanup); a Cloud-only
+# Conflict closes once its file no longer holds that version (#593).
 _INCIDENT_RESOLUTION = """
-    n.event IN ('archive_version_missing', 'cloud_only_conflict') AND EXISTS (
-        SELECT 1 FROM catalog_incidents i
-        WHERE n.dedupe_key='incident:' || i.id::text AND i.status='resolved'
-    )
+    (n.event='archive_version_missing' AND starts_with(n.dedupe_key, 'missing:')
+     AND NOT EXISTS (
+        SELECT 1 FROM archive_versions av
+        WHERE av.id::text=substr(n.dedupe_key, 9) AND av.availability='missing'
+    ))
+    OR (n.event='cloud_only_conflict' AND starts_with(n.dedupe_key, 'conflict:')
+     AND NOT EXISTS (
+        SELECT 1 FROM files f
+        WHERE 'conflict:' || f.id::text || ':' || f.held_version_id::text = n.dedupe_key
+          AND f.local_presence='present'
+    ))
 """
 _FILE_UNREADABLE_RESOLUTION = """
     n.event='file_unreadable' AND (
         EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
                 AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
-        OR EXISTS (SELECT 1 FROM file_paths fp JOIN local_copies lc ON lc.vault_file_id=fp.vault_file_id
-                   WHERE fp.vault_id=n.vault_id AND fp.valid_to IS NULL
-                     AND fp.path=(n.message_params->>'path') AND lc.observed_at>n.created_at)
+        OR EXISTS (SELECT 1 FROM files f
+                   WHERE f.vault_id=n.vault_id AND f.path=(n.message_params->>'path')
+                     AND f.local_observed_at>n.created_at)
     )
 """
 

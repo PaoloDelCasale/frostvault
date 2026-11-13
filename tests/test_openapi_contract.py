@@ -77,7 +77,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
         )
         self.assertIn("null", schemas["AuthMethod"]["type"])
         self.assertNotEqual(
-            schemas["ArchiveVersionSummary"]["additionalProperties"], False
+            schemas["ArchiveVersionItem"]["additionalProperties"], False
         )
 
     def test_raw_download_metrics_and_catalog_sse_are_explicit_openapi_exceptions(

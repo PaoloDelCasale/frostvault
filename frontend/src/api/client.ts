@@ -495,15 +495,12 @@ export async function apiDownload(
  * Does not use apiRequest: a 401 for wrong credentials must not navigate away
  * from the sign-in screen (apiRequest sends every 401 to /login).
  */
-export async function loginWithPassword(
-  username: string,
-  password: string,
-): Promise<void> {
+export async function loginWithPassword(password: string): Promise<void> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const response = await resolveFetch()("/api/login", {
     method: "POST",
     headers,
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ password }),
   });
   const data = await parseBody(response);
   if (!response.ok) {

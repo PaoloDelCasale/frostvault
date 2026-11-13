@@ -114,6 +114,7 @@ def _runtime_settings():
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
+from .services.vaults import VAULT_ROW_SQL
 from .services import vault_moves
 from .services import protection_stop as protection_stop_service
 from .services.shutdown import (
@@ -593,22 +594,7 @@ def _scan_tree(
                 if relative in entries:
                     continue
                 entries[relative] = connection.execute(
-                    """
-                    SELECT vf.id AS vault_file_id,
-                           vf.status AS vault_file_status,
-                           vf.retired_at AS vault_file_retired_at,
-                           lc.presence, lc.file_type, lc.size, lc.mtime_ns,
-                           lc.plaintext_sha256, lc.matched_archive_version_id,
-                           lc.last_seen_at, lc.observed_at, lc.content_observed_at
-                    FROM vault_files vf
-                    JOIN file_paths fp
-                      ON fp.vault_file_id=vf.id
-                     AND fp.vault_id=vf.vault_id
-                     AND fp.path=%s
-                     AND fp.valid_to IS NULL
-                    LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-                    WHERE vf.vault_id=%s
-                    """,
+                    f"SELECT {_JOURNAL_COLUMNS_SQL} FROM files WHERE path=%s AND vault_id=%s",
                     (relative, vault_id),
                 ).fetchone()
         for relative in unreadable_paths:
@@ -623,23 +609,14 @@ def _scan_tree(
         # CPU on large Vaults.  The batch is semantically identical to the
         # serialized per-file path (same upsert columns, digest preservation,
         # dirty ancestors).
+        # Directory replacement can preserve size/mtime. A watcher subtree
+        # invalidates real changes, not independently verified file echoes.
         catalog.observe_local_copies_batch(
             vault_id=vault_id,
             entries=pending,
             seen_at=scan_id,
+            invalidate_paths=invalidate_paths,
         )
-        if invalidate_paths:
-            # Directory replacement can preserve size/mtime. A watcher subtree
-            # invalidates real changes, not independently verified file echoes.
-            connection.execute("""
-                UPDATE local_copies SET content_observed_at=%s,
-                    plaintext_sha256=NULL, matched_archive_version_id=NULL
-                WHERE vault_file_id IN (
-                    SELECT vf.id FROM vault_files vf JOIN file_paths fp
-                      ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-                    WHERE vf.vault_id=%s AND fp.path=ANY(%s)
-                )
-            """, (scan_id, vault_id, invalidate_paths))
         count += len(pending)
         pending.clear()
         invalidate_paths.clear()
@@ -847,15 +824,11 @@ def _apply_filesystem_changes(
         raise RuntimeError("Source watcher suspended after protection stopped")
     with db() as connection:
         state = connection.execute(
-            """
-            SELECT relocation_state, decommission_state
-            FROM vaults WHERE id=%s
-            """,
-            (vault["id"],),
+            "SELECT lifecycle FROM vaults WHERE id=%s", (vault["id"],),
         ).fetchone()
-    if state and state["relocation_state"] != "ready":
+    if state and state["lifecycle"] == "reconnect_required":
         raise RuntimeError("Source watcher suspended for Vault relocation")
-    if state and state["decommission_state"] != "active":
+    if state and state["lifecycle"] != "active":
         raise RuntimeError("Source watcher suspended after protection stopped")
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed:
@@ -937,7 +910,9 @@ def _apply_filesystem_changes(
                 continue
             if inspected is not None:
                 file_type, entry_stat = inspected
-                file_id = catalog.observe_local_copy(
+                # Even a same-size write with a restored mtime restarts the
+                # window. Persist the event, not an in-memory debounce timer.
+                catalog.observe_local_copy(
                     vault_id=vault["id"],
                     path=relative,
                     file_type=file_type,
@@ -945,14 +920,7 @@ def _apply_filesystem_changes(
                     mtime_ns=entry_stat.st_mtime_ns,
                     seen_at=event_id,
                     observed_at=event_id,
-                )
-                # Even a same-size write with a restored mtime restarts the
-                # window. Persist the event, not an in-memory debounce timer.
-                connection.execute(
-                    """UPDATE local_copies SET content_observed_at=%s,
-                           plaintext_sha256=NULL, matched_archive_version_id=NULL
-                       WHERE vault_file_id=%s""",
-                    (event_id, file_id),
+                    invalidate_content=True,
                 )
                 changed += 1
                 continue
@@ -1004,186 +972,93 @@ def _cloud_scan_still_current(vault: dict[str, Any], scan_id: str) -> bool:
     return status.get("scan_id") == scan_id
 
 
-def _remote_listing_timestamp(item: dict[str, Any], scan_id: str) -> str:
-    value = item.get("LastModified")
-    return value.isoformat() if hasattr(value, "isoformat") else str(value or scan_id)
+def scan_cloud(
+    vault: dict[str, Any], scan_id: str, *, reconnect: bool = False,
+    report: dict[str, int] | None = None,
+) -> int:
+    """Observe one complete cloud listing against the exact catalog versions.
 
+    The listing is observation, never ownership or authority (ADR-0035):
 
-def scan_cloud(vault: dict[str, Any], scan_id: str, *, reconnect: bool = False) -> int:
-    """Merge one complete cloud listing into the catalog in bounded writes.
+    - only a version the catalog already knows by its exact object key and
+      VersionId is marked listed (available), in bounded write batches;
+    - a known version the listing did not show is marked missing only after a
+      complete, interpretable listing, and only if this scan generation is
+      still current;
+    - an unknown version, an unknown object and every delete marker are
+      counted in ``report`` and nothing else: never recorded as a version,
+      attributed to a file by its path, promoted, or deleted.
 
-    Provider listings stay outside write transactions.
-    Catalog merges commit in ``CLOUD_SCAN_WRITE_BATCH_SIZE`` chunks so other
-    writers can renew leases and persist notifications.
-    Unseen versions are marked missing only after a complete, interpretable
-    listing, and only if this scan generation is still current.
+    Provider listings stay outside write transactions. Returns the number of
+    known versions the listing showed.
     """
+    from .services.vaults import vault_prefix
+
     validate_cloud_vault(vault)
     client = s3_client()
     paginator = client.get_paginator("list_object_versions")
-    prefix = vault["s3_prefix"].strip("/")
-    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"]}
-    if prefix:
-        kwargs["Prefix"] = f"{prefix}/"
-    versions: list[tuple[str, str, str, Any, str, str, str]] = []
-    markers: list[tuple[str, str, str, str]] = []
+    prefix = vault_prefix(vault["uuid"])
+    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": prefix}
+    listed: list[tuple[str, str, str]] = []
+    markers = 0
     invalid_keys = False
-    listing_complete = False
-
-    def convert_page(items: list[dict[str, Any]], kind: str) -> None:
-        nonlocal invalid_keys
-        for item in items:
-            object_key = item["Key"]
-            logical_path = object_key_to_path(object_key, prefix)
-            if logical_path is None:
+    for page in paginator.paginate(**kwargs):
+        for item in page.get("Versions", []):
+            object_key = str(item["Key"])
+            if object_key_to_path(object_key, prefix) is None:
                 # Directory marker objects contain no file content. Any other
-                # unrecognised key prevents destructive reconciliation.
+                # unrecognised key prevents the missing transition.
                 if not object_key.endswith("/"):
                     invalid_keys = True
                 continue
-            version_id = item["VersionId"]
-            timestamp = _remote_listing_timestamp(item, scan_id)
-            if kind == "version":
-                versions.append(
-                    (
-                        logical_path,
-                        version_id,
-                        object_key,
-                        item.get("Size"),
-                        item.get("StorageClass", "STANDARD"),
-                        str(item.get("ETag", "")).strip('"'),
-                        timestamp,
-                    )
-                )
-            else:
-                markers.append((logical_path, version_id, object_key, timestamp))
-
-    try:
-        page_iter = paginator.paginate(**kwargs)
-        for page in page_iter:
-            convert_page(page.get("Versions", []), "version")
-            convert_page(page.get("DeleteMarkers", []), "marker")
-        listing_complete = True
-    except Exception:
-        listing_complete = False
-        raise
-
-    versions.sort(key=lambda entry: (entry[0], entry[6], entry[2], entry[1]))
-    markers.sort(key=lambda entry: (entry[0], entry[3], entry[2], entry[1]))
-    grouped: dict[str, list[tuple[str, str, str, Any, str, str, str]]] = {}
-    for entry in versions:
-        grouped.setdefault(entry[0], []).append(entry)
-
-    with db() as connection:
-        # Decide cleanup authority before discovery changes internal version
-        # numbers. Record all listed copies chronologically, without granting
-        # trust. Legacy/unverified/mismatched or ambiguous keepers fail closed.
-        catalog = ArchiveCatalog(connection)
-        verified_keepers: dict[str, dict[str, Any]] = {}
-        stale_keeper_paths: set[str] = set()
-        for path, entries in grouped.items():
-            known = catalog.list_versions(vault["id"], path)
-            keeper = next((row for row in known if row["availability"] not in {"missing", "purged"}), None)
-            if keeper is None:
-                continue
-            identity = (keeper["object_key"], keeper["provider_version_id"])
-            if identity not in {(entry[2], entry[1]) for entry in entries}:
-                stale_keeper_paths.add(path)
-                continue
-            keeper = next((row for row in known if row["recoverable"] and
-                           (row["object_key"], row["provider_version_id"]) in {(entry[2], entry[1]) for entry in entries}), None)
-            if not invalid_keys and keeper:
-                # Discovery is observation, not election/trust. Every extra
-                # requires the same claimed exact-version cleanup authority.
-                verified_keepers[path] = keeper
-
-    if reconnect and (invalid_keys or any(
-        len(entries) > 1 and entries[-1][6] == entries[-2][6]
-        for entries in grouped.values()
-    )):
+            listed.append((
+                object_key, str(item["VersionId"]),
+                str(item.get("StorageClass") or "STANDARD"),
+            ))
+        markers += len(page.get("DeleteMarkers", []))
+    if reconnect and invalid_keys:
         raise RuntimeError("Cloud listing is ambiguous; reconnect remains suspended")
+
     count = 0
-    snapshot_extras: list[tuple[str, str, str, str]] = []
-    for offset in range(0, len(versions), CLOUD_SCAN_WRITE_BATCH_SIZE):
+    for offset in range(0, len(listed), CLOUD_SCAN_WRITE_BATCH_SIZE):
         if not _cloud_scan_still_current(vault, scan_id):
             return count
-        batch = versions[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
+        batch = listed[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
         with db() as connection:
-            catalog = ArchiveCatalog(connection)
-            for (
-                logical_path,
-                version_id,
-                object_key,
-                size,
-                storage_class,
-                etag,
-                timestamp,
-            ) in batch:
-                keeper = verified_keepers.get(logical_path)
-                if not reconnect and keeper and (object_key, str(version_id)) != (
-                    keeper["object_key"], keeper["provider_version_id"],
-                ):
-                    snapshot_extras.append((
-                        logical_path, str(version_id), object_key, str(keeper["id"]),
-                    ))
-                # A failed cleanup still leaves every discovered copy catalogued
-                # as present, rather than producing a false missing-copy signal.
-                previously_known = connection.execute(
-                    "SELECT id FROM archive_versions WHERE vault_id=%s AND object_key=%s "
-                    "AND provider_version_id=%s",
-                    (vault["id"], object_key, version_id),
-                ).fetchone()
-                kept_archive_version_id = catalog.record_archive_version(
-                    vault_id=vault["id"],
-                    path=logical_path,
-                    object_key=object_key,
-                    provider_version_id=version_id,
-                    size=size,
-                    storage_class=storage_class,
-                    etag=etag,
-                    uploaded_at=timestamp,
-                    observed_at=now_iso(),
-                    scan_id=scan_id,
-                )
-                if previously_known is None and (logical_path, version_id, object_key) == grouped[logical_path][-1][:3]:
-                    from .services.recovery_kit import remember_cloud_update
-                    file_row = connection.execute(
-                        "SELECT vault_file_id FROM archive_versions WHERE id=%s",
-                        (kept_archive_version_id,),
-                    ).fetchone()
-                    remember_cloud_update(connection, file_row["vault_file_id"])
-                if logical_path in stale_keeper_paths and not invalid_keys:
-                    catalog.mark_unlisted_snapshot_versions_superseded(
-                        kept_archive_version_id=str(kept_archive_version_id),
-                        scan_id=scan_id,
-                        scan_started_at=scan_id,
-                    )
-                count += 1
-    if snapshot_extras:
-        _purge_current_snapshot_scan_extras(vault, snapshot_extras, client)
-    for offset in range(0, len(markers), CLOUD_SCAN_WRITE_BATCH_SIZE):
-        if not _cloud_scan_still_current(vault, scan_id):
-            return count
-        batch = markers[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
-        with db() as connection:
-            catalog = ArchiveCatalog(connection)
-            for logical_path, version_id, object_key, timestamp in batch:
-                catalog.record_delete_marker(
-                    vault_id=vault["id"],
-                    path=logical_path,
-                    object_key=object_key,
-                    provider_version_id=version_id,
-                    created_at=timestamp,
-                    observed_at=now_iso(),
-                )
-                count += 1
+            # The listed storage class of an exact known version is
+            # observation of that version, like its availability.
+            known = connection.execute(
+                """
+                UPDATE archive_versions av
+                SET storage_class = item.storage_class
+                FROM unnest(%s::text[], %s::text[], %s::text[])
+                     AS item(object_key, version_id, storage_class),
+                     files f
+                WHERE av.object_key = item.object_key
+                  AND av.provider_version_id = item.version_id
+                  AND f.id = av.file_id AND f.vault_id = %s
+                RETURNING av.id
+                """,
+                (
+                    [entry[0] for entry in batch], [entry[1] for entry in batch],
+                    [entry[2] for entry in batch], int(vault["id"]),
+                ),
+            ).fetchall()
+            ArchiveCatalog(connection).mark_archive_versions_listed(
+                [str(row["id"]) for row in known], scan_id=scan_id,
+            )
+        count += len(known)
+    if report is not None:
+        report.update(
+            listed_versions=len(listed),
+            known_versions=count,
+            unknown_versions=len(listed) - count,
+            delete_markers=markers,
+            unrecognized_keys=int(invalid_keys),
+        )
     # An unrecognised key or a truncated listing is not evidence that
     # prior catalog rows disappeared. Fail closed by retaining availability.
-    if (
-        listing_complete
-        and not invalid_keys
-        and _cloud_scan_still_current(vault, scan_id)
-    ):
+    if not invalid_keys and _cloud_scan_still_current(vault, scan_id):
         with db() as connection:
             newly_missing = ArchiveCatalog(
                 connection
@@ -1201,61 +1076,31 @@ def scan_cloud(vault: dict[str, Any], scan_id: str, *, reconnect: bool = False) 
                 observed_at=scan_id,
             )
     if reconnect:
-        _verify_reconnected_cloud(vault, grouped, client, scan_id)
+        _verify_reconnected_cloud(vault, scan_id)
     return count
 
 
-def _verify_reconnected_cloud(
-    vault: dict[str, Any], grouped: dict[str, list[tuple]], client: Any, scan_id: str,
-) -> None:
-    """Recover content evidence for the newest exact S3 versions, never delete.
+def _verify_reconnected_cloud(vault: dict[str, Any], scan_id: str) -> None:
+    """A reconnect resumes only when every Current is located, never elected.
 
-    Known verified evidence is retained. Unknown current content is read fully
-    (including size/VersionId checks); cold unreadable objects leave the entire
-    reconnect suspended until an operator makes them readable. No stale digest
-    can authorize an upload or local release in that interval.
+    Current is an explicit, verified pointer: nothing is re-elected from the
+    listing order or the Path History, and nothing is deleted. A Current the
+    complete listing did not locate leaves the reconnect suspended until the
+    Owner resolves it.
     """
-    for entries in grouped.values():
-        path, provider_id, key, size, _storage_class, _etag, _timestamp = entries[-1]
-        with db() as connection:
-            row = connection.execute(
-                "SELECT * FROM archive_versions WHERE vault_id=%s AND object_key=%s "
-                "AND provider_version_id=%s", (vault["id"], key, provider_id),
-            ).fetchone()
-        if row["integrity"] == "mismatch" or (row.get("size") is not None and row["size"] != size):
-            raise RuntimeError("Cloud content mismatch; reconnect remains suspended")
-        digest = row.get("plaintext_sha256")
-        if row["integrity"] != "verified" or not digest:
-            response = client.get_object(Bucket=vault["s3_bucket"], Key=key, VersionId=provider_id)
-            body = response["Body"]
-            hasher, length = hashlib.sha256(), 0
-            try:
-                if str(response.get("VersionId")) != str(provider_id):
-                    raise RuntimeError("Cloud verification returned a different VersionId")
-                while chunk := body.read(1024 * 1024):
-                    hasher.update(chunk)
-                    length += len(chunk)
-            finally:
-                body.close()
-            if length != size:
-                raise RuntimeError("Cloud verification size mismatch")
-            digest = hasher.hexdigest()
-            if row.get("plaintext_sha256") and row["plaintext_sha256"] != digest:
-                raise RuntimeError("Cloud verification digest mismatch")
-        if not _cloud_scan_still_current(vault, scan_id):
-            raise RuntimeError("Reconnect scan superseded")
-        with db() as connection:
-            catalog = ArchiveCatalog(connection)
-            catalog.mark_version_verified(row["id"], plaintext_sha256=digest, verified_at=now_iso())
-            # Listing chronology, not catalog allocation order, chooses current.
-            connection.execute(
-                """UPDATE archive_versions SET version_number=(
-                    SELECT MAX(av.version_number)+1 FROM archive_versions av
-                    WHERE av.vault_file_id=%s)
-                WHERE id=%s AND version_number < (
-                    SELECT MAX(av.version_number) FROM archive_versions av WHERE av.vault_file_id=%s)
-                """, (row["vault_file_id"], row["id"], row["vault_file_id"]),
-            )
+    if not _cloud_scan_still_current(vault, scan_id):
+        raise RuntimeError("Reconnect scan superseded")
+    with db() as connection:
+        unlocated = connection.execute(
+            """
+            SELECT count(*) AS total
+            FROM files f JOIN archive_versions cur ON cur.id = f.current_version_id
+            WHERE f.vault_id=%s AND cur.availability <> 'available'
+            """,
+            (int(vault["id"]),),
+        ).fetchone()["total"]
+    if unlocated:
+        raise RuntimeError("Current cloud copies are missing; reconnect remains suspended")
 
 
 def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
@@ -1269,7 +1114,7 @@ def _current_scan_vault(vault: dict[str, Any]) -> dict[str, Any]:
     """
     with db() as connection:
         current = connection.execute(
-            "SELECT * FROM vaults WHERE id=%s", (int(vault["id"]),)
+            f"{VAULT_ROW_SQL} WHERE v.id=%s", (int(vault["id"]),)
         ).fetchone()
     if isinstance(current, dict) and "source_root" in current:
         return current
@@ -1346,15 +1191,14 @@ def _pinned_verified_scan_root(vault: dict[str, Any]):
 def _current_verified_scan_row(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     current = connection.execute(
         """
-        SELECT source_root, relocation_state, root_identity_version, root_identity,
-               decommission_state
+        SELECT source_root, lifecycle, root_identity_version, root_identity
         FROM vaults WHERE id=%s
         """,
         (int(vault["id"]),),
     ).fetchone()
     if not isinstance(current, dict) or current.get("source_root") != vault.get("source_root"):
         raise _ScanRootMismatch("Vault root changed during local scan")
-    if current.get("decommission_state", "active") != "active":
+    if current.get("lifecycle", "active") not in {"active", "reconnect_required"}:
         raise _ScanRootMismatch("Vault was quiesced during local scan")
     try:
         _validate_enrolled_scan_root(current)
@@ -1379,22 +1223,7 @@ def _scan_generation_is_current(vault_id: int, scan_id: str) -> bool:
 
 def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
     with db() as connection:
-        return connection.execute(
-            """
-            SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            JOIN local_copies lc ON lc.vault_file_id=vf.id
-            WHERE vf.vault_id=%s
-              AND vf.status='active'
-              AND lc.presence='present'
-              AND lc.file_type='regular'
-              AND lc.plaintext_sha256 IS NULL
-            ORDER BY lower(fp.path)
-            """,
-            (vault_id,),
-        ).fetchall()
+        return ArchiveCatalog(connection).local_copies_to_fingerprint(vault_id)
 
 
 def _collect_local_fingerprint_updates(
@@ -1428,6 +1257,7 @@ def _collect_local_fingerprint_updates(
             {
                 "vault_file_id": row["vault_file_id"],
                 "path": row["path"],
+                "generation": row["generation"],
                 "old_size": row["size"],
                 "old_mtime_ns": row["mtime_ns"],
                 "size": stat_result.st_size,
@@ -1453,53 +1283,39 @@ def _apply_local_fingerprint_updates(
                 _current_verified_scan_row(connection, vault)
                 if not _scan_generation_is_current(int(vault["id"]), scan_id):
                     raise _ScanRootMismatch("Local scan was superseded")
-            vault_id = int(vault["id"])
+            catalog = ArchiveCatalog(connection)
             for update in batch:
-                # A watcher may have replaced the file after hashing. The
-                # predicate prevents a stale digest from overwriting it.
-                result = connection.execute(
-                    """
-                    UPDATE local_copies
-                    SET content_observed_at=CASE
-                            WHEN (size, mtime_ns) IS DISTINCT FROM (%s::bigint, %s::bigint)
-                            THEN %s ELSE content_observed_at END,
-                        size=%s,
-                        mtime_ns=%s,
-                        plaintext_sha256=%s,
-                        matched_archive_version_id=NULL,
-                        last_seen_at=%s,
-                        observed_at=%s
-                    WHERE vault_file_id=%s
-                      AND presence='present'
-                      AND file_type='regular'
-                      AND plaintext_sha256 IS NULL
-                      AND (size=%s OR (size IS NULL AND %s IS NULL))
-                      AND (mtime_ns=%s OR (mtime_ns IS NULL AND %s IS NULL))
-                    """,
-                    (
-                        update["size"],
-                        update["mtime_ns"],
-                        update["observed_at"],
-                        update["size"],
-                        update["mtime_ns"],
-                        update["digest"],
-                        scan_id,
-                        update["observed_at"],
-                        update["vault_file_id"],
-                        update["old_size"],
-                        update["old_size"],
-                        update["old_mtime_ns"],
-                        update["old_mtime_ns"],
-                    ),
+                # A watcher may have replaced the file after hashing, or the
+                # file changed while it was hashed: the generation and stat
+                # compare-and-swap leave the digest unpublished; the next
+                # observation hashes it again.
+                if (update["size"], update["mtime_ns"]) != (
+                    update["old_size"], update["old_mtime_ns"],
+                ):
+                    continue
+                catalog.publish_local_fingerprint(
+                    str(update["vault_file_id"]),
+                    generation=int(update["generation"]),
+                    plaintext_sha256=update["digest"],
+                    size=update["size"],
+                    mtime_ns=update["mtime_ns"],
                 )
-                if getattr(result, "rowcount", 0):
-                    invalidate_for_vault_file(
-                        connection,
-                        vault_id,
-                        str(update["vault_file_id"]),
-                    )
             if persisted:
                 _current_verified_scan_row(connection, vault)
+
+
+# The Local Copy columns a scan journal saves before observing a path, so a
+# scan that loses its proof can restore them (#593).
+_JOURNAL_COLUMNS_SQL = """
+    id, local_presence, local_file_type, local_size, local_mtime_ns,
+    local_sha256, matched_version_id, held_version_id, local_seen_at,
+    local_observed_at, local_content_observed_at, local_recovered_at
+"""
+
+
+def _scan_timestamp(value: Any) -> datetime:
+    """A scan id is its start instant; compare it as a timestamptz."""
+    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
 
 
 def _rollback_local_scan_journal(
@@ -1518,90 +1334,54 @@ def _rollback_local_scan_journal(
         with db() as connection:
             for path, snapshot in entries.items():
                 if snapshot is None:
-                    current = connection.execute(
+                    # A file this scan created: removed only while nothing
+                    # attached to it (no cloud content, no Job, no history).
+                    deleted = connection.execute(
                         """
-                        SELECT vf.id AS vault_file_id
-                        FROM vault_files vf
-                        JOIN file_paths fp
-                          ON fp.vault_file_id=vf.id
-                         AND fp.vault_id=vf.vault_id
-                         AND fp.path=%s
-                         AND fp.valid_to IS NULL
-                        JOIN local_copies lc ON lc.vault_file_id=vf.id
-                        WHERE vf.vault_id=%s
-                          AND lc.last_seen_at=%s
+                        DELETE FROM files f
+                        WHERE f.vault_id=%s AND f.path=%s AND f.local_seen_at=%s
+                          AND f.cloud_since IS NULL
+                          AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id)
                           AND NOT EXISTS (
-                              SELECT 1 FROM archive_versions av
-                              WHERE av.vault_file_id=vf.id
-                          )
-                          AND NOT EXISTS (
-                              SELECT 1 FROM jobs j WHERE j.vault_file_id=vf.id
+                              SELECT 1 FROM file_path_history h WHERE h.file_id=f.id
                           )
                         """,
-                        (path, vault_id, scan_id),
-                    ).fetchone()
-                    if current is None:
-                        continue
-                    file_id = current["vault_file_id"]
-                    connection.execute(
-                        "DELETE FROM local_copies WHERE vault_file_id=%s AND last_seen_at=%s",
-                        (file_id, scan_id),
-                    )
-                    connection.execute(
-                        """
-                        DELETE FROM file_paths
-                        WHERE vault_file_id=%s AND vault_id=%s
-                          AND path=%s AND valid_to IS NULL
-                        """,
-                        (file_id, vault_id, path),
-                    )
-                    connection.execute(
-                        "DELETE FROM vault_files WHERE id=%s AND vault_id=%s",
-                        (file_id, vault_id),
-                    )
-                    mark_path_dirty(connection, vault_id, path)
+                        (vault_id, path, _scan_timestamp(scan_id)),
+                    ).rowcount
+                    if deleted:
+                        mark_path_dirty(connection, vault_id, path)
                     continue
-
-                file_id = snapshot["vault_file_id"]
-                if snapshot.get("presence") is None:
-                    connection.execute(
-                        """
-                        DELETE FROM local_copies
-                        WHERE vault_file_id=%s AND last_seen_at=%s
-                        """,
-                        (file_id, scan_id),
-                    )
-                    invalidate_for_vault_file(connection, vault_id, str(file_id))
-                    continue
+                # Restore the previous observation unless a newer one won; the
+                # restore is itself a new observation (generation + 1), so a
+                # hash taken on the compensated one can never publish.
                 connection.execute(
                     """
-                    UPDATE local_copies
-                    SET presence=%s,
-                        file_type=%s,
-                        size=%s,
-                        mtime_ns=%s,
-                        plaintext_sha256=%s,
-                        matched_archive_version_id=%s,
-                        last_seen_at=%s,
-                        observed_at=%s,
-                        content_observed_at=%s
-                    WHERE vault_file_id=%s AND last_seen_at=%s
+                    UPDATE files
+                    SET generation=generation + 1,
+                        local_presence=%s, local_file_type=%s, local_size=%s,
+                        local_mtime_ns=%s, local_sha256=%s, matched_version_id=%s,
+                        held_version_id=%s, local_seen_at=%s, local_observed_at=%s,
+                        local_content_observed_at=%s, local_recovered_at=%s
+                    WHERE id=%s AND vault_id=%s AND local_seen_at=%s
                     """,
                     (
-                        snapshot["presence"],
-                        snapshot["file_type"],
-                        snapshot["size"],
-                        snapshot["mtime_ns"],
-                        snapshot["plaintext_sha256"],
-                        snapshot["matched_archive_version_id"],
-                        snapshot["last_seen_at"],
-                        snapshot["observed_at"],
-                        snapshot["content_observed_at"],
-                        file_id,
-                        scan_id,
+                        snapshot["local_presence"],
+                        snapshot["local_file_type"],
+                        snapshot["local_size"],
+                        snapshot["local_mtime_ns"],
+                        snapshot["local_sha256"],
+                        snapshot["matched_version_id"],
+                        snapshot["held_version_id"],
+                        snapshot["local_seen_at"],
+                        snapshot["local_observed_at"],
+                        snapshot["local_content_observed_at"],
+                        snapshot["local_recovered_at"],
+                        snapshot["id"],
+                        vault_id,
+                        _scan_timestamp(scan_id),
                     ),
                 )
-                invalidate_for_vault_file(connection, vault_id, str(file_id))
+                mark_path_dirty(connection, vault_id, path)
     except Exception:
         # Compensation is best effort. The scan is still reported as blocked,
         # and no missing transition or relocation completion can commit.
@@ -1683,7 +1463,7 @@ def _verified_local_scan(
                 raise _ScanRootMismatch("Local scan was superseded")
             rename_summary = _apply_auto_renames(
                 connection, vault, root=pinned_root, hash_missing=False,
-                recognize_renames=complete and vault.get("relocation_state") != "scan_required",
+                recognize_renames=complete and vault.get("lifecycle") != "reconnect_required",
             )
             rename_summary["hashed"] = len(updates)
             _current_verified_scan_row(connection, vault)
@@ -1707,10 +1487,10 @@ def _verified_local_scan(
             _current_verified_scan_row(connection, vault)
             was_relocation_scan = (
                 connection.execute(
-                    "SELECT relocation_state FROM vaults WHERE id=%s",
+                    "SELECT lifecycle FROM vaults WHERE id=%s",
                     (int(vault["id"]),),
-                ).fetchone()["relocation_state"]
-                == "scan_required"
+                ).fetchone()["lifecycle"]
+                == "reconnect_required"
             )
             was_relocation_scan = was_relocation_scan and complete
             if was_relocation_scan:
@@ -1875,7 +1655,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         if protection_stop_service.local_work_suspended(vault):
             return {"suspended": 1}
         if (
-            str(vault.get("relocation_state") or "ready") == "ready"
+            vault.get("lifecycle") != "reconnect_required"
             and vault_relocation.local_work_suspended(vault)
         ):
             return {"suspended": 1}
@@ -1894,12 +1674,13 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         with status_lock:
             status.update(scanning=True, last_error=None, scan_id=scan_id)
         result: dict[str, int] = {}
-        reconnect = vault.get("relocation_state") == "scan_required"
+        reconnect = vault.get("lifecycle") == "reconnect_required"
+        cloud_report: dict[str, int] = {}
         if reconnect:
             try:
                 # Cloud first, with NO cleanup: stale local metadata must not
                 # become upload/release authority before S3 has been recovered.
-                result["cloud"] = scan_cloud(vault, scan_id, reconnect=True)
+                result["cloud"] = scan_cloud(vault, scan_id, reconnect=True, report=cloud_report)
                 with db() as connection:
                     _current_verified_scan_row(connection, vault)
                     vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
@@ -1973,7 +1754,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         if local_scan_identity_valid:
             try:
                 if not reconnect:
-                    result["cloud"] = scan_cloud(vault, scan_id)
+                    result["cloud"] = scan_cloud(vault, scan_id, report=cloud_report)
             except Exception as exc:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
@@ -1982,8 +1763,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     notify_problem=not isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked),
                 )
             else:
+                # Unknown versions and markers are reported, never attributed.
                 _record_scan_component_health(
-                    vault_id, "cloud", ok=True, verified=True
+                    vault_id, "cloud", ok=True, verified=True, extra=cloud_report or None,
                 )
             try:
                 validate_cloud_vault(vault)
@@ -2079,23 +1861,7 @@ def _apply_auto_renames(
     catalog = ArchiveCatalog(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
     if hash_missing:
-        present_rows = connection.execute(
-            """
-            SELECT vf.id AS vault_file_id, fp.path, lc.size, lc.mtime_ns
-            FROM vault_files vf
-            JOIN file_paths fp
-              ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-            JOIN local_copies lc ON lc.vault_file_id=vf.id
-            WHERE vf.vault_id=%s
-              AND vf.status='active'
-              AND lc.presence='present'
-              AND lc.file_type='regular'
-              AND lc.plaintext_sha256 IS NULL
-            ORDER BY lower(fp.path)
-            """,
-            (vault["id"],),
-        ).fetchall()
-        for row in present_rows:
+        for row in catalog.local_copies_to_fingerprint(int(vault["id"])):
             try:
                 local_path = safe_local_path(str(root), row["path"])
                 if not local_path.is_file():
@@ -2110,31 +1876,14 @@ def _apply_auto_renames(
                 continue
             except (ValueError, RuntimeError):
                 continue
-            catalog.set_local_fingerprint(
-                vault_id=vault["id"],
-                path=row["path"],
-                plaintext_sha256=digest,
-                matched_archive_version_id=None,
-            )
-            summary["hashed"] += 1
-            if (
-                row["size"] != stat_result.st_size
-                or row["mtime_ns"] != stat_result.st_mtime_ns
+            if (stat_result.st_size, stat_result.st_mtime_ns) != (row["size"], row["mtime_ns"]):
+                # Changed while hashed: the next observation hashes it again.
+                continue
+            if catalog.publish_local_fingerprint(
+                row["vault_file_id"], generation=row["generation"],
+                plaintext_sha256=digest, size=row["size"], mtime_ns=row["mtime_ns"],
             ):
-                catalog.observe_local_copy(
-                    vault_id=vault["id"],
-                    path=row["path"],
-                    file_type="regular",
-                    size=stat_result.st_size,
-                    mtime_ns=stat_result.st_mtime_ns,
-                    observed_at=now_iso(),
-                )
-                catalog.set_local_fingerprint(
-                    vault_id=vault["id"],
-                    path=row["path"],
-                    plaintext_sha256=digest,
-                    matched_archive_version_id=None,
-                )
+                summary["hashed"] += 1
 
     # Hashed content that reappeared at a cloud-only path is decided before
     # renames and uploads: identical → Local Copy, different → held back.
@@ -2482,10 +2231,7 @@ def cleanup_abandoned_restore_files() -> int:
     """Remove application-owned recovery residues before workers are started."""
     with db() as connection:
         vaults = connection.execute(
-            """
-            SELECT * FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
-            """
+            "SELECT * FROM vaults WHERE lifecycle='active'"
         ).fetchall()
     removed = 0
     for vault in vaults:
@@ -2653,21 +2399,6 @@ def purge_current_snapshot_superseded(
     with catalog_capacity(job), db() as connection:
         notification_service.set_problem(connection, key=f"upload_reconciliation:{job['vault_file_id']}", event="upload_reconciliation", vault_id=job["vault_id"], active=False, email=False)
     return inventory_job_id
-
-
-def _purge_current_snapshot_scan_extras(
-    vault: dict[str, Any], extras: list[tuple[str, str, str, str]], client: Any,
-) -> None:
-    """Discovery has no claim or delete authority. Offer claimed reconciliation.
-
-    The worker's common gate can prove historical duplicates by exact GET, but
-    scans never delete extras by newest/catalog/origin. #459 later admits work.
-    """
-    for path, _version, _key, keeper_id in extras:
-        with db() as connection:
-            row = connection.execute("SELECT vault_file_id FROM archive_versions WHERE id=%s", (keeper_id,)).fetchone()
-        if row:
-            _record_upload_reconciliation_block({"vault_id": vault["id"], "vault_file_id": row["vault_file_id"], "path": path}, "proof_unavailable")
 
 
 def _storage_head_matches_catalog(
@@ -5781,11 +5512,7 @@ def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
 def scan_all_vaults() -> None:
     with db() as connection:
         vaults = connection.execute(
-            """
-            SELECT * FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
-            ORDER BY id
-            """
+            f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
         ).fetchall()
     for vault in vaults:
         scan_vault(vault)
@@ -5806,7 +5533,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
         return 0
     try:
         vault = _current_scan_vault(vault)
-        if not vault.get("enabled", True) or vault_relocation.local_work_suspended(vault):
+        if vault.get("lifecycle", "active") != "active" or vault_relocation.local_work_suspended(vault):
             return 0
         if protection_stop_service.local_work_suspended(vault):
             return 0
@@ -5825,9 +5552,10 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                 lock_vault(connection, int(vault["id"]))
             except LookupError:
                 return 0
-            current = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
-            if (not current or not current["enabled"] or current["relocation_state"] != "ready"
-                    or current["decommission_state"] != "active"
+            current = connection.execute(
+                f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault["id"],),
+            ).fetchone()
+            if (not current or current["lifecycle"] != "active"
                     or current["source_root"] != vault["source_root"]):
                 return 0
             queued = 0
@@ -5869,11 +5597,11 @@ def scan_vaults_with_cloud_error() -> None:
     """
     with db() as connection:
         vaults = connection.execute(
-            """
-            SELECT v.* FROM vaults v
+            f"""
+            {VAULT_ROW_SQL}
             JOIN vault_component_health h
               ON h.vault_id=v.id AND h.component='cloud' AND h.last_error IS NOT NULL
-            WHERE v.enabled=TRUE AND v.decommission_state='active'
+            WHERE v.lifecycle='active'
             ORDER BY v.id
             """
         ).fetchall()
@@ -6174,16 +5902,9 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
             continue
         with db() as connection:
             current = connection.execute(
-                """
-                SELECT relocation_state, decommission_state
-                FROM vaults WHERE id=%s
-                """,
-                (vault["id"],),
+                "SELECT lifecycle FROM vaults WHERE id=%s", (vault["id"],),
             ).fetchone()
-        if current and current["relocation_state"] != "ready":
-            await asyncio.sleep(1)
-            continue
-        if current and current["decommission_state"] != "active":
+        if current and current["lifecycle"] != "active":
             await asyncio.sleep(1)
             continue
         # Identity / mount gate first — never resolve() or walk the configured
@@ -6426,11 +6147,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
 def _enabled_vaults() -> list[dict[str, Any]]:
     with db() as connection:
         return connection.execute(
-            """
-            SELECT * FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
-            ORDER BY id
-            """
+            f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
         ).fetchall()
 
 
@@ -6489,11 +6206,7 @@ async def filesystem_watch_loop() -> None:
 def audit_all_vaults() -> None:
     with db() as connection:
         vaults = connection.execute(
-            """
-            SELECT * FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
-            ORDER BY id
-            """
+            f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
         ).fetchall()
     for vault in vaults:
         vault_id = int(vault["id"])
@@ -6723,8 +6436,7 @@ def persisted_maintenance_ages(
     with db() as connection:
         vaults = connection.execute(
             """
-            SELECT id FROM vaults
-            WHERE enabled=TRUE AND decommission_state='active'
+            SELECT id FROM vaults WHERE lifecycle='active'
             """
         ).fetchall()
         audit_ages: list[float] = []

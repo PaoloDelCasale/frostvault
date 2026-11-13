@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { AppShell } from "@/layout/AppShell";
 import { loadCatalog } from "./vault-settings-harness";
 
-const vaults = [{ id: 1, name: "First", slug: "first" }, { id: 2, name: "Second", slug: "second" }];
+const vaults = [{ id: 1, name: "First", uuid: "first" }, { id: 2, name: "Second", uuid: "second" }];
 
 describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
   const catalog = loadCatalog(locale); const t = (key: string) => catalog[key] ?? key;

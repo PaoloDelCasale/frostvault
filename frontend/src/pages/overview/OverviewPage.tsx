@@ -72,7 +72,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const totals = rows.reduce((sum, row) => ({ protected: sum.protected + row.protected, files: sum.files + row.files }), { protected: 0, files: 0 });
   const pending = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.pending ?? 0), 0);
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
-  const archived = (general.data?.items ?? []).filter((vault) => vault.decommission_state && vault.decommission_state !== "active");
+  const archived = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "stopping" || vault.lifecycle === "tombstone");
   const problems = overview?.open_problem_count;
   const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
     { key: "name", label: t("overview.col_vault") }, { key: "state", label: t("overview.col_state") },

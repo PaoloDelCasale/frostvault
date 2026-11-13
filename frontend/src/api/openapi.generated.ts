@@ -1343,17 +1343,21 @@ export interface components {
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         ArchiveVersionItem: {
             availability?: string | null;
+            availability_checked_at?: string | null;
             created_at?: string | null;
             id: string;
             integrity?: string | null;
+            not_selectable_reason?: string | null;
             object_key?: string | null;
             provider_version_id?: string | null;
             recoverable: boolean;
-            restore_expiry?: string | null;
-            restore_state?: string | null;
+            /**
+             * @description Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.
+             * @enum {string}
+             */
+            role: "current" | "pending";
             size?: number | null;
             storage_class?: string | null;
-            storage_class_source?: string | null;
             /** @enum {string|null} */
             upload_verification_requested?: "s3_checksum" | "read_back" | null;
             verification_egress_bytes?: number | null;
@@ -1361,17 +1365,6 @@ export interface components {
             /** @enum {string|null} */
             verification_method?: "s3_checksum" | "read_back" | null;
             verified_at?: string | null;
-            version_number: number;
-        } & {
-            [key: string]: unknown;
-        };
-        ArchiveVersionSummary: {
-            object_key?: string | null;
-            size?: number | null;
-            storage_class?: string | null;
-            storage_class_source?: string | null;
-            uploaded_at?: string | null;
-            version_number?: number;
         } & {
             [key: string]: unknown;
         };
@@ -1589,28 +1582,26 @@ export interface components {
             previous_month_delta?: number | null;
             pricing_effective_at?: string;
             vaults?: {
-                decommission_state: string;
                 id: number;
+                /** @enum {string} */
+                lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
                 monthly_estimate: number;
                 name: string;
                 open_problem_count: number;
-                slug: string;
+                uuid: string;
             }[];
         };
         GeneralVault: {
-            /** @enum {string} */
-            decommission_state?: "active" | "decommissioning" | "decommissioned";
-            decommissioned_at?: string | null;
-            enabled: boolean;
             id: number;
+            /** @enum {string} */
+            lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
             name: string;
             paused?: boolean;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
-            slug: string;
             source_root: string;
-            uuid?: string;
+            uuid: string;
         };
         GeneralVaultReconnectPayload: {
             reason: string;
@@ -1815,11 +1806,6 @@ export interface components {
         LoginRequest: {
             /** Password */
             password: string;
-            /**
-             * Username
-             * @default
-             */
-            username: string;
         };
         MeResponse: {
             auth_method: components["schemas"]["AuthMethod"];
@@ -2288,25 +2274,31 @@ export interface components {
             creation_mode?: components["schemas"]["VaultCreationMode"];
             name: string;
             relative_path?: string;
-            slug?: string;
             volume_alias?: string;
         };
         VaultCreateResponse: {
             creation_mode?: components["schemas"]["VaultCreationMode"];
             id: number;
             name: string;
-            slug: string;
             uuid: string;
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
-        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). Restore progress is independent. */
+        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
         VaultFileListItem: {
             availability?: string | null;
+            /**
+             * @description Exact cleanup of superseded versions.
+             * @enum {string|null}
+             */
+            cleanup?: "waiting" | "in_progress" | "blocked" | null;
             cleanup_eligible?: boolean;
             cloud_exists?: number | boolean;
             cloud_only_conflict?: boolean;
             cloud_size?: number | null;
+            /** @description Explicit Current Snapshot reference; null when the file has none. */
+            current_version_id?: string | null;
+            id?: string;
             integrity?: string | null;
             last_known_at?: string | null;
             last_known_state?: string;
@@ -2316,11 +2308,13 @@ export interface components {
             modified_at?: string | null;
             name: string;
             path: string;
+            /** @description Explicit replacement in progress; never recoverable. */
+            pending_version_id?: string | null;
             previous_snapshot_protected?: boolean;
+            reconciliation_block?: string | null;
             recover_eligible?: boolean;
-            recoverable_version_count?: number;
-            restore_expiry?: string | null;
-            restore_state?: string | null;
+            /** @description Current exists, is verified and available. */
+            recoverable?: boolean;
             state: string;
             storage_class?: string | null;
             /** @constant */
@@ -2339,9 +2333,11 @@ export interface components {
         };
         VaultListItem: {
             id: number;
+            /** @enum {string} */
+            lifecycle?: "active" | "reconnect_required" | "stopping" | "tombstone";
             name: string;
             paused?: boolean;
-            slug: string;
+            uuid: string;
         } & {
             [key: string]: unknown;
         };
@@ -2434,8 +2430,6 @@ export interface components {
             name: string;
             /** Relative Path */
             relative_path?: string | null;
-            /** Slug */
-            slug?: string | null;
             /** Volume Alias */
             volume_alias?: string | null;
         };

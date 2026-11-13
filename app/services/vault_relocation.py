@@ -355,5 +355,8 @@ def local_work_suspended(vault: dict[str, Any]) -> bool:
     vault_id = vault.get("id", vault.get("vault_id"))
     return (
         (vault_id is not None and int(vault_id) in _runtime_suspended_vaults)
-        or str(vault.get("relocation_state") or "ready") != "ready"
+        or (
+            str(vault["lifecycle"]) == "reconnect_required" if "lifecycle" in vault
+            else str(vault.get("relocation_state") or "ready") != "ready"
+        )
     )
