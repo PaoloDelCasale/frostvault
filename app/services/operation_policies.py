@@ -316,7 +316,6 @@ def queue_auto_uploads(
     *,
     vault_id: int,
     source_root: str,
-    requested_by: int,
     now: datetime | None = None,
     retry_failed_only: bool = False,
 ) -> int:
@@ -456,7 +455,6 @@ def queue_auto_local_cleanups(
     connection: Any,
     *,
     vault_id: int,
-    requested_by: int,
     now: datetime | None = None,
 ) -> int:
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""

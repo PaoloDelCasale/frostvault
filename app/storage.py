@@ -1915,7 +1915,6 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                         result["auto_local_cleanups"] = queue_auto_local_cleanups(
                             connection,
                             vault_id=int(vault["id"]),
-                            requested_by=None,
                         )
             except Exception as exc:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
@@ -1937,7 +1936,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     if local_access.local_operations_allowed:
                         result["auto_uploads"] = queue_auto_uploads(
                             connection, vault_id=vault_id,
-                            source_root=str(vault["source_root"]), requested_by=None,
+                            source_root=str(vault["source_root"]),
                         )
                 if "auto_uploads" in result:
                     _note_worker_ok("auto_upload_queue", vault_id)
@@ -1981,7 +1980,6 @@ def _apply_auto_renames(
     vault: dict[str, Any],
     *,
     root: Path,
-    requested_by: int | None = None,
     hash_missing: bool = True,
     recognize_renames: bool = True,
 ) -> dict[str, int]:
@@ -2058,7 +2056,6 @@ def _apply_auto_renames(
 def apply_auto_renames(
     vault: dict[str, Any],
     *,
-    requested_by: int | None = None,
     _connection: Any | None = None,
     _root: Path | None = None,
     _recognize_renames: bool = True,
@@ -2069,7 +2066,7 @@ def apply_auto_renames(
         # Preserve the caller-owned transaction seam used by direct catalog
         # callers and the relocation rollback tests.
         return _apply_auto_renames(
-            _connection, vault, root=root, requested_by=requested_by,
+            _connection, vault, root=root,
             recognize_renames=_recognize_renames,
         )
     scan_id = now_iso()
@@ -2082,7 +2079,6 @@ def apply_auto_renames(
             connection,
             vault,
             root=root,
-            requested_by=requested_by,
             hash_missing=False,
             recognize_renames=_recognize_renames,
         )
@@ -5248,7 +5244,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                     (now or datetime.now(timezone.utc)).isoformat())
             queued += queue_auto_uploads(
                 connection, vault_id=int(vault["id"]), source_root=str(root),
-                requested_by=None, now=now, retry_failed_only=retry_failed_only,
+                now=now, retry_failed_only=retry_failed_only,
             )
             if "root_identity" in vault:
                 _current_verified_scan_row(connection, vault)

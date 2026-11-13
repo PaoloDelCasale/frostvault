@@ -512,13 +512,11 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 next_pass = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=before_recovery + timedelta(days=1),
                 )
                 after_retention = queue_auto_local_cleanups(
                     connection,
                     vault_id=2,
-                    requested_by=1,
                     now=before_recovery + timedelta(days=91),
                 )
 

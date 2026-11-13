@@ -69,8 +69,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         """Hash Local Copies, settle reappearances, queue automatic uploads."""
         storage.apply_auto_renames(self.vault())
         with self.db() as connection:
-            return queue_auto_uploads(connection, vault_id=2, source_root=str(self.source),
-                                      requested_by=1)
+            return queue_auto_uploads(connection, vault_id=2, source_root=str(self.source))
 
     def run_queued(self) -> list[int]:
         ids = [r["id"] for r in self.rows(

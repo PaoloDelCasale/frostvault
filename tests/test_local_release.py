@@ -104,7 +104,7 @@ class LocalReleasePolicyTests(unittest.TestCase):
         with (patch("app.services.operation_policies.get_policy", return_value=OperationPolicy(local_release_after_days=90)),
               patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)),
               patch("app.catalog.ArchiveCatalog") as catalog):
-            self.assertEqual(queue_auto_local_cleanups(connection, vault_id=1, requested_by=1), 0)
+            self.assertEqual(queue_auto_local_cleanups(connection, vault_id=1), 0)
             catalog.assert_not_called()
             self.assertEqual(connection.execute.call_count, 1)  # Only the Vault health gate.
 

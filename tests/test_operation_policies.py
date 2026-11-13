@@ -331,7 +331,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             paths = [
@@ -367,7 +366,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             total = connection.execute("SELECT COUNT(*) AS total FROM jobs").fetchone()[
@@ -409,7 +407,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             self.assertEqual(skipped, 0)
@@ -428,7 +425,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             jobs = connection.execute(
@@ -472,7 +468,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                     connection,
                     vault_id=2,
                     source_root=str(self.source),
-                    requested_by=1,
                     now=now,
                 ),
                 0,
@@ -485,14 +480,12 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             again = queue_auto_uploads(
                 connection,
                 vault_id=2,
                 source_root=str(self.source),
-                requested_by=1,
                 now=now,
             )
             jobs = connection.execute(
@@ -561,7 +554,6 @@ class AutoUploadEligibilityTests(unittest.TestCase):
             queued = queue_auto_local_cleanups(
                 connection,
                 vault_id=2,
-                requested_by=1,
                 now=now,
             )
             jobs = connection.execute(

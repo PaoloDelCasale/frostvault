@@ -166,7 +166,7 @@ class QueueFixture(unittest.TestCase):
         with self.db() as connection:
             return queue_auto_uploads(
                 connection, vault_id=vault_id, source_root=str(self.roots[vault_id]),
-                requested_by=1, now=self.clock,
+                now=self.clock,
             )
 
     def jobs(self, vault_id=None):
