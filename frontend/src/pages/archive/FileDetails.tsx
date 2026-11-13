@@ -68,6 +68,9 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             </dl>
             {item.recover_eligible && <Button className="w-fit" disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
           </section>
+          {item.state === "stopped" && <section role="note" className="grid justify-items-start gap-3 rounded-card border border-line p-3" data-testid="stopped-help"><p>{t("essential.stopped_help")}</p>
+            {item.upload_eligible && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.upload_now")}</Button>}
+          </section>}
           {item.state === "excluded" && <p role="note" className="rounded-card border border-line p-3">{t("essential.excluded_help")}</p>}
           {item.state === "unsupported" && <p role="note" className="rounded-card border border-line p-3" data-testid="unsupported-help">{t(item.local_file_type === "symlink" ? "essential.unsupported_symlink_help" : "essential.unsupported_other_help")}</p>}
           {item.state === "problem" && <section className="grid gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/50 p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>

@@ -99,6 +99,12 @@ rules). It is not pending work and never counts against a Vault's protection;
 a manual upload remains possible.
 _Avoid_: Ignored, Skipped, Pending
 
+**Stopped Upload**:
+The protection state of a present Local Copy whose upload the Owner stopped: it
+is kept out of automatic upload until its content changes. It is not pending
+work and not protected; a manual upload remains possible.
+_Avoid_: Held, Pending, Paused
+
 **Unsupported**:
 The protection state of a local entry FrostVault cannot archive: a symbolic
 link, which is never followed, or a special file such as a pipe, socket or

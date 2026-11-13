@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, CircleAlert, File as FileIcon, Folder, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, File as FileIcon, Folder, Search, X } from "lucide-react";
 import { apiRequest } from "@/api/client";
 import type { ArchiveListItem, FilesResponse } from "@/api/types";
 import { vaultApi } from "@/api/vault";
@@ -22,7 +22,7 @@ export type FileBrowserProps = { t: Translate; vaultId: number; vaultName: strin
 export const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 100;
 /** List filters; "" is every file. Counts come from the Vault-wide `/api/stats`. */
-const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["excluded", "files.chip_excluded"], ["unsupported", "files.chip_unsupported"], ["problem", "files.chip_problem"]] as const;
+const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["stopped", "files.chip_stopped"], ["excluded", "files.chip_excluded"], ["unsupported", "files.chip_unsupported"], ["problem", "files.chip_problem"]] as const;
 const parentOf = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 
 function FolderStates({ item, t }: { item: ArchiveListItem; t: Translate }) {
@@ -90,6 +90,16 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     catch (error) { setMessage(String(error)); }
     finally { setBusy(false); }
   }
+  /** Stopped Uploads of this level (#630): files, and folders holding some. */
+  const stoppedTargets = global ? [] : rows.filter(({ item }) => item.type === "directory" ? Number((item.state_counts as Record<string, number> | undefined)?.stopped ?? 0) > 0 : item.state === "stopped");
+  const stoppedCount = stoppedTargets.reduce((sum, { item }) => sum + (item.type === "directory" ? Number((item.state_counts as Record<string, number>).stopped) : 1), 0);
+  async function uploadStopped() {
+    if (busy) return;
+    setBusy(true); setMessage("");
+    try { for (const target of stoppedTargets) await vaultApi(target.vaultId).post("/api/upload", { path: target.item.path, is_directory: target.item.type === "directory" }); refresh(); }
+    catch (error) { setMessage(String(error)); }
+    finally { setBusy(false); }
+  }
   const counts = (stats.data?.states ?? {}) as Record<string, number>;
   const count = (value: string) => value ? counts[value] ?? 0 : Object.values(counts).reduce((sum, n) => sum + n, 0);
   const total = query.data?.total ?? 0;
@@ -149,6 +159,11 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     {searching && <p className="text-sm text-muted">{global ? t("files.results_all") : t("files.results_vault", { name: vaultName })}</p>}
     {query.isPending && <p role="status" data-testid="file-list-loading">{t("ui.file_list_loading")}</p>}{query.error && <div role="alert" data-testid="file-list-error"><p>{t("ui.file_list_error")}</p><Button variant="secondary" onClick={() => void query.refetch()}>{t("ui.file_list_retry")}</Button></div>}
     {query.data?.aggregate_status === "loading" && <p role="status">{t("ui.file_list_loading")}</p>}
+    {stoppedCount > 0 && <div role="note" className="flex min-w-0 flex-wrap items-center gap-3 rounded-card border border-line bg-surface p-3 text-sm" data-testid="stopped-uploads">
+      <CirclePause className="size-4 shrink-0 text-muted" aria-hidden="true" />
+      <p className="min-w-0 flex-1">{t("files.stopped_notice", { count: formatNumber(stoppedCount) })}</p>
+      <Button variant="secondary" disabled={busy} onClick={() => void uploadStopped()}>{t("essential.upload_now")}</Button>
+    </div>}
     {selected.length > 0 && <div className="sticky top-[72px] z-10 flex min-w-0 flex-wrap items-center gap-2 rounded-card border border-green bg-surface p-2 shadow-md" role="region" aria-label={t("files.selection_bar")} data-testid="selection-bar">
       <span className="px-2 font-semibold tabular-nums" role="status">{t("files.selected", { count: selected.length })}</span>
       <Button disabled={busy || selected.some((row) => !eligible(row, "recover"))} onClick={() => setRecover([...selected])}>{t("ui.row_action_recover")}</Button>

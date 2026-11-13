@@ -17,7 +17,7 @@ import { vaultFilesUrl } from "@/router";
 const STATS_REFRESH_MS = 60_000;
 type SortKey = "name" | "state" | "protected" | "local" | "cloud" | "cost" | "problems";
 /** Worst first, so an ascending sort puts the Vaults that need attention on top. */
-const STATE_RANK: Record<string, number> = { suspended: 0, problem: 1, unconfirmed: 2, pending: 3, cloud_only: 4, protected: 5, unsupported: 6, excluded: 7, empty: 8, unknown: 9 };
+const STATE_RANK: Record<string, number> = { suspended: 0, problem: 1, unconfirmed: 2, pending: 3, stopped: 4, cloud_only: 5, protected: 6, unsupported: 7, excluded: 8, empty: 9, unknown: 10 };
 
 type Row = {
   id: number; name: string; state: string; protected: number; files: number; local: number; cloud: number;
@@ -64,13 +64,15 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const money = (value: number) => `${value.toFixed(2)} ${overview?.currency ?? ""}`.trim();
   const rows = vaults.map((vault, index) => rowFor(vault, stats[index]?.data, overview));
   const sorted = [...rows].sort((a, b) => {
-    const value = (row: Row) => sort.key === "name" ? row.name.toLocaleLowerCase() : sort.key === "state" ? STATE_RANK[row.state] ?? 9 : row[sort.key] ?? -1;
+    const value = (row: Row) => sort.key === "name" ? row.name.toLocaleLowerCase() : sort.key === "state" ? STATE_RANK[row.state] ?? 10 : row[sort.key] ?? -1;
     const [left, right] = [value(a), value(b)];
     const order = left < right ? -1 : left > right ? 1 : a.name.localeCompare(b.name);
     return sort.ascending ? order : -order;
   });
   const totals = rows.reduce((sum, row) => ({ protected: sum.protected + row.protected, files: sum.files + row.files }), { protected: 0, files: 0 });
   const pending = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.pending ?? 0), 0);
+  // Stopped Uploads wait for the Owner, not for the queue (#630): counted apart.
+  const stoppedFiles = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.stopped ?? 0), 0);
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
   const archived = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "stopping" || vault.lifecycle === "tombstone");
   const problems = overview?.open_problem_count;
@@ -106,7 +108,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
         <Tile testId="tile-protected" icon={<ShieldCheck className="size-4" />} tone="good" label={t("overview.tile_protected")}
           value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? t("overview.tile_protected_of", { total: number.format(totals.files) }) : null} />
         <Tile testId="tile-pending" icon={<Clock className="size-4" />} tone={pending ? "warn" : "neutral"} label={t("overview.tile_pending")}
-          value={loaded ? number.format(pending) : "—"} detail={t("overview.tile_pending_hint")} />
+          value={loaded ? number.format(pending) : "—"} detail={<>{t("overview.tile_pending_hint")}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: number.format(stoppedFiles) })}</span>}</>} />
         <Tile testId="tile-problems" icon={<CircleAlert className="size-4" />} tone={problems ? "bad" : "neutral"} label={t("overview.tile_problems")}
           value={problems === undefined ? "—" : number.format(problems)}
           detail={problems ? <a href="/problems" className="font-semibold text-ink underline">{t("overview.tile_problems_link")}</a> : t("overview.tile_problems_none")} />

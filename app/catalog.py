@@ -27,7 +27,9 @@ from .services.directory_aggregates import (
     mark_path_dirty,
     mark_paths_dirty,
     request_vault_rebuild,
+    stopped_upload_counts,
 )
+from .services.operation_policies import stopped_upload_sql
 
 
 class VaultFileNotFound(LookupError):
@@ -1773,13 +1775,22 @@ class ArchiveCatalog:
     ) -> tuple[list[dict[str, Any]], int]:
         parent_path = directory or ""
         folder_state = state
+        stopped: dict[str, int] = {}
         if self.protection_unconfirmed:
             folder_state = "" if not state or state == "unconfirmed" else "__none__"
+        else:
+            # The projection holds Stopped Uploads as pending (#630).
+            from .services.operation_policies import get_policy
+            stopped = stopped_upload_counts(
+                self.connection, vault_id, parent_path=parent_path,
+                policy=get_policy(self.connection, vault_id),
+            )
         folder_total = count_child_directories(
             self.connection,
             vault_id,
             parent_path=parent_path,
             state_filter=folder_state,
+            stopped=stopped,
         )
         file_total = self._count_direct_child_files(
             vault_id,
@@ -1798,6 +1809,7 @@ class ArchiveCatalog:
                 limit=page_size,
                 offset=offset,
                 unconfirmed=self.protection_unconfirmed,
+                stopped=stopped,
             )
             items.extend(folders)
             remaining = page_size - len(items)
@@ -1868,6 +1880,7 @@ class ArchiveCatalog:
             SELECT
                 {self._state_sql(vault_id)} AS protection_state,
                 {self._path_excluded_sql(vault_id)} AS path_excluded,
+                {stopped_upload_sql("f")} AS upload_stopped,
                 CASE WHEN cur.availability='unknown'
                      THEN greatest(f.local_observed_at, cur.verified_at)
                      ELSE greatest(f.local_observed_at, cur.verified_at, cur.availability_checked_at)

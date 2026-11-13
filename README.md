@@ -51,7 +51,7 @@ Search remains global across every file in the selected vault.
 - New vaults can use an empty managed root or adopt any existing directory
   under a Source Volume that does not overlap another vault root.
 - The file browser is home: a sidebar lists protected folders, All / Cloud only /
-  Pending / Excluded / Problems filters and **General**. Home reopens the last-used Vault at
+  Pending / Stopped by you / Excluded / Problems filters and **General**. Home reopens the last-used Vault at
   its root; search matches name/path across all protected folders and preserves
   Vault identity even for identical paths. Folder rows show protection counts.
 - Selection offers only **Recover**, **Free space now** and single-file **Details**.
@@ -68,7 +68,7 @@ Search remains global across every file in the selected vault.
 
 ## Automatic protection
 
-Browsing and statistics use six **protection states**, not copy-presence labels:
+Browsing and statistics use these **protection states**, not copy-presence labels:
 
 - **Pending**: new or changed local content not yet verified. A retained verified
   previous snapshot is indicated separately; it does not protect the new bytes.
@@ -88,10 +88,16 @@ Browsing and statistics use six **protection states**, not copy-presence labels:
   not expected to be in the cloud (an older verified copy is still indicated).
   A Problem, an unconfirmed observation or a verified cloud copy of the same
   bytes (Protected) take precedence. Manual upload requests stay explicit.
+- **Stopped by you** (`stopped`): a present Local Copy whose upload the Owner
+  stopped (single or bulk cancel, manual or automatic upload). Automatic upload
+  leaves it alone until its content is observed again; it is not pending work,
+  not queued and not protected. Details and the folder listing say so and offer
+  **Upload now**. A failed upload stays a Problem. See
+  [ADR-0039](docs/adr/0039-stopped-upload-is-a-protection-state.md).
 
-Folders show counts for all six states; Vault statistics use the same derivation.
-The aggregate headline prioritizes Problem, Unconfirmed, Pending, Protected, then
-Cloud only; Excluded appears as the headline only when nothing else is present
+Folders show counts for every state; Vault statistics use the same derivation.
+The aggregate headline prioritizes Problem, Unconfirmed, Pending, Stopped by you,
+Protected, then Cloud only; Excluded appears as the headline only when nothing else is present
 (empty Vaults have no headline state). **Protection suspended** is a
 separate per-Vault flag: pausing uploads does not invalidate already verified
 content. None of these display states authorizes deleting a Local Copy or cloud

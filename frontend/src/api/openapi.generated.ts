@@ -2285,7 +2285,7 @@ export interface components {
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
-        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
+        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
         VaultFileListItem: {
             availability?: string | null;
             /**

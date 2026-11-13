@@ -160,6 +160,29 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertEqual(inbox.count_open_problems(c),0)
             self.assertEqual(inbox.count_unread_notifications(c),0)
 
+    def test_a_stopped_upload_is_not_a_delay_but_a_failed_one_still_is(self):
+        # #630: the Owner stopped it; nothing will start it, so it is not overdue work.
+        from app.catalog import ArchiveCatalog
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
+            catalog = ArchiveCatalog(c)
+            observed = (NOW-timedelta(hours=25)).isoformat()
+            ids = {name: catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
+                                                    mtime_ns=1,observed_at=observed)
+                   for name in ('stopped.jpg','failed.jpg')}
+            for name, status, origin, key in (('stopped.jpg','cancelled','manual','job.upload_stopped'),
+                                              ('failed.jpg','failed','automatic',None)):
+                c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,"
+                          "updated_at,finished_at) VALUES (%s,%s,'upload',%s,%s,%s,%s,%s,%s)",
+                          (self.vault_id,ids[name],status,origin,key,observed,observed,observed))
+            vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
+            monitor.monitor_vault(c,vault,now=NOW)
+            note = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchone()
+            self.assertEqual((note['message_params']['pending'],note['message_params']['overdue']),(1,1))
+            timers = {row['path']: row['pending_since'] for row in c.execute(
+                'SELECT path, pending_since FROM files WHERE vault_id=%s',(self.vault_id,)).fetchall()}
+            self.assertIsNone(timers['stopped.jpg'])
+            self.assertIsNotNone(timers['failed.jpg'])
+
     def test_source_and_suspension_are_blocked_with_no_secret_details(self):
         with self.connect() as c:
             c.execute("INSERT INTO vault_operation_policies(vault_id,auto_upload,suspended_at) VALUES (%s,FALSE,%s)",
@@ -244,7 +267,13 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 catalog.observe_local_copy(vault_id=self.vault_id,path=name,
                                            file_type='symlink' if state == 'unsupported' else 'regular',
                                            size=1024**3,mtime_ns=1,observed_at=NOW)
-                if state in ('pending', 'excluded', 'unsupported'):
+                if state == 'stopped':
+                    # #630: an upload the Owner stopped after this observation.
+                    c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,"
+                              "updated_at,finished_at) VALUES (%s,%s,'upload','cancelled','manual',"
+                              "'job.upload_stopped',%s,%s,%s)",
+                              (self.vault_id,catalog.get_file_by_path(self.vault_id,name)['id'],NOW,NOW,NOW))
+                if state in ('pending', 'stopped', 'excluded', 'unsupported'):
                     continue
                 fingerprint(catalog,self.vault_id,name,digest)
                 version = protect(catalog,self.vault_id,name,digest,provider_version_id=state)
