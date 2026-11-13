@@ -257,14 +257,111 @@ class PreflightQueueTests(unittest.TestCase):
             self.assertEqual(state['status'], 'ready', state.get('remediation'))
             self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='cloud_preflight_blocked' AND problem_status='open'").fetchone()['n'], 0)
 
-    def test_scans_and_audits_share_one_warning_without_suppressing_local_catalog(self):
+    def test_scans_share_one_warning_without_suppressing_local_catalog(self):
+        # A blocked gate sends one installation warning. Scans add nothing; a
+        # failed audit leaves its Vault unconfirmed, so that Vault says why
+        # in-app (#620), without a second email.
         with patch('app.storage.runtime_status', {}), patch('app.storage._verified_local_scan', return_value=(2, {}, None, True)), patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Grant s3:GetBucketPublicAccessBlock')):
             for vault in self.vaults:
                 self.assertEqual(storage.scan_vault(vault)['local'], 2)
             storage.audit_all_vaults()
         with self.db() as c:
-            rows = c.execute("SELECT event FROM notifications WHERE problem_status='open'").fetchall()
-            self.assertEqual(rows, [{'event': 'cloud_preflight_blocked'}])
+            rows = c.execute("SELECT event, vault_id, message_params->>'remediation' AS reason FROM notifications "
+                             "WHERE problem_status='open' ORDER BY event, vault_id").fetchall()
+            audits = [row for row in rows if row['event'] == 'catalog_audit_failed']
+            self.assertEqual([row['event'] for row in rows if row not in audits], ['cloud_preflight_blocked'])
+            self.assertEqual([row['vault_id'] for row in audits], [vault['id'] for vault in self.vaults])
+            self.assertEqual({row['reason'] for row in audits}, {'Grant s3:GetBucketPublicAccessBlock'})
+            emailed = c.execute("SELECT count(*) n FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id "
+                                "WHERE n.event='catalog_audit_failed' AND d.channel='email'").fetchone()['n']
+            self.assertEqual(emailed, 0)
+
+    def test_failed_audit_reruns_when_s3_is_ready_again_and_confirms_the_vault(self):
+        # #620: a failed audit made every Vault unconfirmed, without a Problem,
+        # until the next weekly pass. It must recover with S3, within minutes.
+        import time
+        from app.services import audit_failures
+
+        self.addCleanup(storage._note_audit_outcome, False)
+        with self.db() as c:
+            c.execute(
+                "INSERT INTO cloud_preflight_state(id, status, remediation, failure_count, next_probe_at) "
+                "VALUES (1, 'blocked', 'S3 access was refused', 3, '2000-01-01T00:00:00+00:00')"
+            )
+        refused = gate.ReadinessFailure('The S3 bucket name is not configured. Set VAULT_S3_BUCKET to the archive bucket')
+        with patch('app.storage.runtime_status', {}), patch('app.storage._validate_cloud_vault', side_effect=refused):
+            storage.audit_all_vaults()
+        failed_at = time.monotonic()
+
+        def states(vault_id):
+            response = self.client.get(f'/api/stats?vault_id={vault_id}')
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()['states']
+
+        def audit_problems():
+            response = self.client.get('/api/problems')
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json(), [item for item in response.json()['items']
+                                     if item['event'] == audit_failures.EVENT]
+
+        for vault in self.vaults:
+            self.assertEqual(states(vault['id']), {'unconfirmed': 2})
+        body, problems = audit_problems()
+        self.assertEqual(sorted(item['vault_id'] for item in problems), [1, 2])
+        self.assertIn('The S3 bucket name is not configured', problems[0]['body'])
+        self.assertGreaterEqual(body['open_problem_count'], 2)
+        # The next automatic try is minutes away, not a week.
+        self.assertFalse(storage.audit_retry_due(failed_at + audit_failures.RETRY_MIN_SECONDS - 1))
+        self.assertTrue(storage.audit_retry_due(failed_at + audit_failures.RETRY_MIN_SECONDS + 1))
+
+        with self.db() as c:
+            # The gate's own reprobe delay (seconds) has elapsed.
+            c.execute("UPDATE cloud_preflight_state SET next_probe_at='2000-01-01T00:00:00+00:00'")
+        audited = []
+        with (
+            patch('app.storage.runtime_status', {}),
+            patch('app.storage._validate_cloud_vault'),
+            patch('app.storage.s3_client'),
+            patch('app.storage._submit_maintenance', side_effect=lambda name, func, *args: func(*args)),
+            patch('app.storage.audit_vault_catalog',
+                  side_effect=lambda connection, vault, client: audited.append(vault['id']) or {'healthy': 1}),
+        ):
+            storage.reprobe_cloud_readiness_once()
+        # The gate's return re-ran the audits, well before the backoff elapsed.
+        self.assertLess(time.monotonic(), failed_at + audit_failures.RETRY_MIN_SECONDS)
+        self.assertEqual(audited, [1, 2])
+        self.assertFalse(storage.audit_retry_due(time.monotonic() + audit_failures.RETRY_MAX_SECONDS))
+        for vault in self.vaults:
+            self.assertNotIn('unconfirmed', states(vault['id']))
+        body, problems = audit_problems()
+        self.assertEqual(problems, [])
+        self.assertEqual(body['open_problem_count'], 0)
+
+    def test_an_audit_failing_without_s3_retries_on_a_bounded_backoff(self):
+        from app.services import audit_failures
+
+        self.assertEqual([audit_failures.retry_seconds(n) for n in range(1, 8)],
+                         [300, 600, 1200, 2400, 3600, 3600, 3600])
+        self.addCleanup(storage._note_audit_outcome, False)
+        with self.db() as c:
+            c.execute("INSERT INTO cloud_preflight_state(id, status, remediation, failure_count, next_probe_at) "
+                      "VALUES (1, 'ready', NULL, 0, '2000-01-01T00:00:00+00:00')")
+        error = ClientError({'Error': {'Code': 'SlowDown', 'Message': 'secret-url'}}, 'ListObjectVersions')
+        with (
+            patch('app.storage.runtime_status', {}), patch('app.storage._validate_cloud_vault'),
+            patch('app.storage.s3_client'), patch('app.storage.audit_vault_catalog', side_effect=error),
+        ):
+            storage.audit_all_vaults()
+            with self.db() as c:
+                params = c.execute("SELECT message_params FROM notifications WHERE event=%s AND vault_id=1",
+                                   (audit_failures.EVENT,)).fetchone()['message_params']
+            self.assertEqual(params['remediation_key'], audit_failures.CLOUD_REQUEST_KEY)
+            self.assertNotIn('secret-url', json.dumps(params))
+            first = storage._audit_retry['due']
+            # The retry audits only the failed Vaults and doubles its delay.
+            storage.audit_vaults_with_error()
+            self.assertGreater(storage._audit_retry['due'] - first, audit_failures.RETRY_MIN_SECONDS / 2)
+            self.assertEqual(storage._audit_retry['failures'], 2)
 
     def test_single_flight_sixteen_workers_restart_and_safe_remediation(self):
         entered, release = threading.Event(), threading.Event()
