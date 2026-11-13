@@ -100,6 +100,35 @@ def provider_identity(client: Any) -> str:
     return canonical({"endpoint": endpoint, "region": region if isinstance(region, str) else None})
 
 
+# Whether the catalog ever wrote, or may have written, the object key of the
+# ``files f`` row's path (one %s: that key). Every holder of the path counts:
+# the file itself and the files Path History shows there before it. Any
+# Archive Version at the key, any upload attempt of the path and any copy to
+# the key say yes; only a key the catalog never sent to says no (ADR-0038).
+KEY_WRITTEN_SQL = """(EXISTS (SELECT 1 FROM archive_versions kv WHERE kv.object_key = %s)
+    OR EXISTS (SELECT 1 FROM upload_attempts ka JOIN upload_snapshots ks ON ks.id = ka.snapshot_id
+               WHERE ka.file_id IN (SELECT f.id UNION ALL
+                                    SELECT h.file_id FROM file_path_history h
+                                    WHERE h.vault_id = f.vault_id AND h.path = f.path)
+                 AND ks.vault_id = f.vault_id AND ks.path = f.path)
+    OR EXISTS (SELECT 1 FROM copy_attempts kc
+               WHERE kc.file_id IN (SELECT f.id UNION ALL
+                                    SELECT h.file_id FROM file_path_history h
+                                    WHERE h.vault_id = f.vault_id AND h.path = f.path)
+                 AND kc.destination_key = %s))"""
+
+
+def presumed_empty_inventory() -> dict[str, list[str]]:
+    """The pin of a key the catalog never wrote (ADR-0038): nothing, unobserved.
+
+    It is never replacement authority: cleanup deletes only catalogued
+    candidates after its own fresh listing, and the post-publication listing
+    blocks completion on anything else at the key. A proof of absence compares
+    against it like any pin, so an unknown version keeps the send blocked.
+    """
+    return {"versions": [], "markers": []}
+
+
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
     versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key), bucket)
     return {"versions": sorted(versions), "markers": sorted(markers)}

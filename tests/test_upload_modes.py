@@ -384,7 +384,10 @@ class UploadModeTests(unittest.TestCase):
 
     def test_verified_proof_is_not_completed_until_guarded_cleanup_succeeds(self):
         self.queue()
-        with patch("app.storage.cleanup_superseded_upload", side_effect=RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")):
+        refused = RuntimeError("Snapshot found uncatalogued cloud content; no deletion allowed")
+        # A keeper that superseded nothing owes only the postcondition (#622).
+        with patch("app.storage.cleanup_superseded_upload", side_effect=refused), \
+                patch("app.storage.require_sole_keeper", side_effect=refused):
             self.run_worker()
         job, versions, _ = self.rows()
         self.assertEqual(versions[0]["integrity"], "verified")

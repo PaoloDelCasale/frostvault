@@ -54,23 +54,46 @@ class _Limits:
     catalog_per_vault: int = 2
 
 
+# A queued waiter is woken by the release that makes room for it; without a
+# wake-up it still runs its checkpoint at this cadence, the same second the
+# claim checkpoint amortizes its remote lease read to (ADR-0034, #622).
+RECHECK_SECONDS = 1.0
+
+
 class _Capacity:
-    """FIFO weighted permits; only claimed foreground threads can wait here."""
+    """FIFO weighted permits; only claimed foreground threads can wait here.
+
+    Waiters do not poll: each one sleeps on its own Event, and a release (or a
+    waiter leaving the queue) wakes only the head of the queue when it now
+    fits. A waiter that is not woken runs its checkpoint every
+    ``RECHECK_SECONDS``, so cancellation, shutdown and claim loss still win
+    while queued.
+    """
 
     def __init__(self, count: int, byte_limit: int = 1):
         if count < 1 or byte_limit < 1:
             raise ValueError("Upload capacity must be positive")
         self.count, self.byte_limit = count, byte_limit
         self._condition = threading.Condition()
-        self._waiting: deque[object] = deque()
+        self._waiting: deque[tuple[threading.Event, int]] = deque()
         self._count = self._bytes = 0
+
+    def _fits(self, weight: int) -> bool:
+        return self._count < self.count and self._bytes + weight <= self.byte_limit
+
+    def _wake_head(self) -> None:
+        """Under the mutex: wake the head waiter when it can now be admitted."""
+        if self._waiting:
+            event, weight = self._waiting[0]
+            if self._fits(weight):
+                event.set()
 
     @contextmanager
     def take(self, check: Callable[[], None], weight: int = 1) -> Iterator[None]:
         weight = max(1, weight)
         if weight > self.byte_limit:
             raise ValueError("Upload allocation exceeds its stage byte capacity")
-        ticket = object()
+        ticket = (threading.Event(), weight)
         acquired = False
         with self._condition:
             self._waiting.append(ticket)
@@ -79,15 +102,18 @@ class _Capacity:
                 # Never call durable claim checks while holding this mutex.
                 check()
                 with self._condition:
-                    if (self._waiting[0] is ticket and self._count < self.count
-                            and self._bytes + weight <= self.byte_limit):
+                    if self._waiting[0] is ticket and self._fits(weight):
                         self._waiting.popleft()
                         self._count += 1
                         self._bytes += weight
                         acquired = True
-                        self._condition.notify_all()
+                        # The next waiter may fit in what is left.
+                        self._wake_head()
                         break
-                    self._condition.wait(timeout=0.1)
+                    # Cleared under the mutex: a release after this point sets
+                    # it again, so the wait below cannot miss that wake-up.
+                    ticket[0].clear()
+                ticket[0].wait(RECHECK_SECONDS)
             check()  # Cancellation/loss/shutdown winning while queued wins here.
             yield
         finally:
@@ -97,7 +123,7 @@ class _Capacity:
                     self._bytes -= weight
                 else:
                     self._waiting.remove(ticket)
-                self._condition.notify_all()
+                self._wake_head()
 
 
 class _Pipeline:

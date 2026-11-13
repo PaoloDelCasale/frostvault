@@ -305,7 +305,8 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             def __init__(self, c):
                 self.c = c
             def execute(self, query, params=None):
-                if "SET pending_since = COALESCE" in query:
+                # The monitor's read of the durable timers (#622).
+                if "AS wanted" in query:
                     with fixture.connect() as upload:
                         fixture.protect(upload)
                         upload.execute("UPDATE files SET pending_since=NULL WHERE id=%s", (fixture.file_id,))

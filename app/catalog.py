@@ -786,31 +786,56 @@ class ArchiveCatalog:
         timer) is left out and never gets its timer back (#549).
         """
         ids = list(pending)
-        sinces = [_required_timestamp(pending[file_id]) for file_id in ids]
+        # One read of every timer of the Vault. A write happens only for a
+        # timer that starts or ends: an unchanged pending file is never
+        # rewritten (#622), so a long queue costs no WAL per call.
         rows = self.connection.execute(
             f"""
-            UPDATE files f
-            SET pending_since = COALESCE(f.pending_since, s.since)
-            FROM unnest(%s::uuid[], %s::timestamptz[]) AS s(id, since)
-            WHERE f.id = s.id AND f.vault_id = %s
-              AND f.local_presence = 'present' AND f.held_version_id IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM archive_versions cur
-                  WHERE cur.id = f.current_version_id AND {PROTECTED_SQL}
-              )
-            RETURNING f.id, f.pending_since
+            SELECT f.id, f.pending_since, (f.id = ANY(%s::uuid[])) AS wanted,
+                   (f.local_presence = 'present' AND f.held_version_id IS NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM archive_versions cur
+                        WHERE cur.id = f.current_version_id AND {PROTECTED_SQL}
+                    )) AS eligible
+            FROM files f
+            WHERE f.vault_id = %s AND f.pending_since IS NOT NULL
             """,
-            (ids, sinces, vault_id),
+            (ids, vault_id),
         ).fetchall()
-        self.connection.execute(
-            """
-            UPDATE files SET pending_since=NULL
-            WHERE vault_id=%s AND pending_since IS NOT NULL
-              AND NOT (id = ANY(%s::uuid[]))
-            """,
-            (vault_id, ids),
-        )
-        return {str(row["id"]): row["pending_since"] for row in rows}
+        durable = {str(row["id"]): row["pending_since"]
+                   for row in rows if row["wanted"] and row["eligible"]}
+        timed = {str(row["id"]) for row in rows}
+        ended = [str(row["id"]) for row in rows if not row["wanted"]]
+        if ended:
+            self.connection.execute(
+                """
+                UPDATE files SET pending_since=NULL
+                WHERE vault_id=%s AND id = ANY(%s::uuid[]) AND pending_since IS NOT NULL
+                """,
+                (vault_id, ended),
+            )
+        starting = [file_id for file_id in ids if file_id not in timed]
+        if starting:
+            sinces = [_required_timestamp(pending[file_id]) for file_id in starting]
+            # Re-checked under the row lock: a file protected after the caller
+            # read it keeps no timer, and a timer set meanwhile is not reset.
+            started = self.connection.execute(
+                f"""
+                UPDATE files f
+                SET pending_since = s.since
+                FROM unnest(%s::uuid[], %s::timestamptz[]) AS s(id, since)
+                WHERE f.id = s.id AND f.vault_id = %s AND f.pending_since IS NULL
+                  AND f.local_presence = 'present' AND f.held_version_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM archive_versions cur
+                      WHERE cur.id = f.current_version_id AND {PROTECTED_SQL}
+                  )
+                RETURNING f.id, f.pending_since
+                """,
+                (starting, sinces, vault_id),
+            ).fetchall()
+            durable.update((str(row["id"]), row["pending_since"]) for row in started)
+        return durable
 
     def block_reconciliation(self, vault_file_id: str, *, reason: str, at: Any) -> None:
         """Record why exact upload reconciliation of this file is blocked."""
