@@ -25,9 +25,6 @@ from app.sessions import create_session, csrf_token_for
 from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
-# Upload failures close from upload proofs and remediation, ported by #592.
-UPLOAD_FAILURE_PROOFS = "upload failure closure proofs are ported by #592"
-
 
 class _FailingSmtp:
     def __init__(self) -> None:
@@ -98,7 +95,6 @@ class NotificationDeliveryTests(unittest.TestCase):
                     "SELECT COUNT(*) AS total FROM notification_deliveries"
                 ).fetchone()["total"], 0)
 
-    @unittest.skip(UPLOAD_FAILURE_PROOFS)
     def test_failed_upload_reaches_the_owner_inbox_as_an_open_problem(self) -> None:
         with patch.object(notifications, "settings", replace(settings, smtp_host="")):
             with PostgresConnection(str(self.path)) as connection:
