@@ -1,6 +1,12 @@
-"""Durability, lifecycle and cancellation on disposable PostgreSQL16 (PR CI)."""
+"""Durability, lifecycle and cancellation on disposable PostgreSQL16 (PR CI).
+
+Rebuilt model (ADR-0035): one ``files`` row per Vault File (renames keep the
+row), the frozen verification mode and reconcile-only flag of an upload live
+in ``job_uploads``, and an interrupted Vault is ``reconnect_required``.
+"""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from types import SimpleNamespace
 import time
 import uuid
 from unittest.mock import patch
@@ -11,7 +17,9 @@ from app.services import bulk_upload_admission as bulk, protection_stop, vault_r
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services.upload_activity import upload_activity
 from tests.test_job_queue_fairness import QueueFixture
+from tests.owner_fixtures import insert_vault
 from tests import test_upload_provenance_worker as provenance_fixtures
+from app.services import upload_provenance as provenance
 from tests.postgres import PostgresConnection
 import unittest
 
@@ -22,6 +30,10 @@ class BulkAdmissionProvenanceTests(unittest.TestCase):
     run_job = provenance_fixtures.UploadProvenanceWorkerTests.run_job
     row = provenance_fixtures.UploadProvenanceWorkerTests.row
     assert_keeper = provenance_fixtures.UploadProvenanceWorkerTests.assert_keeper
+
+    def upload(self, job_id):
+        with PostgresConnection(self.db_path) as c:
+            return c.execute("SELECT * FROM job_uploads WHERE job_id=%s", (job_id,)).fetchone()
 
     def admit(self):
         with PostgresConnection(self.db_path) as c:
@@ -38,14 +50,14 @@ class BulkAdmissionProvenanceTests(unittest.TestCase):
         original = self.queue()
         self.run_job(original)
         self.assertEqual(self.provider.puts, 1)
-        original_mode = self.row(original)["upload_verification_requested"]
+        original_mode = self.upload(original)["verification_mode"]
         with PostgresConnection(self.db_path) as c:
             set_policy(c, 2, OperationPolicy(upload_verification="read_back" if original_mode == "s3_checksum" else "s3_checksum"))
         self.provider.hook = lambda *args, **kwargs: None
         resumed = self.admit()
         self.assertIsNotNone(resumed)
-        self.assertTrue(resumed["upload_reconcile_only"])
-        self.assertEqual(resumed["upload_verification_requested"], original_mode)
+        self.assertTrue(self.upload(resumed["id"])["reconcile_only"])
+        self.assertEqual(self.upload(resumed["id"])["verification_mode"], original_mode)
         self.assertEqual(resumed["origin"], "manual")
         self.run_job(resumed["id"])
         self.assert_keeper(resumed["id"])
@@ -60,11 +72,13 @@ class BulkAdmissionProvenanceTests(unittest.TestCase):
         self.run_job(original)
         self.assertEqual(self.row(original)["status"], "failed")
         self.provider.hook = lambda *args, **kwargs: None
-        self.provider.multiparts.append(("docs/report.txt", "still-in-flight"))
+        self.provider.multiparts.append((self.key, "still-in-flight"))
         resumed = self.admit()
-        self.assertTrue(resumed["upload_reconcile_only"])
+        self.assertTrue(self.upload(resumed["id"])["reconcile_only"])
         self.run_job(resumed["id"])
-        self.assertIn("ambiguous_send", self.row(resumed["id"])["message"])
+        self.assertEqual(self.row(resumed["id"])["status"], "failed")
+        with PostgresConnection(self.db_path) as c:
+            self.assertEqual(provenance.describe(c, vault_id=2, path="report.txt")["reason"], "ambiguous_send")
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
 
 
@@ -75,6 +89,10 @@ class BulkAdmissionPostgresTests(QueueFixture):
             for path in paths:
                 catalog.observe_local_copy(vault_id=vault_id, path=path, file_type="regular", size=12,
                                            mtime_ns=1, observed_at=self.clock.isoformat())
+
+    def request(self):
+        """A signed-in Owner request (the audit actor of the cancel)."""
+        return SimpleNamespace(state=SimpleNamespace(session={"auth_method": "oidc"}))
 
     def create(self, path="", vault_id=2, request_id=None):
         with self.db() as c:
@@ -133,23 +151,26 @@ class BulkAdmissionPostgresTests(QueueFixture):
         final = self.finish(group)
         self.assertEqual((final["processed_count"], final["admitted_count"], final["total_bytes"]), (7, 7, 84))
         jobs = self.jobs()
-        self.assertEqual(len(jobs), len({j["vault_file_id"] for j in jobs}))
-        self.assertEqual({j["group_id"] for j in jobs}, {group})
+        self.assertEqual(len(jobs), len({j["file_id"] for j in jobs}))
+        self.assertEqual({str(j["group_id"]) for j in jobs}, {group})
         self.assertTrue(all(j["origin"] == "manual" for j in jobs))
         self.assertFalse(self.step(group))
 
     def test_inactive_path_candidates_consume_the_batch_window_without_admitting_jobs(self):
         self.seed(["inactive-a.jpg", "inactive-b.jpg", "active.jpg"])
         with self.db() as c:
-            c.execute("""UPDATE vault_files SET status='retired' WHERE id IN (
-                SELECT vault_file_id FROM file_paths WHERE vault_id=2
-                AND path IN ('inactive-a.jpg','inactive-b.jpg'))""")
+            # A File whose Local Copy is gone stays a candidate but is never admitted.
+            catalog = ArchiveCatalog(c)
+            for row in c.execute("SELECT id FROM files WHERE vault_id=2 AND path LIKE 'inactive-%'").fetchall():
+                catalog.mark_local_copy_missing(str(row["id"]), observed_at=self.clock.isoformat())
         group = self.create()["group_id"]
         self.assertEqual(self.status(group)["selected_count"], 3)
-        for count in (1, 2):
+        for count in (1, 2, 3):
+            # The cursor walks File ids: each one-File batch consumes one
+            # candidate, admitted or not.
             self.step(group, size=1)
             self.assertEqual(self.status(group)["processed_count"], count)
-            self.assertEqual(self.jobs(), [])
+            self.assertLessEqual({job["path"] for job in self.jobs()}, {"active.jpg"})
         self.finish(group)
         self.assertEqual([job["path"] for job in self.jobs()], ["active.jpg"])
 
@@ -157,28 +178,35 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.seed(["foo%_/a.jpg", "foo%_/b.jpg", "fooXX/a.jpg", "foobar/a.jpg"])
         group = self.create("foo%_")["group_id"]
         with self.db() as c:
-            row = c.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=2 AND path='foo%_/b.jpg'").fetchone()
-            c.execute("UPDATE file_paths SET valid_to=%s WHERE vault_file_id=%s", (self.clock.isoformat(), row["vault_file_id"]))
-            c.execute("INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from) VALUES (%s,2,%s,%s)", (row["vault_file_id"], "foo%_/renamed.jpg", self.clock.isoformat()))
+            row = c.execute("SELECT id FROM files WHERE vault_id=2 AND path='foo%_/b.jpg'").fetchone()
+            ArchiveCatalog(c).rename_file(str(row["id"]), new_path="foo%_/renamed.jpg",
+                                          changed_at=self.clock.isoformat(), vault_id=2)
         self.seed(["foo%_/new.jpg", "foo%_/b.jpg"])
         result = self.finish(group)
         self.assertEqual(result["processed_count"], result["selected_count"])
-        self.assertEqual([j["path"] for j in self.jobs()], ["foo%_/a.jpg"])
+        # The selection is of File identities: a renamed File keeps its row and
+        # is admitted at its new path; a new File at the old path is not.
+        self.assertEqual([j["path"] for j in self.jobs()], ["foo%_/a.jpg", "foo%_/renamed.jpg"])
 
     def test_eligibility_revalidated_and_remediation_arbiter_is_not_bypassed(self):
         self.seed(["a.jpg", "b.jpg", "c.jpg", "d.jpg"])
         group = self.create()["group_id"]
         with self.db() as c:
-            c.execute("UPDATE local_copies SET presence='missing' WHERE vault_file_id=(SELECT vault_file_id FROM file_paths WHERE vault_id=2 AND path='b.jpg')")
-            c.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_at,updated_at)
-                SELECT 2,vault_file_id,path,'recover','queued',%s,%s FROM file_paths WHERE vault_id=2 AND path='c.jpg'""",
+            missing = c.execute("SELECT id FROM files WHERE vault_id=2 AND path='b.jpg'").fetchone()["id"]
+            ArchiveCatalog(c).mark_local_copy_missing(str(missing), observed_at=self.clock.isoformat())
+            c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at)
+                SELECT 2,id,'recover','queued','manual',%s,%s FROM files WHERE vault_id=2 AND path='c.jpg'""",
+                (self.clock.isoformat(), self.clock.isoformat()))
+            # Only a File that ever had a remediation episode reaches the arbiter.
+            c.execute("""INSERT INTO upload_remediations(vault_id,file_id,state,reason,due_at,closed_at)
+                SELECT 2,id,'cancelled','owner_cancelled',%s,%s FROM files WHERE vault_id=2 AND path='d.jpg'""",
                 (self.clock.isoformat(), self.clock.isoformat()))
         from app.services import upload_remediation
         original = upload_remediation.intercept_upload
         seen = []
         def arbiter(c, **kwargs):
             seen.append(kwargs)
-            path = c.execute("SELECT path FROM file_paths WHERE vault_file_id=%s AND valid_to IS NULL", (kwargs["file_id"],)).fetchone()["path"]
+            path = c.execute("SELECT path FROM files WHERE id=%s", (kwargs["file_id"],)).fetchone()["path"]
             if path == "d.jpg":
                 return True, None  # unresolved/cancelled ambiguity forbids a new ordinary Job
             return original(c, **kwargs)
@@ -186,7 +214,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
             result = self.finish(group)
         self.assertEqual(result["admitted_count"], 1)
         self.assertEqual({j["path"] for j in self.jobs() if j["action"] == "upload"}, {"a.jpg"})
-        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(seen), 1, "a File without an episode never reaches the arbiter")
         self.assertTrue(all(not call["automatic"] and call["group_id"] == group for call in seen))
 
     def test_frozen_policy_manual_origin_and_pause_does_not_prevent_admission_or_allow_claim(self):
@@ -200,10 +228,13 @@ class BulkAdmissionPostgresTests(QueueFixture):
             c.execute("UPDATE vaults SET paused=TRUE WHERE id=2")
         self.finish(group)
         jobs = self.jobs()
-        self.assertEqual({j["upload_verification_requested"] for j in jobs}, {"read_back"})
+        with self.db() as c:
+            modes = {r["verification_mode"] for r in c.execute(
+                "SELECT verification_mode FROM job_uploads WHERE job_id=ANY(%s)", ([j["id"] for j in jobs],)).fetchall()}
+        self.assertEqual(modes, {"read_back"})
         self.assertEqual({j["origin"] for j in jobs}, {"manual"})
         with self.db() as c:
-            self.assertIsNone(ArchiveCatalog(c).claim_job(job_id=jobs[0]["id"], claim_token="held",
+            self.assertIsNone(ArchiveCatalog(c).claim_job(job_id=jobs[0]["id"], claim_token=str(uuid.uuid4()),
                 claimed_at=self.clock.isoformat(), claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()))
 
@@ -226,11 +257,14 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.seed(["first/a.jpg", "foo/a.jpg", "foo/sub/b.jpg", "foobar/a.jpg", "last/a.jpg"])
         group = self.create()["group_id"]
         self.step(group, size=1)
+        # The cursor walks File ids: the first batch may already hold a foo/ Job.
+        admitted = {j["path"] for j in self.jobs()}
         with patch.object(main, "db", self.db):
-            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(path="foo"), {"id": 1}, self.vaults[2])
-        self.assertEqual(result["cancelled_count"], 0)
-        self.assertEqual(self.finish(group)["admitted_count"], 3)
-        self.assertEqual({j["path"] for j in self.jobs()}, {"first/a.jpg", "foobar/a.jpg", "last/a.jpg"})
+            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(path="foo"), self.request(), {"id": 1}, self.vaults[2])
+        self.assertEqual(result["cancelled_count"], len(admitted & {"foo/a.jpg", "foo/sub/b.jpg"}))
+        self.assertEqual(self.finish(group)["admitted_count"], 3 + result["cancelled_count"])
+        self.assertEqual({j["path"] for j in self.jobs() if j["status"] != "cancelled"},
+                         {"first/a.jpg", "foobar/a.jpg", "last/a.jpg"})
 
     def test_whole_cancel_pending_stops_producer_and_preserves_ambiguous_jobs(self):
         self.seed([f"{n}.jpg" for n in range(5)])
@@ -239,7 +273,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         jobs = self.jobs()
         self.add_intent(jobs[0]["id"], send_started=True)
         with patch.object(main, "db", self.db):
-            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(), {"id": 1}, self.vaults[2])
+            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(), self.request(), {"id": 1}, self.vaults[2])
         self.assertEqual((result["cancelled_count"], result["stopped_admissions"]), (1, 1))
         self.assertFalse(self.step(group))
         self.assertEqual([j["status"] for j in self.jobs()], ["queued", "cancelled"])
@@ -263,7 +297,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
 
     def test_lifecycle_and_identity_drift_invalidate_before_next_batch(self):
         self.seed(["a.jpg", "b.jpg", "c.jpg"])
-        for field, value in (("root_identity", "different"), ("relocation_state", "scan_required")):
+        for field, value in (("root_identity", "different"), ("lifecycle", "reconnect_required")):
             group = self.create()["group_id"]
             self.step(group, size=1)
             with self.db() as c:
@@ -292,10 +326,8 @@ class BulkAdmissionPostgresTests(QueueFixture):
         ids = list(range(2, bulk.VAULT_BATCH + 3))
         with self.db() as c:
             for vault_id in ids[2:]:
-                c.execute("""INSERT INTO vaults(id,slug,name,source_root,s3_bucket,s3_prefix)
-                    VALUES (%s,%s,%s,%s,'test-bucket',%s)""",
-                    (vault_id, f"bulk-{vault_id}", f"Bulk {vault_id}",
-                     str(self.base / f"bulk-{vault_id}"), f"bulk-{vault_id}"))
+                insert_vault(c, id=vault_id, name=f"Bulk {vault_id}",
+                             source_root=str(self.base / f"bulk-{vault_id}"), bucket="test-bucket")
         groups = {}
         for vault_id in ids:
             self.seed(["one.jpg"], vault_id=vault_id)
@@ -367,12 +399,10 @@ class BulkAdmissionPostgresTests(QueueFixture):
 
     def test_ten_thousand_paths_return_without_per_file_work_and_each_transaction_is_bounded(self):
         with self.db() as c:
-            c.execute("""INSERT INTO vault_files(id,vault_id,created_at)
-                SELECT 'bulk550-' || n,2,%s FROM generate_series(1,10000) n""", (self.clock.isoformat(),))
-            c.execute("""INSERT INTO file_paths(vault_file_id,vault_id,path,valid_from)
-                SELECT id,2,id,%s FROM vault_files WHERE vault_id=2 ORDER BY id""", (self.clock.isoformat(),))
-            c.execute("""INSERT INTO local_copies(vault_file_id,presence,file_type,size,mtime_ns,observed_at)
-                SELECT id,'present','regular',12,1,%s FROM vault_files WHERE vault_id=2""", (self.clock.isoformat(),))
+            c.execute("""INSERT INTO files(vault_id,path,path_since,local_presence,local_file_type,
+                    local_size,local_mtime_ns,local_observed_at)
+                SELECT 2,'bulk550-' || n,%s,'present','regular',12,1,%s
+                FROM generate_series(1,10000) n""", (self.clock.isoformat(), self.clock.isoformat()))
         started = time.monotonic()
         with self.db() as c:
             request = bulk.create(c, vault_id=2, path="", user_id=1)
