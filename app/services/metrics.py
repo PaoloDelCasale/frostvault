@@ -45,8 +45,6 @@ _ALLOWED_METRICS = {
     "jobs_stuck_oldest_age_seconds": "gauge",
     "jobs_failed_backlog": "gauge",
     "jobs_failed_oldest_age_seconds": "gauge",
-    "upload_remediation_discovery_backlog": "gauge",
-    "upload_remediation_discovery_oldest_age_seconds": "gauge",
     "upload_remediation_due_queue": "gauge",
     "upload_remediation_due_oldest_age_seconds": "gauge",
     "upload_remediation_states": "gauge",

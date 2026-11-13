@@ -379,13 +379,11 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         job = self.connection.execute("INSERT INTO jobs(vault_id, file_id, action, status) VALUES (9, %s, 'upload', 'queued') RETURNING id", (file_id,)).fetchone()['id']
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
-        # Remediation episodes are #592's; only the Job transition matters here.
-        with patch('app.database.settings', self.cfg), patch('app.services.upload_remediation.transition'):
+        with patch('app.database.settings', self.cfg):
             self.assertTrue(set_job(job, 'failed'))
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
-        with patch('app.services.upload_remediation.intercept_upload', return_value=(False, None)):
-            self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
+        self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
 

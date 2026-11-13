@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -1139,31 +1138,3 @@ def _unresumable_reason(connection: Any, vault_id: int, path: str, state: dict[s
 def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
     from .upload_remediation import schedule_resume as schedule
     return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp, remediation_id=remediation_id)
-
-
-def _schedule_resume_unenrolled(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str) -> dict[str, Any]:
-    from .cloud_deletion import lock_vault
-    from .vault_moves import require_ready
-    current = lock_vault(connection, vault["id"])
-    try:
-        require_ready(current)
-    except ValueError:
-        raise UploadBlocked("vault_suspended") from None
-    state = describe(connection, vault_id=vault["id"], path=path)
-    if not state["pending"] or not state["can_resume"]:
-        raise UploadBlocked(_unresumable_reason(connection, vault["id"], path, state))
-    row = connection.execute("SELECT vf.id,lc.cloud_only_version_id FROM vault_files vf JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id WHERE vf.vault_id=%s AND fp.path=%s AND vf.status='active'", (vault["id"], path)).fetchone()
-    if not row:
-        raise UploadBlocked("identity_changed")
-    if row["cloud_only_version_id"]:
-        raise UploadBlocked("cloud_only_conflict")
-    intent = outstanding(connection, row["id"])
-    linked = None
-    if not intent:
-        linked = connection.execute("SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability='available' AND integrity='verified' ORDER BY version_number DESC LIMIT 1", (row["id"],)).fetchone()
-    if not intent and not linked:
-        raise UploadBlocked("proof_unavailable")
-    job = connection.execute("INSERT INTO jobs(vault_id,vault_file_id,archive_version_id,path,action,status,requested_by,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,origin,upload_reconcile_only,upload_plaintext_sha256,upload_snapshot_json,upload_verification_requested) VALUES (%s,%s,%s,%s,'upload','queued',%s,%s,%s,%s,%s,%s,0,'manual',TRUE,%s,%s,%s) RETURNING id,group_id", (vault["id"], row["id"], intent["archive_version_id"] if intent else linked["id"], path, user_id, timestamp, timestamp, str(uuid.uuid4()), path, UploadSnapshot.from_json(intent["snapshot_json"]).size if intent else linked["size"], UploadSnapshot.from_json(intent["snapshot_json"]).plaintext_sha256 if intent else linked.get("expected_sha") or linked["plaintext_sha256"], intent["snapshot_json"] if intent else linked["upload_snapshot_json"], intent["requested"] if intent else linked["upload_verification_requested"] or "read_back")).fetchone()
-    if intent:
-        bind_for_resume(connection, job["id"], intent)
-    return {"job_id": job["id"], "group_id": job["group_id"]}

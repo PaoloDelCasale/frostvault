@@ -59,9 +59,6 @@ class JobPrometheusCounterTests(unittest.TestCase):
         )
         self._db.start()
         self.addCleanup(self._db.stop)
-        # Upload Remediation episodes and their closed-failure filter are
-        # ported separately (#592).
-        self.enterContext(patch("app.services.upload_remediation.transition"))
 
     def _insert_job(self, connection, action: str, status: str = "uploading") -> int:
         return int(

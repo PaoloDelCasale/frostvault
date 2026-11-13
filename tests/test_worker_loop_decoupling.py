@@ -48,8 +48,6 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
         self.enterContext(patch('app.storage.cloud_preflight_gate.snapshot',
                                 return_value={'status': 'ready'}))
         self.enterContext(patch('app.storage.sweep_source_volume_problems', return_value=0))
-        # Upload Remediation episodes are ported separately (#592).
-        self.enterContext(patch('app.services.upload_remediation.transition'))
         migrated = run_alembic(self.path)
         self.assertEqual(migrated.returncode, 0, migrated.stderr)
         with PostgresConnection(str(self.path)) as connection:

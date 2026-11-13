@@ -46,9 +46,6 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
             insert_owner(connection)
             insert_vault(connection, id=2)
             self.job_id = insert_job(connection, vault_id=2, status="uploading")
-        # Upload Remediation episodes and their closed-failure filter are
-        # ported separately (#592).
-        self.enterContext(patch("app.services.upload_remediation.transition"))
         self.enterContext(patch(
             "app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"))
 

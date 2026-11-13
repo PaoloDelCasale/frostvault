@@ -2320,9 +2320,8 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     @retry_database_unit
     def persist() -> None:
         with owned_connection(db()) as connection:
+            # The Job's own failure keeps the block as open Remediation work.
             ArchiveCatalog(connection).block_reconciliation(job["file_id"], reason=reason, at=now_iso())
-            from .services.upload_remediation_discovery import capture
-            capture(connection, now_iso(), file_id=job["file_id"])
     persist()
     # Notifications use Owner locks separately from attempt/receipt publication.
     # Retry the complete owned notification unit too, never the provider work.

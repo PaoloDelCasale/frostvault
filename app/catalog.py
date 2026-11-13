@@ -3058,14 +3058,21 @@ class ArchiveCatalog:
         remediation_job_ids: list[int] = []
         skipped_same = 0
         target_class = (target_storage_class or "").upper() or None
+        group_path = "" if whole_vault or recovery_selection else path
+        # Only files that ever had an Upload Remediation episode go to its
+        # arbiter: one indexed read, nothing per file in the normal case.
+        with_episode: set[str] = set()
+        if action == "upload" and candidates:
+            from .services import upload_remediation
+            with_episode = upload_remediation.episode_files(
+                self.connection, [row["file_id"] for row in candidates])
         for row in candidates:
             allowed = self._queue_candidate_allowed(action, row)
-            if allowed and action == "upload":
-                from .services import upload_remediation
+            if allowed and str(row["file_id"]) in with_episode:
                 handled, resumed = upload_remediation.intercept_upload(
                     self.connection, vault_id=vault_id, file_id=row["file_id"],
                     stamp=requested_at, automatic=origin == "automatic",
-                    group_id=group_id,
+                    group_id=group_id, group_path=group_path,
                 )
                 if handled:
                     if resumed:
@@ -3096,8 +3103,7 @@ class ArchiveCatalog:
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
-            (group_id, vault_id, "" if whole_vault or recovery_selection else path,
-             requested_at),
+            (group_id, vault_id, group_path, requested_at),
         )
         # ON CONFLICT: a File that gained an active operation since the read
         # (one per File) is skipped, not failed.

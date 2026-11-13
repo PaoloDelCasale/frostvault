@@ -788,15 +788,19 @@ without per-file labels or filesystem/listing performance diagnostics, behind th
 explicit Bearer opt-in described above. Queue stalls remain visible in protected
 metrics and Owner problems, not the anonymous readiness payload.
 
-Upload Remediation recreates missing sweep cursors without resetting existing
-round-robin progress. Missing ticks or ticks older than 50 seconds open an Owner
-problem; `upload_remediation_sweep_stale` and the oldest actual
+Upload Remediation keeps one episode per file only while an ended upload left
+cloud work open (an uncertain send, an unverified replacement, an open cleanup
+or a reconciliation block); a successful upload writes nothing for it, so there
+is no backlog to re-examine. `upload_remediation_due_queue` and
+`upload_remediation_states` count open episodes. The sweep recreates a missing
+cursor without resetting existing round-robin progress. Missing ticks or ticks
+older than 50 seconds open an Owner problem; `upload_remediation_sweep_stale` and the oldest actual
 `upload_remediation_last_tick_unixtime` support protected monitoring (zero means
 at least one tick is missing). Receipt-journal holds are reported by
 `upload_journal_held` and an Owner problem when the catalog is writable. Held
 Jobs release their claims and wait without spending transfer retries. Once the
 journal's INSERT/commit probe succeeds, unrelated uploads may continue; the
-uncertain intent keeps its token, snapshot and send-started fence and must still
+uncertain attempt keeps its token, snapshot and send-started fence and must still
 reconcile before any send. No provider reads of another Vault are needed to
 reopen admission. These are informational health signals, not new container
 readiness dependencies.

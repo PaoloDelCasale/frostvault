@@ -90,9 +90,8 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
                 max(j.estimated_hours) AS estimated_hours,
                 max(j.restore_tier) AS restore_tier, max(j.restore_days) AS restore_days
             FROM candidates c JOIN members j ON j.group_key=c.group_key
-            LEFT JOIN upload_remediation_originals o ON o.original_job_id=j.id
             LEFT JOIN upload_remediation_jobs b ON b.job_id=j.id
-            LEFT JOIN upload_remediations r ON r.id=COALESCE(o.remediation_id,b.remediation_id)
+            LEFT JOIN upload_remediations r ON r.id=b.remediation_id
             GROUP BY c.group_key,c.last_id
         ), representatives AS (
             SELECT DISTINCT ON (j.group_key) j.group_key,j.path,j.group_path,j.action,

@@ -93,8 +93,6 @@ class JobMessagePersistenceTests(unittest.TestCase):
             patcher = patch(target, self.settings)
             patcher.start()
             self.addCleanup(patcher.stop)
-        # Upload Remediation episodes are ported separately (#592).
-        self.enterContext(patch("app.services.upload_remediation.transition"))
 
     def test_set_job_stores_message_key_and_english_fallback(self) -> None:
         set_job(

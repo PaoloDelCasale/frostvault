@@ -1615,6 +1615,122 @@ $$;
 CREATE TRIGGER archive_versions_removed_with_proof
     BEFORE DELETE ON archive_versions
     FOR EACH ROW EXECUTE FUNCTION archive_versions_removed_with_proof();
+
+-- Upload Remediation (#592, ADR-0035): the durable episode of a Vault File
+-- whose upload ended (failed or cancelled) with cloud work still open: a
+-- started send whose outcome is unknown, a materialized replacement not yet
+-- verified, an open cleanup batch or superseded versions, or a reconciliation
+-- block. It is opened by the Job transition that ends with that work, never by
+-- a queue of facts: a successful upload writes nothing here. The work itself
+-- is not copied: attempt_id and archive_version_id only name it (the expected
+-- proof stays the attempt's snapshot), and every decision rereads the file's
+-- live state. One open episode per file; the partial indexes make the lookup
+-- per file and the sweep independent of accumulated history.
+--
+-- state (closed_at set exactly for the final ones):
+--   pending    admissible from due_at (grace, backoff)
+--   queued     its reconcile-only Job (current_job_id) is waiting or running
+--   retrying   its Job waits for a backoff (due_at = the Job's run_after)
+--   suspended  waiting for an external condition (reason), retried at due_at
+--   blocked    needs the Owner: never admitted automatically
+--   cancelled  the Owner cancelled it (or the file was removed): final, never
+--              resurrected; a later failure on the same work joins it
+--   resolved   a Job completed with the work closed: no started send, no
+--              replacement in progress, no cleanup batch or superseded version
+--              left, and the verified keeper is Current
+-- retry_count only grows: an explicit retry keeps the budget spent so far.
+CREATE TABLE upload_remediations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    vault_id bigint NOT NULL,
+    file_id uuid NOT NULL,
+    attempt_id uuid,
+    archive_version_id uuid,
+    state text COLLATE "C" NOT NULL DEFAULT 'pending',
+    reason text COLLATE "C",
+    retry_count integer NOT NULL DEFAULT 0,
+    due_at timestamptz NOT NULL,
+    current_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
+    resolved_by_job_id bigint REFERENCES jobs(id) ON DELETE SET NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    CONSTRAINT upload_remediations_file_scope_uq UNIQUE (id, file_id),
+    CONSTRAINT upload_remediations_file_fk FOREIGN KEY (file_id, vault_id)
+        REFERENCES files (id, vault_id) ON DELETE RESTRICT,
+    CONSTRAINT upload_remediations_attempt_fk FOREIGN KEY (attempt_id, file_id)
+        REFERENCES upload_attempts (id, file_id) ON DELETE SET NULL (attempt_id),
+    CONSTRAINT upload_remediations_version_fk FOREIGN KEY (archive_version_id, file_id)
+        REFERENCES archive_versions (id, file_id) ON DELETE SET NULL (archive_version_id),
+    CONSTRAINT upload_remediations_state_ck CHECK (
+        state IN ('pending', 'queued', 'retrying', 'suspended', 'blocked',
+                  'cancelled', 'resolved')
+    ),
+    CONSTRAINT upload_remediations_closed_ck CHECK (
+        (state IN ('cancelled', 'resolved')) = (closed_at IS NOT NULL)
+    ),
+    CONSTRAINT upload_remediations_reason_ck CHECK (reason <> ''),
+    CONSTRAINT upload_remediations_retry_count_ck CHECK (retry_count >= 0)
+);
+
+-- One open episode per Vault File; the sweep reads only open, due episodes.
+CREATE UNIQUE INDEX upload_remediations_open_file_uq ON upload_remediations (file_id)
+    WHERE closed_at IS NULL;
+CREATE INDEX upload_remediations_open_due_idx ON upload_remediations (vault_id, due_at, id)
+    WHERE closed_at IS NULL;
+CREATE INDEX upload_remediations_file_idx ON upload_remediations (file_id, created_at);
+CREATE INDEX upload_remediations_current_job_idx ON upload_remediations (current_job_id)
+    WHERE current_job_id IS NOT NULL;
+
+-- A closed episode is history: it never reopens, and its budget never shrinks.
+CREATE FUNCTION upload_remediations_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.vault_id IS DISTINCT FROM OLD.vault_id OR NEW.file_id IS DISTINCT FROM OLD.file_id
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'an upload remediation keeps its Vault File'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF OLD.closed_at IS NOT NULL AND (
+        NEW.state IS DISTINCT FROM OLD.state OR NEW.reason IS DISTINCT FROM OLD.reason
+        OR NEW.closed_at IS DISTINCT FROM OLD.closed_at
+        OR NEW.retry_count IS DISTINCT FROM OLD.retry_count
+        OR (NEW.resolved_by_job_id IS NOT NULL
+            AND NEW.resolved_by_job_id IS DISTINCT FROM OLD.resolved_by_job_id)
+        OR (NEW.current_job_id IS NOT NULL
+            AND NEW.current_job_id IS DISTINCT FROM OLD.current_job_id)) THEN
+        RAISE EXCEPTION 'a closed upload remediation is history'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NEW.retry_count < OLD.retry_count THEN
+        RAISE EXCEPTION 'an upload remediation retry budget never shrinks'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER upload_remediations_guard
+    BEFORE UPDATE ON upload_remediations
+    FOR EACH ROW EXECUTE FUNCTION upload_remediations_guard();
+
+-- The Jobs of an episode: the failed or cancelled originals that opened or
+-- joined it and every reconcile-only Job it admitted. Collecting a Job (#596)
+-- removes only its link; the episode and its work stay recoverable.
+CREATE TABLE upload_remediation_jobs (
+    job_id bigint PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    remediation_id uuid NOT NULL REFERENCES upload_remediations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX upload_remediation_jobs_remediation_idx
+    ON upload_remediation_jobs (remediation_id, job_id);
+
+-- Round-robin cursor and durable heartbeat of the admission sweep.
+CREATE TABLE upload_remediation_sweep (
+    name text COLLATE "C" PRIMARY KEY,
+    last_vault_id bigint NOT NULL DEFAULT 0,
+    last_tick_at timestamptz,
+    CONSTRAINT upload_remediation_sweep_name_ck CHECK (name <> '')
+);
 """
 
 

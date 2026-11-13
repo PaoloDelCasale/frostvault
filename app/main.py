@@ -1955,9 +1955,10 @@ _JOB_HISTORY_COLUMNS = "id,path,action,status,message,message_key,message_params
 
 @app.get("/api/jobs/{job_id}", response_model=response_model("JobRecord"))
 def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(current_vault)):
+    from .services.job_queries import JOB_ROWS
     from .services.upload_remediation import project_jobs
     with db() as connection:
-        row = connection.execute(f"SELECT {_JOB_HISTORY_COLUMNS} FROM jobs WHERE id=%s AND vault_id=%s", (job_id,vault["id"])).fetchone()
+        row = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE id=%s AND vault_id=%s", (job_id,vault["id"])).fetchone()
         if not row:
             raise HTTPException(404,"Job not found in this Vault")
         projected = project_jobs(connection,[row])[0]
@@ -1967,14 +1968,15 @@ def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(cu
 @app.get("/api/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def file_job_history(request: Request, path: str = Query(), before_id: int | None = Query(default=None,ge=1),
                      limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(current_vault)):
+    from .services.job_queries import JOB_ROWS
     from .services.upload_remediation import project_jobs
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
-        file = connection.execute("SELECT vault_file_id FROM file_paths WHERE vault_id=%s AND path=%s AND valid_to IS NULL",(vault["id"],logical_path)).fetchone()
+        file = connection.execute("SELECT id FROM files WHERE vault_id=%s AND path=%s",(vault["id"],logical_path)).fetchone()
         if not file:
             raise HTTPException(404,"Vault File not found")
-        rows = connection.execute(f"SELECT {_JOB_HISTORY_COLUMNS} FROM jobs WHERE vault_id=%s AND vault_file_id=%s AND id<%s ORDER BY id DESC LIMIT %s",
-            (vault["id"],file["vault_file_id"],before_id or 2**63-1,limit+1)).fetchall()
+        rows = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE vault_id=%s AND file_id=%s AND id<%s ORDER BY id DESC LIMIT %s",
+            (vault["id"],file["id"],before_id or 2**63-1,limit+1)).fetchall()
         items = project_jobs(connection,rows[:limit])
     return {"items":[{**row,"message":present_job_message(row,_request_locale(request))} for row in items],
             "next_before_id":items[-1]["id"] if len(rows)>limit else None}
@@ -2850,15 +2852,15 @@ class PendingUploadCancelAction(BaseModel):
 _UNSTARTED_UPLOAD_SQL = """
     j.vault_id=%s AND j.action='upload'
     AND j.status IN ('queued', 'retrying')
-    AND NOT COALESCE(j.upload_reconcile_only, FALSE)
     AND j.archive_version_id IS NULL
-    AND NOT EXISTS (SELECT 1 FROM upload_intent_jobs b WHERE b.job_id=j.id)
-    AND NOT EXISTS (SELECT 1 FROM upload_intents i
-                    WHERE i.vault_file_id=j.vault_file_id AND i.send_started AND NOT i.settled)
+    AND NOT EXISTS (SELECT 1 FROM job_uploads b
+                    WHERE b.job_id=j.id AND (b.reconcile_only OR b.snapshot_id IS NOT NULL))
+    AND NOT EXISTS (SELECT 1 FROM upload_attempts a
+                    WHERE a.file_id=j.file_id AND a.send_started_at IS NOT NULL
+                      AND a.settled_at IS NULL)
     AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=j.id)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediation_originals ro WHERE ro.original_job_id=j.id)
     AND NOT EXISTS (SELECT 1 FROM upload_remediations r
-                    WHERE r.vault_file_id=j.vault_file_id AND r.state NOT IN ('resolved', 'cancelled'))
+                    WHERE r.file_id=j.file_id AND r.closed_at IS NULL)
 """
 
 
@@ -2891,10 +2893,11 @@ def cancel_pending_uploads(
         stopped_admissions = bulk_upload_admission.cancel(connection, vault_id=vault["id"], path=folder)
         scope_sql, scope_params = "", []
         if folder:
-            scope_sql = "AND (j.path=%s OR starts_with(j.path, %s))"
+            scope_sql = "AND (f.path=%s OR starts_with(f.path, %s))"
             scope_params = [folder, folder + "/"]
         rows = connection.execute(
-            f"SELECT j.id FROM jobs j WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
+            f"SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
+            f"WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
             [vault["id"], *scope_params],
         ).fetchall()
         job_ids = [int(row["id"]) for row in rows]

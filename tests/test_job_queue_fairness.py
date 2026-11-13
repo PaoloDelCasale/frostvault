@@ -134,9 +134,6 @@ class QueueFixture(unittest.TestCase):
             patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
-            # Upload Remediation episodes are ported by #592.
-            patch("app.services.upload_remediation.intercept_upload", return_value=(False, None)),
-            patch("app.services.upload_remediation.transition"),
             patch("app.storage._held_transition_may_share_vault", return_value=True),
             # Per-Vault operation policies are not in the v0.6 baseline yet.
             patch("app.catalog.ArchiveCatalog._upload_verification_mode", return_value="s3_checksum"),
@@ -636,68 +633,61 @@ class RemovedFileTests(QueueFixture):
             self.assertFalse(storage._upload_source_confirmed_removed(job))
         self.assertEqual(storage._automatic_upload_state(job), storage.UPLOAD_SOURCE_REMOVED)
 
+    def add_episode(self, job, *, current):
+        """An open Upload Remediation episode of the Job's file, linked to it."""
+        with self.db() as connection:
+            episode = connection.execute(
+                "INSERT INTO upload_remediations(vault_id, file_id, state, due_at, current_job_id) "
+                "VALUES (2, %s, 'queued', %s, %s) RETURNING id",
+                (job["file_id"], self.clock.isoformat(), job["id"] if current else None),
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO upload_remediation_jobs(job_id, remediation_id) VALUES (%s, %s)",
+                (job["id"], episode),
+            )
+        return episode
+
     def test_rearmed_remediation_closes_as_file_removed_when_the_file_is_gone(self):
         from app.services.upload_remediation import FILE_REMOVED_SQL
         target = self.write(2, "episode.jpg")
         self.advance(300)
         self.assertEqual(self.queue(2), 1)
         job = self.jobs(2)[0]
-        # After a proven absence the intent is back to "unsent" and the episode is
-        # the file's ordinary upload again (ADR-0025).
-        self.add_intent(job["id"], send_started=False)
-        stamp = self.clock.isoformat()
-        with self.db() as connection:
-            connection.execute(
-                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
-                "size,state,phase,due_at,current_job_id,created_at,updated_at) "
-                "VALUES ('episode-1','key-episode-1',2,%s,%s,'{}','read_back',1,'queued','verification',%s,%s,%s,%s)",
-                (job["vault_file_id"], f"intent-{job['id']}", stamp, job["id"], stamp, stamp),
-            )
-            connection.execute(
-                "INSERT INTO upload_remediation_jobs(job_id,remediation_id,vault_file_id,vault_id) "
-                "VALUES (%s,'episode-1',%s,2)", (job["id"], job["vault_file_id"]),
-            )
+        # After a proven absence the episode's Job is an ordinary upload again
+        # (ADR-0025): nothing is left in the cloud, so the removal closes it.
+        episode = self.add_episode(job, current=True)
         target.unlink()
         self.assertEqual(self.run_once(), 1)
         with self.db() as connection:
-            episode = connection.execute(
-                "SELECT state, reason FROM upload_remediations WHERE id='episode-1'"
+            row = connection.execute(
+                "SELECT state, reason FROM upload_remediations WHERE id=%s", (episode,)
             ).fetchone()
             closed = connection.execute(
                 f"SELECT original.id FROM jobs original WHERE original.id=%s AND {FILE_REMOVED_SQL}",
                 (job["id"],),
             ).fetchone()
-        self.assertEqual(episode, {"state": "cancelled", "reason": "file_removed"})
+        self.assertEqual(row, {"state": "cancelled", "reason": "file_removed"})
         self.assertEqual(closed, {"id": job["id"]})
         self.assertEqual(self.jobs(2)[0]["status"], "cancelled")
 
     def test_failed_notification_of_a_file_removed_episode_resolves(self):
-        target = self.write(2, "note.jpg")
+        self.write(2, "note.jpg")
         self.advance(300)
         self.assertEqual(self.queue(2), 1)
         job = self.jobs(2)[0]
-        self.add_intent(job["id"], send_started=False)
-        stamp = self.clock.isoformat()
+        episode = self.add_episode(job, current=False)
         with self.db() as connection:
-            connection.execute(
-                "INSERT INTO upload_remediations(id,target_key,vault_id,vault_file_id,intent_id,target_json,requested_mode,"
-                "size,state,phase,due_at,created_at,updated_at) "
-                "VALUES ('episode-2','key-episode-2',2,%s,%s,'{}','read_back',1,'queued','verification',%s,%s,%s)",
-                (job["vault_file_id"], f"intent-{job['id']}", stamp, stamp, stamp),
-            )
-            connection.execute(
-                "INSERT INTO upload_remediation_originals(original_job_id,remediation_id,vault_file_id,vault_id) "
-                "VALUES (%s,'episode-2',%s,2)", (job["id"], job["vault_file_id"]),
-            )
             # The failure is notified while its episode is still open...
-            connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (job["id"],))
+            connection.execute("UPDATE jobs SET status='failed', finished_at=%s WHERE id=%s",
+                               (self.clock.isoformat(), job["id"]))
             notifications.enqueue_job_terminal_notification(connection, job_id=job["id"])
             before = connection.execute(
                 "SELECT problem_status FROM notifications WHERE event='job_failed'"
             ).fetchone()["problem_status"]
             # ...and the episode later ends because the file is gone.
             connection.execute(
-                "UPDATE upload_remediations SET state='cancelled', reason='file_removed' WHERE id='episode-2'"
+                "UPDATE upload_remediations SET state='cancelled', reason='file_removed', "
+                "closed_at=%s WHERE id=%s", (self.clock.isoformat(), episode),
             )
             notifications.reconcile_problem_states(connection)
             after = connection.execute(
@@ -718,18 +708,18 @@ class FailureGroupingTests(QueueFixture):
         with self.db() as connection:
             for _ in range(count):
                 index, self.failed = self.failed, self.failed + 1
-                file_id = f"00000000-0000-0000-0000-{index:012d}"
-                connection.execute(
-                    "INSERT INTO vault_files(id, vault_id, status, created_at) VALUES (%s, 2, 'active', %s)",
-                    (file_id, self.clock.isoformat()),
-                )
+                file_id = connection.execute(
+                    "INSERT INTO files(vault_id, path, path_since) VALUES (2, %s, %s) RETURNING id",
+                    (f"f{index}.jpg", self.clock.isoformat()),
+                ).fetchone()["id"]
                 job_id = connection.execute(
                     """
-                    INSERT INTO jobs(vault_id, vault_file_id, path, action, status, requested_by,
-                                     requested_at, updated_at, origin)
-                    VALUES (2, %s, %s, 'upload', 'failed', 1, %s, %s, 'automatic') RETURNING id
+                    INSERT INTO jobs(vault_id, file_id, action, status, requested_at,
+                                     updated_at, finished_at, origin)
+                    VALUES (2, %s, 'upload', 'failed', %s, %s, %s, 'automatic') RETURNING id
                     """,
-                    (file_id, f"f{index}.jpg", self.clock.isoformat(), self.clock.isoformat()),
+                    (file_id, self.clock.isoformat(), self.clock.isoformat(),
+                     self.clock.isoformat()),
                 ).fetchone()["id"]
                 notifications.enqueue_job_terminal_notification(connection, job_id=job_id)
 
@@ -801,12 +791,8 @@ class FailureGroupingTests(QueueFixture):
         with self.db() as connection:
             # The files are gone and none of the failures reached the cloud.
             connection.execute(
-                """
-                INSERT INTO local_copies(vault_file_id, presence, file_type, size, mtime_ns,
-                                         last_seen_at, observed_at)
-                SELECT vault_file_id, 'missing', 'regular', 1, 1, %s, %s FROM jobs
-                """,
-                (self.clock.isoformat(), self.clock.isoformat()),
+                "UPDATE files SET local_presence='missing', local_file_type='regular', "
+                "local_observed_at=%s", (self.clock.isoformat(),),
             )
             notifications.reconcile_problem_states(connection)
             states = connection.execute(
@@ -822,13 +808,8 @@ class FailureGroupingTests(QueueFixture):
         self.fail_jobs(1)  # gets its own row and stays a real failure
         with self.db() as connection:
             connection.execute(
-                """
-                INSERT INTO local_copies(vault_file_id, presence, file_type, size, mtime_ns,
-                                         last_seen_at, observed_at)
-                SELECT vault_file_id, 'missing', 'regular', 1, 1, %s, %s FROM jobs
-                WHERE path <> %s
-                """,
-                (self.clock.isoformat(), self.clock.isoformat(), f"f{count}.jpg"),
+                "UPDATE files SET local_presence='missing', local_file_type='regular', "
+                "local_observed_at=%s WHERE path <> %s", (self.clock.isoformat(), f"f{count}.jpg"),
             )
             notifications.reconcile_problem_states(connection)
         self.assertEqual(self.rows("job_failed_group")[0]["problem_status"], "resolved")

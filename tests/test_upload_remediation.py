@@ -1,348 +1,355 @@
-"""Actual admission/claim/worker and inbox projections on disposable PG16."""
-import hashlib
-import threading
+"""Upload Remediation guided by open obligations (#592, ADR-0035).
+
+Real admission, claim, ``storage.process_job`` and the remediation sweep on a
+disposable PostgreSQL 16 database, with the synthetic ``VersionedProvider``
+counting every PUT/GET/HEAD. An episode exists only for a file whose upload
+ended with cloud work still open; it resolves only with the exact
+postcondition, and the normal case writes nothing.
+"""
+from __future__ import annotations
+
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import psycopg
+
 from app import storage
-from app.services import upload_remediation as remediation, notifications
-from tests import test_upload_provenance_worker as fixtures
-from tests.postgres import PostgresConnection
+from app.catalog import ArchiveCatalog
+from app.services import upload_failure_problems
+from app.services import upload_provenance as provenance
+from app.services import upload_remediation as remediation
+from tests import test_upload_worker as worker
+from tests.catalog_support import seed_vault
+
+A = worker.A
+
+_HELPERS = ("setUp", "db", "observe", "write", "queue", "claim", "run_job", "due", "abandon",
+            "job", "file_row", "rows", "version", "assert_current")
 
 
 class UploadRemediationTests(unittest.TestCase):
-    setUp = fixtures.UploadProvenanceWorkerTests.setUp
-    queue = fixtures.UploadProvenanceWorkerTests.queue
-    run_job = fixtures.UploadProvenanceWorkerTests.run_job
-    row = fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = fixtures.UploadProvenanceWorkerTests.assert_keeper
-    http_client = fixtures.UploadProvenanceWorkerTests.http_client
+    locals().update({name: getattr(worker.UploadWorkerTests, name) for name in _HELPERS})
 
-    def db(self):
-        return PostgresConnection(self.db_path)
+    # -- helpers -------------------------------------------------------------
 
-    def fail_after_ack(self):
-        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(RuntimeError("post raw ack fault")) if stage == "acknowledged" else None
-        original = self.queue()
+    def fail_original(self, stage: str, *, retries: int = 0, mode: str = "s3_checksum") -> int:
+        """Run an upload that ends failed (a permanent error) at ``stage``."""
+        def crash(name, **kwargs):
+            if name == stage and not crashed:
+                crashed.append(name)
+                raise ValueError(f"provider answer at {stage} is malformed")
+        crashed: list[str] = []
+        self.provider.hook = crash
+        job_id = self.queue(mode)
+        if retries:
+            with self.db() as connection:
+                connection.execute("UPDATE jobs SET retry_count=%s WHERE id=%s", (retries, job_id))
+        self.run_job(job_id)
+        self.provider.hook = lambda name, **kwargs: None
+        self.assertEqual(self.job(job_id)["status"], "failed", self.job(job_id)["message"])
+        return job_id
+
+    def episodes(self) -> list[dict]:
+        return self.rows("SELECT * FROM upload_remediations ORDER BY created_at, id")
+
+    def episode(self) -> dict:
+        rows = self.episodes()
+        self.assertEqual(len(rows), 1, rows)
+        return rows[0]
+
+    def make_due(self) -> None:
+        with self.db() as connection:
+            connection.execute("UPDATE upload_remediations SET due_at=now() - interval '1 second' "
+                               "WHERE closed_at IS NULL AND due_at <> 'infinity'")
+
+    def sweep(self) -> int:
+        return remediation.sweep(storage.db)
+
+    def admitted(self) -> int:
+        episode = self.episode()
+        self.assertEqual(episode["state"], "queued", episode)
+        detail = self.rows("SELECT * FROM job_uploads WHERE job_id=%s", episode["current_job_id"])[0]
+        self.assertTrue(detail["reconcile_only"])
+        return int(episode["current_job_id"])
+
+    def failure_closed(self, job_id: int) -> bool:
+        return bool(self.rows(
+            f"SELECT {upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL} AS closed "
+            "FROM jobs original WHERE original.id=%s", job_id)[0]["closed"])
+
+    def request_upload(self) -> list[int]:
+        with self.db() as connection:
+            job_ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+                vault_id=2, path="report.txt", action="upload", requested_at=storage.now_iso(),
+                group_id=str(uuid.uuid4()), is_directory=False)
+        return job_ids
+
+    # -- the normal case writes nothing ----------------------------------------
+
+    def test_successful_and_workless_failed_uploads_leave_no_backlog(self) -> None:
+        job_id = self.queue()
+        self.run_job(job_id)
+        self.assert_current(job_id, A)
+        self.write(b"new content, never sent")
+        failed = self.queue()
+        self.assertTrue(storage.set_job(failed, "failed", "the Owner's disk is gone"))
+        self.assertEqual(self.episodes(), [])
+        self.assertEqual(self.rows("SELECT * FROM upload_remediation_jobs"), [])
+        self.assertEqual(self.sweep(), 0)
+        # Ordinary requests never consult the arbiter without an episode.
+        with patch.object(remediation, "intercept_upload",
+                          side_effect=AssertionError("per-file remediation work")):
+            self.assertEqual(len(self.request_upload()), 1)
+
+    def test_a_workless_failure_closes_by_later_protection_or_removal_only(self) -> None:
+        failed = self.queue()
+        self.assertTrue(storage.set_job(failed, "failed", "the Owner's disk is gone"))
+        self.assertFalse(self.failure_closed(failed))
+        successor = self.queue()
+        self.run_job(successor)
+        self.assert_current(successor, A)
+        self.assertTrue(self.failure_closed(failed), "superseded by the protected Current")
+        self.write(b"edited, then removed")
+        removed = self.queue()
+        self.assertTrue(storage.set_job(removed, "failed", "gone"))
+        self.assertFalse(self.failure_closed(removed))
+        with self.db() as connection:
+            connection.execute("UPDATE files SET local_presence='missing' WHERE id=%s", (self.file_id,))
+        self.assertTrue(self.failure_closed(removed), "nothing left to protect")
+        # A failure that started a send closes only through its episode.
+        sent = self.fail_original("accepted")
+        self.assertFalse(self.failure_closed(sent))
+
+    # -- an original failure resolves from its own evidence --------------------
+
+    def test_ambiguous_send_failure_is_reconciled_without_a_second_put(self) -> None:
+        original = self.fail_original("accepted")
+        episode = self.episode()
+        attempt = self.rows("SELECT * FROM upload_attempts")[0]
+        self.assertEqual((episode["state"], str(episode["attempt_id"]), episode["retry_count"]),
+                         ("pending", str(attempt["id"]), 0))
+        self.assertEqual(self.sweep(), 0, "the grace comes first")
+        self.make_due()
+        self.assertEqual(self.sweep(), 1)
+        resumed = self.admitted()
+        self.assertIsNone(self.job(resumed)["archive_version_id"])
+        self.run_job(resumed)
+        self.assert_current(resumed, A)
+        self.assertEqual(self.provider.puts, 1)
+        episode = self.episode()
+        self.assertEqual((episode["state"], episode["resolved_by_job_id"]), ("resolved", resumed))
+        self.assertEqual({r["job_id"] for r in self.rows("SELECT job_id FROM upload_remediation_jobs")},
+                         {original, resumed})
+        self.assertTrue(self.failure_closed(original))
+        self.assertEqual(self.sweep(), 0)
+
+    def test_failure_with_a_receipt_resolves_without_a_new_put(self) -> None:
+        heads: list[str] = []
+
+        def fail_verification(name, **kwargs):
+            if name == "head" and heads.append(name) is None and len(heads) == 2:
+                raise ValueError("malformed verification answer")
+        self.provider.hook = fail_verification
+        original = self.queue("read_back")
         self.run_job(original)
-        self.assertEqual(self.row(original)["status"], "failed")
-        self.provider.hook = lambda *args, **kw: None
-        return original
+        self.provider.hook = lambda name, **kwargs: None
+        self.assertEqual(self.job(original)["status"], "failed")
+        replacing = self.file_row()["replacing_version_id"]
+        self.assertIsNotNone(replacing)
+        self.assertEqual(len(self.rows("SELECT * FROM upload_receipts")), 1)
+        self.assertEqual(str(self.episode()["archive_version_id"]), str(replacing))
+        self.make_due()
+        self.assertEqual(self.sweep(), 1)
+        resumed = self.admitted()
+        self.assertEqual(str(self.job(resumed)["archive_version_id"]), str(replacing))
+        self.run_job(resumed)
+        current = self.assert_current(resumed, A)
+        self.assertEqual(str(current["id"]), str(replacing))
+        self.assertEqual(current["verification_method"], "read_back")
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.episode()["state"], "resolved")
+        self.assertTrue(self.failure_closed(original))
 
-    def admit(self):
+    def test_proven_no_write_rearms_the_same_snapshot_with_a_new_token(self) -> None:
+        # The automatic resend waits for stable content like any upload.
+        self.enterContext(patch("app.storage.file_is_stable", return_value=True))
+        self.fail_original("before_put")
+        self.assertEqual(self.provider.puts, 0)
+        self.make_due()
+        self.assertEqual(self.sweep(), 1)
+        resumed = self.admitted()
+        self.run_job(resumed)
+        self.assert_current(resumed, A)
+        attempts = self.rows("SELECT * FROM upload_attempts ORDER BY created_at")
+        self.assertEqual([(a["outcome"], a["no_write_operation"]) for a in attempts],
+                         [("no_write", provenance.ABSENT_OPERATION), ("landed", None)])
+        self.assertEqual(attempts[0]["snapshot_id"], attempts[1]["snapshot_id"])
+        self.assertNotEqual(attempts[0]["token"], attempts[1]["token"])
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.episode()["state"], "resolved")
+
+    def test_obligation_survives_collection_of_the_original_job(self) -> None:
+        original = self.fail_original("accepted")
+        with self.db() as connection:
+            connection.execute("DELETE FROM notifications WHERE job_id=%s", (original,))
+            connection.execute("UPDATE upload_attempts SET job_id=NULL WHERE job_id=%s", (original,))
+            connection.execute("DELETE FROM jobs WHERE id=%s", (original,))
+        self.assertEqual(self.rows("SELECT * FROM upload_remediation_jobs"), [])
+        self.make_due()
+        self.assertEqual(self.sweep(), 1)
+        resumed = self.admitted()
+        self.run_job(resumed)
+        self.assert_current(resumed, A)
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.episode()["state"], "resolved")
+
+    # -- the exact postcondition -------------------------------------------------
+
+    def test_completion_requires_the_exact_postcondition(self) -> None:
+        self.fail_original("accepted")
+        self.make_due()
+        self.sweep()
+        resumed = self.admitted()
+        with self.assertRaisesRegex(RuntimeError, "exact cleanup postcondition"):
+            with self.db() as connection:
+                remediation.transition(connection, resumed, "completed", storage.now_iso())
+        self.assertEqual(self.episode()["state"], "queued")
+
+    def test_an_ordinary_success_resolves_the_episode_only_when_the_work_is_closed(self) -> None:
+        original = self.fail_original("accepted")
+        # An ordinary request for the file goes to the episode instead.
+        self.make_due()
+        job_ids = self.request_upload()
+        self.assertEqual(len(job_ids), 1)
+        self.assertEqual(self.admitted(), job_ids[0])
+        self.run_job(job_ids[0])
+        self.assertEqual(self.episode()["state"], "resolved")
+        self.assertTrue(self.failure_closed(original))
+        # With nothing left, later uploads are ordinary again.
+        self.write(b"edited after the resolution")
+        later = self.request_upload()
+        self.assertEqual(len(later), 1)
+        self.assertFalse(self.rows("SELECT reconcile_only FROM job_uploads WHERE job_id=%s",
+                                   later[0])[0]["reconcile_only"])
+
+    # -- grace, active Jobs, budget and cancel -------------------------------------
+
+    def test_an_active_job_of_the_file_suspends_admission(self) -> None:
+        self.fail_original("accepted")
+        other = self.queue()
+        self.make_due()
+        self.assertEqual(self.sweep(), 0)
+        episode = self.episode()
+        self.assertEqual((episode["state"], episode["reason"]), ("suspended", "active_operation"))
+        with self.db() as connection:
+            ArchiveCatalog(connection).cancel_jobs(vault_id=2, job_ids=[other], message="",
+                                                   message_key=None, now=storage.now_iso())
+        self.make_due()
+        self.assertEqual(self.sweep(), 1)
+
+    def test_retry_budget_is_monotonic_and_explicit_retry_keeps_it(self) -> None:
+        self.fail_original("accepted", retries=remediation.MAX_RETRIES)
+        episode = self.episode()
+        self.assertEqual((episode["state"], episode["reason"], episode["retry_count"]),
+                         ("blocked", "retry_budget_exhausted", remediation.MAX_RETRIES))
+        self.make_due()
+        self.assertEqual(self.sweep(), 0)
+        with self.assertRaises(psycopg.errors.RestrictViolation):
+            with self.db() as connection:
+                connection.execute("UPDATE upload_remediations SET retry_count=0")
         with self.db() as connection:
             vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-            return remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())["job_id"]
+            resumed = remediation.schedule_resume(connection, vault=vault, path="report.txt",
+                                                  user_id=None, timestamp=storage.now_iso())
+        self.assertEqual(self.job(resumed["job_id"])["retry_count"], remediation.MAX_RETRIES)
+        self.run_job(resumed["job_id"])
+        self.assert_current(resumed["job_id"], A)
+        self.assertEqual(self.provider.puts, 1)
+        self.assertEqual(self.episode()["state"], "resolved")
 
-    def test_interrupted_own_request_finishing_during_inventory_auto_reconciles(self):
-        original = self.fail_after_ack()
-        version, payload = next(iter(self.provider.objects.items()))
-        del self.provider.objects[version]
-        # Replay an old in-flight completion, not a second PUT or a new baseline.
-        listings = []
-        def finish(stage,**kwargs):
-            if stage == 'list':
-                listings.append(1)
-                if len(listings) == 2:
-                    self.provider.objects[version] = payload
-        self.provider.hook = finish
-        self.assertEqual(remediation.sweep(self.db),1)
+    def test_owner_cancel_is_durable(self) -> None:
+        self.fail_original("accepted")
+        self.make_due()
+        self.sweep()
+        resumed = self.admitted()
         with self.db() as connection:
-            resumed = connection.execute('SELECT current_job_id FROM upload_remediations').fetchone()['current_job_id']
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        self.assertEqual(self.provider.puts,1)
+            ArchiveCatalog(connection).cancel_jobs(vault_id=2, job_ids=[resumed], message="",
+                                                   message_key=None, now=storage.now_iso())
+            remediation.transition(connection, resumed, "cancelled", storage.now_iso())
+        episode = self.episode()
+        self.assertEqual((episode["state"], episode["reason"]), ("cancelled", "owner_cancelled"))
+        self.make_due()
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.request_upload(), [], "a cancelled episode is never resurrected")
         with self.db() as connection:
-            self.assertEqual(connection.execute('SELECT state FROM upload_remediations').fetchone()['state'],'resolved')
-            self.assertEqual(connection.execute('SELECT status FROM jobs WHERE id=%s',(original,)).fetchone()['status'],'failed')
+            vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+            with self.assertRaises(provenance.UploadBlocked) as refused:
+                remediation.schedule_resume(connection, vault=vault, path="report.txt",
+                                            user_id=None, timestamp=storage.now_iso())
+        self.assertEqual(refused.exception.reason, "owner_cancelled")
+        with self.assertRaises(psycopg.errors.RestrictViolation):
+            with self.db() as connection:
+                connection.execute("UPDATE upload_remediations SET state='pending', closed_at=NULL")
+        self.assertEqual(self.provider.puts, 1)
 
-    def test_interrupted_upload_with_external_inventory_delta_stays_blocked(self):
-        self.fail_after_ack()
-        listings = []
-        def external(stage,**kwargs):
-            if stage == 'list':
-                listings.append(1)
-                if len(listings) == 2:
-                    self.provider.add('docs/report.txt',fixtures.A,version='external-writer')
-        self.provider.hook = external
-        self.assertEqual(remediation.sweep(self.db),1)
+    def test_a_failed_remediation_blocks_and_never_restarts_by_itself(self) -> None:
+        self.fail_original("accepted")
+        self.make_due()
+        self.sweep()
+        resumed = self.admitted()
         with self.db() as connection:
-            resumed = connection.execute('SELECT current_job_id FROM upload_remediations').fetchone()['current_job_id']
-        self.run_job(resumed)
-        self.assertEqual(self.row(resumed)['status'],'failed')
-        self.assertIn('Retry failed uploads',self.row(resumed)['message'])
-        for _ in range(3):
-            self.assertEqual(remediation.sweep(self.db),0)
-        with self.db() as connection:
-            self.assertEqual(connection.execute('SELECT state,reason FROM upload_remediations').fetchone(),
-                             {'state':'blocked','reason':'inventory_changed'})
-        self.assertEqual((self.provider.puts,self.provider.deletes),(1,0))
-        self.assertEqual(len(self.provider.objects),2)
+            ArchiveCatalog(connection).block_reconciliation(
+                str(self.file_id), reason="inventory_changed", at=storage.now_iso())
+        self.assertTrue(storage.set_job(resumed, "failed", "inventory changed"))
+        episode = self.episode()
+        self.assertEqual((episode["state"], episode["reason"]), ("blocked", "inventory_changed"))
+        self.make_due()
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.request_upload()[:1], [], "blocked work is not bypassed")
 
-    def test_post_ack_original_preserved_resolution_requires_completed_cleanup(self):
-        original = self.fail_after_ack()
-        before = self.row(original)
-        resumed = self.admit()
+    def test_a_stale_queued_episode_catches_up_with_its_collected_job(self) -> None:
+        self.fail_original("accepted")
+        self.make_due()
+        self.sweep()
+        resumed = self.admitted()
         with self.db() as connection:
-            notifications.reconcile_problem_states(connection)
-            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s", (original,)).fetchone()["problem_status"], "open")
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        self.assertEqual(self.provider.puts,1)
-        after = self.row(original)
-        for key in ("status","message","requested_at","updated_at","group_id"):
-            self.assertEqual(after[key],before[key],key)
-        with self.db() as connection:
-            row = connection.execute("SELECT * FROM upload_remediations").fetchone()
-            self.assertEqual((row["state"],row["resolved_by_job_id"]),("resolved",resumed))
-            notifications.reconcile_problem_states(connection)
-            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s", (original,)).fetchone()["problem_status"],"resolved")
-            connection.execute("DELETE FROM notification_deliveries")
-            connection.execute("DELETE FROM notifications")
-            notifications.enqueue_job_terminal_notification(connection,job_id=original)
-            self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s",(original,)).fetchone()["problem_status"],"resolved","Late delivery cannot reopen resolved history")
+            connection.execute("DELETE FROM jobs WHERE id=%s", (resumed,))
+        self.assertIsNone(self.episode()["current_job_id"])
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.episode()["state"], "pending")
+        self.assertEqual(self.sweep(), 1)
+        self.run_job(self.admitted())
+        self.assertEqual(self.episode()["state"], "resolved")
 
-    def test_verified_cleanup_fault_is_resumable_without_put_or_readback(self):
-        original = self.queue()
-        with patch("app.storage.purge_current_snapshot_superseded",side_effect=RuntimeError("post verified fault")):
-            self.run_job(original)
-        self.assertEqual(self.row(original)["status"],"failed")
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT integrity FROM archive_versions").fetchone()["integrity"],"verified")
-        resumed = self.admit()
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        self.assertEqual((self.provider.puts,self.provider.gets),(1,0))
+    # -- per-Vault fairness and bounds ---------------------------------------------
 
-    def test_failed_remediation_never_rediscovered_as_fresh_original(self):
-        original = self.fail_after_ack()
-        resumed = self.admit()
-        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(RuntimeError("permanent HEAD fault")) if stage == "head" else None
-        self.run_job(resumed)
-        self.assertEqual(self.row(resumed)["status"],"failed")
-        for _ in range(3):
-            remediation.sweep(self.db)
+    def test_sweep_is_round_robin_across_vaults_and_bounded(self) -> None:
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs").fetchone()["n"],2)
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediations").fetchone()["n"],1)
-            self.assertEqual(connection.execute("SELECT state FROM upload_remediations").fetchone()["state"],"blocked")
-            self.assertEqual(connection.execute("SELECT original_job_id FROM upload_remediation_originals").fetchone()["original_job_id"],original)
-        self.assertEqual(self.provider.puts,1)
+            other_root = self.root / "other"
+            other_root.mkdir()
+            seed_vault(connection, vault_id=3, source_root=str(other_root))
+            other = ArchiveCatalog(connection).observe_local_copy(
+                vault_id=3, path="other.txt", file_type="regular", size=1, mtime_ns=1,
+                observed_at=storage.now_iso())
+            past = datetime.now(timezone.utc) - timedelta(seconds=5)
+            for vault_id, file_id in ((2, self.file_id), (3, other)):
+                connection.execute(
+                    "INSERT INTO upload_remediations(vault_id, file_id, reason, due_at) "
+                    "VALUES (%s, %s, 'transient', %s)", (vault_id, file_id, past))
+        seen: list[int] = []
 
-    def test_cancelled_remediation_persists_target_suppression(self):
-        self.fail_after_ack()
-        resumed = self.admit()
-        storage.set_job(resumed,"cancelled","owner cancelled")
-        for _ in range(3):
-            remediation.sweep(self.db)
+        def record(connection, episode, vault, **kwargs):
+            seen.append(vault["id"])
+            return None
+        with patch.object(remediation, "VAULT_BATCH", 1), patch.object(remediation, "admit", record):
+            self.sweep()
+            self.sweep()
+            self.sweep()
+        self.assertEqual(seen, [2, 3, 2])
         with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT state FROM upload_remediations").fetchone()["state"],"cancelled")
-            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs").fetchone()["n"],2)
-        with self.assertRaisesRegex(Exception,"owner_cancelled"):
-            self.admit()
-        self.assertEqual(self.provider.puts,1)
-
-    def test_queued_failed_and_completed_b_do_not_resolve_failed_a(self):
-        original = self.fail_after_ack()
-        with self.db() as connection:
-            for status in ("queued","failed","completed"):
-                other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at)
-                    VALUES (2,%s,'report.txt','upload',%s,1,%s,%s) RETURNING id""",(self.file_id,status,storage.now_iso(),storage.now_iso())).fetchone()["id"]
-                notifications.reconcile_problem_states(connection)
-                self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE job_id=%s",(original,)).fetchone()["problem_status"],"open",status)
-                connection.execute("UPDATE jobs SET status='failed' WHERE id=%s",(other,))
-
-    def test_discovery_admission_continues_while_actual_provider_io_is_blocked(self):
-        self.fail_after_ack()
-        other = self.source / "other.txt"
-        other.write_bytes(fixtures.A)
-        with self.db() as connection:
-            from app.catalog import ArchiveCatalog
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2,path="other.txt",file_type="regular",size=len(fixtures.A),mtime_ns=other.stat().st_mtime_ns,observed_at=storage.now_iso())
-        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(RuntimeError("post raw ack fault")) if stage == "acknowledged" else None
-        fixtures.queue_jobs("other.txt","upload",2,1)
-        with self.db() as connection:
-            second = connection.execute("SELECT max(id) id FROM jobs").fetchone()["id"]
-        self.run_job(second)
-        self.assertEqual(self.row(second)["status"],"failed")
-        self.provider.hook = lambda *args, **kw: None
-        resumed = self.admit()
-        entered,release = threading.Event(),threading.Event()
-        def block(stage, **kw):
-            if stage == "head" and kw["key"] == "docs/report.txt":
-                entered.set()
-                if not release.wait(5):
-                    raise AssertionError("Test provider I/O was not released")
-        self.provider.hook = block
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self.run_job,resumed)
-            try:
-                self.assertTrue(entered.wait(5),"Actual claimed worker must enter provider I/O")
-                with patch("app.storage.s3_client",side_effect=AssertionError("Sweep cannot use provider")):
-                    self.assertEqual(remediation.sweep(self.db),1)
-                self.assertFalse(future.done(),"Admission must not wait for blocked provider I/O")
-                with self.db() as connection:
-                    self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_jobs").fetchone()["n"],2)
-            finally:
-                release.set()
-            future.result(timeout=5)
-        self.assert_keeper(resumed)
-        self.assertEqual(self.provider.puts,2,"Discovery never creates provider versions")
-
-    def test_sweep_is_db_only_and_admits_historical_verified_completion_failure(self):
-        original = self.queue()
-        with patch("app.storage.purge_current_snapshot_superseded",side_effect=RuntimeError("post verified fault")):
-            self.run_job(original)
-        with patch("app.storage.s3_client",side_effect=AssertionError("discovery cannot use provider")), patch("app.services.source_layout.vault_local_access",side_effect=AssertionError("discovery cannot probe filesystem")):
-            self.assertEqual(remediation.sweep(self.db),1)
-            self.assertEqual(remediation.sweep(self.db),0)
-        with self.db() as connection:
-            resumed = connection.execute("SELECT current_job_id FROM upload_remediations").fetchone()["current_job_id"]
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        self.assertEqual((self.provider.puts,self.provider.gets),(1,0))
-
-    def test_a_changed_to_b_is_not_protected_by_remediation_of_a(self):
-        self.fail_after_ack()
-        self.file.write_bytes(fixtures.B)
-        resumed = self.admit()
-        self.run_job(resumed)
-        version = self.assert_keeper(resumed)
-        self.assertEqual(version["plaintext_sha256"],hashlib.sha256(fixtures.A).hexdigest())
-        with self.db() as connection:
-            local = connection.execute("SELECT * FROM local_copies WHERE vault_file_id=%s",(self.file_id,)).fetchone()
-            self.assertNotEqual(local["matched_archive_version_id"],version["id"])
-        self.assertEqual(self.provider.puts,1)
-
-    def test_target_budget_deadline_restart_and_explicit_retry_do_not_reset(self):
-        original = self.fail_after_ack()
-        resumed = self.admit()
-        self.provider.hook = lambda stage, **kw: (_ for _ in ()).throw(TimeoutError("connection reset")) if stage == "head" else None
-        self.run_job(resumed)
-        self.assertEqual((self.row(resumed)["status"],self.row(resumed)["retry_count"]),("retrying",1))
-        with self.db() as connection:
-            row = connection.execute("SELECT * FROM upload_remediations").fetchone()
-            self.assertEqual((row["retry_count"],row["due_at"]),(1,self.row(resumed)["retry_after"]))
-            epoch = row["id"]
-            # Advance the durable fixture budget to its last permitted retry.
-            connection.execute("UPDATE jobs SET retry_count=8,retry_after=%s WHERE id=%s",((datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),resumed))
-            connection.execute("UPDATE upload_remediations SET retry_count=8 WHERE id=%s",(epoch,))
-        self.run_job(resumed)
-        self.assertEqual(self.row(resumed)["status"],"failed")
-        for _ in range(3):
-            self.assertEqual(remediation.sweep(self.db),0)
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT reason FROM upload_remediations").fetchone()["reason"],"retry_budget_exhausted")
-        self.provider.hook = lambda *args, **kw: None
-        explicit = self.admit()
-        self.assertEqual(self.row(explicit)["retry_count"],8,"Explicit retry keeps the target budget")
-        self.run_job(explicit)
-        self.assert_keeper(explicit)
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT id FROM upload_remediations").fetchone()["id"],epoch)
-        self.assertEqual(self.provider.puts,1)
-        with self.db() as connection:
-            notifications.reconcile_problem_states(connection)
-            failures = connection.execute("SELECT job_id,problem_status,read_at FROM notifications WHERE event='job_failed'").fetchall()
-            self.assertEqual({row["job_id"] for row in failures}, {original, resumed})
-            self.assertTrue(all(row["problem_status"] == "resolved" and row["read_at"] for row in failures), "Failed remediation attempts are resolved and read with their exact target")
-            connection.execute("DELETE FROM notification_deliveries")
-            connection.execute("DELETE FROM notifications")
-            notifications.enqueue_job_terminal_notification(connection, job_id=resumed)
-            late = connection.execute("SELECT problem_status,read_at FROM notifications WHERE job_id=%s", (resumed,)).fetchone()
-            self.assertEqual(late["problem_status"], "resolved")
-            self.assertIsNotNone(late["read_at"], "Late resolved attempts must not remain unread forever")
-
-    def test_concurrent_manual_and_sweep_share_one_target_and_active_file(self):
-        self.fail_after_ack()
-        def explicit():
-            try:
-                return self.admit()
-            except remediation.provenance.UploadBlocked:
-                return None
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda f:f(),(explicit,lambda:remediation.sweep(self.db))))
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediations").fetchone()["n"],1)
-            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs WHERE status NOT IN ('failed','cancelled','completed')").fetchone()["n"],1)
-            self.assertEqual(connection.execute("SELECT count(*) n FROM upload_remediation_jobs").fetchone()["n"],1)
-        self.assertTrue(any(results))
-        self.assertEqual(self.provider.puts,1)
-
-    def test_other_live_and_expired_claims_are_not_absence_of_active_work(self):
-        self.fail_after_ack()
-        with self.db() as connection:
-            other = connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at,claim_token,claim_expires_at)
-                VALUES (2,%s,'report.txt','recover','queued',1,%s,%s,'other-live-claim',%s) RETURNING id""",(self.file_id,storage.now_iso(),storage.now_iso(),storage._claim_expiry_at())).fetchone()["id"]
-        self.assertEqual(remediation.sweep(self.db),0)
-        future = (datetime.now(timezone.utc)+timedelta(seconds=20)).isoformat()
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT reason FROM upload_remediations").fetchone()["reason"],"active_operation")
-            connection.execute("UPDATE jobs SET claim_expires_at=%s WHERE id=%s",("2020-01-01T00:00:00+00:00",other))
-        self.assertEqual(remediation.sweep(self.db,future),0)
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT count(*) n FROM jobs").fetchone()["n"],2,"Expired claim is still the same active operation")
-
-    def test_source_volume_suspend_is_durable_but_single_file_missing_can_complete(self):
-        from types import SimpleNamespace
-        self.fail_after_ack()
-        resumed = self.admit()
-        with patch("app.services.source_layout.vault_local_access",return_value=SimpleNamespace(local_operations_allowed=False)):
-            self.assertFalse(self.run_job(resumed))
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT state,reason FROM upload_remediations").fetchone(),{"state":"suspended","reason":"source_volume_unavailable"})
-        self.assertEqual(remediation.sweep(self.db),0)
-        self.file.unlink()
-        with self.db() as connection:
-            self.assertEqual(connection.execute("SELECT status,retry_count FROM jobs WHERE id=%s",(resumed,)).fetchone(),{"status":"retrying","retry_count":0})
-            connection.execute("UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE id=%s",(resumed,))
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        self.assertEqual(self.provider.puts,1)
-
-    def test_targeted_history_and_bidirectional_lookup_survive_recent50_window(self):
-        original = self.fail_after_ack()
-        resumed = self.admit()
-        self.run_job(resumed)
-        self.assert_keeper(resumed)
-        with self.db() as connection:
-            for _ in range(55):
-                connection.execute("""INSERT INTO jobs(vault_id,vault_file_id,path,action,status,requested_by,requested_at,updated_at)
-                    VALUES (2,%s,'report.txt','upload','completed',1,%s,%s)""",(self.file_id,storage.now_iso(),storage.now_iso()))
-        client = self.http_client()
-        with patch("app.main._allowed_hosts",return_value=[]):
-            recent = client.get("/api/jobs?vault_id=2")
-            self.assertEqual(recent.status_code,200,recent.text)
-            self.assertNotIn(original,[r["id"] for r in recent.json()["items"]])
-            first = client.get("/api/files/jobs?vault_id=2&path=report.txt").json()
-            second = client.get(f"/api/files/jobs?vault_id=2&path=report.txt&before_id={first['next_before_id']}").json()
-            self.assertIn(original,[r["id"] for r in second["items"]])
-            linked = client.get(f"/api/jobs/{original}?vault_id=2").json()
-            self.assertEqual(linked["remediation"]["resolved_by_job_id"],resumed)
-            reverse = client.get(f"/api/jobs/{resumed}?vault_id=2").json()
-            self.assertIn(original,reverse["remediation"]["original_job_ids"])
-            self.assertNotIn("claim_token",reverse)
-
-    def test_verified_alone_cannot_complete_remediation(self):
-        original = self.queue()
-        with patch("app.storage.purge_current_snapshot_superseded", side_effect=RuntimeError("post verified fault")):
-            self.run_job(original)
-        resumed = self.admit()
-        with self.db() as connection:
-            linked = self.row(resumed)["archive_version_id"]
-            self.assertIsNotNone(linked)
-            self.assertEqual(connection.execute("SELECT integrity FROM archive_versions WHERE id=%s", (linked,)).fetchone()["integrity"], "verified")
-            # Isolate ONLY the incomplete cleanup guard: linked verified AV,
-            # settled intent and exact inventory pointer are all present.
-            connection.execute("UPDATE upload_intents SET settled=TRUE WHERE archive_version_id=%s", (linked,))
-            connection.execute("UPDATE snapshot_cleanup_inventories SET keeper_id=%s,completed_at=NULL WHERE job_id=%s", (linked, original))
-            connection.execute("UPDATE upload_remediations SET cleanup_inventory_job_id=%s", (original,))
-            self.assertTrue(connection.execute("SELECT settled FROM upload_intents WHERE archive_version_id=%s", (linked,)).fetchone()["settled"])
-        with self.assertRaisesRegex(RuntimeError,"exact cleanup postcondition"):
-            storage.set_job(resumed,"completed")
-        self.assertEqual(self.row(resumed)["status"],"queued","Authoritative transition rolls back")
+            self.assertFalse(remediation.sweep_status(connection)["stale"])
 
 
 if __name__ == "__main__":

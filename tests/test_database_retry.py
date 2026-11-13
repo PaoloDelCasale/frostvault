@@ -88,9 +88,7 @@ class DatabaseRetryTests(unittest.TestCase):
     def test_reconciliation_problem_retries_its_whole_notification_transaction(self) -> None:
         from app import storage
         connection = MagicMock()
-        with patch.object(storage,'db',return_value=connection), patch(
-            'app.services.upload_remediation_discovery.capture'
-        ), patch.object(storage.notification_service,'set_problem',side_effect=[DeadlockDetected(),None]) as notify, patch(
+        with patch.object(storage,'db',return_value=connection), patch.object(storage.notification_service,'set_problem',side_effect=[DeadlockDetected(),None]) as notify, patch(
             'app.services.database_retry.time.sleep'
         ):
             storage._record_upload_reconciliation_block({'file_id':'file','vault_id':1,'path':'a'},'inventory_changed')

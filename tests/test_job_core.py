@@ -13,7 +13,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import psycopg
 
@@ -43,9 +42,6 @@ class JobCoreFixture(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "jobs"
-        # Upload Remediation episodes are ported separately (#592).
-        self.enterContext(patch("app.services.upload_remediation.intercept_upload",
-                                return_value=(False, None)))
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.file_ids: dict[tuple[int, str], str] = {}
