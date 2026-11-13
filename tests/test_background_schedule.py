@@ -171,6 +171,38 @@ class PersistedAgesTests(unittest.TestCase):
             )
         self.assertIsNone(self._ages()["audit"])
 
+    def test_a_failed_audit_is_due_at_startup_whatever_its_last_attempt(self) -> None:
+        # #620: a failure is not a run. The Vault it left unconfirmed is audited
+        # again at startup, not one interval after the failed attempt.
+        with PostgresConnection(str(self.path)) as connection:
+            for vault_id in (1, 2):
+                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
+            connection.execute(
+                """
+                INSERT INTO vault_component_health(
+                    vault_id, component, last_success_at, last_error, healthy, updated_at
+                ) VALUES (1, 'audit', %s, NULL, TRUE, %s), (2, 'audit', %s, 'Catalog audit: denied', FALSE, %s)
+                """,
+                (
+                    (self.now - timedelta(days=1)).isoformat(), (self.now - timedelta(days=1)).isoformat(),
+                    (self.now - timedelta(days=2)).isoformat(), self.now.isoformat(),
+                ),
+            )
+        self.assertIsNone(self._ages()["audit"])
+
+    def test_audit_age_counts_from_the_last_success_not_the_last_attempt(self) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            insert_vault(connection, id=1, name="V1", source_root="/source/1")
+            connection.execute(
+                """
+                INSERT INTO vault_component_health(
+                    vault_id, component, last_success_at, healthy, updated_at
+                ) VALUES (1, 'audit', %s, TRUE, %s)
+                """,
+                ((self.now - timedelta(days=6)).isoformat(), self.now.isoformat()),
+            )
+        self.assertEqual(self._ages()["audit"], 6 * 24 * 60 * 60)
+
 
 if __name__ == "__main__":
     unittest.main()

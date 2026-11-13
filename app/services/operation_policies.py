@@ -27,6 +27,25 @@ DEFAULT_STABILITY_SECONDS = 300
 AUTO_UPLOAD_EXCLUSIONS = (".DS_Store", "Thumbs.db", "._*", "*.lock", "*-wal", "*-journal")
 
 
+def stopped_upload_holds_automatic_admission_sql(job: str, file: str) -> str:
+    """SQL predicate: this upload Job keeps automatic admission off its File.
+
+    A failed automatic upload, any cancelled automatic upload and any upload the
+    Owner cancelled (``job.upload_stopped``, manual or automatic) hold the File
+    until its content is observed again (#618). A manual upload closed for
+    another reason (removed file, metadata restore) or a failed manual upload
+    does not.
+    """
+    return f"""(
+        {job}.action='upload'
+        AND {job}.requested_at >= COALESCE({file}.local_content_observed_at, {file}.local_observed_at)
+        AND (
+            ({job}.origin='automatic' AND {job}.status IN ('failed', 'cancelled'))
+            OR ({job}.status='cancelled' AND {job}.message_key='job.upload_stopped')
+        )
+    )"""
+
+
 def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
     """Fixed noise exclusions are additional to, never editable via, user globs."""
     return not any(
@@ -340,7 +359,7 @@ def queue_auto_uploads(
     # One row per File (#587): its Local Copy and its matched Archive Version.
     # A purge in progress is an active Job of the File, so it is excluded too.
     rows = connection.execute(
-        """
+        f"""
         SELECT f.id AS file_id, f.path, f.local_size AS size, f.local_mtime_ns AS mtime_ns,
                COALESCE(f.local_content_observed_at, f.local_observed_at) AS content_observed_at,
                f.local_sha256 AS plaintext_sha256, f.matched_version_id AS matched_archive_version_id,
@@ -370,9 +389,7 @@ def queue_auto_uploads(
                        ORDER BY latest.id DESC LIMIT 1)='failed')
               OR (NOT %s AND NOT EXISTS (
                   SELECT 1 FROM jobs stopped WHERE stopped.file_id=f.id
-                    AND stopped.action='upload' AND stopped.origin='automatic'
-                    AND stopped.status IN ('failed', 'cancelled')
-                    AND stopped.requested_at >= COALESCE(f.local_content_observed_at, f.local_observed_at)
+                    AND {stopped_upload_holds_automatic_admission_sql("stopped", "f")}
               ))
           )
         ORDER BY lower(f.path)

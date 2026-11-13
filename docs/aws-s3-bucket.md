@@ -199,6 +199,12 @@ them to the catalog without restoring Glacier content or reading policy tags.
 Detected drift updates storage class and availability
 (`missing` when a catalogued version is gone from S3).
 
+The interval counts from each Vault's last **successful** audit. A failed audit
+leaves the Vault unconfirmed (Free space is refused) and opens an in-app
+Problem with the reason. It is retried after 5, 10, 20 and 40 minutes, then
+hourly; at startup; and as soon as the S3 readiness gate returns to `ready`. The
+next successful audit of that Vault closes the Problem.
+
 ## SDK transfer upgrade (0052)
 
 Migration `0052_s3_sdk` removes only the retired transport alias column. It makes
