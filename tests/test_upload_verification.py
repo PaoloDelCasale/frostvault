@@ -29,11 +29,51 @@ from app.storage import (
     cancel_jobs,
     process_jobs_once,
 )
+from tests.catalog_support import seed_vault
+from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
 
 
 def _sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _observed(connection, path: str) -> dict:
+    """The Vault File with ``latest_version``: its most recent Archive Version.
+
+    Current, the replacement in progress or an abandoned (mismatched)
+    replacement awaiting cleanup: whichever upload wrote last.
+    """
+    row = ArchiveCatalog(connection).get_file_by_path(2, path)
+    latest = connection.execute(
+        """SELECT av.* FROM archive_versions av WHERE av.file_id=%s
+           ORDER BY av.created_at DESC, av.id LIMIT 1""", (row["id"],)).fetchone()
+    if latest is not None:
+        latest = {**latest, "id": str(latest["id"]),
+                  "plaintext_sha256": bytes(latest["plaintext_sha256"]).hex()
+                  if latest["plaintext_sha256"] is not None else None}
+    return {**row, "latest_version": latest}
+
+
+def _versions(connection, path: str) -> list[dict]:
+    """Every Archive Version the file holds: Current, in progress or superseded."""
+    return [{**row, "id": str(row["id"])} for row in connection.execute(
+        """SELECT av.* FROM archive_versions av JOIN files f ON f.id=av.file_id
+           WHERE f.vault_id=2 AND f.path=%s ORDER BY av.created_at""", (path,)).fetchall()]
+
+
+def _seed_previous_current(connection, path: str, content: bytes, provider_version_id: str) -> tuple[str, str]:
+    """A verified Current with older content at the Vault namespace key."""
+    catalog = ArchiveCatalog(connection)
+    row = catalog.get_file_by_path(2, path)
+    uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
+    key = f"vaults/{uuid}/{path}"
+    version = catalog.begin_replacement(
+        row["id"], object_key=key, provider_version_id=provider_version_id,
+        size=len(content), storage_class="STANDARD", created_at="2026-07-20T00:00:00+00:00")
+    catalog.promote_replacement(row["id"], archive_version_id=version,
+        plaintext_sha256=_sha256_hex(content), verified_at="2026-07-20T00:00:00+00:00")
+    return version, key
 
 
 def _prepare_plain_vault(
@@ -48,20 +88,8 @@ def _prepare_plain_vault(
     migrated = run_alembic(database_path)
     assert migrated.returncode == 0, migrated.stderr
     with PostgresConnection(str(database_path)) as connection:
-        connection.execute(
-            """
-            INSERT INTO users(
-                id, username, display_name, password_hash
-            ) VALUES (1, 'owner', 'Owner', 'hash')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO vaults(
-                id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (2, 'docs', 'Docs', %s, 'bucket', 'docs')
-            """,
-            (str(source),),
-        )
+        insert_owner(connection)
+        seed_vault(connection, vault_id=2, source_root=str(source))
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
@@ -114,7 +142,7 @@ def _run_plain_upload(
         size = len(read_back_bytes)
     else:
         with PostgresConnection(str(database_path)) as connection:
-            size = connection.execute("SELECT size FROM local_copies LIMIT 1").fetchone()["size"]
+            size = connection.execute("SELECT local_size AS size FROM files LIMIT 1").fetchone()["size"]
     with patch("app.database.settings", database_settings):
         queue_jobs(relative_path, "upload", 2, 1)
         with (
@@ -147,25 +175,19 @@ class PlainUploadVerificationTests(unittest.TestCase):
             payload = b"good"
             _source, path = _prepare_plain_vault(Path(directory), relative_path="report.txt", payload=payload)
             with PostgresConnection(str(path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                previous = catalog.record_archive_version(
-                    vault_id=2, path="report.txt", object_key="docs/report.txt",
-                    provider_version_id="previous-only-copy", size=3, storage_class="STANDARD",
-                    etag="old", uploaded_at="2026-07-20", observed_at="2026-07-20", scan_id="old",
-                )
-                catalog.mark_version_verified(previous, plaintext_sha256=_sha256_hex(b"old"), verified_at="2026-07-20")
+                previous, key = _seed_previous_current(connection, "report.txt", b"old", "previous-only-copy")
             provider = VersionedS3Stub(
-                initial_versions={"docs/report.txt": {"previous-only-copy", "concurrent-writer"}},
+                initial_versions={key: {"previous-only-copy", "concurrent-writer"}},
                 version_bytes=payload,
                 head_object=lambda **kwargs: {"VersionId": kwargs.get("VersionId") or "concurrent-writer",
                                               "ContentLength": len(payload), "ETag": "etag"},
             )
             with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(path)))):
                 queue_jobs("report.txt", "upload", 2, 1)
-                with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_s3_file", return_value={"VersionId": "upload-response"}):
+                with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), mock_sdk_upload(return_value={"VersionId": "upload-response"}):
                     process_jobs_once()
             with PostgresConnection(str(path)) as connection:
-                versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+                versions = _versions(connection, "report.txt")
                 job = connection.execute("SELECT status, message FROM jobs").fetchone()
             self.assertEqual({row["provider_version_id"] for row in versions}, {"previous-only-copy", "upload-response"})
             self.assertTrue(all(row["integrity"] == "verified" and row["availability"] == "available" for row in versions))
@@ -180,17 +202,11 @@ class PlainUploadVerificationTests(unittest.TestCase):
             payload = b"good"
             _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=payload)
             with PostgresConnection(str(path)) as connection:
-                catalog = ArchiveCatalog(connection)
-                previous = catalog.record_archive_version(
-                    vault_id=2, path="report.txt", object_key="docs/report.txt",
-                    provider_version_id="previous-only-copy", size=3, storage_class="STANDARD",
-                    etag="old", uploaded_at="2026-07-20", observed_at="2026-07-20", scan_id="old",
-                )
-                catalog.mark_version_verified(previous, plaintext_sha256=_sha256_hex(b"old"), verified_at="2026-07-20")
+                previous, key = _seed_previous_current(connection, "report.txt", b"old", "previous-only-copy")
             _run_plain_upload(path, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
             with PostgresConnection(str(path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                versions = catalog.list_versions(2, "report.txt")
+                versions = _versions(connection, "report.txt")
                 old = next(row for row in versions if row["id"] == previous)
                 current = next(row for row in versions if row["id"] != previous)
                 job = connection.execute("SELECT status FROM jobs").fetchone()
@@ -205,7 +221,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=b"good")
             _run_plain_upload(path, relative_path="report.txt", read_back_bytes=b"evil", exact_version_bytes=b"good")
             with PostgresConnection(str(path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 job = connection.execute("SELECT status FROM jobs").fetchone()
             self.assertEqual(job["status"], "completed")
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
@@ -228,10 +244,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 listed = catalog.list_file_rows(2)
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
 
@@ -265,10 +281,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 listed = catalog.list_file_rows(2)
                 job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
+                    "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
 
@@ -298,10 +314,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 listed = catalog.list_file_rows(2)
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
 
@@ -383,11 +399,11 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
                     with PostgresConnection(str(database_path)) as connection:
                         first = connection.execute(
-                            "SELECT status, retry_after, archive_version_id FROM jobs WHERE path=%s",
+                            "SELECT status, run_after, archive_version_id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                             ("report.txt",),
                         ).fetchone()
                         connection.execute(
-                            "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
+                            "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                             ("report.txt",),
                         )
                         count = connection.execute(
@@ -401,7 +417,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
-                    "SELECT status, archive_version_id FROM jobs WHERE path=%s",
+                    "SELECT status, archive_version_id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
                 versions = connection.execute(
@@ -409,8 +425,9 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ).fetchone()["total"]
                 local_copy = connection.execute(
                     """
-                    SELECT plaintext_sha256, matched_archive_version_id
-                    FROM local_copies
+                    SELECT encode(local_sha256, 'hex') AS plaintext_sha256,
+                           matched_version_id AS matched_archive_version_id
+                    FROM files
                     """
                 ).fetchone()
             self.assertEqual(job["status"], "completed")
@@ -477,17 +494,20 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
                     with PostgresConnection(str(database_path)) as connection:
                         connection.execute(
-                            "UPDATE jobs SET retry_after='2000-01-01T00:00:00+00:00' WHERE path=%s",
+                            "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                             ("report.txt",),
                         )
                     process_jobs_once()
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = _observed(connection, "report.txt")
                 job = connection.execute(
                     """
-                    SELECT status, archive_version_id, upload_plaintext_sha256, message
-                    FROM jobs WHERE path=%s
+                    SELECT status, archive_version_id, message,
+                           (SELECT encode(s.plaintext_sha256, 'hex') FROM job_uploads b
+                            JOIN upload_snapshots s ON s.id=b.snapshot_id
+                            WHERE b.job_id=jobs.id) AS upload_plaintext_sha256
+                    FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)
                     """,
                     ("report.txt",),
                 ).fetchone()
@@ -496,8 +516,9 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ).fetchone()["total"]
                 local_copy = connection.execute(
                     """
-                    SELECT plaintext_sha256, matched_archive_version_id
-                    FROM local_copies
+                    SELECT encode(local_sha256, 'hex') AS plaintext_sha256,
+                           matched_version_id AS matched_archive_version_id
+                    FROM files
                     """
                 ).fetchone()
 
@@ -534,8 +555,15 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 if command[:1] != ("upload",) or len(command) < 3:
                     return
                 origin, destination = command[1], command[2]
-                if Path(origin).is_file() and destination == "docs/report.txt":
+                if Path(origin).is_file() and destination.endswith("/report.txt"):
                     local_file.write_bytes(mutated)
+                    # The watcher observes the change: a newer generation,
+                    # which the publication never matches (ADR-0035).
+                    with PostgresConnection(str(database_path)) as connection:
+                        ArchiveCatalog(connection).observe_local_copy(
+                            vault_id=2, path="report.txt", file_type="regular",
+                            size=len(mutated), mtime_ns=local_file.stat().st_mtime_ns,
+                            observed_at="2026-07-21T10:05:00+00:00")
 
             def fake_stream(*args, **kwargs) -> int:
                 command = tuple(str(arg) for arg in args if not callable(arg))
@@ -573,15 +601,13 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     process_jobs_once()
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "report.txt"
-                )
+                observed = _observed(connection, "report.txt")
                 job = connection.execute(
-                    "SELECT status, message FROM jobs WHERE path=%s",
+                    "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
                 local_copy = connection.execute(
-                    "SELECT matched_archive_version_id FROM local_copies"
+                    "SELECT matched_version_id AS matched_archive_version_id FROM files"
                 ).fetchone()
 
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
@@ -615,11 +641,9 @@ class PlainUploadVerificationTests(unittest.TestCase):
                         read_back_bytes=payload,
                     )
                     with PostgresConnection(str(database_path)) as connection:
-                        observed = ArchiveCatalog(connection).get_file_by_path(
-                            2, relative_path
-                        )
+                        observed = _observed(connection, relative_path)
                         job = connection.execute(
-                            "SELECT status FROM jobs WHERE path=%s",
+                            "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                             (relative_path,),
                         ).fetchone()
                     self.assertEqual(
@@ -672,18 +696,16 @@ class PlainUploadVerificationTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
                     """
-                    SELECT status, retry_count, retry_after, message
-                    FROM jobs WHERE path=%s
+                    SELECT status, retry_count, run_after, message
+                    FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)
                     """,
                     ("report.txt",),
                 ).fetchone()
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "report.txt"
-                )
+                observed = _observed(connection, "report.txt")
 
             self.assertEqual(job["status"], "retrying")
             self.assertEqual(job["retry_count"], 1)
-            self.assertIsNotNone(job["retry_after"])
+            self.assertIsNotNone(job["run_after"])
             self.assertIn("SlowDown", job["message"] or "")
             self.assertIsNone(observed["latest_version"])
 
@@ -718,7 +740,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 queued = queue_jobs("report.txt", "upload", 2, 1)
                 with PostgresConnection(str(database_path)) as connection:
                     job_id_holder["id"] = connection.execute(
-                        "SELECT id FROM jobs WHERE path=%s",
+                        "SELECT id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                         ("report.txt",),
                     ).fetchone()["id"]
                 with (
@@ -742,12 +764,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 job = connection.execute(
-                    "SELECT status FROM jobs WHERE path=%s",
+                    "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
                 ).fetchone()
-                observed = ArchiveCatalog(connection).get_file_by_path(
-                    2, "report.txt"
-                )
+                observed = _observed(connection, "report.txt")
             self.assertEqual(queued["item_count"], 1)
             self.assertEqual(job["status"], "cancelled")
             if observed["latest_version"] is not None:

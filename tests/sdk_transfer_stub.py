@@ -14,9 +14,12 @@ def mock_sdk_upload(*, side_effect=None, return_value=None):
     def upload(job, *, source, key):
         if side_effect:
             side_effect("upload", str(source), key, job_id=job["id"])
-        if return_value:
-            return return_value
-        return storage.s3_client().head_object(Bucket=job["s3_bucket"], Key=key)
+        client = storage.s3_client()
+        response = return_value or client.head_object(Bucket=job["s3_bucket"], Key=key)
+        # The written version carries the attempt's metadata (its token).
+        if hasattr(client, "remember_upload"):
+            client.remember_upload(key, response.get("VersionId"), job.get("_upload_metadata"))
+        return response
 
     with patch("app.storage.upload_s3_file", side_effect=upload) as mock:
         yield mock
@@ -24,8 +27,10 @@ def mock_sdk_upload(*, side_effect=None, return_value=None):
 
 @contextmanager
 def mock_sdk_read(*, side_effect):
-    def read(job, *, target, source_size):
+    def read(job, *, target, source_size, check_active=None, floor_reported=False):
         chunks = []
+        if check_active is not None:
+            check_active()
         side_effect("read", target["object_key"], on_chunk=chunks.append, job_id=job["id"])
         content = b"".join(chunks)
         return hashlib.sha256(content).hexdigest(), len(content)

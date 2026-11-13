@@ -12,11 +12,21 @@ class VersionedS3Stub(SimpleNamespace):
         self._delete = delete_object
         self.versions = {key: set(ids) for key, ids in (initial_versions or {}).items()}
         self.deleted = []
+        # User metadata each uploaded version was written with (the upload
+        # attempt's token among it), echoed by HEAD like a real provider.
+        self.metadata = {}
+
+    def remember_upload(self, key, version_id, metadata):
+        if version_id:
+            self.metadata[(key, version_id)] = dict(metadata or {})
 
     def head_object(self, **kwargs):
         result = self._head(**kwargs)
         if result.get('VersionId'):
             self.versions.setdefault(kwargs['Key'], set()).add(result['VersionId'])
+            stored = self.metadata.get((kwargs['Key'], result['VersionId']))
+            if stored is not None and 'Metadata' not in result:
+                result = {**result, 'Metadata': dict(stored)}
         return result
 
     def get_object(self, **kwargs):
