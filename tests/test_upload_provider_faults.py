@@ -127,6 +127,31 @@ class ListingFaultTests(unittest.TestCase):
             self.listing(client_error("InvalidArgument", 400, "ListObjectVersions"))()
         self.assertEqual(caught.exception.reason, "inventory_changed")
 
+    def test_a_malformed_provider_answer_is_a_changed_inventory(self):
+        from app.services.s3_copy import ProviderResponseError
+        with probe(True), self.assertRaises(provenance.UploadBlocked) as caught:
+            self.listing(ProviderResponseError("S3 version listing is malformed"))()
+        self.assertEqual(caught.exception.reason, "inventory_changed")
+
+    def test_a_programming_error_propagates_as_a_worker_error(self):
+        # #628: only provider failures become the unconfirmed outcome.
+        for error in (AttributeError("'NoneType' object has no attribute 'list_object_versions'"),
+                      TypeError("unexpected keyword"), NameError("client"), RuntimeError("bug")):
+            with self.subTest(error=repr(error)), probe(True):
+                with self.assertRaises(type(error)):
+                    self.listing(error)()
+                with self.assertRaises(type(error)):
+                    provenance.guarded(self.listing(error), "bucket", default="read_permission_denied")
+
+    def test_a_programming_error_while_handling_a_provider_error_still_propagates(self):
+        def call():
+            try:
+                raise client_error("InvalidArgument", 400, "ListObjectVersions")
+            except ClientError:
+                raise TypeError("bug in the handler")
+        with probe(True), self.assertRaises(TypeError):
+            provenance._guarded_listing(call, "bucket")
+
     def test_a_refused_listing_blocks_the_file_only_when_the_probe_passes(self):
         with probe(True), self.assertRaises(provenance.UploadBlocked) as caught:
             self.listing(client_error("AccessDenied", 403, "ListObjectVersions"))()

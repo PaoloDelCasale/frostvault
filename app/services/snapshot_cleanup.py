@@ -158,9 +158,15 @@ def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any]
     one complete listing of the keeper's key must show the keeper alone. An
     unknown object there (an external writer, a send of another file that may
     have landed) still blocks completion, as in ``cleanup``.
+
+    ``client`` may be None: a Job taken over after the publication skipped
+    every step that opens one, so the listing opens its own, as ``cleanup``
+    does (#628).
     """
     if keeper["object_key"] != worker._upload_key(job):
         raise UploadBlocked("identity_changed")
+    if client is None:
+        client = worker.s3_client()
     _require_sole(provenance.inventory(client, bucket, keeper["object_key"]),
                   keeper["provider_version_id"])
 
