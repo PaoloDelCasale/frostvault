@@ -21,14 +21,16 @@ CREDENTIALS_PATH = RUNTIME / "credentials.json"
 
 PASSWORD = "e2e-test-password-ok"
 OWNER_USERNAME = "e2e-owner"
+PRIMARY_UUID = "00000000-0000-4000-8000-000000000001"
+SECONDARY_UUID = "00000000-0000-4000-8000-000000000002"
 
 
 def _ensure_runtime() -> dict[str, Path]:
     RUNTIME.mkdir(parents=True, exist_ok=True)
     # Ordinary direct children are not Source Volumes. Use actual managed
     # UUID roots so the same containment/access gate as production is exercised.
-    source_primary = RUNTIME / "sources" / "managed" / "00000000-0000-4000-8000-000000000001"
-    source_secondary = RUNTIME / "sources" / "managed" / "00000000-0000-4000-8000-000000000002"
+    source_primary = RUNTIME / "sources" / "managed" / PRIMARY_UUID
+    source_secondary = RUNTIME / "sources" / "managed" / SECONDARY_UUID
     source_primary.mkdir(parents=True, exist_ok=True)
     source_secondary.mkdir(parents=True, exist_ok=True)
     (source_primary / "reports").mkdir(exist_ok=True)
@@ -67,40 +69,54 @@ def _seed(paths: dict[str, Path]) -> dict:
 
     password_hash = hash_password(PASSWORD)
     with db() as connection:
-        owner_id = connection.execute(
-            """
-            INSERT INTO users(username, display_name, password_hash)
-            VALUES (%s, %s, %s) RETURNING id
-            """,
-            (OWNER_USERNAME, "E2E Owner", password_hash),
+        connection.execute(
+            "INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s)",
+            ("E2E Owner", password_hash),
+        )
+        target_id = connection.execute(
+            "INSERT INTO vault_targets(provider, bucket, region) "
+            "VALUES ('s3', 'e2e-bucket', 'eu-south-1') RETURNING id"
         ).fetchone()["id"]
 
-        primary_id = connection.execute(
-            """
-            INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix
-            ) VALUES (
-                'family', 'Family Archive', %s, 'e2e-bucket', 'family'
-            ) RETURNING id
-            """,
-            (str(paths["source_primary"]),),
-        ).fetchone()["id"]
-        secondary_id = connection.execute(
-            """
-            INSERT INTO vaults(
-                slug, name, source_root, s3_bucket, s3_prefix) VALUES (
-                'secondary', 'Secondary Archive', %s, 'e2e-bucket',
-                'secondary') RETURNING id
-            """,
-            (str(paths["source_secondary"]),),
-        ).fetchone()["id"]
+        def vault(uuid: str, name: str, root: Path) -> int:
+            return connection.execute(
+                "INSERT INTO vaults(uuid, target_id, name, source_root) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (uuid, target_id, name, str(root)),
+            ).fetchone()["id"]
 
+        primary_id = vault(PRIMARY_UUID, "Family Archive", paths["source_primary"])
+        secondary_id = vault(SECONDARY_UUID, "Secondary Archive", paths["source_secondary"])
+        prefixes = {primary_id: f"vaults/{PRIMARY_UUID}/", secondary_id: f"vaults/{SECONDARY_UUID}/"}
         catalog = ArchiveCatalog(connection)
+
+        def cloud_file(vault_id: int, path: str) -> str:
+            """A Vault File known only from the cloud (no Local Copy observed)."""
+            return str(connection.execute(
+                "INSERT INTO files(vault_id, path, path_since) VALUES (%s, %s, %s) "
+                "ON CONFLICT (vault_id, path) DO UPDATE SET path=EXCLUDED.path RETURNING id",
+                (vault_id, path, "2026-07-01T10:00:00+00:00"),
+            ).fetchone()["id"])
+
+        def protect(file_id: str, vault_id: int, path: str, *, version: str, size: int,
+                    digest: str, storage_class: str = "STANDARD", generation: int | None = None) -> str:
+            """Fixed cloud evidence: one verified Current at the exact key."""
+            version_id = catalog.begin_replacement(
+                file_id, object_key=prefixes[vault_id] + path, provider_version_id=version,
+                size=size, storage_class=storage_class, created_at="2026-07-01T11:00:00+00:00",
+            )
+            catalog.promote_replacement(
+                file_id, archive_version_id=version_id, plaintext_sha256=digest,
+                verified_at="2026-07-01T12:00:00+00:00", local_generation=generation,
+            )
+            return version_id
+
+        readme = paths["source_primary"] / "reports" / "readme.txt"
         readme_id = catalog.observe_local_copy(
             vault_id=primary_id,
             path="reports/old-readme.txt",
             file_type="regular",
-            size=21,
+            size=readme.stat().st_size,
             mtime_ns=1_700_000_000_000_000_000,
             observed_at="2026-07-01T10:00:00+00:00",
         )
@@ -110,21 +126,12 @@ def _seed(paths: dict[str, Path]) -> dict:
             changed_at="2026-07-01T12:00:00+00:00",
             vault_id=primary_id,
         )
-        catalog.record_archive_version(
-            vault_id=primary_id,
-            path="reports/readme.txt",
-            object_key="family/reports/readme.txt",
-            provider_version_id="v-readme-1",
-            size=21,
-            storage_class="STANDARD",
-            etag="etag-readme",
-            uploaded_at="2026-07-01T11:00:00+00:00",
-            observed_at="2026-07-01T11:00:00+00:00",
-            scan_id="seed-scan",
-        )
+        protect(readme_id, primary_id, "reports/readme.txt", version="v-readme-1",
+                size=readme.stat().st_size, digest=hashlib.sha256(readme.read_bytes()).hexdigest())
+
         note_path = paths["source_primary"] / "note.txt"
         note_stat = note_path.stat()
-        catalog.observe_local_copy(
+        note_id = catalog.observe_local_copy(
             vault_id=primary_id,
             path="note.txt",
             file_type="regular",
@@ -132,30 +139,14 @@ def _seed(paths: dict[str, Path]) -> dict:
             mtime_ns=note_stat.st_mtime_ns,
             observed_at="2026-07-02T10:00:00+00:00",
         )
-        note_version_id = catalog.record_archive_version(
-            vault_id=primary_id,
-            path="note.txt",
-            object_key="family/note.txt",
-            provider_version_id="v-note-1",
-            size=note_stat.st_size,
-            storage_class="STANDARD",
-            etag="etag-note",
-            uploaded_at="2026-07-02T11:00:00+00:00",
-            observed_at="2026-07-02T11:00:00+00:00",
-            scan_id="seed-scan",
-        )
         note_digest = hashlib.sha256(note_path.read_bytes()).hexdigest()
-        catalog.mark_version_verified(
-            note_version_id,
-            plaintext_sha256=note_digest,
-            verified_at="2026-07-02T12:00:00+00:00",
+        note = catalog.get_file(note_id, vault_id=primary_id)
+        catalog.publish_local_fingerprint(
+            note_id, generation=note["generation"], plaintext_sha256=note_digest,
+            size=note_stat.st_size, mtime_ns=note_stat.st_mtime_ns,
         )
-        catalog.set_local_fingerprint(
-            vault_id=primary_id,
-            path="note.txt",
-            plaintext_sha256=note_digest,
-            matched_archive_version_id=note_version_id,
-        )
+        protect(note_id, primary_id, "note.txt", version="v-note-1", size=note_stat.st_size,
+                digest=note_digest, generation=note["generation"])
         catalog.observe_local_copy(
             vault_id=secondary_id,
             path="hello.txt",
@@ -167,22 +158,29 @@ def _seed(paths: dict[str, Path]) -> dict:
 
         # Real catalog/API fixtures for the essential interface. S3 transfer
         # execution is covered by the separate MinIO CI job, not this UI server.
-        for vault_id, prefix in ((primary_id, 'family'), (secondary_id, 'secondary')):
-            version = catalog.record_archive_version(
-                vault_id=vault_id, path='photos/cold.jpg', object_key=f'{prefix}/photos/cold.jpg',
-                provider_version_id=f'cold-{vault_id}', size=2048, storage_class='DEEP_ARCHIVE',
-                etag='cold', uploaded_at='2026-07-01T10:00:00Z', observed_at='2026-07-01T10:00:00Z', scan_id='seed')
-            catalog.mark_version_verified(version, plaintext_sha256='a'*64, verified_at='2026-07-01T10:00:00Z')
+        for vault_id in (primary_id, secondary_id):
+            protect(cloud_file(vault_id, "photos/cold.jpg"), vault_id, "photos/cold.jpg",
+                    version=f"cold-{vault_id}", size=2048, digest="a" * 64,
+                    storage_class="DEEP_ARCHIVE")
+        # Cloud-only Conflict: different content reappears at the path of a
+        # cloud-only file; the ordinary observation holds Current back.
         conflict_path = paths['source_primary'] / 'incoming' / 'conflict.jpg'
         conflict_path.parent.mkdir(exist_ok=True)
         conflict_path.write_bytes(b'new different local bytes')
-        held = catalog.record_archive_version(
-            vault_id=primary_id, path='incoming/conflict.jpg', object_key='family/incoming/conflict.jpg',
-            provider_version_id='held-only-copy', size=12, storage_class='STANDARD', etag='held',
-            uploaded_at='2026-07-01T10:00:00Z', observed_at='2026-07-01T10:00:00Z', scan_id='seed')
-        catalog.mark_version_verified(held, plaintext_sha256='b'*64, verified_at='2026-07-01T10:00:00Z')
-        conflict_file = catalog.observe_local_copy(vault_id=primary_id, path='incoming/conflict.jpg', file_type='regular', size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns, observed_at='2026-07-01T11:00:00Z')
-        connection.execute('UPDATE local_copies SET cloud_only_version_id=%s,plaintext_sha256=%s WHERE vault_file_id=%s', (held, hashlib.sha256(conflict_path.read_bytes()).hexdigest(), conflict_file))
+        conflict_file = cloud_file(primary_id, "incoming/conflict.jpg")
+        protect(conflict_file, primary_id, "incoming/conflict.jpg", version="held-only-copy",
+                size=12, digest="b" * 64)
+        catalog.observe_local_copy(
+            vault_id=primary_id, path='incoming/conflict.jpg', file_type='regular',
+            size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,
+            observed_at='2026-07-01T13:00:00Z',
+        )
+        conflict = catalog.get_file(conflict_file, vault_id=primary_id)
+        catalog.publish_local_fingerprint(
+            conflict_file, generation=conflict["generation"],
+            plaintext_sha256=hashlib.sha256(conflict_path.read_bytes()).hexdigest(),
+            size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,
+        )
         from app.services.notifications import set_problem
         set_problem(connection, key='conflict-e2e', event='cloud_only_conflict', vault_id=primary_id, active=True, params={'path':'incoming/conflict.jpg'})
 
@@ -195,13 +193,8 @@ def _seed(paths: dict[str, Path]) -> dict:
                 (vault_id,),
             )
 
-        owner_token = create_session(
-            connection, user_id=owner_id, auth_method="local"
-        )
-        connection.execute(
-            "UPDATE sessions SET vault_id=%s WHERE user_id=%s",
-            (primary_id, owner_id),
-        )
+        owner_token = create_session(connection, auth_method="local")
+        connection.execute("UPDATE sessions SET vault_id=%s", (primary_id,))
 
         credentials = {
             "password": PASSWORD,
