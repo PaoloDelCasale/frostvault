@@ -404,14 +404,14 @@ class ReleaseRepairVaultIdentityTests(unittest.TestCase):
     def test_repair_uses_vault_id_not_unrelated_same_number_job_id(self):
         self.job.update(id=100, vault_id=2)
         vault = {"id": 2, "source_root": self.job["source_root"]}
-        unrelated = {"id": 100, "source_root": "/unrelated"}
+        unrelated = {"id": 100, "source_root": "/unrelated", "generation": 3}
         connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.side_effect = lambda sql, params: SimpleNamespace(fetchone=lambda: vault if params == (2,) else unrelated)
         with (patch("app.storage._validate_enrolled_scan_root") as validate,
               patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True))):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         validate.assert_called_with(vault)
-        self.catalog.set_local_fingerprint.assert_called_once()
+        self.catalog.publish_local_fingerprint.assert_called_once()
 
     def test_missing_actual_vault_never_falls_back_to_unenrolled_job(self):
         self.job.update(id=100, vault_id=2)

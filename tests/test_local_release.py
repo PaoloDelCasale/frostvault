@@ -139,7 +139,7 @@ class LocalReleaseWorkerTests(unittest.TestCase):
         self.mtime = self.path.stat().st_mtime_ns
         self.digest = hashlib.sha256(b"photo").hexdigest()
         self.target = dict(local_presence="present", local_file_type="regular", integrity="verified", availability="available",
-                           matched_archive_version_id="av", archive_version_id="av", latest_archive_version_id="av",
+                           matched_archive_version_id="av", archive_version_id="av", current_version_id="av", replacing_version_id=None,
                            local_sha256=self.digest, version_sha256=self.digest, cloud_only_version_id=None,
                            object_key="photos/old-photo.jpg", provider_version_id="exact", cloud_size=5,
                            local_size=5, local_mtime_ns=self.mtime, vault_file_id="file", job_origin="manual",
@@ -157,6 +157,7 @@ class LocalReleaseWorkerTests(unittest.TestCase):
             "root_identity": storage.vault_relocation.root_identity(self.tmp.name),
             "root_identity_version": storage.vault_relocation.ROOT_IDENTITY_VERSION,
             "relocation_state": "ready", "decommission_state": "active",
+            "generation": 3,  # the repair publishes its fingerprint at the observed generation
         }
         self.catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
         self.catalog.get_job_target.side_effect = lambda _: dict(self.target)
@@ -184,7 +185,8 @@ class LocalReleaseWorkerTests(unittest.TestCase):
     def test_mismatch_unavailable_conflict_and_stale_snapshot_preserve_local_content(self):
         for key, value in (("integrity", "mismatch"), ("integrity", "unverified"), ("availability", "unknown"),
                            ("availability", "missing"), ("local_sha256", "different"),
-                           ("cloud_only_version_id", "conflict"), ("latest_archive_version_id", "new")):
+                           ("cloud_only_version_id", "conflict"), ("current_version_id", "new"),
+                           ("replacing_version_id", "pending")):
             original = self.target[key]
             self.target[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(RuntimeError):

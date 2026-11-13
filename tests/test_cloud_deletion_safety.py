@@ -14,7 +14,7 @@ class LocalAbsenceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.vault = {"source_root":str(self.root),"relocation_state":"ready",
+        self.vault = {"source_root":str(self.root),"lifecycle":"active",
                       "root_identity_version":vault_relocation.ROOT_IDENTITY_VERSION,
                       "root_identity":vault_relocation.root_identity(self.root)}
         for target, result in (("app.services.source_layout.vault_local_access", SimpleNamespace(local_operations_allowed=True)),
@@ -43,7 +43,7 @@ class LocalAbsenceTests(unittest.TestCase):
         with self.assertRaises(CloudDeletionError): require_local_absence(self.vault,["link/missing.jpg"])
 
     def test_replaced_or_unenrolled_root_and_reconnect_are_not_absence(self):
-        for overrides in ({"root_identity":"wrong"},{"root_identity":None},{"relocation_state":"scan_required"}):
+        for overrides in ({"root_identity":"wrong"},{"root_identity":None},{"lifecycle":"reconnect_required"}):
             with self.subTest(overrides=overrides), self.assertRaises(CloudDeletionError):
                 require_local_absence({**self.vault, **overrides},["missing.jpg"])
 

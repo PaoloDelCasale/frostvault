@@ -75,7 +75,8 @@ class SnapshotMtimeTests(unittest.TestCase):
             catalog.get_job_target.return_value = {
                 "integrity": "verified", "availability": "available", "provider_version_id": "exact",
                 "object_key": "vault/photo", "version_sha256": evidence.plaintext_sha256,
-                "archive_version_id": "av", "local_presence": "missing", "cloud_size": 5,
+                "archive_version_id": "av", "current_version_id": "av", "file_id": "f",
+                "local_generation": 4, "local_presence": "missing", "cloud_size": 5,
                 "upload_snapshot_json": evidence.as_json() if snapshot else None,
                 # Must never restore the changed/missing Local Copy's timestamp.
                 "local_mtime_ns": 1,
@@ -96,9 +97,10 @@ class SnapshotMtimeTests(unittest.TestCase):
                 "path": "recovered", "s3_bucket": "bucket", "total_bytes": 5, "status": "queued"})
             self.assertEqual(destination.read_bytes(), b"photo")
             self.assertEqual(destination.stat().st_mtime_ns, expected)
-            observation = catalog.observe_local_copy.call_args.kwargs
+            observation = catalog.publish_recovered_local_copy.call_args.kwargs
             self.assertEqual(observation["mtime_ns"], expected)
             self.assertIsNotNone(observation["recovered_at"])
+            self.assertEqual(observation["generation"], 4)
             client.head_object.assert_called_once_with(Bucket="bucket", Key="vault/photo", VersionId="exact")
             self.assertEqual(client.download_file.call_args.kwargs["ExtraArgs"], {"VersionId": "exact"})
 

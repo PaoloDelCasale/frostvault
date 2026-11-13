@@ -288,10 +288,12 @@ def enqueue_recovery_approval_best_effort(connection: Any, *, job_ids: list[int]
     try:
         with transaction(connection):
             job = connection.execute(
-                """SELECT vault_id, group_id, min(path) AS path, count(*) AS count,
-                          max(estimated_cost_eur) AS cost
-                   FROM jobs WHERE id=ANY(%s) AND status='pending_approval'
-                   GROUP BY vault_id, group_id""", (job_ids,),
+                """SELECT j.vault_id, j.group_id, min(f.path) AS path, count(*) AS count,
+                          max(r.estimated_cost_eur) AS cost
+                   FROM jobs j JOIN files f ON f.id = j.file_id
+                   LEFT JOIN restore_requests r ON r.group_id = j.group_id
+                   WHERE j.id=ANY(%s) AND j.status='pending_approval'
+                   GROUP BY j.vault_id, j.group_id""", (job_ids,),
             ).fetchone()
             if not job:
                 return

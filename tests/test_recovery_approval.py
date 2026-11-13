@@ -1,4 +1,5 @@
 """Request expiry, selection admission and serialized approval/cancellation (#536)."""
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Event
@@ -27,7 +28,7 @@ class RecoveryApprovalTests(unittest.TestCase):
 
     def _expire_deadline(self):
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE jobs SET pending_until='2000-01-01T00:00:00+00:00'")
+            connection.execute("UPDATE restore_requests SET approval_deadline='2000-01-01T00:00:00+00:00'")
 
     def _approve(self, group):
         return main.approve_recover(main.RecoverApproveAction(group_id=group), {"id": 1}, {"id": 2})
@@ -41,7 +42,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         client.restore_object.assert_not_called()
         client.get_object.assert_not_called()
         with PostgresConnection(str(self.database_path)) as connection:
-            rows = connection.execute("SELECT status, message_key, approved_at FROM jobs").fetchall()
+            rows = connection.execute("SELECT j.status, j.message_key, rr.approved_at FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id").fetchall()
         self.assertEqual(len(rows), queued["item_count"])
         self.assertEqual({row["status"] for row in rows}, {"cancelled"})
         self.assertEqual({row["message_key"] for row in rows}, {"job.recovery_approval_expired"})
@@ -60,7 +61,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         _, queued = self._queue_and_estimate(self._runtime())
         deadline = "2030-01-01T01:00:00+01:00"
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE jobs SET pending_until=%s", (deadline,))
+            connection.execute("UPDATE restore_requests SET approval_deadline=%s", (deadline,))
             connection.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
             self.assertEqual(recovery_approval.expire_pending(connection, vault_id=2, now="2029-12-31T23:59:59.999999+00:00"), 0)
             self.assertEqual(recovery_approval.expire_pending(connection, vault_id=2, now="2030-01-01T00:00:00+00:00"), queued["item_count"])
@@ -70,8 +71,9 @@ class RecoveryApprovalTests(unittest.TestCase):
         with patch("app.database.settings", self.database_settings):
             self._approve(queued["group_id"])
         with PostgresConnection(str(self.database_path)) as connection:
-            self.assertTrue(all(row["pending_until"] is None for row in connection.execute("SELECT pending_until FROM jobs").fetchall()))
-            connection.execute("UPDATE jobs SET pending_until='2000-01-01T00:00:00+00:00'")
+            # The approval is recorded before its deadline (schema CHECK); a
+            # stale deadline no longer expires an approved request.
+            self.assertTrue(all(row["approved_at"] is not None for row in connection.execute("SELECT approved_at FROM restore_requests").fetchall()))
             self.assertEqual(recovery_approval.sweep_expired(connection, now=datetime.now(timezone.utc).isoformat()), 0)
         self.assertEqual({j["status"] for j in self._jobs().values()}, {"queued"})
 
@@ -135,7 +137,7 @@ class RecoveryApprovalTests(unittest.TestCase):
             clock.now.return_value = deadline
             with PostgresConnection(str(self.database_path)) as connection:
                 connection.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
-                connection.execute("UPDATE jobs SET pending_until=%s", (deadline.isoformat(),))
+                connection.execute("UPDATE restore_requests SET approval_deadline=%s", (deadline.isoformat(),))
                 future = pool.submit(self._approve, queued["group_id"])
                 self.assertTrue(entered_lock.wait(timeout=10))
                 clock.now.assert_not_called()
@@ -145,7 +147,7 @@ class RecoveryApprovalTests(unittest.TestCase):
 
     def test_mixed_already_restored_selection_does_not_inflate_estimate(self):
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE archive_versions SET restore_state='available' WHERE vault_file_id IN (SELECT vault_file_id FROM file_paths WHERE path='photos/p00.jpg')")
+            connection.execute("UPDATE archive_versions SET restore_state='available' WHERE file_id IN (SELECT id FROM files WHERE path='photos/p00.jpg')")
         selection = [("photos", True), ("photos/p00.jpg", False)]
         with patch("app.database.settings", self.database_settings), patch("app.main.settings", self._runtime()):
             estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
@@ -188,7 +190,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(len(deliveries), 1)
         self.assertTrue(notices[0]["in_app_enabled"])
-        self.assertIn(queued["group_id"], notices[0]["dedupe_key"])
+        self.assertIn(str(uuid.UUID(queued["group_id"])), notices[0]["dedupe_key"])
         self.assertIsNone(notices[0]["job_id"], "request notice, not per-file")
         self.assertIn("approvazione", notifications._row_notification(notices[0], locale="it")["title"])
 

@@ -1,8 +1,23 @@
-"""One fixed, cancellable seven-day cloud deletion workflow (#428).
+"""Delayed Cloud Deletion: one fixed, cancellable seven-day workflow (#428, #594).
 
-Admission captures exact VersionIds once. The worker never expands that consent.
-Protection labels are not deletion authority: source identity, actual absence,
-immutable targets, catalog state and concurrent work are checked independently.
+The Owner's consent is a Job group (``job_groups`` + ``cloud_purge_requests``)
+with one ``cloud-purge`` Job per Cloud-only file, pinned to the file's exact
+Current (``jobs.archive_version_id``) and runnable from ``run_after``. Nothing
+else is ever covered: no superseded version, no Delete Marker, no object the
+application did not write.
+
+When the delay has elapsed and the scheduler claims the whole group, the
+worker revalidates everything under the Vault lock, freezes one cleanup batch
+per file (``cleanup_batches.purge_group_id``, ADR-0035) with the consented
+Current as its only grant, and deletes it by exact VersionId. Recording the
+deletion clears Current and removes the Archive Version row together with the
+completed proof (``archive_versions_removed_with_proof``). A grant whose
+deletion is not proven is revoked, never left to authorize a later run.
+
+Protection labels are not deletion authority: source identity, actual local
+absence, the exact Current, catalog state and concurrent work are checked
+independently. A reappearance revokes the whole pending selection
+(``ArchiveCatalog._revoke_deletion_consents``).
 """
 from __future__ import annotations
 
@@ -16,7 +31,7 @@ from typing import Any
 from . import source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .component_health import load_vault_health
-from .directory_aggregates import invalidate_for_archive_version_ids, invalidate_for_vault_file
+from .directory_aggregates import mark_paths_dirty
 from .protection_states import observation_is_unconfirmed
 
 DELETION_DELAY_SECONDS = 7 * 24 * 60 * 60
@@ -61,13 +76,26 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _aware(value: Any) -> datetime:
+    moment = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if moment.tzinfo is None:
+        raise CloudDeletionError("A timezone-aware time is required")
+    return moment
+
+
 def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
-        "SELECT * FROM vaults WHERE id=%s FOR UPDATE", (vault_id,)
+        """SELECT v.*, t.bucket AS s3_bucket FROM vaults v
+           JOIN vault_targets t ON t.id = v.target_id
+           WHERE v.id=%s FOR UPDATE OF v""", (vault_id,)
     ).fetchone()
     if row is None:
         raise CloudDeletionError("Vault not found")
     return row
+
+
+def _vault_prefix(vault: dict[str, Any]) -> str:
+    return f"vaults/{vault['uuid']}/"
 
 
 def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
@@ -78,7 +106,8 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
     No local file (even an unsupported entry) can authorize a cloud deletion.
     """
     access = source_layout.vault_local_access(vault["source_root"])
-    if not access.local_operations_allowed or vault.get("relocation_state", "ready") != "ready":
+    if (not access.local_operations_allowed
+            or vault.get("lifecycle") not in {"active", "stopping"}):
         raise CloudDeletionError("Local absence cannot be confirmed: reconnect the Source Volume")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     descriptors: list[int] = []
@@ -133,78 +162,98 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
             os.close(descriptor)
 
 
+# Everything a decision about one selected file reads, from its live row.
+_FILE_SQL = """
+    SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.local_presence,
+           f.held_version_id, f.replacing_version_id, f.current_version_id,
+           cur.integrity, cur.availability, cur.object_key, cur.provider_version_id,
+           cur.size, att.outcome AS attempt_outcome, att.landed_version_id,
+           EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
+                     AND other.id IS DISTINCT FROM f.current_version_id) AS other_versions,
+           (SELECT b.purge_group_id FROM cleanup_batches b WHERE b.file_id = f.id) AS batch_group,
+           EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id) AS batch_open,
+           EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id = f.id
+                     AND a.settled_at IS NULL) AS attempt_open
+    FROM files f
+    LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
+    LEFT JOIN upload_attempts att ON att.id = cur.upload_attempt_id
+"""
+
+
+def _require_paths(paths: list[str]) -> None:
+    if not paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts
+                        or str(PurePosixPath(p)) != p for p in paths):
+        raise CloudDeletionError("Select valid relative file paths")
+
+
 def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
                     is_directory: bool, whole_vault: bool = False) -> list[dict[str, Any]]:
+    """The files of a selection. A folder or the whole Vault covers what still
+    has a copy somewhere; an exact path is always covered (and then validated)."""
     params: list[Any] = [vault_id]
     if whole_vault:
-        selection = "av.id IS NOT NULL"
+        selection = "(f.current_version_id IS NOT NULL OR f.local_presence IS DISTINCT FROM 'missing')"
     else:
-        if not paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts
-                            or str(PurePosixPath(p)) != p for p in paths):
-            raise CloudDeletionError("Select valid relative file paths")
+        _require_paths(paths)
         clauses = []
         for path in paths:
             if is_directory:
                 escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                clauses.append("(fp.path=%s OR fp.path LIKE %s ESCAPE '\\')")
+                clauses.append(
+                    "((f.path=%s OR f.path LIKE %s ESCAPE '\\') AND (f.current_version_id IS NOT NULL"
+                    " OR f.local_presence IS DISTINCT FROM 'missing'))")
                 params.extend((path, escaped + "/%"))
             else:
-                clauses.append("fp.path=%s")
+                clauses.append("f.path=%s")
                 params.append(path)
         selection = "(" + " OR ".join(clauses) + ")"
-    return connection.execute(f"""
-        SELECT vf.id AS vault_file_id, fp.path, lc.presence,
-               lc.cloud_only_version_id, av.id AS archive_version_id,
-               av.integrity, av.availability
-        FROM vault_files vf
-        LEFT JOIN file_paths fp ON fp.vault_file_id=vf.id AND fp.valid_to IS NULL
-        LEFT JOIN local_copies lc ON lc.vault_file_id=vf.id
-        LEFT JOIN archive_versions av ON av.id=(
-            SELECT latest.id FROM archive_versions latest
-            WHERE latest.vault_file_id=vf.id AND latest.availability<>'purged'
-            ORDER BY latest.version_number DESC LIMIT 1)
-        WHERE vf.vault_id=%s AND {selection}
-        ORDER BY fp.path, vf.id
-    """, params).fetchall()
+    return connection.execute(
+        f"{_FILE_SQL} WHERE f.vault_id=%s AND {selection} ORDER BY f.path, f.id", params,
+    ).fetchall()
 
 
-def _versions(connection: Any, file_id: str) -> list[dict[str, Any]]:
-    return connection.execute("""
-        SELECT * FROM archive_versions WHERE vault_file_id=%s AND availability<>'purged'
-        ORDER BY version_number
-    """, (file_id,)).fetchall()
-
-
-def _markers(connection: Any, file_id: str) -> list[dict[str, Any]]:
-    return connection.execute("""
-        SELECT dm.* FROM delete_markers dm WHERE vault_file_id=%s AND NOT EXISTS (
-            SELECT 1 FROM cloud_deletion_items prior
-            WHERE prior.delete_marker_id=dm.id AND prior.status='deleted') ORDER BY dm.id
-    """, (file_id,)).fetchall()
+def _files_by_id(connection: Any, file_ids: list[str]) -> list[dict[str, Any]]:
+    return connection.execute(
+        f"{_FILE_SQL} WHERE f.id = ANY(%s::uuid[]) ORDER BY f.path, f.id", (file_ids,),
+    ).fetchall()
 
 
 def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str, Any]],
                     *, own_group: str | None = None) -> None:
+    """Every selected file is Cloud-only with exactly one consentable version."""
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("Protection observations are not confirmed")
+    prefix = _vault_prefix(vault)
     for row in files:
-        if (row["presence"] not in {None, "missing"} or row["cloud_only_version_id"] is not None
+        if (row["local_presence"] not in {None, "missing"} or row["held_version_id"] is not None
+                or row["current_version_id"] is None or row["replacing_version_id"] is not None
                 or row["integrity"] != "verified" or row["availability"] != "available"
                 or not row["path"]):
             raise CloudDeletionError("Only Cloud-only files can be deleted from the cloud")
-        pending = connection.execute("""
-            SELECT 1 FROM jobs WHERE vault_file_id=%s
-              AND status NOT IN ('completed','failed','cancelled')
-              AND (CAST(%s AS TEXT) IS NULL OR group_id IS DISTINCT FROM %s) LIMIT 1
-        """, (row["vault_file_id"], own_group, own_group)).fetchone()
+        if (row["other_versions"] or row["attempt_open"]
+                or (row["batch_open"] and (own_group is None
+                                           or str(row["batch_group"] or "") != str(own_group)))):
+            raise CloudDeletionError("Selected file has pending cloud cleanup")
+        if (not row["object_key"] or not row["provider_version_id"]
+                or row["provider_version_id"] == "null"
+                or not str(row["object_key"]).startswith(prefix)
+                or row["attempt_outcome"] != "landed"
+                or row["landed_version_id"] != row["provider_version_id"]):
+            raise CloudDeletionError("An exact cloud VersionId in this Vault is required")
+    if files:
+        pending = connection.execute(
+            """SELECT 1 FROM jobs WHERE file_id = ANY(%s::uuid[])
+                 AND status NOT IN ('completed','failed','cancelled')
+                 AND (CAST(%s AS uuid) IS NULL OR group_id IS DISTINCT FROM CAST(%s AS uuid))
+               LIMIT 1""",
+            ([str(r["file_id"]) for r in files], own_group, own_group)).fetchone()
         if pending:
             raise CloudDeletionError("Selected file has pending work")
-        for item in [*_versions(connection, row["vault_file_id"]), *_markers(connection, row["vault_file_id"])]:
-            if (not item["object_key"] or not item["provider_version_id"]
-                    or item["provider_version_id"] == "null"
-                    or not str(item["object_key"]).startswith(str(vault["s3_prefix"]).rstrip("/") + "/")):
-                raise CloudDeletionError("An exact cloud VersionId in this Vault is required")
     require_local_absence(vault, [r["path"] for r in files])
+
+
+def _preview(files: list[dict[str, Any]]) -> DeletionPreview:
+    return DeletionPreview(len(files), len(files), 0, sum(int(f["size"] or 0) for f in files))
 
 
 def preview_selection(connection: Any, *, vault_id: int, paths: list[str],
@@ -215,18 +264,16 @@ def preview_selection(connection: Any, *, vault_id: int, paths: list[str],
     if not files:
         raise CloudDeletionError("No Cloud-only files selected")
     _validate_files(connection, vault, files)
-    versions = [v for f in files for v in _versions(connection, f["vault_file_id"])]
-    return DeletionPreview(len(files), len(versions),
-                           sum(len(_markers(connection, f["vault_file_id"])) for f in files),
-                           sum(int(v["size"] or 0) for v in versions))
+    return _preview(files)
 
 
 def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
                          is_directory: bool, actor: str, requested_at: str,
                          confirmation: str, reason: str,
                          whole_vault: bool = False, origin: str = "manual") -> ScheduledDeletion:
+    """Record the consent: one group, its request and one pending Job per file."""
     vault = lock_vault(connection, vault_id)
-    if vault["decommission_state"] != "active" or vault.get("root_released_at"):
+    if vault["lifecycle"] != "active" or vault.get("root_released_at"):
         raise CloudDeletionError("Folder protection has already stopped")
     if origin not in {"manual", "stop-protection"}:
         raise CloudDeletionError("Unsupported deletion origin")
@@ -234,58 +281,53 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
         raise ConfirmationRequired("Type the exact Vault name to confirm")
     if not (reason or "").strip() or len(reason) > 500:
         raise CloudDeletionError("A deletion reason is required")
-    preview = preview_selection(connection, vault_id=vault_id, paths=paths,
-                                is_directory=is_directory, whole_vault=whole_vault)
+    requested = _aware(requested_at)
     files = _selected_files(connection, vault_id=vault_id, paths=paths,
                             is_directory=is_directory, whole_vault=whole_vault)
-    requested = datetime.fromisoformat(requested_at)
-    if requested.tzinfo is None:
-        raise CloudDeletionError("A timezone-aware request time is required")
+    if not files:
+        raise CloudDeletionError("No Cloud-only files selected")
+    _validate_files(connection, vault, files)
+    preview = _preview(files)
     pending_until = (requested + timedelta(seconds=DELETION_DELAY_SECONDS)).isoformat()
     group_id = str(uuid.uuid4())
-    job_ids = []
-    for row in files:
-        job_id = int(connection.execute("""
-            INSERT INTO jobs(vault_id,vault_file_id,path,action,status,
-                             requested_at,updated_at,group_id,group_path,pending_until,
-                             reason,confirmation_phrase,origin,total_bytes,transferred_bytes)
-            VALUES (%s,%s,%s,'cloud-purge','pending_delay',%s,%s,%s,%s,%s,%s,%s,%s,0,0)
-            RETURNING id
-        """, (vault_id, row["vault_file_id"], row["path"], requested_at,
-              requested_at, group_id, "" if whole_vault else paths[0], pending_until,
-              reason.strip(), confirmation, origin)).fetchone()["id"])
-        job_ids.append(job_id)
-        total = 0
-        for kind, versions in (("version", _versions(connection, row["vault_file_id"])),
-                               ("delete_marker", _markers(connection, row["vault_file_id"]))):
-            for version in versions:
-                size = int(version.get("size") or 0)
-                total += size
-                connection.execute("""
-                    INSERT INTO cloud_deletion_items(job_id,vault_id,vault_file_id,kind,
-                        archive_version_id,delete_marker_id,object_key,provider_version_id,
-                        size_bytes,status,updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s)
-                """, (job_id, vault_id, row["vault_file_id"], kind,
-                      version["id"] if kind == "version" else None,
-                      version["id"] if kind == "delete_marker" else None,
-                      version["object_key"], version["provider_version_id"], size, requested_at))
-        connection.execute("UPDATE jobs SET total_bytes=%s WHERE id=%s", (total, job_id))
-        record_audit_event(connection, event="cloud_deletion.requested", actor=actor,
-                           vault_id=vault_id, job_id=job_id, outcome="requested",
-                           path=row["path"], reason=reason.strip(), group_id=group_id,
-                           pending_until=pending_until, preview=preview.as_dict())
+    connection.execute(
+        "INSERT INTO job_groups(id, vault_id, path, created_at) VALUES (%s, %s, %s, %s)",
+        (group_id, vault_id, "" if whole_vault else paths[0], requested_at))
+    connection.execute(
+        "INSERT INTO cloud_purge_requests(group_id, reason, stop_protection) VALUES (%s, %s, %s)",
+        (group_id, reason.strip(), origin == "stop-protection"))
+    rows = connection.execute(
+        """INSERT INTO jobs(vault_id, file_id, archive_version_id, group_id, action, status,
+                            origin, total_bytes, requested_at, updated_at, run_after)
+           SELECT %s, f.file_id, f.version_id, %s, 'cloud-purge', 'pending_delay',
+                  'manual', f.size, %s, %s, %s
+           FROM unnest(%s::uuid[], %s::uuid[], %s::bigint[]) AS f(file_id, version_id, size)
+           RETURNING id, file_id""",
+        (vault_id, group_id, requested_at, requested_at, pending_until,
+         [str(f["file_id"]) for f in files], [str(f["current_version_id"]) for f in files],
+         [int(f["size"] or 0) for f in files])).fetchall()
+    job_ids = sorted(int(r["id"]) for r in rows)
+    record_audit_event(connection, event="cloud_deletion.requested", actor=actor,
+                       vault_id=vault_id, outcome="requested", group_id=group_id,
+                       paths=sorted(f["path"] for f in files)[:100], reason=reason.strip(),
+                       pending_until=pending_until, preview=preview.as_dict(),
+                       stop_protection=origin == "stop-protection")
     return ScheduledDeletion(group_id, job_ids, preview, pending_until)
+
+
+def _group_jobs(connection: Any, vault_id: int, group_id: str) -> list[dict[str, Any]]:
+    return connection.execute(
+        """SELECT j.*, EXISTS (SELECT 1 FROM job_leases l WHERE l.job_id = j.id) AS leased
+           FROM jobs j WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+           ORDER BY j.requested_at, j.id FOR UPDATE OF j""",
+        (vault_id, group_id)).fetchall()
 
 
 def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
                           actor: str, cancelled_at: str) -> CancelledDeletion:
     lock_vault(connection, vault_id)
-    rows = connection.execute("""
-        SELECT * FROM jobs WHERE vault_id=%s AND group_id=%s AND action='cloud-purge'
-        ORDER BY requested_at,id FOR UPDATE
-    """, (vault_id, group_id)).fetchall()
-    if not rows or any(r["status"] != "pending_delay" or r["claim_token"] for r in rows):
+    rows = _group_jobs(connection, vault_id, group_id)
+    if not rows or any(r["status"] != "pending_delay" or r["leased"] for r in rows):
         raise CloudDeletionError("Deletion has started or is no longer cancellable")
     _cancel_rows(connection, rows, at=cancelled_at, actor=actor,
                  reason="Cancelled before deletion started")
@@ -294,124 +336,177 @@ def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
 
 def _cancel_rows(connection: Any, rows: list[dict[str, Any]], *, at: str,
                  actor: str, reason: str) -> None:
-    for row in rows:
-        connection.execute("""UPDATE jobs SET status='cancelled', message=%s, updated_at=%s,
-            claim_token=NULL,claimed_at=NULL,claim_expires_at=NULL WHERE id=%s""", (reason, at, row["id"]))
-        connection.execute("""UPDATE cloud_deletion_items SET status='skipped',updated_at=%s
-            WHERE job_id=%s AND status IN ('pending','failed')""", (at, row["id"]))
-        record_audit_event(connection, event="cloud_deletion.cancelled", actor=actor,
-                           vault_id=int(row["vault_id"]), job_id=int(row["id"]), outcome="cancelled",
-                           group_id=row["group_id"], reason=reason)
+    if not rows:
+        return
+    ids = [int(r["id"]) for r in rows]
+    connection.execute(
+        """UPDATE jobs SET status='cancelled', message=%s, message_key=NULL, message_params=NULL,
+               updated_at=%s, finished_at=%s
+           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
+        (reason, at, at, ids))
+    revoke_grants(connection, group_id=str(rows[0]["group_id"]),
+                  file_ids=[str(r["file_id"]) for r in rows])
+    record_audit_event(connection, event="cloud_deletion.cancelled", actor=actor,
+                       vault_id=int(rows[0]["vault_id"]), outcome="cancelled",
+                       group_id=str(rows[0]["group_id"]), job_ids=ids[:100], reason=reason)
+
+
+def revoke_grants(connection: Any, *, group_id: str, file_ids: list[str] | None = None) -> None:
+    """Remove the open (not executed) grants of a purge group, with their batches."""
+    params: list[Any] = [group_id]
+    scope = ""
+    if file_ids is not None:
+        scope = " AND b.file_id = ANY(%s::uuid[])"
+        params.append(file_ids)
+    batches = connection.execute(
+        f"""SELECT b.id FROM cleanup_batches b WHERE b.purge_group_id=%s{scope}
+            FOR UPDATE""", params).fetchall()
+    ids = [str(b["id"]) for b in batches]
+    if not ids:
+        return
+    if connection.execute(
+            """SELECT 1 FROM cleanup_candidates WHERE batch_id = ANY(%s::uuid[])
+                 AND deleted_at IS NOT NULL LIMIT 1""", (ids,)).fetchone():
+        raise CloudDeletionError("A recorded cloud deletion is never revoked")
+    connection.execute("DELETE FROM cleanup_candidates WHERE batch_id = ANY(%s::uuid[])", (ids,))
+    connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (ids,))
 
 
 def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str) -> bool:
     """Under the Vault lock, revoke stale consent before *any* S3 delete call.
 
-    Exact targets already deleted by an interrupted request remain evidence;
-    retries never widen consent to newly discovered/uploaded cloud versions.
+    The consent never widens: each Job still names the file's Current, the
+    file is still Cloud-only and the request still matches the Vault's
+    lifecycle (an ordinary deletion only while active, a Stop Protection one
+    only while stopping). Anything else cancels the whole group.
     """
     vault = lock_vault(connection, vault_id)
-    rows = connection.execute("""SELECT * FROM jobs WHERE vault_id=%s AND group_id=%s
-        AND action='cloud-purge' ORDER BY requested_at,id FOR UPDATE""", (vault_id, group_id)).fetchall()
+    rows = _group_jobs(connection, vault_id, group_id)
     active = [r for r in rows if r["status"] not in TERMINAL]
+    request = connection.execute(
+        "SELECT * FROM cloud_purge_requests WHERE group_id=%s", (group_id,)).fetchone()
     try:
-        if not active or vault.get("root_released_at"):
+        if not active or request is None or vault.get("root_released_at"):
             raise CloudDeletionError("Deletion authority is no longer active")
-        if vault["decommission_state"] == "active":
-            if not vault["enabled"] or any(r["origin"] != "manual" for r in active):
-                raise CloudDeletionError("Deletion authority is no longer active")
-        else:
-            stop = connection.execute("""SELECT group_id FROM protection_stops
-                WHERE vault_id=%s AND cloud_disposition='delete'""", (vault_id,)).fetchone()
-            if (vault["decommission_state"] != "decommissioning" or not stop
-                    or stop["group_id"] != group_id or any(r["origin"] != "stop-protection" for r in active)):
+        if request["stop_protection"]:
+            if vault["lifecycle"] != "stopping":
                 raise CloudDeletionError("Stopped folder deletion authority changed")
+        elif vault["lifecycle"] != "active":
+            raise CloudDeletionError("Deletion authority is no longer active")
+        moment = _aware(at)
         for row in active:
-            earliest = datetime.fromisoformat(row["requested_at"]) + timedelta(seconds=DELETION_DELAY_SECONDS)
-            if (not row["pending_until"] or datetime.fromisoformat(at) < earliest
-                    or datetime.fromisoformat(at) < datetime.fromisoformat(row["pending_until"])):
+            earliest = _aware(row["requested_at"]) + timedelta(seconds=DELETION_DELAY_SECONDS)
+            if row["run_after"] is None or moment < earliest or moment < _aware(row["run_after"]):
                 raise CloudDeletionError("The seven-day delay has not elapsed")
-        files = _selected_files(connection, vault_id=vault_id, paths=[r["path"] for r in active], is_directory=False)
-        if {f["vault_file_id"] for f in files} != {r["vault_file_id"] for r in active}:
-            raise CloudDeletionError("Selected file identity changed")
-        # Restart reconciliation may already have confirmed every target gone.
-        # Such a Job still finalizes, but cannot authorize deleting new content.
-        require_local_absence(vault, [f["path"] for f in files])
-        _validate_files(connection, vault, [f for f in files if f["archive_version_id"]], own_group=group_id)
+        files = {str(f["file_id"]): f for f in _files_by_id(
+            connection, [str(r["file_id"]) for r in active])}
         for row in active:
-            items = connection.execute("SELECT * FROM cloud_deletion_items WHERE job_id=%s", (row["id"],)).fetchall()
-            authorized = {(i["object_key"], i["provider_version_id"]) for i in items}
-            current = [*_versions(connection, row["vault_file_id"]), *_markers(connection, row["vault_file_id"])]
-            if not current and any(i["status"] != "deleted" for i in items):
-                raise CloudDeletionError("Cloud absence has not been reconciled for every exact target")
-            if not items or any((i["object_key"], i["provider_version_id"]) not in authorized for i in current):
+            live = files.get(str(row["file_id"]))
+            if (live is None or row["archive_version_id"] is None
+                    or str(live["current_version_id"] or "") != str(row["archive_version_id"])):
                 raise CloudDeletionError("Cloud content changed after confirmation")
-            for item in items:
-                if not item["provider_version_id"] or item["provider_version_id"] == "null":
-                    raise CloudDeletionError("Exact cloud version identity is missing")
-                if item["kind"] == "version":
-                    version = connection.execute("SELECT * FROM archive_versions WHERE id=%s", (item["archive_version_id"],)).fetchone()
-                else:
-                    version = connection.execute("SELECT * FROM delete_markers WHERE id=%s", (item["delete_marker_id"],)).fetchone()
-                if (not version or version["vault_file_id"] != row["vault_file_id"]
-                        or (version["object_key"], version["provider_version_id"]) != (item["object_key"], item["provider_version_id"])):
-                    raise CloudDeletionError("Cloud target identity changed")
+        _validate_files(connection, vault, list(files.values()), own_group=group_id)
     except CloudDeletionError as exc:
         _cancel_rows(connection, active, at=at, actor="system", reason=str(exc))
         return False
     return True
 
 
-def mark_item_deleted(connection: Any, *, item_id: int, updated_at: str) -> None:
-    mark_items_deleted(connection, item_ids=[item_id], updated_at=updated_at)
+def freeze_grants(connection: Any, *, vault: dict[str, Any], group_id: str,
+                  jobs: list[dict[str, Any]], provider: str) -> dict[str, str]:
+    """Freeze one batch per file granting exactly its consented Current.
+
+    Runs in the transaction that validated the group (Vault locked, members
+    claimed). Returns ``{file_id: batch_id}``; an existing open grant of this
+    group is reused, never widened.
+    """
+    file_ids = [str(j["file_id"]) for j in jobs]
+    existing = {str(r["file_id"]): str(r["id"]) for r in connection.execute(
+        "SELECT id, file_id FROM cleanup_batches WHERE purge_group_id=%s AND file_id = ANY(%s::uuid[])",
+        (group_id, file_ids)).fetchall()}
+    fresh = [j for j in jobs if str(j["file_id"]) not in existing]
+    if fresh:
+        rows = connection.execute(
+            """INSERT INTO cleanup_batches(vault_id, file_id, purge_group_id, job_id, provider,
+                                           path_since, source_root, root_identity)
+               SELECT %s, f.id, %s, j.job_id, %s, f.path_since, %s, %s
+               FROM unnest(%s::uuid[], %s::bigint[]) AS j(file_id, job_id)
+               JOIN files f ON f.id = j.file_id
+               RETURNING id, file_id""",
+            (vault["id"], group_id, provider, vault["source_root"], vault.get("root_identity"),
+             [str(j["file_id"]) for j in fresh], [int(j["id"]) for j in fresh])).fetchall()
+        created = {str(r["file_id"]): str(r["id"]) for r in rows}
+        connection.execute(
+            """INSERT INTO cleanup_candidates(batch_id, file_id, archive_version_id)
+               SELECT b.batch_id, b.file_id, b.version_id
+               FROM unnest(%s::uuid[], %s::uuid[], %s::uuid[]) AS b(batch_id, file_id, version_id)""",
+            ([created[str(j["file_id"])] for j in fresh], [str(j["file_id"]) for j in fresh],
+             [str(j["archive_version_id"]) for j in fresh]))
+        existing.update(created)
+    return existing
 
 
-def mark_items_deleted(connection: Any, *, item_ids: list[int], updated_at: str) -> None:
-    """Persist provider batches in bounded queries, retaining the existing scale seam."""
-    for offset in range(0, len(item_ids), 500):
-        batch = item_ids[offset:offset + 500]
-        placeholders = ','.join('%s' for _ in batch)
-        items = connection.execute(f"""SELECT archive_version_id,vault_id,vault_file_id
-            FROM cloud_deletion_items WHERE id IN ({placeholders})""", batch).fetchall()
-        connection.execute(f"""UPDATE archive_versions SET availability='purged',availability_checked_at=%s
-            WHERE id IN (SELECT archive_version_id FROM cloud_deletion_items
-                         WHERE id IN ({placeholders}) AND kind='version')""", (updated_at, *batch))
-        connection.execute(f"""UPDATE cloud_deletion_items SET status='deleted',error_message=NULL,updated_at=%s
-            WHERE id IN ({placeholders})""", (updated_at, *batch))
-        invalidate_for_archive_version_ids(connection, [str(i["archive_version_id"])
-                                                       for i in items if i["archive_version_id"]])
-        for vault_id, file_id in {(int(i["vault_id"]), str(i["vault_file_id"]))
-                                  for i in items if not i["archive_version_id"]}:
-            invalidate_for_vault_file(connection, vault_id, file_id)
+def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, actor: str) -> None:
+    """The exact DELETE returned (or the version is proven absent): record it.
+
+    Clears Current and removes the Archive Version row with its completed
+    proof, then completes each Job. The caller holds the group claim.
+    """
+    if not jobs:
+        return
+    versions = [str(j["archive_version_id"]) for j in jobs]
+    files = [str(j["file_id"]) for j in jobs]
+    connection.execute(
+        """UPDATE cleanup_candidates c SET deleted_at=%s
+           FROM cleanup_batches b
+           WHERE b.id = c.batch_id AND b.purge_group_id = %s
+             AND c.archive_version_id = ANY(%s::uuid[]) AND c.deleted_at IS NULL""",
+        (at, str(jobs[0]["group_id"]), versions))
+    proven = connection.execute(
+        """SELECT count(*) AS n FROM cleanup_candidates
+           WHERE archive_version_id = ANY(%s::uuid[]) AND deleted_at IS NOT NULL""",
+        (versions,)).fetchone()["n"]
+    if int(proven) != len(versions):
+        raise CloudDeletionError("A cloud deletion is recorded only with its grant")
+    connection.execute(
+        """UPDATE files SET current_version_id=NULL, matched_version_id=NULL,
+               held_version_id=NULL
+           WHERE id = ANY(%s::uuid[]) AND current_version_id = ANY(%s::uuid[])""",
+        (files, versions))
+    batches = [str(r["batch_id"]) for r in connection.execute(
+        "SELECT batch_id FROM cleanup_candidates WHERE archive_version_id = ANY(%s::uuid[])",
+        (versions,)).fetchall()]
+    connection.execute("DELETE FROM archive_versions WHERE id = ANY(%s::uuid[])", (versions,))
+    connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (batches,))
+    ids = [int(j["id"]) for j in jobs]
+    connection.execute(
+        """UPDATE jobs SET status='completed', message='Cloud deletion completed',
+               message_key=NULL, message_params=NULL, transferred_bytes=total_bytes,
+               updated_at=%s, finished_at=%s
+           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
+        (at, at, ids))
+    mark_paths_dirty(connection, int(jobs[0]["vault_id"]), [r["path"] for r in connection.execute(
+        "SELECT path FROM files WHERE id = ANY(%s::uuid[])", (files,)).fetchall()])
+    record_audit_event(connection, event="cloud_deletion.completed", actor=actor,
+                       vault_id=int(jobs[0]["vault_id"]), outcome="success",
+                       group_id=str(jobs[0]["group_id"]), deleted=len(ids), job_ids=ids[:100])
 
 
-def mark_items_failed(connection: Any, *, failures: list[tuple[int, str]], updated_at: str) -> None:
-    for offset in range(0, len(failures), 250):
-        batch = failures[offset:offset + 250]
-        cases = ' '.join('WHEN %s THEN %s' for _ in batch)
-        placeholders = ','.join('%s' for _ in batch)
-        case_params = [value for pair in batch for value in pair]
-        connection.execute(f"""UPDATE cloud_deletion_items SET status='failed',
-            error_message=CASE id {cases} ELSE error_message END,updated_at=%s
-            WHERE id IN ({placeholders})""", (*case_params, updated_at, *(i for i, _ in batch)))
-
-
-def finalize_purge_job(connection: Any, *, job_id: int, vault_file_id: str,
-                       actor: str, updated_at: str) -> str:
-    items = connection.execute("SELECT status FROM cloud_deletion_items WHERE job_id=%s", (job_id,)).fetchall()
-    completed = bool(items) and all(i["status"] == "deleted" for i in items)
-    status = "completed" if completed else "failed"
-    job = connection.execute("SELECT * FROM jobs WHERE id=%s", (job_id,)).fetchone()
-    connection.execute("""UPDATE jobs SET status=%s,message=%s,updated_at=%s,
-        transferred_bytes=CASE WHEN %s THEN total_bytes ELSE transferred_bytes END WHERE id=%s""",
-                       (status, "Cloud deletion completed" if completed else "Cloud deletion partially failed",
-                        updated_at, completed, job_id))
-    if completed and not _versions(connection, vault_file_id):
-        connection.execute("UPDATE vault_files SET status='purged',retired_at=COALESCE(retired_at,%s) WHERE id=%s",
-                           (updated_at, vault_file_id))
-        invalidate_for_vault_file(connection, int(job["vault_id"]), vault_file_id)
-    record_audit_event(connection, event="cloud_deletion.completed" if completed else "cloud_deletion.partial_failure",
-                       actor=actor, vault_id=int(job["vault_id"]), job_id=job_id,
-                       outcome="success" if completed else "partial_failure",
-                       deleted=sum(i["status"] == "deleted" for i in items))
-    return status
+def record_failed(connection: Any, *, failures: list[tuple[dict[str, Any], str]],
+                  at: str, actor: str) -> None:
+    """A deletion the provider refused: revoke its grant and fail its Job."""
+    if not failures:
+        return
+    group_id = str(failures[0][0]["group_id"])
+    revoke_grants(connection, group_id=group_id,
+                  file_ids=[str(job["file_id"]) for job, _ in failures])
+    for job, message in failures:
+        connection.execute(
+            """UPDATE jobs SET status='failed', message=%s, message_key=NULL, message_params=NULL,
+                   updated_at=%s, finished_at=%s
+               WHERE id=%s AND status NOT IN ('completed','failed','cancelled')""",
+            (f"Cloud deletion failed: {message}"[:500], at, at, int(job["id"])))
+    record_audit_event(connection, event="cloud_deletion.partial_failure", actor=actor,
+                       vault_id=int(failures[0][0]["vault_id"]), outcome="partial_failure",
+                       group_id=group_id, failed=len(failures),
+                       job_ids=[int(job["id"]) for job, _ in failures][:100])

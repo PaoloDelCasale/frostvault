@@ -2488,25 +2488,24 @@ def _reconcile_recover_job(
             "Recovery destination conflict preserved after restart; the final path is not a regular file",
         )
 
-    expected_digest = (target or {}).get("version_sha256") or job.get(
-        "version_sha256"
-    )
-    archive_version_id = (target or {}).get("archive_version_id") or job.get(
-        "archive_version_id"
-    )
-    if not expected_digest or not archive_version_id:
+    # Only the exact proof is adopted: the destination's bytes must hash to
+    # the digest of the Job's Archive Version, and that version must still be
+    # the file's verified Current. Nothing is downloaded or copied here.
+    try:
+        exact = _recovery_target(target)
+    except RuntimeError:
         return transition(
             "failed",
-            "Recovery destination preserved after restart; its Archive Version digest could not be verified",
+            "Recovery destination preserved after restart; its Archive Version is no longer Current",
         )
-    expected_digest = str(expected_digest).lower()
-    if len(expected_digest) != 64:
+    expected_digest = str(exact["version_sha256"]).lower()
+    archive_version_id = str(exact["archive_version_id"])
+    if exact["local_presence"] == "present":
         return transition(
             "failed",
-            "Recovery destination preserved after restart; its Archive Version digest is invalid",
+            "Recovery destination preserved after restart; a newer Local Copy observation exists",
         )
     try:
-        int(expected_digest, 16)
         recovered_digest, recovered_stat = hash_stable_regular_file(target_path)
     except (OSError, ValueError, RuntimeError) as exc:
         return transition(
@@ -2520,33 +2519,35 @@ def _reconcile_recover_job(
             "Recovery destination conflict preserved after restart; its digest does not match the Archive Version",
         )
 
-    # Claim the terminal Job before publishing the Local Copy in this same
-    # transaction.  A live worker that renews the lease wins the compare-and-
-    # swap and this transaction commits no catalog observation.
+    # The observation, digest and recovered_at are one compare-and-swap on the
+    # generation read in this transaction, and the terminal Job is claimed in
+    # the same savepoint: a live worker that renewed the lease, or a newer
+    # observation, wins and nothing is committed for this Job.
+    connection.execute("SAVEPOINT recover_adoption")
+    published = ArchiveCatalog(connection).publish_recovered_local_copy(
+        str(exact["file_id"]),
+        generation=int(exact["local_generation"]),
+        archive_version_id=archive_version_id,
+        plaintext_sha256=expected_digest,
+        size=recovered_stat.st_size,
+        mtime_ns=recovered_stat.st_mtime_ns,
+        recovered_at=timestamp,
+    )
+    if published is None:
+        connection.execute("ROLLBACK TO SAVEPOINT recover_adoption")
+        return transition(
+            "failed",
+            "Recovery destination preserved after restart; a newer Local Copy observation exists",
+        )
     outcome = transition(
         "completed",
         "Recovered Local Copy verified and adopted after restart",
         complete=True,
     )
     if outcome != "completed":
+        connection.execute("ROLLBACK TO SAVEPOINT recover_adoption")
         return outcome
-    catalog = ArchiveCatalog(connection)
-    catalog.observe_local_copy(
-        vault_id=int(job["vault_id"]),
-        path=str(job["path"]),
-        file_type="regular",
-        size=recovered_stat.st_size,
-        mtime_ns=recovered_stat.st_mtime_ns,
-        observed_at=timestamp,
-        seen_at=timestamp,
-        recovered_at=timestamp,
-    )
-    catalog.set_local_fingerprint(
-        vault_id=int(job["vault_id"]),
-        path=str(job["path"]),
-        plaintext_sha256=expected_digest,
-        matched_archive_version_id=str(archive_version_id),
-    )
+    connection.execute("RELEASE SAVEPOINT recover_adoption")
     return outcome
 
 
@@ -2654,7 +2655,14 @@ def _reconcile_cloud_purge_group(
     *,
     timestamp: str,
 ) -> dict[str, int]:
-    """Reconcile exact-version purge items before allowing a group to resume."""
+    """Settle an interrupted cloud-purge group by exact listing, then requeue it.
+
+    A frozen grant whose exact version is absent was deleted by the crashed
+    worker: it is recorded and its Job completes. A grant still present is
+    revoked; its Job is requeued and the next claim revalidates the consent
+    from the live catalog (an expired or changed consent is cancelled there).
+    Nothing is deleted here.
+    """
     group_id = lead.get("group_id")
     if not group_id:
         raise RuntimeError("Cloud purge is missing its group identity")
@@ -2667,12 +2675,14 @@ def _reconcile_cloud_purge_group(
         FROM jobs j
         WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
         ORDER BY j.requested_at ASC, j.id ASC
+        FOR UPDATE OF j
         """,
         (timestamp, lead["vault_id"], group_id),
     ).fetchall()
     active_rows = [
         row for row in group_rows if row["status"] not in JOB_TERMINAL_STATUSES
     ]
+    result = {"completed": 0, "requeued": 0, "failed": 0}
     # Reconciliation must never split a group around another worker's live
     # claim.  A partially published prior reconciliation may leave some rows
     # queued; those are harmless as long as every active member is unleased.
@@ -2681,67 +2691,54 @@ def _reconcile_cloud_purge_group(
         or any(row["lease_live"] for row in active_rows)
         or any(row["status"] not in {"cleaning", "queued"} for row in active_rows)
     ):
-        return {"completed": 0, "requeued": 0, "failed": 0}
+        return result
     jobs = [row for row in active_rows if row["status"] == "cleaning"]
     if not jobs:
-        return {"completed": 0, "requeued": 0, "failed": 0}
-    job_ids = [int(job["id"]) for job in jobs]
-    placeholders = ", ".join(["%s"] * len(job_ids))
-    items = connection.execute(
-        f"""
-        SELECT * FROM cloud_deletion_items
-        WHERE job_id IN ({placeholders})
-          AND status IN ('pending', 'failed')
-        ORDER BY id
+        return result
+    granted = connection.execute(
+        """
+        SELECT b.file_id, av.object_key, av.provider_version_id
+        FROM cleanup_batches b
+        JOIN cleanup_candidates c ON c.batch_id = b.id
+        JOIN archive_versions av ON av.id = c.archive_version_id
+        WHERE b.purge_group_id = %s AND c.deleted_at IS NULL
         """,
-        job_ids,
+        (group_id,),
     ).fetchall()
-    if any(item["status"] == "failed" for item in items):
-        outcome = "failed"
-        message = "Permanent purge had recorded failures before restart"
-    else:
-        remaining = list(items)
-        cached: dict[str, tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]] = {}
-        deleted_ids: list[int] = []
-        for item in remaining:
-            key = str(item["object_key"])
-            if key not in cached:
-                cached[key] = _object_version_entries(
-                    s3_client(),
-                    bucket=str(lead["s3_bucket"]),
-                    object_key=key,
-                )
-            versions, markers = cached[key]
-            source = versions if item["kind"] == "version" else markers
-            if str(item["provider_version_id"]) not in source:
-                deleted_ids.append(int(item["id"]))
-        if deleted_ids:
-            cloud_deletion_service.mark_items_deleted(
-                connection,
-                item_ids=deleted_ids,
-                updated_at=timestamp,
-            )
-        still_pending = len(remaining) - len(deleted_ids)
-        outcome = "requeued"
-        message = (
-            "Permanent purge deletions reconciled after restart; finalizing"
-            if still_pending == 0
-            else "Permanent purge interrupted before all exact versions were deleted; safely resumed"
-        )
-    result = {"completed": 0, "requeued": 0, "failed": 0}
+    by_file = {str(row["file_id"]): row for row in granted}
+    absent: list[dict[str, Any]] = []
+    client = s3_client() if by_file else None
     for job in jobs:
+        grant = by_file.get(str(job["file_id"]))
+        if grant is None:
+            continue
+        versions, _markers = _object_version_entries(
+            client, bucket=str(lead["s3_bucket"]), object_key=str(grant["object_key"]),
+        )
+        if str(grant["provider_version_id"]) not in versions:
+            absent.append(job)
+    absent_ids = {int(job["id"]) for job in absent}
+    if absent:
+        for job in absent:
+            connection.execute("DELETE FROM job_leases WHERE job_id=%s", (int(job["id"]),))
+        cloud_deletion_service.record_deleted(
+            connection, jobs=absent, at=timestamp, actor="system",
+        )
+        result["completed"] += len(absent)
+    remaining = [job for job in jobs if int(job["id"]) not in absent_ids]
+    cloud_deletion_service.revoke_grants(
+        connection, group_id=str(group_id),
+        file_ids=[str(job["file_id"]) for job in remaining],
+    )
+    for job in remaining:
         if _reconcile_job_transition(
             connection,
             job_id=int(job["id"]),
-            status="failed" if outcome == "failed" else "queued",
-            message=message,
+            status="queued",
+            message="Cloud deletion interrupted before its exact version was deleted; safely resumed",
             timestamp=timestamp,
         ):
-            if outcome == "failed":
-                notification_service.enqueue_job_terminal_notification_best_effort(
-                    connection, job_id=int(job["id"])
-                )
-            result[outcome] += 1
+            result["requeued"] += 1
     return result
 
 
@@ -3844,7 +3841,8 @@ def _checked_local_release_target(
         or not target["local_sha256"]
         or target["local_sha256"] != target["version_sha256"]
         or target["cloud_only_version_id"] is not None
-        or target["archive_version_id"] != target["latest_archive_version_id"]
+        or target["archive_version_id"] != target["current_version_id"]
+        or target["replacing_version_id"] is not None
         or not target["object_key"]
         or not target["provider_version_id"]
     ):
@@ -3884,27 +3882,34 @@ def _repair_failed_local_release(
     digest = None
     if file_type == "regular":
         digest, info = hash_stable_regular_file(local_path)
+    file_id = str(target["vault_file_id"])
     with db() as connection:
         if "root_identity" in vault:
             _current_verified_scan_row(connection, vault)
         catalog = ArchiveCatalog(connection)
+        observed_at = now_iso()
         if replacement:
-            file_id = target["vault_file_id"]
+            # Content that replaced the claimed original: Current may be the
+            # only copy now, so it is held unless it proves identical.
             catalog.observe_replaced_local_copy(
                 file_id, file_type=file_type, size=info.st_size,
-                mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+                mtime_ns=info.st_mtime_ns, observed_at=observed_at,
             )
         else:
-            file_id = catalog.observe_local_copy(
+            # New bytes (a different digest) restart the content window and
+            # never inherit the released copy's fingerprint or match.
+            catalog.observe_local_copy(
                 vault_id=job["vault_id"], path=job["path"], file_type=file_type,
-                size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=now_iso(),
+                size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=observed_at,
+                invalidate_content=digest != target["local_sha256"],
             )
-        if digest != target["local_sha256"]:
-            connection.execute("UPDATE local_copies SET content_observed_at=%s WHERE vault_file_id=%s", (now_iso(), file_id))
         if digest:
-            catalog.set_local_fingerprint(
-                vault_id=job["vault_id"], path=job["path"], plaintext_sha256=digest,
-                matched_archive_version_id=(target["archive_version_id"] if digest == target["version_sha256"] else None),
+            observed = connection.execute(
+                "SELECT generation FROM files WHERE id=%s", (file_id,),
+            ).fetchone()
+            catalog.publish_local_fingerprint(
+                file_id, generation=int(observed["generation"]), plaintext_sha256=digest,
+                size=info.st_size, mtime_ns=info.st_mtime_ns, match_current=True,
             )
         if "root_identity" in vault:
             _current_verified_scan_row(connection, vault)
@@ -4252,21 +4257,46 @@ def download_exact_version_plaintext(
         raise RuntimeError("S3 download did not create the recovered file")
 
 
-def process_recover(job: dict[str, Any]) -> None:
-    ensure_job_active(job["id"], "Recovery stopped")
-    validate_cloud_vault(job)
-    with db() as connection:
-        target = ArchiveCatalog(connection).get_job_target(job["id"])
+def _recovery_target(target: dict[str, Any] | None) -> dict[str, Any]:
+    """The exact Archive Version a recovery may read: the file's verified Current."""
     if (
         not target
+        or not target["archive_version_id"]
+        or str(target["archive_version_id"]) != str(target.get("current_version_id") or "")
         or target["integrity"] != "verified"
         or target["availability"] != "available"
         or not target["provider_version_id"]
         or not target["object_key"]
         or not target["version_sha256"]
-        or not target["archive_version_id"]
     ):
         raise RuntimeError("The file is not available in the cloud")
+    return target
+
+
+def _publish_without_replacing(temporary: Path, destination: Path) -> None:
+    """Move the verified plaintext to the final path, never over an entry there.
+
+    A hard link fails atomically when anything (a file, a directory, a
+    symlink) appeared at the destination since the last check. Only where
+    links are unsupported does the publication fall back to a checked rename.
+    """
+    try:
+        os.link(temporary, destination, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise RuntimeError("A local copy already exists at the recovery destination") from exc
+    except OSError:
+        if os.path.lexists(destination):
+            raise RuntimeError("A local copy already exists at the recovery destination")
+        temporary.replace(destination)
+        return
+    temporary.unlink()
+
+
+def process_recover(job: dict[str, Any]) -> None:
+    ensure_job_active(job["id"], "Recovery stopped")
+    validate_cloud_vault(job)
+    with db() as connection:
+        target = _recovery_target(ArchiveCatalog(connection).get_job_target(job["id"]))
     if target["local_presence"] == "present":
         raise RuntimeError("A local copy is already present")
 
@@ -4278,31 +4308,26 @@ def process_recover(job: dict[str, Any]) -> None:
     archive_version_id = str(target["archive_version_id"])
     storage_class = target.get("storage_class")
     size_bytes = int(target.get("cloud_size") or job.get("total_bytes") or 0)
-    restore_expiry = target.get("restore_expiry")
 
     # Restore Approval is decided once for the whole request when it is
     # queued (#533). The worker never re-evaluates the thresholds, so a restore
     # already requested from AWS cannot be held again after settings change
-    # (#534).
+    # (#534). The provider's restore header of the exact VersionId decides
+    # whether RestoreObject is still needed: never requested twice (#594).
     head = s3_client().head_object(
         Bucket=job["s3_bucket"],
         Key=object_key,
         VersionId=provider_version_id,
     )
+    if str(head.get("VersionId") or provider_version_id) != provider_version_id or head.get("DeleteMarker"):
+        raise RuntimeError("The provider returned a different Archive Version")
     original_mtime_ns = recovery_mtime_ns(target.get("upload_snapshot_json"), head.get("Metadata") or {})
     head_class = head.get("StorageClass") or storage_class
     restore_state, restore_expiry = restore_header_state(head.get("Restore"))
-    if storage_class_requires_restore(head_class) and restore_state != "available":
-        tier = (
-            job.get("restore_tier")
-            or _runtime_settings().restore_tier
-            or "Bulk"
-        )
-        days = int(
-            job.get("restore_days")
-            or _runtime_settings().restore_days
-            or 3
-        )
+    needs_restore = storage_class_requires_restore(head_class)
+    if needs_restore and restore_state != "available":
+        tier = target.get("restore_tier") or _runtime_settings().restore_tier or "Bulk"
+        days = int(target.get("restore_days") or _runtime_settings().restore_days or 3)
         estimate = estimate_restore(
             size_bytes=size_bytes,
             storage_class=str(head_class),
@@ -4331,25 +4356,23 @@ def process_recover(job: dict[str, Any]) -> None:
             )
             ArchiveCatalog(connection).update_restore_state(
                 archive_version_id,
-                state=restore_state,
+                state=restore_state if restore_state != "not_requested" else None,
                 expiry=restore_expiry,
                 checked_at=checked_at,
                 storage_class=head_class,
             )
-        if restore_state != "available":
-            set_job(
-                job["id"],
-                "restoring",
-                "Waiting for Glacier restore; RestoreObject cannot be cancelled after AWS accepts it",
-            )
-            return
+        set_job(
+            job["id"],
+            "restoring",
+            "Waiting for Glacier restore; RestoreObject cannot be cancelled after AWS accepts it",
+        )
+        return
 
     destination = safe_local_entry_path(job["source_root"], job["path"])
     temporary = destination.with_name(
         f".{destination.name}.restore-{uuid.uuid4().hex}.tmp"
     )
-    message = "Downloading"
-    set_job(job["id"], "downloading", message)
+    set_job(job["id"], "downloading", "Downloading")
     try:
         download_exact_version_plaintext(
             job,
@@ -4369,37 +4392,48 @@ def process_recover(job: dict[str, Any]) -> None:
                 "Recovered plaintext digest does not match the Archive Version"
             )
         with scan_lock_for_vault(int(job["vault_id"])):
-            # Transfers/hash stay outside the filesystem critical section.
-            # Publish the atomic rename and its verified observation together
-            # so a watcher cannot unprotect our own just-recovered copy.
+            # Transfers/hash stay outside the filesystem critical section. The
+            # observation token is read before the final path appears, and the
+            # observation, digest and recovered_at are published with one
+            # compare-and-swap on it: a newer observation is never overwritten.
             ensure_job_active(job["id"], "Recovery claim was lost")
             if not _local_stat_unchanged(temporary, recovered_stat):
                 raise RuntimeError("Recovered plaintext changed before publication")
+            with db() as connection:
+                ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
+                live = _recovery_target(ArchiveCatalog(connection).get_job_target(job["id"]))
+            if (str(live["archive_version_id"]), live["version_sha256"]) != (
+                archive_version_id, expected_digest,
+            ) or live["local_presence"] == "present":
+                raise RuntimeError("The recovery target changed before publication")
+            generation = int(live["local_generation"])
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if os.path.lexists(destination):
-                raise RuntimeError(
-                    "A local copy already exists at the recovery destination"
-                )
-            temporary.replace(destination)
+            _publish_without_replacing(temporary, destination)
             published_stat = destination.lstat()
+            recovered_at = now_iso()
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
                 catalog = ArchiveCatalog(connection)
-                recovered_at = now_iso()
-                catalog.observe_local_copy(
-                    vault_id=job["vault_id"], path=job["path"], file_type="regular",
-                    size=recovered_stat.st_size, mtime_ns=recovered_stat.st_mtime_ns,
-                    observed_at=recovered_at, recovered_at=recovered_at,
+                published = catalog.publish_recovered_local_copy(
+                    str(target["file_id"]),
+                    generation=generation,
+                    archive_version_id=archive_version_id,
+                    plaintext_sha256=expected_digest,
+                    size=recovered_stat.st_size,
+                    mtime_ns=recovered_stat.st_mtime_ns,
+                    recovered_at=recovered_at,
                 )
-                catalog.set_local_fingerprint(
-                    vault_id=job["vault_id"], path=job["path"],
-                    plaintext_sha256=expected_digest, matched_archive_version_id=archive_version_id,
-                )
-                if target.get("restore_state") or storage_class_requires_restore(head_class):
+                if published is None:
+                    raise RuntimeError(
+                        "Recovered Local Copy was preserved; a newer observation of the path won"
+                    )
+                if needs_restore or target.get("restore_state"):
                     catalog.update_restore_state(
                         archive_version_id,
-                        state="available" if storage_class_requires_restore(head_class) else None,
-                        expiry=restore_expiry, checked_at=now_iso(), storage_class=head_class,
+                        state="available" if needs_restore else None,
+                        expiry=restore_expiry if needs_restore else None,
+                        checked_at=recovered_at,
+                        storage_class=head_class,
                     )
             local_observation.remember(job["vault_id"], job["path"], published_stat, expected_digest)
     finally:
@@ -4408,91 +4442,115 @@ def process_recover(job: dict[str, Any]) -> None:
     set_job(job["id"], "completed", f"Recovered to {destination}")
 
 
+class _PurgeUnsettled(JobLeaseLost):
+    """A DELETE may have run but its outcome is not recorded: restart settles it."""
+
+
 def process_cloud_purge(job: dict[str, Any]) -> None:
-    """Permanently delete a scheduler-claimed cloud-purge group exactly once."""
+    """Delete a scheduler-claimed Delayed Cloud Deletion group exactly once.
+
+    Per chunk: revalidate the consent and freeze the grants (committed before
+    any DELETE); then, in one transaction holding the Vault lock, the renewed
+    group claim and a fresh local-absence proof, send one DeleteObjects by
+    exact VersionId; then record each result in a separate DB unit. A DELETE
+    is never replayed by a DB retry; an unrecorded outcome stays held for the
+    restart reconciliation, which settles it by exact listing.
+    """
+    from .services import upload_provenance as _provenance
+
     ensure_job_active(job["id"], "Cloud purge stopped")
     claim_token = job.get("claim_token")
     if not claim_token:
         # The scheduler is the only supported entry point for destructive work.
-        # Retaining this no-op protects direct legacy callers from bypassing the
-        # durable group acquisition primitive.
         return
-    claimed_at = now_iso()
+    group_id = str(job.get("group_id") or "")
+    if not group_id:
+        raise RuntimeError("Permanent purge is missing its group identity")
+    vault_id = int(job["vault_id"])
+    validate_cloud_vault(job)
+    client = s3_client()
+    provider = _provenance.provider_identity(client)
     with db() as connection:
         if not cloud_deletion_service.validate_execution(
-            connection, vault_id=int(job["vault_id"]), group_id=str(job.get("group_id") or ""),
-            at=claimed_at,
+            connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
         ):
             return
         purge_jobs, items = ArchiveCatalog(connection).load_claimed_purge_group(
-            lead_job_id=int(job["id"]),
-            claim_token=str(claim_token),
-            now=claimed_at,
+            lead_job_id=int(job["id"]), claim_token=str(claim_token), now=now_iso(),
         )
     if not purge_jobs:
         return
     expected_job_ids = [int(purge_job["id"]) for purge_job in purge_jobs]
-    group_id = job.get("group_id")
-    if not group_id:
-        raise RuntimeError("Permanent purge is missing its group identity")
-    validate_cloud_vault(job)
-    client = s3_client()
-    failures = 0
-    for offset in range(0, len(items), CLOUD_DELETE_BATCH_SIZE):
-        batch = items[offset : offset + CLOUD_DELETE_BATCH_SIZE]
-        ensure_job_active(job["id"], "Cloud purge stopped")
-        stamp = now_iso()
-        # Keep all group members leased while a batch is in flight.  If a
-        # cancellation or takeover won, do not turn its durable state back into
-        # an item result after the provider call.
-        with db() as connection:
-            if not cloud_deletion_service.validate_execution(
-                connection, vault_id=int(job["vault_id"]), group_id=str(group_id), at=stamp,
-            ):
-                return
-            # Validation may traverse a large selection while holding Job locks.
-            # Never revive an expired lease using the pre-validation timestamp.
-            stamp = now_iso()
-            if not ArchiveCatalog(connection).renew_purge_group_claim(
-                vault_id=int(job["vault_id"]),
-                group_id=str(group_id),
-                claim_token=str(claim_token),
-                expected_job_ids=expected_job_ids,
-                now=stamp,
-                claim_expires_at=_claim_expiry_at(stamp),
-            ):
-                _mark_claim_lost(int(job["id"]))
-                raise JobLeaseLost("Cloud purge claim was lost")
-        deleted_ids: list[int] = []
-        failed_items: list[tuple[int, str]] = []
-        try:
-            response = client.delete_objects(
-                Bucket=job["s3_bucket"],
-                Delete={
-                    "Objects": [
-                        {
-                            "Key": item["object_key"],
-                            "VersionId": item["provider_version_id"],
-                        }
-                        for item in batch
-                    ],
-                    "Quiet": True,
-                },
-            )
-        except Exception as exc:
-            response = None
-            failed_items = [(int(item["id"]), str(exc)) for item in batch]
+    actor = "owner"
 
-        # The lease may expire while DeleteObjects is blocked.  Capture the
-        # provider-return time before inspecting its result, then honor the
-        # heartbeat's shared loss signal before any durable result is derived.
-        provider_returned_at = now_iso()
-        if _claim_is_lost(int(job["id"])):
+    def renew(connection: Any) -> None:
+        stamp = now_iso()
+        if _claim_is_lost(int(job["id"])) or not ArchiveCatalog(connection).renew_purge_group_claim(
+            vault_id=vault_id, group_id=group_id, claim_token=str(claim_token),
+            expected_job_ids=expected_job_ids, now=stamp,
+            claim_expires_at=_claim_expiry_at(stamp),
+        ):
             _mark_claim_lost(int(job["id"]))
             raise JobLeaseLost("Cloud purge claim was lost")
 
-        if response is not None:
-            try:
+    for offset in range(0, len(items), CLOUD_DELETE_BATCH_SIZE):
+        batch = items[offset : offset + CLOUD_DELETE_BATCH_SIZE]
+        ensure_job_active(job["id"], "Cloud purge stopped")
+        with db() as connection:
+            if not cloud_deletion_service.validate_execution(
+                connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
+            ):
+                return
+            renew(connection)
+            vault = cloud_deletion_service.lock_vault(connection, vault_id)
+            cloud_deletion_service.freeze_grants(
+                connection, vault=vault, group_id=group_id, jobs=batch, provider=provider,
+            )
+        response: dict[str, Any] | None = None
+        ambiguous: Exception | None = None
+        sent = False
+        try:
+            with owned_connection(db()) as connection:
+                if not cloud_deletion_service.validate_execution(
+                    connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
+                ):
+                    return
+                renew(connection)
+                if job_cancelled(int(job["id"])):
+                    raise OperationCancelled("Cloud purge stopped")
+                sent = True
+                try:
+                    response = client.delete_objects(
+                        Bucket=job["s3_bucket"],
+                        Delete={
+                            "Objects": [
+                                {"Key": item["object_key"], "VersionId": item["provider_version_id"]}
+                                for item in batch
+                            ],
+                            "Quiet": True,
+                        },
+                    )
+                except Exception as exc:  # the outcome is unknown: settle by listing
+                    ambiguous = exc
+        except psycopg.Error:
+            if not sent:
+                raise
+        if _claim_is_lost(int(job["id"])):
+            _mark_claim_lost(int(job["id"]))
+            raise _PurgeUnsettled("Cloud purge claim was lost")
+        deleted: list[dict[str, Any]] = []
+        failed: list[tuple[dict[str, Any], str]] = []
+        try:
+            if ambiguous is not None or response is None:
+                for item in batch:
+                    versions, _markers = _object_version_entries(
+                        client, bucket=str(job["s3_bucket"]), object_key=str(item["object_key"]),
+                    )
+                    if str(item["provider_version_id"]) in versions:
+                        failed.append((item, str(ambiguous or "S3 did not answer")))
+                    else:
+                        deleted.append(item)
+            else:
                 errors: dict[tuple[str, str], str] = {}
                 for error in response.get("Errors") or []:
                     key = error.get("Key")
@@ -4503,83 +4561,29 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                     message = error.get("Message") or "S3 rejected the deletion"
                     errors[(str(key), str(version_id))] = f"{code}: {message}"
                 for item in batch:
-                    item_id = int(item["id"])
-                    error_message = errors.get(
-                        (str(item["object_key"]), str(item["provider_version_id"]))
-                    )
-                    if error_message is None:
-                        deleted_ids.append(item_id)
+                    message = errors.get((str(item["object_key"]), str(item["provider_version_id"])))
+                    if message is None:
+                        deleted.append(item)
                     else:
-                        failed_items.append((item_id, error_message))
-            except Exception as exc:
-                failed_items = [(int(item["id"]), str(exc)) for item in batch]
-
-        failures += len(failed_items)
-        # Result parsing is local-only, but use a second timestamp immediately
-        # before the conditional group renewal so an expired lease cannot be
-        # revived with the pre-provider fence time.
-        fence_at = now_iso()
-        if _claim_is_lost(int(job["id"])):
-            _mark_claim_lost(int(job["id"]))
-            raise JobLeaseLost("Cloud purge claim was lost")
-        with db() as connection:
-            if not ArchiveCatalog(connection).renew_purge_group_claim(
-                vault_id=int(job["vault_id"]),
-                group_id=str(group_id),
-                claim_token=str(claim_token),
-                expected_job_ids=expected_job_ids,
-                now=fence_at,
-                claim_expires_at=_claim_expiry_at(fence_at),
-            ):
-                _mark_claim_lost(int(job["id"]))
-                raise JobLeaseLost("Cloud purge claim was lost")
-            if _claim_is_lost(int(job["id"])):
-                _mark_claim_lost(int(job["id"]))
-                raise JobLeaseLost("Cloud purge claim was lost")
-            cloud_deletion_service.mark_items_deleted(
-                connection,
-                item_ids=deleted_ids,
-                updated_at=provider_returned_at,
-            )
-            cloud_deletion_service.mark_items_failed(
-                connection,
-                failures=failed_items,
-                updated_at=provider_returned_at,
-            )
-    stamp = now_iso()
-    if _claim_is_lost(int(job["id"])):
-        _mark_claim_lost(int(job["id"]))
-        raise JobLeaseLost("Cloud purge claim was lost")
-    with db() as connection:
-        # This renewal locks all Jobs' rows, then their leases, through finalization,
-        # so a cancellation either wins before this point or observes terminal
-        # Jobs afterward; it can never be overwritten by finalize_purge_job.
-        if not ArchiveCatalog(connection).renew_purge_group_claim(
-            vault_id=int(job["vault_id"]),
-            group_id=str(group_id),
-            claim_token=str(claim_token),
-            expected_job_ids=expected_job_ids,
-            now=stamp,
-            claim_expires_at=_claim_expiry_at(stamp),
-        ):
-            _mark_claim_lost(int(job["id"]))
-            raise JobLeaseLost("Cloud purge claim was lost")
-        if _claim_is_lost(int(job["id"])):
-            _mark_claim_lost(int(job["id"]))
-            raise JobLeaseLost("Cloud purge claim was lost")
-        for purge_job in purge_jobs:
-            cloud_deletion_service.finalize_purge_job(
-                connection,
-                job_id=int(purge_job["id"]),
-                vault_file_id=purge_job["vault_file_id"],
-                actor="system" if purge_job.get("origin") == "automatic" else "owner",
-                updated_at=stamp,
-            )
-        # A Job that ended dropped its lease with it (schema trigger).
-    if failures:
-        # finalize_purge_job already persisted failed status; avoid double-write
-        # through process_job's exception handler.
-        return
+                        failed.append((item, message))
+            stamp = now_iso()
+            with owned_connection(db()) as connection:
+                renew(connection)
+                cloud_deletion_service.record_deleted(
+                    connection, jobs=deleted, at=stamp, actor=actor,
+                )
+                cloud_deletion_service.record_failed(
+                    connection, failures=failed, at=stamp, actor=actor,
+                )
+            # Ended members dropped their lease; the claim covers the rest.
+            ended = {int(item["id"]) for item in deleted} | {int(item["id"]) for item, _ in failed}
+            expected_job_ids[:] = [i for i in expected_job_ids if i not in ended]
+        except JobLeaseLost:
+            raise _PurgeUnsettled("Cloud purge claim was lost")
+        except Exception as exc:
+            # Never fail a Job whose exact DELETE may have run without its
+            # record: keep it held; the restart reconciliation lists and settles.
+            raise _PurgeUnsettled(f"Cloud deletion outcome not recorded: {exc}") from exc
 
 
 @retry_database_unit
