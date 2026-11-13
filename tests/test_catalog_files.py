@@ -107,23 +107,56 @@ class LocalCopyTests(_Fixture):
         self.assertEqual(self.file("link")["local_copy"]["presence"], "unsupported")
         self.assertEqual(self.catalog.local_copies_to_fingerprint(2), [])
 
-    def test_every_new_observation_invalidates_the_previous_one(self) -> None:
+    def test_a_confirming_observation_keeps_the_generation_a_change_does_not(self) -> None:
         file_id = self.observe()
         before_hash = self.catalog.local_copies_to_fingerprint(2)[0]
-        # A scan re-observes the same stat while the hash runs.
+        # A scan re-observes the same stat while the hash runs (#619): the
+        # content observation is unchanged, so the hash still publishes.
         self.observe(at=T1)
-        after = self.file()
-        self.assertGreater(after["generation"], before_hash["generation"])
-        self.assertFalse(self.catalog.publish_local_fingerprint(
+        self.assertEqual(self.file()["generation"], before_hash["generation"])
+        self.assertEqual(self.file()["local_copy"]["observed_at"].isoformat(), T1)
+        self.assertTrue(self.catalog.publish_local_fingerprint(
             file_id, generation=before_hash["generation"], plaintext_sha256=DIGEST_A,
             size=9, mtime_ns=100,
         ))
-        self.assertIsNone(self.file()["local_copy"]["plaintext_sha256"])
-        # A hash taken on the current observation publishes.
-        self.assertTrue(self.catalog.publish_local_fingerprint(
-            file_id, generation=after["generation"], plaintext_sha256=DIGEST_A,
-            size=9, mtime_ns=100,
-        ))
+        # A content event or a different stat is a new observation: a hash
+        # taken on the earlier one can no longer publish.
+        for change in ({"invalidate_content": True}, {"mtime_ns": 101}, {"size": 10},
+                       {"file_type": "symlink"}):
+            with self.subTest(change=change):
+                token = self.file()["generation"]
+                self.observe(at=T2, **change)
+                after = self.file()
+                self.assertGreater(after["generation"], token)
+                self.assertFalse(self.catalog.publish_local_fingerprint(
+                    file_id, generation=token, plaintext_sha256=DIGEST_A,
+                    size=after["local_copy"]["size"],
+                    mtime_ns=after["local_copy"]["mtime_ns"],
+                ))
+        # Reappearing after missing is a new observation too.
+        token = self.file()["generation"]
+        self.catalog.mark_local_copy_missing(file_id, observed_at=T2)
+        missing = self.file()["generation"]
+        self.assertGreater(missing, token)
+        self.observe(at="2026-07-21T13:00:00+00:00")
+        self.assertGreater(self.file()["generation"], missing)
+
+    def test_a_batch_scan_bumps_only_changed_or_invalidated_paths(self) -> None:
+        self.observe("same.txt")
+        self.observe("event.txt")
+        self.observe("grown.txt")
+        before = {path: self.file(path)["generation"]
+                  for path in ("same.txt", "event.txt", "grown.txt")}
+        self.catalog.observe_local_copies_batch(
+            vault_id=2,
+            entries=[("same.txt", "regular", 9, 100, T1),
+                     ("event.txt", "regular", 9, 100, T1),
+                     ("grown.txt", "regular", 10, 100, T1)],
+            seen_at=T1, invalidate_paths=["event.txt"],
+        )
+        self.assertEqual(self.file("same.txt")["generation"], before["same.txt"])
+        self.assertGreater(self.file("event.txt")["generation"], before["event.txt"])
+        self.assertGreater(self.file("grown.txt")["generation"], before["grown.txt"])
 
     def test_publication_requires_the_stat_the_hash_saw(self) -> None:
         file_id = self.observe()
@@ -295,22 +328,47 @@ class ExplicitStateTests(_Fixture):
         ).fetchall()
         self.assertEqual(superseded, [{"id": first}])
 
-    def test_a_stale_observation_is_never_matched_at_promotion(self) -> None:
+    def test_a_confirming_scan_between_snapshot_and_publish_keeps_the_match(self) -> None:
+        # #619: snapshot -> scan re-observes the unchanged file -> publish.
         file_id = self.observe()
         fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
         generation = self.file()["generation"]
         version = self.catalog.begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v1", size=9,
         )
-        self.observe(at=T1)  # same stat, newer observation
+        self.catalog.observe_local_copies_batch(
+            vault_id=2, entries=[("a.txt", "regular", 9, 100, T1)], seen_at=T1,
+        )
         matched = self.catalog.promote_replacement(
             file_id, archive_version_id=version, plaintext_sha256=DIGEST_A,
             verified_at=T1, local_generation=generation,
         )
-        self.assertFalse(matched)
+        self.assertTrue(matched)
         state = self.file()
         self.assertEqual(state["current_version"]["id"], version)
-        self.assertIsNone(state["matched_version_id"])
+        self.assertEqual(state["matched_version_id"], state["current_version"]["id"])
+
+    def test_a_stale_observation_is_never_matched_at_promotion(self) -> None:
+        # A real content change between snapshot and publish: a new stat, or
+        # a content event with the same stat, leaves the copy unmatched.
+        for path, change in (("stat.txt", {"mtime_ns": 101}),
+                             ("event.txt", {"invalidate_content": True})):
+            with self.subTest(change=change):
+                file_id = self.observe(path)
+                fingerprint(self.catalog, 2, path, DIGEST_A)
+                generation = self.file(path)["generation"]
+                version = self.catalog.begin_replacement(
+                    file_id, object_key=f"vaults/x/{path}", provider_version_id="v1", size=9,
+                )
+                self.observe(path, at=T1, **change)
+                matched = self.catalog.promote_replacement(
+                    file_id, archive_version_id=version, plaintext_sha256=DIGEST_A,
+                    verified_at=T1, local_generation=generation,
+                )
+                self.assertFalse(matched)
+                state = self.file(path)
+                self.assertEqual(state["current_version"]["id"], version)
+                self.assertIsNone(state["matched_version_id"])
 
     def test_a_failed_replacement_preserves_current(self) -> None:
         file_id = self.observe()

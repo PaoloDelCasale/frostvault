@@ -338,11 +338,14 @@ class ArchiveCatalog:
     ) -> str:
         """Record the observed Local Copy at ``path`` and return its file id.
 
-        Every observation increments the file's generation, even with the same
-        stat, so a hash taken on an earlier observation can no longer publish.
-        The fingerprint and match are kept only for a present regular file
-        whose stat is unchanged, unless ``invalidate_content`` (a watcher
-        content event) says the bytes may have changed anyway.
+        The file's generation measures content observations: it increments
+        only when presence, kind, size or mtime change, or when
+        ``invalidate_content`` (a watcher content event) says the bytes may
+        have changed anyway, so a hash taken on an earlier observation can no
+        longer publish. A re-observation that confirms the same copy keeps
+        the generation, so it never fences an upload or a hash in flight
+        (#619). The fingerprint and match are kept only for a present regular
+        file whose stat is unchanged and that had no content event.
         ``recovered_at`` is set only by a completed recovery; it restarts the
         automatic cleanup retention window and holds nothing back.
         """
@@ -405,6 +408,14 @@ class ArchiveCatalog:
             AND f.local_size IS NOT DISTINCT FROM EXCLUDED.local_size
             AND f.local_mtime_ns IS NOT DISTINCT FROM EXCLUDED.local_mtime_ns
         """
+        # The content observation a scan re-confirms leaves the generation
+        # alone (#619); a content event via ``invalidate_paths`` changes it.
+        content_changed = """
+            (f.local_presence, f.local_file_type, f.local_size, f.local_mtime_ns)
+            IS DISTINCT FROM
+            (EXCLUDED.local_presence, EXCLUDED.local_file_type,
+             EXCLUDED.local_size, EXCLUDED.local_mtime_ns)
+        """
         self._vault_lock_touch(vault_id)
         rows = self.connection.execute(
             f"""
@@ -421,7 +432,11 @@ class ArchiveCatalog:
                 %s::timestamptz[], %s::timestamptz[]
             ) AS s(path, presence, file_type, size, mtime_ns, observed_at, seen_at)
             ON CONFLICT (vault_id, path) DO UPDATE SET
-                generation = f.generation + 1,
+                generation = CASE
+                    WHEN {content_changed} OR EXCLUDED.path = ANY(%s::text[])
+                    THEN f.generation + 1
+                    ELSE f.generation
+                END,
                 local_presence = EXCLUDED.local_presence,
                 local_file_type = EXCLUDED.local_file_type,
                 local_size = EXCLUDED.local_size,
@@ -440,10 +455,7 @@ class ArchiveCatalog:
                 local_seen_at = EXCLUDED.local_seen_at,
                 local_observed_at = EXCLUDED.local_observed_at,
                 local_content_observed_at = CASE
-                    WHEN (f.local_presence, f.local_file_type, f.local_size, f.local_mtime_ns)
-                         IS DISTINCT FROM
-                         (EXCLUDED.local_presence, EXCLUDED.local_file_type,
-                          EXCLUDED.local_size, EXCLUDED.local_mtime_ns)
+                    WHEN {content_changed}
                     THEN EXCLUDED.local_observed_at
                     ELSE COALESCE(f.local_content_observed_at, EXCLUDED.local_observed_at)
                 END,
@@ -453,6 +465,7 @@ class ArchiveCatalog:
             (
                 vault_id, recovered,
                 paths, presences, types, sizes, mtimes, observed, seen_values,
+                sorted(set(invalidate_paths)),
             ),
         ).fetchall()
         file_ids = {str(row["path"]): str(row["id"]) for row in rows}

@@ -622,6 +622,84 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 ["upload", "read"],
             )
 
+    def test_scan_confirming_unchanged_source_during_upload_keeps_the_match(self) -> None:
+        # #619: snapshot -> a scan re-observes the unchanged file while the
+        # upload runs -> publication. The copy is still the snapshot: matched.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = b"unchanged-bytes"
+            source, database_path = _prepare_plain_vault(
+                root, relative_path="report.txt", payload=payload
+            )
+            local_file = source / "report.txt"
+            generations: list[int] = []
+
+            def rescanning_sdk_upload(*args, **kwargs) -> None:
+                command = tuple(str(arg) for arg in args if not callable(arg))
+                if command[:1] != ("upload",) or len(command) < 3:
+                    return
+                info = local_file.stat()
+                with PostgresConnection(str(database_path)) as connection:
+                    catalog = ArchiveCatalog(connection)
+                    before = catalog.get_file_by_path(2, "report.txt")["generation"]
+                    catalog.observe_local_copies_batch(
+                        vault_id=2,
+                        entries=[("report.txt", "regular", info.st_size,
+                                  info.st_mtime_ns, "2026-07-21T10:05:00+00:00")],
+                        seen_at="2026-07-21T10:05:00+00:00",
+                    )
+                    after = catalog.get_file_by_path(2, "report.txt")["generation"]
+                generations.extend((before, after))
+
+            def fake_stream(*args, **kwargs) -> int:
+                kwargs["on_chunk"](payload)
+                return len(payload)
+
+            database_settings = SimpleNamespace(
+                database_dsn=database_dsn(str(database_path)),
+            )
+            worker_settings = SimpleNamespace(
+                operation_concurrency=1,
+                restore_poll_interval=900,
+            )
+            with patch("app.database.settings", database_settings):
+                queue_jobs("report.txt", "upload", 2, 1)
+                with (
+                    patch("app.storage.settings", worker_settings),
+                    patch("app.storage.validate_cloud_vault"),
+                    mock_sdk_upload(side_effect=rescanning_sdk_upload),
+                    mock_sdk_read(side_effect=fake_stream),
+                    patch(
+                        "app.storage.s3_client",
+                        return_value=VersionedS3Stub(
+                            version_bytes=payload,
+                            head_object=lambda **_: {
+                                "VersionId": "s3-version-1",
+                                "ContentLength": len(payload),
+                                "StorageClass": "STANDARD",
+                                "ETag": '"etag"',
+                            }
+                        ),
+                    ),
+                ):
+                    process_jobs_once()
+
+            with PostgresConnection(str(database_path)) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
+                    ("report.txt",),
+                ).fetchone()
+                state = connection.execute(
+                    "SELECT current_version_id, matched_version_id FROM files WHERE path=%s",
+                    ("report.txt",),
+                ).fetchone()
+
+            self.assertEqual(len(generations), 2, "the scan ran during the upload")
+            self.assertEqual(generations[0], generations[1])
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNotNone(state["current_version_id"])
+            self.assertEqual(state["matched_version_id"], state["current_version_id"])
+
     def test_empty_and_unicode_paths_verify_end_to_end(self) -> None:
         cases = (
             ("empty.bin", b""),

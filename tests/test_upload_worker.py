@@ -95,6 +95,9 @@ class UploadWorkerTests(unittest.TestCase):
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
         self.addCleanup(storage.shutdown_state.reset)
+        # Job ids restart at 1 in every disposable catalog: a cancel flag
+        # another test raised for the same id must not stop this test's Job.
+        self.enterContext(patch("app.storage.cancelled_jobs", set()))
 
     # -- helpers -------------------------------------------------------------
 
