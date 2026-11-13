@@ -22,7 +22,7 @@
   "activity.current_work": "Current observed work, not a batch completion percentage. Finished files leave these totals. Timing is conditional on unchanged content; no reliable speed or completion estimate is available.",
   "activity.unavailable": "Activity could not be refreshed. Any counts shown are from the last successful observation.",
   "activity.cancel_pending": "Cancel pending uploads of this Vault",
-  "activity.cancel_pending_confirm": "Cancel uploads that have not started and stop preparing new uploads for this Vault? Running uploads and ambiguous sends keep their own controls. Local and cloud copies stay untouched.",
+  "activity.cancel_pending_confirm": "Cancel uploads that have not started and stop preparing new uploads for this Vault? Running uploads and ambiguous sends keep their own controls. Local and cloud copies stay untouched. Automatic uploads skip the cancelled files until they change.",
   "activity.cancel_pending_done": "{count} uploads cancelled",
   "move.title": "Move the entire Vault now",
   "move.help": "Only verified current copies move to a colder class on the saved Storage Plan. Equal or colder files and files with pending work are skipped. Glacier sources require an explicit restore of their exact version; this action never requests a restore or warms content.",

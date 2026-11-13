@@ -125,7 +125,7 @@ from .services.shutdown import (
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
 from .services.job_admission import JOB_LEASE_HELD_STATUSES, TERMINAL_JOB_STATUSES
-from .services.job_scheduler import effective_priority, job_priority, select_fair_jobs
+from .services.job_scheduler import job_priority, select_fair_jobs, turn_is_aged
 from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
@@ -5107,8 +5107,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
         claimed_at = now_iso()
         claim_token = str(uuid.uuid4())
         claim_expires_at = _claim_expiry_at(claimed_at)
-        generation = (job.get('scheduler_generation')
-                      if effective_priority(job) < job_priority(job) else None)
+        generation = job.get('scheduler_generation') if turn_is_aged(job) else None
         with db() as connection:
             catalog = ArchiveCatalog(connection)
             if job["action"] == "cloud-purge":

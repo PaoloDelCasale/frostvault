@@ -107,7 +107,9 @@ class SelectFairJobsTests(unittest.TestCase):
             {"id": 5, "vault_id": 20, "action": "upload", "origin": "manual", "requested_at": new},
         ]
         order = [job["id"] for job in select_fair_jobs(jobs, limit=5)]
-        self.assertEqual(order, [3, 4, 5, 1, 2])
+        # Across Vaults manual and automatic uploads share one tier (ADR-0037):
+        # Vault 20 was already served by its free-space, so Vault 10 goes next.
+        self.assertEqual(order, [3, 4, 1, 2, 5])
         self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [3, 4])
 
     def test_vaults_alternate_inside_one_tier(self) -> None:
@@ -139,10 +141,13 @@ class SelectFairJobsTests(unittest.TestCase):
         jobs = [
             {"id": 1, "vault_id": 10, "action": "free-space", "origin": "automatic",
              "requested_at": "2026-07-01T00:00:00+00:00"},
-            {"id": 2, "vault_id": 20, "action": "upload", "origin": "manual",
+            {"id": 2, "vault_id": 10, "action": "upload", "origin": "manual",
              "requested_at": "2026-07-01T00:05:00+00:00"},
         ]
         self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [2, 1])
+        # Across Vaults they share one tier and the older turn goes first (ADR-0037).
+        jobs[1]["vault_id"] = 20
+        self.assertEqual([job["id"] for job in select_fair_jobs(jobs, limit=2)], [1, 2])
 
     def test_a_vault_with_running_jobs_yields_to_idle_vaults(self) -> None:
         # Workers free up one at a time: with concurrency 1 the Vault that

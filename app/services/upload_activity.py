@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .operation_policies import get_policy
+from .operation_policies import get_policy, stopped_upload_holds_automatic_admission_sql
 from .upload_path_rules import eligibility_sql as _eligibility_sql, path_pattern as _path_pattern  # noqa: F401
 
 STAGES = ("stability_wait", "queued", "uploading", "verifying")
@@ -84,9 +84,8 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
                         AND av.plaintext_sha256 IS NOT DISTINCT FROM f.local_sha256)
                     AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id
                         AND j.status NOT IN ('completed','failed','cancelled'))
-                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id AND j.action='upload'
-                        AND j.origin='automatic' AND j.status IN ('failed','cancelled')
-                        AND j.requested_at>=COALESCE(f.local_content_observed_at,f.local_observed_at))
+                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id
+                        AND {stopped_upload_holds_automatic_admission_sql("j", "f")})
                     AND {rules}
             ) SELECT CASE WHEN stable_at > %s::timestamptz THEN 'stability_wait' ELSE 'queued' END AS stage,
                 count(*) AS files, COALESCE(sum(GREATEST(size,0)),0) AS bytes,
