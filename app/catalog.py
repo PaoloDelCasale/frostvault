@@ -13,7 +13,7 @@ from .services.job_admission import (
 )
 from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
-    CURRENT_JOIN_SQL, VISIBLE_SQL, aggregate_state, current_is_recoverable,
+    CURRENT_JOIN_SQL, PROTECTED_SQL, VISIBLE_SQL, aggregate_state, current_is_recoverable,
     local_copy_matches_current, path_excluded_sql, project_file, state_sql,
 )
 from .services.directory_aggregates import (
@@ -767,16 +767,24 @@ class ArchiveCatalog:
 
         ``pending`` maps each file that is pending now to the instant its
         pending state began. Existing timers never reset; files no longer
-        pending lose theirs. Returns the durable ``{file_id: pending_since}``.
+        pending lose theirs. Returns the durable ``{file_id: pending_since}``
+        of the files still pending at the write: a file protected after the
+        caller read it (a concurrent upload published Current and cleared its
+        timer) is left out and never gets its timer back (#549).
         """
         ids = list(pending)
         sinces = [_required_timestamp(pending[file_id]) for file_id in ids]
         rows = self.connection.execute(
-            """
+            f"""
             UPDATE files f
             SET pending_since = COALESCE(f.pending_since, s.since)
             FROM unnest(%s::uuid[], %s::timestamptz[]) AS s(id, since)
             WHERE f.id = s.id AND f.vault_id = %s
+              AND f.local_presence = 'present' AND f.held_version_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM archive_versions cur
+                  WHERE cur.id = f.current_version_id AND {PROTECTED_SQL}
+              )
             RETURNING f.id, f.pending_since
             """,
             (ids, sinces, vault_id),
