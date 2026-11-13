@@ -134,7 +134,6 @@ class QueueFixture(unittest.TestCase):
             patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
-            patch("app.storage._held_transition_may_share_vault", return_value=True),
             # Per-Vault operation policies are not in the v0.6 baseline yet.
             patch("app.catalog.ArchiveCatalog._upload_verification_mode", return_value="s3_checksum"),
         ):
