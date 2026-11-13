@@ -16,6 +16,7 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.services import notifications, source_layout, vault_relocation, watch_plan
+from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 
 
@@ -32,11 +33,8 @@ class RecoveryProblemTests(unittest.TestCase):
         result = run_alembic(self.path)
         self.assertEqual(result.returncode, 0, result.stderr)
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute("INSERT INTO users(id, username, display_name, password_hash) VALUES (1, 'owner', 'Owner', 'hash')")
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (9, 'files', 'Files', %s, 'bucket', 'files')",
-                (str(self.root),),
-            )
+            insert_owner(connection)
+            insert_vault(connection, id=9, name="Files", source_root=str(self.root))
         self.vault = {"id": 9, "source_root": str(self.root)}
         patcher = patch("app.database.settings", replace(settings, database_dsn=database_dsn(str(self.path))))
         patcher.start()
@@ -56,7 +54,7 @@ class RecoveryProblemTests(unittest.TestCase):
 
     def open_problem_count(self):
         with PostgresConnection(str(self.path)) as connection:
-            return notifications.count_open_problems(connection, user_id=1)
+            return notifications.count_open_problems(connection)
 
     def test_non_utf8_name_is_reported_safely_and_everything_else_is_catalogued(self):
         (self.root / "ok.txt").write_text("fine")
@@ -69,14 +67,14 @@ class RecoveryProblemTests(unittest.TestCase):
         with open(raw + b"/dir-\xff/inside.txt", "wb") as handle:
             handle.write(b"inside")
 
-        self.assertEqual(storage.scan_tree(self.vault, "first"), 2)
+        self.assertEqual(storage.scan_tree(self.vault, storage.now_iso()), 2)
 
         with PostgresConnection(str(self.path)) as connection:
             paths = {row["path"] for row in ArchiveCatalog(connection).list_file_rows(9)}
         self.assertEqual(paths, {"ok.txt", "sub/nested.txt"})
         problems = self.problems("file_name_unsupported")
         self.assertEqual(
-            sorted(json.loads(p["message_params"])["path"] for p in problems),
+            sorted(p["message_params"]["path"] for p in problems),
             ["dir-\\udcff", "non-utf8-\\udce9.txt"],
         )
         self.assertEqual({p["problem_status"] for p in problems}, {"open"})
@@ -84,7 +82,7 @@ class RecoveryProblemTests(unittest.TestCase):
         self.assertEqual(self.problems("file_unreadable"), [])
 
         # Rescanning does not duplicate the problems.
-        storage.scan_tree(self.vault, "second")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(len(self.problems("file_name_unsupported")), 2)
 
     def test_the_problem_closes_when_a_complete_scan_no_longer_sees_the_name(self):
@@ -94,24 +92,24 @@ class RecoveryProblemTests(unittest.TestCase):
             handle.write(b"bad")
         with open(raw + b"/also-\xe9.txt", "wb") as handle:
             handle.write(b"bad")
-        storage.scan_tree(self.vault, "first")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(self.open_problem_count(), 2)
 
         os.unlink(raw + b"/non-utf8-\xe9.txt")
-        storage.scan_tree(self.vault, "second")
-        statuses = {json.loads(p["message_params"])["path"]: p["problem_status"]
+        storage.scan_tree(self.vault, storage.now_iso())
+        statuses = {p["message_params"]["path"]: p["problem_status"]
                     for p in self.problems("file_name_unsupported")}
         self.assertEqual(statuses, {"non-utf8-\\udce9.txt": "resolved", "also-\\udce9.txt": "open"})
 
         os.unlink(raw + b"/also-\xe9.txt")
-        storage.scan_tree(self.vault, "third")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(self.open_problem_count(), 0)
 
     def test_an_incomplete_scan_does_not_close_the_problem(self):
         raw = os.fsencode(self.root)
         with open(raw + b"/non-utf8-\xe9.txt", "wb") as handle:
             handle.write(b"bad")
-        storage.scan_tree(self.vault, "first")
+        storage.scan_tree(self.vault, storage.now_iso())
         os.unlink(raw + b"/non-utf8-\xe9.txt")
         private = self.root / "private"
         private.mkdir()
@@ -123,7 +121,7 @@ class RecoveryProblemTests(unittest.TestCase):
             return real_scandir(fd)
 
         with patch("app.services.fs_preflight.os.scandir", side_effect=inaccessible):
-            storage.scan_tree(self.vault, "incomplete")
+            storage.scan_tree(self.vault, storage.now_iso())
         # The walk could not see inside "private": that proves nothing about the name.
         self.assertEqual(
             [p["problem_status"] for p in self.problems("file_name_unsupported")], ["open"],
@@ -162,10 +160,9 @@ class RecoveryProblemTests(unittest.TestCase):
     def copies(self):
         with PostgresConnection(str(self.path)) as connection:
             return {
-                row["path"]: row["presence"]
+                row["path"]: row["local_presence"]
                 for row in connection.execute(
-                    """SELECT fp.path, lc.presence FROM local_copies lc
-                       JOIN file_paths fp ON fp.vault_file_id=lc.vault_file_id AND fp.valid_to IS NULL"""
+                    "SELECT path, local_presence FROM files WHERE local_presence IS NOT NULL"
                 ).fetchall()
             }
 
@@ -177,13 +174,13 @@ class RecoveryProblemTests(unittest.TestCase):
         (self.root / "Foto").mkdir()
         (self.root / "Foto" / "a.jpg").write_text("photo")
         (self.root / "other.txt").write_text("other")
-        storage.scan_tree(self.vault, "first")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(self.copies(), {"Foto/a.jpg": "present", "other.txt": "present"})
 
         # Another client (or a remount with another charset) renames the folder.
         os.rename(raw + b"/Foto", raw + b"/Fot\xf2")
         journal = {}
-        storage.scan_tree(self.vault, "second", _scan_journal=journal)
+        storage.scan_tree(self.vault, storage.now_iso(), _scan_journal=journal)
 
         # The old rows are not proven gone: they would otherwise look
         # cloud-only and become deletable from the cloud.
@@ -211,10 +208,10 @@ class RecoveryProblemTests(unittest.TestCase):
 
         # Once the name is repaired the next complete scan decides again.
         os.rename(raw + b"/Fot\xf2", raw + b"/Foto")
-        storage.scan_tree(self.vault, "third")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(self.copies()["Foto/a.jpg"], "present")
         os.unlink(self.root / "Foto" / "a.jpg")
-        storage.scan_tree(self.vault, "fourth")
+        storage.scan_tree(self.vault, storage.now_iso())
         self.assertEqual(self.copies()["Foto/a.jpg"], "missing")
 
     def test_complete_scan_waits_for_repaired_subtree_registration_before_confirming_source(self):
@@ -272,7 +269,7 @@ class RecoveryProblemTests(unittest.TestCase):
                 connection, event="file_unreadable", vault_id=9,
                 keep_paths={"kept/x", "below"}, keep_prefixes={"below"},
             )
-        statuses = {json.loads(p["message_params"])["path"]: p["problem_status"]
+        statuses = {p["message_params"]["path"]: p["problem_status"]
                     for p in self.problems("file_unreadable")}
         self.assertEqual(statuses, {
             "kept/x": "open", "gone/y": "resolved", "below/hidden/z": "open", "below": "open",
@@ -282,10 +279,7 @@ class RecoveryProblemTests(unittest.TestCase):
         from app.services.component_health import record_component_health
 
         with PostgresConnection(str(self.path)) as connection:
-            connection.execute(
-                "INSERT INTO vaults(id, slug, name, source_root, s3_bucket, s3_prefix) VALUES (10, 'other', 'Other', %s, 'bucket', 'other')",
-                (str(self.root),),
-            )
+            insert_vault(connection, id=10, name="Other", source_root=str(self.root.parent / "other"))
             record_component_health(connection, vault_id=9, component="cloud", ok=False, error="Cloud scan: denied")
             record_component_health(connection, vault_id=10, component="cloud", ok=True)
             connection.execute(
