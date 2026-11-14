@@ -110,6 +110,29 @@ def read_mountinfo_text() -> str:
     return MOUNTINFO_PATH.read_text(encoding="utf-8")
 
 
+def mount_points(*, text: str | None = None) -> frozenset[str]:
+    """Return every mount point listed in ``/proc/self/mountinfo``.
+
+    Only the mount-point field is decoded, so a mount probe stays cheap even
+    on hosts with hundreds of container mounts. Unlike ``os.path.ismount``,
+    this sees bind mounts of a directory on the same filesystem as its
+    parent (#640).
+    """
+    try:
+        source = read_mountinfo_text() if text is None else text
+    except (OSError, UnicodeError) as exc:
+        raise MountIdentityError("Linux mount metadata is inaccessible") from exc
+    points: set[str] = set()
+    for line_number, raw_line in enumerate(source.splitlines(), 1):
+        if not raw_line:
+            continue
+        fields = raw_line.split(" ", 5)
+        if len(fields) < 6 or "" in fields[:5]:
+            raise MountIdentityError(f"malformed mountinfo line {line_number}")
+        points.add(_unescape_mountinfo(fields[4]))
+    return frozenset(points)
+
+
 def validate_root_mount_boundary(
     volume: str | Path, root: str | Path, *, text: str | None = None,
 ) -> None:
