@@ -226,8 +226,8 @@ FrostVault expects a flat container layout under `/sources`:
 
 A path counts as a mount when `/proc/self/mountinfo` lists a mount at exactly
 that path, so a bind mount of a folder on the same filesystem as `/sources`
-(common on Unraid, e.g. `/mnt/cache/foto:/sources/foto` next to
-`/mnt/cache/frostvault-sources:/sources`) is a valid Source Volume.
+(common on Unraid, e.g. `<pool>/photos:/sources/photos` next to
+`<pool>/frostvault-sources:/sources`) is a valid Source Volume.
 
 A missing or non-mounted `/sources`, or an invalid `/sources/managed`, makes
 the whole instance not ready. A direct child that is not a mount (an ordinary
