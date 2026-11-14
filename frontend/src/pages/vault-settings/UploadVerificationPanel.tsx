@@ -6,13 +6,14 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
   const { t } = useI18n();
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
   useEffect(() => {
     let live = true;
-    setPolicy(null);
+    setPolicy(null); setLoadError("");
     void fetchOperationPolicy(vaultId).then((data) => { if (live) setPolicy(data); })
-      .catch((error: unknown) => { if (live) onNotice(String(error), true); });
+      .catch((error: unknown) => { if (live) setLoadError(String(error)); });
     return () => { live = false; };
-  }, [vaultId, onNotice]);
+  }, [vaultId]);
   async function change(value: string) {
     setBusy(true);
     try {
@@ -22,6 +23,7 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     finally { setBusy(false); }
   }
   return <section className="grid gap-2">
+    {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
     <label className="grid min-w-0 gap-2 font-semibold"><span className="sr-only">{t("verification.title")}</span>
       <select className="min-h-11 w-full min-w-0 truncate rounded border border-line bg-surface px-3" disabled={!policy || busy} value={policy?.upload_verification ?? "inherit"} onChange={(event) => void change(event.target.value)}>
         <option value="inherit">{t("verification.inherit")}</option>

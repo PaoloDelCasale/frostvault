@@ -73,6 +73,7 @@ export function CloudPurgeDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t("ui.cloud_purge_title")}
+      closeLabel={t("ui.close")}
       description={`${t("ui.cloud_purge_intro")} (${path}${isDirectory ? "/" : ""})`}
       className="w-[min(28rem,calc(100%-1.75rem))]"
     >

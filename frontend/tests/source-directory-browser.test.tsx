@@ -99,7 +99,28 @@ describe("SourceDirectoryBrowser", () => {
     const browser = screen.getByTestId("source-directory-browser");
     expect(browser.getBoundingClientRect().width).toBeLessThanOrEqual(375);
 
-    await user.click(screen.getAllByRole("button", { name: "Select" })[0]);
+    await user.click(screen.getByRole("button", { name: "Select family" }));
     expect(onSelect).toHaveBeenCalledWith("family");
+  });
+
+  it("names each folder in its select button and keeps a 44px touch target (#656)", async () => {
+    const messages = loadMessages();
+    renderBrowser(
+      <SourceDirectoryBrowser
+        volumeAlias="photos"
+        browse={vi.fn().mockResolvedValue(browseResponse())}
+        selectedPath="family"
+        onSelect={vi.fn()}
+      />,
+      messages,
+    );
+    const selected = await screen.findByRole("button", { name: "Selected: family" });
+    expect(selected).toHaveAttribute("aria-pressed", "true");
+    const occupied = screen.getByRole("button", { name: "Select vacation" });
+    expect(occupied).toBeDisabled();
+    for (const button of [selected, occupied]) {
+      expect(button).toHaveClass("min-h-11", "min-w-11");
+    }
+    expect(screen.getByRole("button", { name: messages["ui.source_directory_browser_select_volume_root"] })).toHaveClass("min-h-11");
   });
 });

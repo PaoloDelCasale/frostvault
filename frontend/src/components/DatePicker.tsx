@@ -196,7 +196,7 @@ export function DatePicker({
               aria-pressed={isSelected}
               className={cn(
                 "size-9 rounded-lg text-sm font-bold outline-none transition-colors hover:bg-green-soft focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-30 motion-reduce:transition-none",
-                isSelected && "bg-green text-white hover:bg-green",
+                isSelected && "bg-primary text-primary-foreground hover:bg-primary",
                 !isSelected && isToday && "border border-green text-green",
               )}
               onClick={() => {

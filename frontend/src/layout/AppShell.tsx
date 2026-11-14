@@ -6,6 +6,7 @@ import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { Button } from "@/components/ui/button";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { Dialog } from "@/components/Dialog";
+import { ToastRegion } from "@/components/Toast";
 import { shellLabel, type ShellTranslator } from "./labels";
 import { ShellNavItems } from "./ShellNavItems";
 import { VaultSwitcher } from "./VaultSwitcher";
@@ -52,5 +53,6 @@ export function AppShell({ capabilities, handlers, t, queryClient: provided, chi
     <Dialog open={drawer} onOpenChange={setDrawer} title={shellLabel(t, "ui.navigation", "Navigation")} description={undefined} closeLabel={shellLabel(t, "ui.close_navigation", "Close navigation")}>
       <nav aria-label={shellLabel(t, "ui.vault_navigation", "Main navigation")}>{nav(() => setDrawer(false))}</nav>
     </Dialog>
+    <ToastRegion closeLabel={shellLabel(t, "ui.toast_close", "Close notification")} />
   </div>;
 }

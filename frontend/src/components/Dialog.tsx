@@ -1,5 +1,5 @@
 import { Dialog as RadixDialog } from "radix-ui";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -9,32 +9,46 @@ type DialogProps = {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  /** Accessible label for the dismiss control. */
-  closeLabel?: string;
+  /** Translated accessible label for the dismiss control. */
+  closeLabel: string;
   children: ReactNode;
   /** Actions kept visible below the scrolling body (e.g. Cancel / Confirm). */
   footer?: ReactNode;
   className?: string;
 };
 
+const FIELD = "input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)";
+const FOCUSABLE = `${FIELD}, button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])`;
+
 /**
  * Accessible dialog (Radix): focus trap, Esc to close, focus returned to trigger.
+ * Opening focuses the first field of the body, else its first control, else the
+ * dialog itself — never the header «×» nor a footer action.
  */
 export function Dialog({
   open,
   onOpenChange,
   title,
   description,
-  closeLabel = "Close",
+  closeLabel,
   children,
   footer,
   className,
 }: DialogProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="fixed inset-0 z-50 bg-[var(--overlay)]" />
         <RadixDialog.Content
+          ref={contentRef}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            const body = bodyRef.current;
+            const target = body?.querySelector<HTMLElement>(FIELD) ?? body?.querySelector<HTMLElement>(FOCUSABLE) ?? contentRef.current;
+            target?.focus();
+          }}
           className={cn(
             "fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-30px)] w-[min(760px,calc(100%-30px))] -translate-x-1/2 -translate-y-1/2 flex-col",
             "rounded-panel border border-line bg-surface p-[22px] text-ink shadow-lg outline-none",
@@ -63,7 +77,7 @@ export function Dialog({
               </Button>
             </RadixDialog.Close>
           </div>
-          <div className="-mx-1 min-h-0 overflow-y-auto px-1" data-testid="dialog-body">{children}</div>
+          <div ref={bodyRef} className="-mx-1 min-h-0 overflow-y-auto px-1" data-testid="dialog-body">{children}</div>
           {footer ? <div className="mt-4 flex shrink-0 flex-wrap gap-2 border-t border-line pt-4">{footer}</div> : null}
         </RadixDialog.Content>
       </RadixDialog.Portal>
