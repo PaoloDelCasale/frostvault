@@ -76,11 +76,20 @@ describe("deliberate file Details", () => {
   it("shows a Recovery in progress with its tier and expected time instead of offering a new one (#646)", async () => {
     setup("cloud_only", false, false, false, false, { recover_eligible: false, recovery: { state: "waiting_for_cloud", active: true, tier: "Standard", days: 1, requested_at: "2026-11-14T09:57:00Z", ready_by: "2026-11-14T21:57:00Z", expires_at: null } });
     const progress = await screen.findByTestId("recovery-progress");
-    expect(progress).toHaveTextContent(/^recovery\.in_progress · recovery\.state\.waiting_for_cloud · recovery\.requested_at · recovery\.tier\.Standard · recovery\.ready_by$/);
+    // Tier and expected time show once, in «Recovery time» (#677).
+    expect(progress).toHaveTextContent(/^recovery\.in_progress · recovery\.state\.waiting_for_cloud · recovery\.requested_at$/);
     const summary = screen.getByTestId("details-summary");
     expect(within(summary).getByText("state.recovering")).toHaveAttribute("data-state", "restoring");
     expect(within(summary).getByText("details.recovery_time").nextSibling).toHaveTextContent("recovery.tier.Standard · recovery.ready_by");
     expect(screen.queryByRole("button", { name: "ui.row_action_recover" })).not.toBeInTheDocument();
+  });
+  it("keeps the stopped-wait sentence apart from the Recovery details (#677)", async () => {
+    setup("cloud_only", false, false, false, false, { recover_eligible: true, recovery: { state: "waiting_for_cloud", active: false, tier: "Standard", days: 1, requested_at: "2026-11-14T09:57:00Z", ready_by: "2026-11-14T21:57:00Z", expires_at: null } });
+    const note = await screen.findByTestId("recovery-progress");
+    const [sentence, details] = within(note).getAllByText(/./);
+    expect(sentence).toHaveTextContent(/^recovery\.cloud_continues$/);
+    expect(details).toHaveTextContent(/^recovery\.requested_at$/);
+    expect(within(screen.getByTestId("details-summary")).getByText("details.recovery_time").nextSibling).toHaveTextContent("recovery.tier.Standard · recovery.ready_by");
   });
   it("says until when a restored copy stays available and keeps Recover", async () => {
     setup("cloud_only", false, false, false, false, { recover_eligible: true, recovery: { state: "ready", active: false, tier: "Bulk", days: 3, requested_at: null, ready_by: null, expires_at: "2026-11-17T00:00:00Z" } });

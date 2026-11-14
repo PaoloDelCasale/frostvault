@@ -16,10 +16,14 @@ test("another client's Session selection cannot redirect this browser's pinned V
   try {
     const response = await select(other.id);
     expect(response.ok()).toBe(true);
-    // The Overview's sidebar keeps pointing at this browser's last Vault.
-    await page.goto("/");
     // The sidebar is collapsed on phones, so read the link without requiring visibility.
     const files = page.locator('aside nav a[href$="/files"]');
+    // The Overview belongs to no Vault: its sidebar names none (#677).
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(files).toHaveCount(0);
+    // This browser's Vault page keeps its own Vault after a reload.
+    await page.goto(vaultFilesPath(credentials.vaults.primary.id));
     await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));
     await page.reload();
     await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));

@@ -124,11 +124,12 @@ describe("Owner app routing and shell (#512)", () => {
     expect(screen.getByTestId("file-browser")).toBeInTheDocument();
   });
 
-  it("points the sidebar at the remembered Vault without changing shared Session selection", async () => {
+  it("keeps the remembered Vault out of the sidebar of a global page, without changing shared Session selection (#677)", async () => {
     localStorage.setItem("frostvault.home.1", "2"); show();
     const navigation = await screen.findByRole("navigation", { name: "Main navigation" });
-    expect(within(navigation).getByRole("link", { name: "Files" })).toHaveAttribute("href", "/vaults/2/files");
-    expect(within(navigation).getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/vaults/2/settings");
+    expect(within(navigation).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(within(navigation).queryByRole("link", { name: "Files" })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
     expect(calls.some((url) => url.includes("/select"))).toBe(false);
   });
 

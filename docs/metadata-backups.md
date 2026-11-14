@@ -147,6 +147,10 @@ the private scratch directory. The downloaded kit includes these steps offline.
    old inode happens to match. Stopped folders stay
    stopped; cancelled deletion requests never resume protection. Retained cloud
    content from stopped folders is recovered with the manual S3 route below.
+   Recoveries that were waiting for a Deep Archive or Glacier restore are
+   cancelled too: request them again with «Recupera» (Recover). The restore
+   already requested from AWS goes on, and while its temporary copy lasts the
+   new Recovery downloads it without a new restore charge.
    Do not start workers
    against the restored catalog before this step.
 6. Configure AWS, OIDC environment and `BOOTSTRAP_ADMIN_*` securely. Start the

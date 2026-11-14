@@ -52,6 +52,10 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
     finally { setBusy(false); }
   }
   const recovery = item?.recovery;
+  // Tier and expected readiness show once, in «Recovery time»; the progress
+  // line keeps the state and the request time (#677).
+  const recoveryFact = Boolean(item?.cloud_exists && storage && recovery?.tier);
+  const recoveryDetails = recovery ? recoveryTimeline(recoveryFact ? { requested_at: recovery.requested_at } : recovery, t) : [];
   const pending = data.data?.jobs.groups?.filter((job) => job.action === "cloud-purge" && job.status === "pending_delay") ?? [];
   return <>
     <Sheet open={!deletion && !replace} onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={target.item.name || target.item.path} description={`${target.vaultName} / ${target.item.path}`} closeLabel={t("ui.close")}>
@@ -71,9 +75,9 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             </dl>
             {/* A Recovery in progress is shown, never offered again (#646). */}
             {recovery?.active
-              ? <p role="status" data-testid="recovery-progress">{[t("recovery.in_progress"), t(`recovery.state.${recovery.state}`), ...recoveryTimeline(recovery, t)].join(" · ")}</p>
+              ? <p role="status" data-testid="recovery-progress">{[t("recovery.in_progress"), t(`recovery.state.${recovery.state}`), ...recoveryDetails].join(" · ")}</p>
               : <>
-                {recovery?.state === "waiting_for_cloud" && <p role="note" data-testid="recovery-progress">{[t("recovery.cloud_continues"), ...recoveryTimeline(recovery, t)].join(" · ")}</p>}
+                {recovery?.state === "waiting_for_cloud" && <div role="note" className="grid gap-1" data-testid="recovery-progress"><p>{t("recovery.cloud_continues")}</p>{recoveryDetails.length > 0 && <p>{recoveryDetails.join(" · ")}</p>}</div>}
                 {recovery?.state === "ready" && recovery.expires_at && <p role="note" data-testid="recovery-progress">{t("recovery.copy_until", { date: formatDateTime(recovery.expires_at) })}</p>}
                 {item.recover_eligible && <Button className="w-fit" disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
               </>}

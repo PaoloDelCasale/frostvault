@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   formatCompactCount,
+  formatClock,
   formatCount,
   formatDate,
+  formatDateTime,
   formatEur,
   formatMoney,
   pickDurationUnit,
@@ -136,5 +138,12 @@ describe("translate plurals", () => {
     expect(translate(messages, "only.other", { count: 1 }, "en")).toBe("1 items");
     expect(translate(messages, "plain", { count: 1 }, "en")).toBe("1 things");
     expect(translate(messages, "files.selected", { count: "3" }, "en")).toBe("files.selected");
+  });
+});
+
+describe("formatClock", () => {
+  it("reads another day like every other date (#677)", () => {
+    const now = new Date("2026-11-14T12:00:00Z");
+    expect(formatClock("2026-11-15T09:16:00Z", now)).toBe(formatDateTime("2026-11-15T09:16:00Z"));
   });
 });

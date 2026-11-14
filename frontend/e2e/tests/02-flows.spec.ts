@@ -13,7 +13,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await page.goBack(); await expect(page).toHaveURL(/directory=reports/);
   });
 
-  test("the header switcher changes Vault and the sidebar remembers it at its root", async ({ page }) => {
+  test("the header switcher changes Vault at its root; a global page keeps no Vault in the sidebar (#677)", async ({ page }) => {
     const credentials = await emergencyPasswordLogin(page);
     await switchVault(page, "Secondary Archive");
     await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}$`));
@@ -21,7 +21,9 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await visible(page, /^photos$/).click();
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1, name: /^overview$/i })).toBeVisible();
-    await navTo(page, /^files$/i);
+    await expect(page.locator('aside nav a[href$="/files"]')).toHaveCount(0);
+    await switchVault(page, "Secondary Archive");
+    await expect(page).toHaveURL(new RegExp(`${vaultFilesPath(credentials.vaults.secondary.id)}$`));
     await expect(page.getByRole("heading", { name: "Secondary Archive", exact: true })).toBeVisible();
     await expect(visible(page, "hello.txt")).toBeVisible();
     await page.goto(vaultFilesPath(credentials.vaults.primary.id));
