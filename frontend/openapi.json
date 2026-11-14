@@ -698,6 +698,74 @@
         ],
         "type": "object"
       },
+      "FileRecovery": {
+        "additionalProperties": true,
+        "description": "Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped.",
+        "properties": {
+          "active": {
+            "description": "A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable.",
+            "type": "boolean"
+          },
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "description": "End of the readable restored copy.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ready_by": {
+            "description": "Request instant plus the tier's restore hours; an estimate.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "awaiting_approval",
+              "waiting_for_cloud",
+              "ready",
+              "downloading"
+            ],
+            "type": "string"
+          },
+          "tier": {
+            "enum": [
+              "Expedited",
+              "Standard",
+              "Bulk",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "active",
+          "tier",
+          "days",
+          "requested_at",
+          "ready_by",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "FileVersionsResponse": {
         "additionalProperties": true,
         "properties": {
@@ -1266,6 +1334,19 @@
           },
           "percent": {
             "type": "number"
+          },
+          "ready_by": {
+            "description": "Expected end of the cloud restore: requested_at plus estimated_hours.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "resolved_failed_count": {
             "type": "number"
@@ -3558,6 +3639,16 @@
           "recoverable": {
             "description": "Current exists, is verified and available.",
             "type": "boolean"
+          },
+          "recovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FileRecovery"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "state": {
             "type": "string"

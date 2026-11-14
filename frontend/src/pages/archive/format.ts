@@ -80,3 +80,13 @@ export function formatEur(value: number, locale?: string): string {
 export function recoveryTimeKey(storageClass: unknown): string {
   return storageClass === "DEEP_ARCHIVE" ? "essential.ready_deep" : storageClass === "GLACIER" ? "essential.ready_glacier" : "essential.ready_now";
 }
+
+/** An instant as a clock time in the page language; the date is added when it is not today. */
+export function formatClock(value: unknown, now: Date = new Date()): string {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toDateString() === now.toDateString()
+    ? date.toLocaleTimeString(pageLocale(), { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleString(pageLocale(), { dateStyle: "short", timeStyle: "short" });
+}

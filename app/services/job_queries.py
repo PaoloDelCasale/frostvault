@@ -7,6 +7,7 @@ A Job row holds only its core; the read model joins its File (path), group
 from typing import Any
 
 from app.i18n import present_job_message, translate
+from .recovery_progress import ready_by
 from .upload_remediation import project_jobs
 
 PAGE_SIZE = 50
@@ -85,6 +86,7 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
                 sum(CASE WHEN j.status='completed' THEN COALESCE(j.total_bytes,0)
                     ELSE least(COALESCE(j.transferred_bytes,0),COALESCE(j.total_bytes,0)) END) AS transferred_bytes,
                 max(j.updated_at) AS updated_at,
+                min(j.requested_at) AS requested_at,
                 max(j.pending_until) AS pending_until,
                 max(j.estimated_cost_eur) AS estimated_cost_eur,
                 max(j.estimated_hours) AS estimated_hours,
@@ -120,6 +122,9 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         group["status"] = group.pop("active_status") or (
             "failed" if group["failed_count"] else "cancelled" if group["cancelled_count"] else "completed")
         group["unresolved_failed_count"] = group["failed_count"] - group["resolved_failed_count"]
+        # A cloud restore takes hours: the panel shows when it should be ready
+        # instead of a byte percentage that stays at zero meanwhile (#646).
+        group["ready_by"] = ready_by(group["requested_at"], group["estimated_hours"])
         for field in ("total_bytes", "transferred_bytes"):
             group[field] = int(group[field])
         finished = group["completed_count"] + group["failed_count"] + group["cancelled_count"]

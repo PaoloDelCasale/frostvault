@@ -20,6 +20,7 @@ export type FileJobHistoryResponse = components["schemas"]["FileJobHistoryRespon
 export type FileOperationAction = components["schemas"]["FileOperationAction"];
 export type FileOperationPayload = components["schemas"]["FileOperationPayload"];
 export type FileOperationResponse = components["schemas"]["FileOperationResponse"];
+export type FileRecovery = components["schemas"]["FileRecovery"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
 export type FilesQuery = components["schemas"]["FilesQuery"];
 export type FilesResponse = components["schemas"]["FilesResponse"];

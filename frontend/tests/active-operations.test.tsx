@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
@@ -53,5 +53,43 @@ describe("active Owner work without a routine notification feed", () => {
     await screen.findByText("move.title · move-folder");
     await screen.findByText("action.recover · restore-folder");
     expect(calls).toContain("/api/jobs?action=storage-class&active_only=true&vault_id=2");
+  });
+  it("shows a cloud restore as a wait with times, and stopping it explains that AWS continues (#646)", async () => {
+    const calls: string[] = [];
+    configureApiClient({ fetch: vi.fn(async (input) => {
+      const url = String(input); calls.push(url);
+      if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [
+        { id: "cold", action: "recover", path: "cold/c0.bin", status: "restoring", item_count: 1, completed_count: 0, percent: 0, restore_tier: "Standard", restore_days: 1, requested_at: "2026-11-14T09:57:00Z", ready_by: "2026-11-14T21:57:00Z" },
+      ] });
+      return jsonResponse({});
+    }) });
+    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} /></ApiQueryProvider>);
+    const line = await screen.findByText(/^operation\.restoring/);
+    expect(line).toHaveTextContent(/recovery\.requested_at\{"time":".+"\} · recovery\.tier\.Standard · recovery\.ready_by\{"time":".+"\}/);
+    expect(line).not.toHaveTextContent("%");
+    expect(screen.queryByRole("button", { name: "ui.cancel" })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "recovery.stop_waiting" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent('recovery.stop_waiting_help_days{"days":1}');
+    await user.click(within(dialog).getByRole("button", { name: "recovery.keep_waiting" }));
+    expect(calls).not.toContain("/api/jobs/cancel?vault_id=2");
+    await user.click(screen.getByRole("button", { name: "recovery.stop_waiting" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "recovery.stop_waiting" }));
+    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    expect(await screen.findByRole("status")).toHaveTextContent("ui.operation_not_cancellable");
+  });
+  it("cancels a recovery AWS has not accepted yet without a dialog or a not-cancellable notice", async () => {
+    const calls: string[] = [];
+    configureApiClient({ fetch: vi.fn(async (input) => {
+      const url = String(input); calls.push(url);
+      if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [{ id: "queued", action: "recover", path: "cold/c1.bin", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
+      return jsonResponse({});
+    }) });
+    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /></ApiQueryProvider>);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "ui.cancel" }));
+    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("ui.operation_not_cancellable")).not.toBeInTheDocument();
   });
 });
