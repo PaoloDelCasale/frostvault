@@ -6,6 +6,7 @@ import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { formatBytes, formatDate, formatEur } from "@/pages/archive/format";
+import { errorMessage } from "@/lib/errorMessage";
 
 /** "≈ 0.27 €"; a sub-cent "< 0.01 €" is already a bound, so it gets no "≈". */
 const approximately = (amount: string) => amount.startsWith("<") ? amount : `≈ ${amount}`;
@@ -28,7 +29,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
         setPreview(next);
         setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
       }
-    }).catch((cause: unknown) => { if (live) setError(String(cause)); });
+    }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, t)); });
     return () => { live = false; };
   }, [vaultId, t]);
   const estimate = preview?.targets.find((item) => item.target_class === target);
@@ -46,7 +47,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
         setError(t("move.vault_changed"));
       } else setPreview(next);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause, t));
     } finally { setBusy(false); }
   }
   return <section className="mt-5 grid gap-3 border-t border-line pt-4" data-panel="vault-move">

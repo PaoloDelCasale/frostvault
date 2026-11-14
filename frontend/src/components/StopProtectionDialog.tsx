@@ -7,6 +7,7 @@ import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { formatDateTime } from "@/pages/archive/format";
+import { errorMessage } from "@/lib/errorMessage";
 
 export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, onCompleted }: {
   open: boolean;
@@ -17,6 +18,8 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
   onCompleted?: () => void | Promise<void>;
 }) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [operation, setOperation] = useState<StopProtectionStatus | null>(null);
   const [choice, setChoice] = useState<"keep" | "delete">("keep");
   const [confirmation, setConfirmation] = useState("");
@@ -44,7 +47,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     void fetchStopProtection(vaultId).then((value) => {
       if (!cancelled) setOperation(value);
     }).catch((failure: unknown) => {
-      if (!cancelled) setError(failure instanceof Error ? failure.message : String(failure));
+      if (!cancelled) setError(errorMessage(failure, translateRef.current));
     });
     return () => { cancelled = true; };
   }, [open, vaultId]);
@@ -57,7 +60,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
       setOperation(await stopProtection(vaultId, { cloud_disposition: choice, confirmation, reason }));
       changed.current = true;
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure, t));
     } finally { setBusy(false); }
   }
 
@@ -68,7 +71,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
       setOperation(await cancelStoppedFolderDeletion(vaultId));
       changed.current = true;
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure, t));
     } finally { setBusy(false); }
   }
 
@@ -80,7 +83,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
         reason: t("stop_protection.keep_remaining") }));
       changed.current = true;
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure, t));
     } finally { setBusy(false); }
   }
 
@@ -108,7 +111,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
         </Button> : null}
         <Button variant="secondary" onClick={() => {
           void fetchStopProtection(vaultId).then(setOperation).catch((failure: unknown) => {
-            setError(failure instanceof Error ? failure.message : String(failure));
+            setError(errorMessage(failure, t));
           });
         }}>{t("stop_protection.refresh")}</Button>
         <Button onClick={() => handleOpenChange(false)}>{t("ui.close")}</Button>

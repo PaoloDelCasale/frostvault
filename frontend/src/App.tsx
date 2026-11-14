@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchMe, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
 import { fetchOverview } from "@/api/vault";
@@ -16,11 +16,14 @@ import { ProblemsPage } from "@/pages/general/ProblemsPage";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
 import { UploadActivity } from "@/components/UploadActivity";
 import { interceptLinkClick, legacyRedirect, navigate, parseRoute, useLocation } from "@/router";
+import { errorMessage } from "@/lib/errorMessage";
 
 const rememberedKey = (ownerId: number) => `frostvault.home.${ownerId}`;
 
 export default function App() {
   const { t, locale, setLocale } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const { setUserId } = useTheme();
   const client = useQueryClient();
   const [me, setMe] = useState<MeResponse | null>(null);
@@ -45,7 +48,7 @@ export default function App() {
     void Promise.all([fetchMe(), fetchVaults()]).then(([owner, listed]) => {
       if (!live) return;
       setUserId(owner.id); setMe(owner); setVaults(listed.items);
-    }).catch((cause: unknown) => { if (live) setError(String(cause)); });
+    }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, translateRef.current)); });
     return () => { live = false; };
   }, [signedIn, setUserId]);
   let remembered = 0;
@@ -83,7 +86,7 @@ export default function App() {
     handlers={{
       onNavigate: navigate,
       onLocaleChange: (next) => { void setLocale(next); },
-      onSignOut: () => { void (async () => { setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null); try { await logout(); window.location.assign("/login"); } catch (cause) { setError(String(cause)); setLeaving(false); } })(); },
+      onSignOut: () => { void (async () => { setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null); try { await logout(); window.location.assign("/login"); } catch (cause) { setError(errorMessage(cause, t)); setLeaving(false); } })(); },
     }}>
     {page}
   </AppShell>;

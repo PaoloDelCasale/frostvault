@@ -4,6 +4,7 @@ import { vaultApi } from "@/api/vault";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { recoveryTimeline } from "@/pages/archive/recoveryLabel";
+import { errorMessage } from "@/lib/errorMessage";
 
 type Props = { vaultId: number; moves?: boolean; t: (key: string, params?: Record<string, string | number>) => string };
 
@@ -30,7 +31,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
       // Only a stopped wait leaves AWS working: before AWS accepted, cancelling stops everything.
       if (stoppedWaiting) setMessage(t("ui.operation_not_cancellable"));
       await Promise.all([client.invalidateQueries({ queryKey: ["jobs", vaultId] }), client.invalidateQueries({ queryKey: ["files"] })]);
-    } catch (error) { setMessage(String(error)); }
+    } catch (error) { setMessage(errorMessage(error, t)); }
     finally { setBusy(null); }
   }
   if (!jobs.length && !message && !beforeId && !query.error) return null;
@@ -49,7 +50,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
       {beforeId && <Button variant="secondary" onClick={() => setPages((value) => value.slice(0, -1))}>{t("ui.previous")}</Button>}
       {query.data?.next_groups_before_id && <Button variant="secondary" onClick={() => setPages((value) => [...value, query.data!.next_groups_before_id!])}>{t("ui.next")}</Button>}
     </div>
-    {query.error && <p role="alert">{String(query.error)}</p>}
+    {query.error && <p role="alert">{errorMessage(query.error, t)}</p>}
     {message && <p role="status">{message}</p>}
     <ConfirmDialog open={stopWaiting !== null} onOpenChange={(open) => { if (!open) setStopWaiting(null); }} title={t("recovery.stop_waiting_title")}
       description={stopWaiting?.days ? t("recovery.stop_waiting_help_days", { days: stopWaiting.days }) : t("recovery.stop_waiting_help")}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
@@ -12,6 +12,7 @@ import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { RetentionPanel } from "./RetentionPanel";
 import { UploadVerificationPanel } from "./UploadVerificationPanel";
+import { errorMessage } from "@/lib/errorMessage";
 
 /** One settings topic: title, a one-line summary, the controls, and optional longer help. */
 function SettingsSection({ id, title, summary, more, danger, children }: {
@@ -31,6 +32,8 @@ function SettingsSection({ id, title, summary, more, danger, children }: {
 
 export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId: number; vaultName: string; onStopped: () => void }) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const client = useQueryClient();
   const [auto, setAuto] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,7 +47,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   useEffect(() => {
     let live = true;
     setLoadError("");
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(String(error)); });
+    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
   async function toggle() {
@@ -53,7 +56,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     try {
       const next = (await updateOperationPolicy({ auto_upload: !auto }, vaultId)).auto_upload;
       setAuto(next); show(t(next ? "settings.auto_on" : "settings.auto_off"));
-    } catch (error) { show(String(error), true); }
+    } catch (error) { show(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
   return <div className="grid min-w-0 gap-4" data-testid="vault-settings">

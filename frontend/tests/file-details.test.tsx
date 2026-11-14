@@ -7,6 +7,7 @@ import { jsonResponse } from "./vault-settings-harness";
 
 const t = (key: string) => key;
 const stale = { type: "file" as const, name: "same.jpg", path: "same.jpg", state: "cloud_only" };
+let purgeFailure: Record<string, unknown> | null = null;
 function setup(state: string, local: boolean, conflict = false, reconciliation = false, remediation = false, extra: Record<string, unknown> = {}, pending = false) {
   const calls: string[] = [];
   configureApiClient({ fetch: vi.fn(async (input) => {
@@ -16,6 +17,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
     if (url.startsWith("/api/files/jobs")) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
     if (url.startsWith("/api/jobs/")) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
+    if (url.startsWith("/api/cloud-purge") && purgeFailure) return jsonResponse(purgeFailure, 409);
     if (url.startsWith("/api/cloud-deletion/preview")) return jsonResponse({ object_count: 1, version_count: 1, delete_marker_count: 0, byte_count: 12 });
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
     return jsonResponse({});
@@ -23,7 +25,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
   render(<ApiQueryProvider client={createAppQueryClient()}><FileDetails target={{ item: stale, vaultId: 2, vaultName: "Second" }} t={t} onClose={vi.fn()} onRecover={vi.fn()} onRefresh={vi.fn()} /></ApiQueryProvider>);
   return calls;
 }
-afterEach(resetApiClientForTests);
+afterEach(() => { resetApiClientForTests(); purgeFailure = null; });
 describe("deliberate file Details", () => {
   it("separates verified cloud cleanup from changed Local Copy protection and offers exact resume", async () => {
     const calls = setup("pending", true, false, false, true);
@@ -140,5 +142,23 @@ describe("deliberate file Details", () => {
     await user.type(screen.getByTestId("cloud-purge-confirmation"), "Second");
     await user.click(screen.getByTestId("cloud-purge-submit"));
     await waitFor(() => expect(calls).toContain("/api/cloud-purge?vault_id=2"));
+  });
+  it("shows a cloud deletion failure inside the open dialog, not in the hidden Details sheet (#651)", async () => {
+    purgeFailure = { message: "Bucket refused the deletion" };
+    const calls = setup("cloud_only", false);
+    await screen.findByText("exact");
+    const user = userEvent.setup(); await user.click(screen.getByText("essential.danger_zone"));
+    await user.click(screen.getByRole("button", { name: "ui.cloud_purge_title" }));
+    const dialog = await screen.findByRole("dialog", { name: "ui.cloud_purge_title" });
+    await user.type(within(dialog).getByTestId("cloud-purge-reason"), "Deliberate removal");
+    await user.type(within(dialog).getByTestId("cloud-purge-confirmation"), "Second");
+    await user.click(within(dialog).getByTestId("cloud-purge-submit"));
+    await waitFor(() => expect(calls).toContain("/api/cloud-purge?vault_id=2"));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("Bucket refused the deletion");
+    expect(alert).not.toHaveTextContent("ApiError");
+    expect(screen.getByRole("dialog", { name: "ui.cloud_purge_title" })).toBeInTheDocument();
+    expect(within(dialog).getByTestId("cloud-purge-submit")).toHaveTextContent("ui.cloud_purge_submit");
+    expect(within(dialog).getByTestId("cloud-purge-submit")).toBeEnabled();
   });
 });

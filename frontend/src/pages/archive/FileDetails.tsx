@@ -13,6 +13,7 @@ import { itemStateBadge } from "./protectionLabel";
 import { formatBytes, formatDateTime, recoveryTimeKey } from "./format";
 import { recoveryTimeline } from "./recoveryLabel";
 import type { Target } from "./RecoverSelection";
+import { errorMessage } from "@/lib/errorMessage";
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
   return <div className="grid min-w-0 gap-0.5"><dt className="text-xs text-muted">{label}</dt><dd className="min-w-0 font-medium">{children}</dd></div>;
@@ -47,7 +48,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
     if (busy) return;
     setBusy(true); setError("");
     try { await fn(); setRevision((value) => value + 1); onRefresh(); }
-    catch (cause) { setError(String(cause)); }
+    catch (cause) { setError(errorMessage(cause, t)); }
     finally { setBusy(false); }
   }
   const recovery = item?.recovery;
@@ -55,7 +56,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   return <>
     <Sheet open={!deletion && !replace} onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={target.item.name || target.item.path} description={`${target.vaultName} / ${target.item.path}`} closeLabel={t("ui.close")}>
       <div className="grid min-w-0 gap-4 break-words" aria-label={`${t("essential.details")} · ${target.vaultName} / ${target.item.path}`}>
-        {data.isPending && <p role="status">{t("ui.loading")}</p>}{data.error && <p role="alert">{String(data.error)}</p>}
+        {data.isPending && <p role="status">{t("ui.loading")}</p>}{data.error && <p role="alert">{errorMessage(data.error, t)}</p>}
         {item && <>
           <section className="grid gap-3" data-testid="details-summary">
             <div className="flex flex-wrap items-center gap-2"><span className="sr-only">{t("essential.protection")}:</span><Badge {...itemStateBadge(item, t)} />{recovery?.active && <Badge state="restoring" label={t("state.recovering")} />}</div>
@@ -106,7 +107,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
           </details>
           <details className="border-t border-line" onToggle={(event) => setHistoryOpen(event.currentTarget.open)}><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("remediation.history")}</summary>
             {history.isFetching && <p role="status">{t("ui.loading")}</p>}
-            {history.error && <p role="alert">{String(history.error)}</p>}
+            {history.error && <p role="alert">{errorMessage(history.error, t)}</p>}
             {history.data?.items.map((job) => <div key={job.id} className="grid gap-1 border-b border-line py-2">
               <Button variant="secondary" onClick={() => setJobId(job.id)}>{t("remediation.job", { id: job.id })} · {t(`operation.${job.status}`)}</Button>
               <p>{job.requested_at} · {job.message}</p>
@@ -116,7 +117,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {beforeId && <Button variant="secondary" onClick={() => setBeforeId(undefined)}>{t("remediation.recent")}</Button>}
             {history.data?.next_before_id && <Button variant="secondary" onClick={() => setBeforeId(history.data!.next_before_id!)}>{t("remediation.older")}</Button>}
           </details>
-          {linkedJob.error && <p role="alert">{String(linkedJob.error)}</p>}
+          {linkedJob.error && <p role="alert">{errorMessage(linkedJob.error, t)}</p>}
           {linkedJob.data && <section className="grid gap-2 rounded-card border border-line p-3">
             <h2>{t("remediation.job", { id: linkedJob.data.id })} · {t(`operation.${linkedJob.data.status}`)}</h2><p>{linkedJob.data.requested_at} · {linkedJob.data.message}</p>
             {linkedJob.data.remediation_rejection && <p>{t(`reconciliation.reason.${linkedJob.data.remediation_rejection}`)}</p>}
@@ -132,6 +133,6 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
       </div>
     </Sheet>
     <ConfirmDialog open={replace} onOpenChange={setReplace} title={t("essential.replace_cloud")} description={t("essential.replace_warning")} confirmLabel={t("essential.replace_cloud")} cancelLabel={t("ui.cancel")} tone="danger" onConfirm={() => { setReplace(false); void perform(() => api.post("/api/files/cloud-only-conflict/replace", { path: target.item.path })); }} />
-    <CloudPurgeDialog open={Boolean(deletion)} onOpenChange={(open) => { if (!open && !busy) setDeletion(null); }} path={target.item.path} vaultName={target.vaultName} settings={deletion?.settings ?? null} preview={deletion?.preview ?? null} t={t} onConfirm={(payload) => { if (!busy) void perform(async () => { await api.post("/api/cloud-purge", { path: target.item.path, ...payload }); setDeletion(null); }); }} />
+    <CloudPurgeDialog open={Boolean(deletion)} onOpenChange={(open) => { if (!open && !busy) { setDeletion(null); setError(""); } }} path={target.item.path} vaultName={target.vaultName} settings={deletion?.settings ?? null} preview={deletion?.preview ?? null} t={t} busy={busy} error={deletion ? error : ""} onConfirm={(payload) => { if (!busy) void perform(async () => { await api.post("/api/cloud-purge", { path: target.item.path, ...payload }); setDeletion(null); }); }} />
   </>;
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  ApiError,
   downloadGeneralMetadataBackup,
   fetchGeneralMetadataBackups,
   runGeneralMetadataBackup,
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import type { I18nContextValue } from "@/i18n/context";
 import { useI18n } from "@/i18n/useI18n";
 import { formatDateTime } from "@/pages/archive/format";
+import { errorMessage } from "@/lib/errorMessage";
 
 export type MetadataBackupOutcome =
   | "full_off_host"
@@ -53,7 +55,16 @@ function outcomeBadgeState(outcome: MetadataBackupOutcome): BadgeState {
   }
 }
 
-function errorMessage(reason: unknown, fallback: string): string {
+function failureMessage(
+  reason: unknown,
+  fallback: string,
+  translate: (key: string) => string,
+): string {
+  // Network failures and API errors get the shared localized text (#651);
+  // anything else without a message keeps this section's own fallback.
+  if (reason instanceof ApiError || reason instanceof TypeError) {
+    return errorMessage(reason, translate);
+  }
   return reason instanceof Error && reason.message ? reason.message : fallback;
 }
 
@@ -174,7 +185,7 @@ export function MetadataBackupsSection() {
       setStatus(null);
       setRuns([]);
       setListError(
-        errorMessage(reason, translateRef.current("general.metadata_backups_load_error")),
+        failureMessage(reason, translateRef.current("general.metadata_backups_load_error"), translateRef.current),
       );
       return false;
     } finally {
@@ -196,7 +207,7 @@ export function MetadataBackupsSection() {
       runSucceeded = true;
     } catch (reason) {
       setRunError(
-        errorMessage(reason, translateRef.current("general.metadata_backups_run_error")),
+        failureMessage(reason, translateRef.current("general.metadata_backups_run_error"), translateRef.current),
       );
     } finally {
       // The endpoint is synchronous. Refresh on both success and failure so a
@@ -231,9 +242,10 @@ export function MetadataBackupsSection() {
       URL.revokeObjectURL(objectUrl);
     } catch (reason) {
       setDownloadError(
-        errorMessage(
+        failureMessage(
           reason,
           translateRef.current("general.metadata_backups_download_error"),
+          translateRef.current,
         ),
       );
     } finally {

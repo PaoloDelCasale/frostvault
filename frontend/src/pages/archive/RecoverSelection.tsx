@@ -3,6 +3,7 @@ import type { ArchiveListItem, RecoverEstimateResponse } from "@/api/types";
 import { vaultApi } from "@/api/vault";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
+import { errorMessage } from "@/lib/errorMessage";
 
 export type Target = { item: ArchiveListItem; vaultId: number; vaultName: string };
 type Preview = { targets: Target[]; estimate: RecoverEstimateResponse; retention: number | null };
@@ -33,9 +34,9 @@ export function RecoverSelection({ targets, onClose, onDone, t }: { targets: Tar
       const api = vaultApi(group[0].vaultId);
       const [estimate, policy] = await Promise.all([api.estimate({ ...requestScope(group), restore_tier: tier }), api.policy()]);
       return { targets: group, estimate, retention: policy.local_release_after_days ?? null };
-    })).then((data) => { if (live) setPreviews(data); }).catch((cause: unknown) => { if (live) setError(String(cause)); });
+    })).then((data) => { if (live) setPreviews(data); }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, t)); });
     return () => { live = false; };
-  }, [targets, tier]);
+  }, [targets, tier, t]);
   async function recover() {
     if (!previews || busy) return;
     setBusy(true); setError("");
@@ -50,7 +51,7 @@ export function RecoverSelection({ targets, onClose, onDone, t }: { targets: Tar
         completed.add(key); setCompleted(new Set(completed));
       }
       onDone();
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) { setError(errorMessage(cause, t)); }
     finally { setBusy(false); }
   }
   const cold = previews?.some((row) => row.estimate.requires_restore);

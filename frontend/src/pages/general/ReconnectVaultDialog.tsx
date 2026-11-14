@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import type { GeneralVault, SourceVolumeInventoryItem } from "@/api";
 import { browseSourceVolume, fetchGeneralSourceVolumes, reconnectGeneralVault } from "@/api";
@@ -7,6 +7,7 @@ import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 const MANAGED_ALIAS = "managed";
 
@@ -25,23 +26,27 @@ type Props = {
 
 export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCompleted }: Props) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [volumes, setVolumes] = useState<SourceVolumeInventoryItem[]>([]);
   const [alias, setAlias] = useState("");
   const [path, setPath] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Shown inside the dialog: a Toast behind the modal would go unseen (#651).
+  const [error, setError] = useState("");
   const ownManaged = ownsManagedFolder(vault);
   const managedSelected = ownManaged && alias === MANAGED_ALIAS;
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setAlias(""); setPath(null); setReason(""); setVolumes([]); setLoadError("");
+    setAlias(""); setPath(null); setReason(""); setVolumes([]); setLoadError(""); setError("");
     void fetchGeneralSourceVolumes().then((data) => {
       if (!cancelled) setVolumes(data.items);
     }).catch((error: unknown) => {
-      if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
+      if (!cancelled) setLoadError(errorMessage(error, translateRef.current));
     });
     return () => { cancelled = true; };
   }, [open, vault?.id]);
@@ -50,7 +55,7 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!vault || !ready) return;
-    setSubmitting(true);
+    setSubmitting(true); setError("");
     try {
       await reconnectGeneralVault(vault.id, {
         volume_alias: alias,
@@ -60,16 +65,17 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
       onOpenChange(false);
       onNotice(t("general.reconnect_started"));
       await onCompleted();
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), true);
+    } catch (failure) {
+      setError(errorMessage(failure, t));
     } finally { setSubmitting(false); }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={t("general.reconnect_vault")} description={t("general.reconnect_help")} closeLabel={t("ui.close")}>
+    <Dialog open={open} onOpenChange={(next) => { if (next || !submitting) onOpenChange(next); }} title={t("general.reconnect_vault")} description={t("general.reconnect_help")} closeLabel={t("ui.close")}>
       <form className="grid gap-4" onSubmit={(event) => void submit(event)}>
         <p className="break-all text-sm text-muted">{t(vault?.lifecycle === "reconnect_required" ? "general.reconnect_old_root" : "general.reconnect_current_root")}: {vault?.source_root}</p>
         {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
+        {error ? <p role="alert" className="text-sm font-semibold text-destructive">{error}</p> : null}
         <FormField label={t("general.reconnect_volume")} htmlFor="reconnect-volume">
           <select id="reconnect-volume" required value={alias} onChange={(event) => { setAlias(event.target.value); setPath(null); }} className="min-h-11 rounded border border-input bg-surface px-3">
             <option value="">—</option>

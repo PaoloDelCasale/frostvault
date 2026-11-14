@@ -9,6 +9,7 @@ import type { UploadActivityResponse, UploadActivitySummary } from "@/api/types"
 import { formatBytes } from "@/pages/archive/format";
 import { CATALOG_REFRESH_MS } from "@/api/useCatalogEvents";
 import { vaultFilesUrl } from "@/router";
+import { errorMessage } from "@/lib/errorMessage";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
@@ -55,7 +56,7 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
       const result = await apiRequest<{ cancelled_count: number }>(`/api/upload/cancel-pending?vault_id=${vaultId}`, { method: "POST", body: JSON.stringify({ path: "" }) });
       setNotice(t("activity.cancel_pending_done", { count: result.cancelled_count }));
       await client.invalidateQueries({ queryKey: ["upload-activity"] });
-    } catch (error) { setNotice(String(error)); }
+    } catch (error) { setNotice(errorMessage(error, t)); }
     finally { setCancelling(false); setConfirm(false); setOpen(true); }
   }
   const query = useQuery({
