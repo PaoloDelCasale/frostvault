@@ -18,8 +18,8 @@ const buttonVariants = cva(
           "border border-input bg-surface text-ink font-bold hover:border-[var(--interactive-border-hover)] hover:bg-green-soft aria-expanded:border-[var(--interactive-border-hover)] aria-expanded:bg-green-soft",
         ghost:
           "hover:bg-green-soft hover:text-ink aria-expanded:bg-green-soft aria-expanded:text-ink",
-        danger: "bg-destructive text-white font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
-        destructive: "bg-destructive text-white font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
+        danger: "bg-destructive text-destructive-foreground font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
+        destructive: "bg-destructive text-destructive-foreground font-bold hover:-translate-y-px hover:brightness-105 hover:shadow-[0_5px_14px_var(--shadow-color)]",
         link: "text-primary underline-offset-4 hover:underline hover:decoration-2",
 
       },

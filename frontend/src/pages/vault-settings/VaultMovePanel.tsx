@@ -69,7 +69,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={acknowledged} disabled={busy} onChange={(event) => setAcknowledged(event.target.checked)} />{t("move.acknowledge")}</label>
       <Button type="button" variant="primary" disabled={busy || !acknowledged || !estimate?.eligible_count} className="w-fit" onClick={() => void move()}>{t("move.start")}</Button>
     </> : preview ? <p className="text-sm text-muted">{t("move.unavailable")}</p> : !error && <p role="status">{t("ui.loading")}</p>}
-    {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <ActiveOperations vaultId={vaultId} t={t} moves />
   </section>;
 }

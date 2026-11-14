@@ -80,7 +80,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     description={t("stop_protection.description", { vault: vaultName })}>
     <div className="grid gap-4">
       <p className="text-sm text-muted">{t("stop_protection.local_retained")}</p>
-      {error ? <p role="alert" className="text-red-700">{error}</p> : null}
+      {error ? <p role="alert" className="text-destructive">{error}</p> : null}
       {operation?.stopped ? <div className="grid gap-3" data-testid="stop-protection-status">
         <p>{t(operation.root_released ? "stop_protection.stopped" : "stop_protection.pending")}</p>
         {operation.pending_until ? <p>{t("stop_protection.deadline", { date: operation.pending_until })}</p> : null}
@@ -107,7 +107,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
             <option value="delete">{t("stop_protection.delete")}</option>
           </select>
         </FormField>
-        {choice === "delete" ? <p className="text-sm text-red-700">{t("stop_protection.delete_help")}</p> : null}
+        {choice === "delete" ? <p className="text-sm text-destructive">{t("stop_protection.delete_help")}</p> : null}
         <FormField label={t("stop_protection.confirmation", { vault: vaultName })} htmlFor="stop-confirmation">
           <FormInput id="stop-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required />
         </FormField>

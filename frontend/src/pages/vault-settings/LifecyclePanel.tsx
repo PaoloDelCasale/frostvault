@@ -86,7 +86,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
           <p className="text-sm text-muted">{t("folder_settings.plan_caveats")}</p>
           <Button type="button" variant="primary" disabled={busy} className="w-fit" onClick={() => void save()}>{t("folder_settings.plan_save")}</Button>
         </div> : <p role="status">{t("folder_settings.plan_loading")}</p>}
-        {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+        {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
         {data && <VaultMovePanel key={`${vaultId}:${JSON.stringify(data.profile)}`} vaultId={vaultId} onNotice={onNotice} />}
       </div>
     </section>
