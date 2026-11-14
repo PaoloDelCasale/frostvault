@@ -385,7 +385,9 @@ instead of trying other credentials available on the computer.
    ```
 
    Compose may still substitute the host path with `SOURCES_ROOT`; the
-   application no longer accepts `VAULT_SOURCES_ROOT`.
+   application no longer accepts `VAULT_SOURCES_ROOT`. A bind of a folder on
+   the same filesystem as `/sources` is a valid Source Volume; a direct child
+   that is not a mount degrades only that alias, not the whole instance.
 
    On first discovery FrostVault stores a markerless, opaque identity for each
    custom Source Volume. It accepts ordinary remounts of the same source but

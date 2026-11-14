@@ -224,6 +224,18 @@ FrostVault expects a flat container layout under `/sources`:
 - nested mounts inside a Source Volume are unsupported because one Vault must
   never cross filesystem boundaries.
 
+A path counts as a mount when `/proc/self/mountinfo` lists a mount at exactly
+that path, so a bind mount of a folder on the same filesystem as `/sources`
+(common on Unraid, e.g. `<pool>/photos:/sources/photos` next to
+`<pool>/frostvault-sources:/sources`) is a valid Source Volume.
+
+A missing or non-mounted `/sources`, or an invalid `/sources/managed`, makes
+the whole instance not ready. A direct child that is not a mount (an ordinary
+directory, a file or a symbolic link) affects only that alias: it appears in
+the Source Volume inventory with health `invalid`, cannot hold Vault roots,
+and its Vaults' local work stays suspended, while `/ready` and every other
+Source Volume keep working.
+
 Host Compose still uses `SOURCES_ROOT` only as the bind source for `/sources`.
 
 ## Markerless Source Volume identity
