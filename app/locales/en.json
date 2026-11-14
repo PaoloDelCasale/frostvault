@@ -371,6 +371,8 @@
   "general.reconnect_vault": "Reconnect folder",
   "general.reconnect_help": "Explicitly accept a new Source Volume or different folder for this Vault. Other Vaults are not reconnected. A reason is required.",
   "general.reconnect_old_root": "Previous folder",
+  "general.reconnect_current_root": "Current folder",
+  "general.reconnect_active_hint": "Only needed when this Vault's data moved to another volume or folder. After a metadata restore, this Vault's own managed folder is the usual choice.",
   "general.reconnect_volume": "Destination Source Volume",
   "general.reconnect_own_managed": "This Vault's own managed folder",
   "general.reconnect_own_managed_help": "The same managed folder this Vault was created in. It is never created again: if it is missing, reconnect is refused.",

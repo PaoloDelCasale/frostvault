@@ -78,7 +78,8 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <SettingsSection id="danger" danger title={t("settings.danger_title")} summary={t("settings.danger_summary")}>
       {vault && !stopped && <div className="grid gap-2 border-b border-line pb-4">
         <p className="text-sm">{t("general.reconnect_help")}</p>
-        <p className="break-all text-xs text-muted">{t("general.reconnect_old_root")}: {vault.source_root}</p>
+        {vault.lifecycle === "active" && <p className="text-sm text-muted">{t("general.reconnect_active_hint")}</p>}
+        <p className="break-all text-xs text-muted">{t(vault.lifecycle === "reconnect_required" ? "general.reconnect_old_root" : "general.reconnect_current_root")}: {vault.source_root}</p>
         <Button className="w-fit" variant="secondary" onClick={() => setReconnect(true)}>{t("general.reconnect_vault")}</Button>
       </div>}
       <div className="grid gap-2">

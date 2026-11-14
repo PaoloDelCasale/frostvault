@@ -65,7 +65,7 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={t("general.reconnect_vault")} description={t("general.reconnect_help")}>
       <form className="grid gap-4" onSubmit={(event) => void submit(event)}>
-        <p className="break-all text-sm text-muted">{t("general.reconnect_old_root")}: {vault?.source_root}</p>
+        <p className="break-all text-sm text-muted">{t(vault?.lifecycle === "reconnect_required" ? "general.reconnect_old_root" : "general.reconnect_current_root")}: {vault?.source_root}</p>
         <FormField label={t("general.reconnect_volume")} htmlFor="reconnect-volume">
           <select id="reconnect-volume" required value={alias} onChange={(event) => setAlias(event.target.value)} className="min-h-11 rounded border border-input bg-surface px-3">
             <option value="">—</option>
