@@ -172,8 +172,12 @@ the private scratch directory. The downloaded kit includes these steps offline.
    folder is valid. Full scan/verification failure keeps local work suspended,
    across restart; retry the scan or explicitly reconnect another valid folder.
    Unknown newer cloud content is read by exact VersionId before becoming
-   verified evidence. GLACIER/DEEP_ARCHIVE content may need the manual S3 restore
-   request below before reconnect can finish. No size/mtime-only shortcut.
+   verified evidence, including files uploaded after the backup, which are
+   adopted without uploading them again. A version replaced after the backup,
+   and already cleaned up from S3, is closed as superseded, not reported
+   missing. GLACIER/DEEP_ARCHIVE content needs the manual S3 restore request
+   below before reconnect can finish: until then reconnect stays suspended.
+   No size/mtime-only shortcut.
 
 The recovery panel keeps a durable warning: **“Restored backup dated <date>:
 <N> files updated from the cloud”**, including new files absent from the backup.

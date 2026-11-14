@@ -998,7 +998,9 @@ def scan_cloud(
       still current;
     - an unknown version, an unknown object and every delete marker are
       counted in ``report`` and nothing else: never recorded as a version,
-      attributed to a file by its path, promoted, or deleted.
+      attributed to a file by its path, promoted, or deleted. The only
+      exception is the first Reconnect after a metadata restore, which reads
+      and adopts newer cloud content (``_reconcile_restored_cloud``).
 
     Provider listings stay outside write transactions. Returns the number of
     known versions the listing showed.
@@ -1073,6 +1075,12 @@ def scan_cloud(
             delete_markers=markers,
             unrecognized_keys=int(invalid_keys),
         )
+    # A metadata restore is reconciled before the missing transition: a
+    # version the cloud replaced after the backup is superseded, not lost.
+    restoring = (
+        _reconcile_restored_cloud(vault, scan_id, latest, prefix=prefix)
+        if reconnect else False
+    )
     # An unrecognised key or a truncated listing is not evidence that
     # prior catalog rows disappeared. Fail closed by retaining availability.
     if not invalid_keys and _cloud_scan_still_current(vault, scan_id):
@@ -1083,6 +1091,7 @@ def scan_cloud(
                 vault_id=vault["id"],
                 scan_id=scan_id,
                 scan_started_at=scan_id,
+                superseded=not restoring,
             )
             from .services.catalog_incidents import remember_missing_archives
 
@@ -1093,7 +1102,6 @@ def scan_cloud(
                 observed_at=scan_id,
             )
     if reconnect:
-        _reconcile_restored_cloud(vault, scan_id, latest, prefix=prefix)
         _verify_reconnected_cloud(vault, scan_id)
     return count
 
@@ -1116,36 +1124,50 @@ def _note_latest_listed_version(latest: dict[str, dict[str, Any]], item: dict[st
 
 def _reconcile_restored_cloud(
     vault: dict[str, Any], scan_id: str, latest: dict[str, dict[str, Any]], *, prefix: str,
-) -> int:
+) -> bool:
     """First Reconnect after a manual metadata restore: catch up the cloud.
 
-    The restored catalog predates the backup; a catalogued file may have been
-    replaced in the cloud afterwards (its old Current possibly already
-    cleaned up). Only for a Vault queued by ``record_metadata_restore``, and
-    only for a key of a file the catalog already knows, the newest listed
-    version that the catalog does not know becomes the file's replacement in
-    progress and then Current after its exact VersionId has been read and
-    hashed (read-back proof). Nothing is deleted, no unknown path is imported,
-    and a cold or unreadable version leaves the reconnect suspended.
+    The restored catalog predates the backup. Afterwards a catalogued file may
+    have been replaced in the cloud (its old Current possibly already cleaned
+    up) and a new file may have been uploaded. Only for a Vault queued by
+    ``record_metadata_restore``, for every key whose newest listed entry is a
+    version the catalog does not know (never a Delete Marker):
+
+    - a key with no Vault File at its path is adopted: the file is created
+      with no Local Copy (#638), so the local rehash then decides Protected,
+      Cloud-only or Cloud-only Conflict like for any known file;
+    - that version becomes the file's replacement in progress and then
+      Current only after its exact VersionId has been read and hashed
+      (read-back proof), and the file is counted in the restore notice;
+    - a superseded version the complete listing no longer shows was removed
+      by the Current Snapshot cleanup after the backup: it is closed with
+      that proof, never reported missing (#639).
+
+    Nothing is deleted from S3. A GLACIER/DEEP_ARCHIVE version cannot be read
+    before a manual S3 restore: the other keys are still reconciled, then the
+    reconnect stays suspended. Returns whether a restore was reconciled.
     """
     from .services import recovery_kit
+    from .services.catalog_incidents import resolve_archive_version_incidents
+    from .services.upload_provenance import provider_identity
 
     vault_id = int(vault["id"])
     with db() as connection:
         if not recovery_kit.restore_reconciliation_pending(connection, vault_id):
-            return 0
+            return False
         rows = connection.execute(
-            """
-            SELECT f.id, f.path, f.replacing_version_id
-            FROM files f WHERE f.vault_id=%s AND f.cloud_since IS NOT NULL
-            """,
+            "SELECT f.id, f.path, f.replacing_version_id FROM files f WHERE f.vault_id=%s",
             (vault_id,),
         ).fetchall()
         known = {
-            (str(row["object_key"]), str(row["provider_version_id"]))
+            (str(row["object_key"]), str(row["provider_version_id"])): (
+                str(row["id"]) if row["unverified_replacement"] else None
+            )
             for row in connection.execute(
                 """
-                SELECT av.object_key, av.provider_version_id
+                SELECT av.id, av.object_key, av.provider_version_id,
+                       (av.id = f.replacing_version_id
+                        AND av.integrity = 'unverified') AS unverified_replacement
                 FROM archive_versions av JOIN files f ON f.id = av.file_id
                 WHERE f.vault_id=%s AND av.provider_version_id IS NOT NULL
                 """,
@@ -1153,38 +1175,52 @@ def _reconcile_restored_cloud(
             ).fetchall()
         }
     files = {str(row["path"]): row for row in rows}
-    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    candidates: list[tuple[str, dict[str, Any], str | None]] = []
     for object_key, item in latest.items():
         if item.get("_delete_marker"):
             continue
         path = object_key_to_path(object_key, prefix)
-        row = files.get(path) if path is not None else None
-        if row is None or (object_key, str(item["VersionId"])) in known:
+        if path is None:
             continue
-        candidates.append((row, item))
-    client = s3_client() if candidates else None
-    reconciled = 0
-    for row, item in candidates:
+        identity = (object_key, str(item["VersionId"]))
+        # A replacement a failed earlier attempt left unverified is read
+        # again; any other known version is already accounted for.
+        if identity in known and known[identity] is None:
+            continue
+        candidates.append((path, item, known.get(identity)))
+    client = s3_client()
+    cold = 0
+    for path, item, pending_version in candidates:
         if not _cloud_scan_still_current(vault, scan_id):
             raise RuntimeError("Reconnect scan superseded")
         storage_class = str(item.get("StorageClass") or "STANDARD")
         if storage_class in {"GLACIER", "DEEP_ARCHIVE"}:
-            # Reading needs a cloud restore first; Current stays unlocated
-            # and the reconnect suspended, never elected without a proof.
+            # Reading needs a cloud restore first; nothing is elected or
+            # adopted without a proof, and the reconnect stays suspended.
+            cold += 1
             continue
-        file_id = str(row["id"])
         version_id = str(item["VersionId"])
         size = int(item.get("Size") or 0)
         with db() as connection:
             catalog = ArchiveCatalog(connection)
-            if row["replacing_version_id"] is not None:
-                catalog.abandon_replacement(
-                    file_id, archive_version_id=str(row["replacing_version_id"]),
+            row = files.get(path)
+            if row is None:
+                file_id = catalog.adopt_cloud_path(vault_id, path, at=scan_id)
+                replacing = None
+            else:
+                file_id = str(row["id"])
+                replacing = row["replacing_version_id"]
+            if pending_version is not None and str(replacing) == pending_version:
+                archive_version_id = pending_version
+            else:
+                if replacing is not None:
+                    catalog.abandon_replacement(
+                        file_id, archive_version_id=str(replacing),
+                    )
+                archive_version_id = catalog.begin_replacement(
+                    file_id, object_key=str(item["Key"]), provider_version_id=version_id,
+                    size=size, storage_class=storage_class,
                 )
-            archive_version_id = catalog.begin_replacement(
-                file_id, object_key=str(item["Key"]), provider_version_id=version_id,
-                size=size, storage_class=storage_class,
-            )
             catalog.record_verification_evidence(
                 archive_version_id, method="read_back", fallback=None, egress_bytes=size,
             )
@@ -1218,8 +1254,20 @@ def _reconcile_restored_cloud(
             )
             catalog.mark_archive_versions_listed([archive_version_id], scan_id=scan_id)
             recovery_kit.remember_cloud_update(connection, file_id)
-        reconciled += 1
-    return reconciled
+    if not _cloud_scan_still_current(vault, scan_id):
+        raise RuntimeError("Reconnect scan superseded")
+    with db() as connection:
+        closed = ArchiveCatalog(connection).close_absent_superseded_versions(
+            vault_id=vault_id, scan_id=scan_id, provider=provider_identity(client),
+            source_root=str(vault["source_root"]), root_identity=vault.get("root_identity"),
+        )
+        resolve_archive_version_incidents(connection, closed)
+    if cold:
+        raise RuntimeError(
+            "Cloud versions need an S3 restore before they can be read; "
+            "reconnect remains suspended"
+        )
+    return True
 
 
 def _verify_reconnected_cloud(vault: dict[str, Any], scan_id: str) -> None:

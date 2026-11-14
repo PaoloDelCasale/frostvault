@@ -43,6 +43,37 @@ class ListingS3:
         self.deleted.append(kwargs)
         raise AssertionError("Reconnect must never delete S3 content")
 
+    def put_object(self, **kwargs):
+        raise AssertionError("Reconnect must never upload")
+
+
+KEY = "vaults/11111111-1111-1111-1111-111111111111/"
+MISSING_PROBLEMS = """SELECT COUNT(*) AS n FROM notifications
+    WHERE event='archive_version_missing' AND problem_status='open'"""
+
+
+def landed_current(connection, path, data, *, version):
+    """A Current Snapshot written by a landed upload, as a real upload leaves it."""
+    catalog = ArchiveCatalog(connection)
+    file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=len(data),
+                                         mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
+    digest = hashlib.sha256(data).digest()
+    snapshot = connection.execute("""INSERT INTO upload_snapshots(vault_id,file_id,path,path_since,source_root,
+            provider,local_generation,size,mtime_ns,plaintext_sha256,part_size,part_sha256,verification)
+        SELECT vault_id,id,path,path_since,'/sources/photos/old','s3',0,%s,1,%s,8388608,ARRAY[%s::bytea],'read_back'
+        FROM files WHERE id=%s RETURNING id""", (len(data), digest, digest, file_id)).fetchone()["id"]
+    attempt = connection.execute("""INSERT INTO upload_attempts(snapshot_id,file_id,inventory_versions,
+            inventory_markers) VALUES (%s,%s,'{}','{}') RETURNING id""", (snapshot, file_id)).fetchone()["id"]
+    connection.execute("UPDATE upload_attempts SET send_started_at=now() WHERE id=%s", (attempt,))
+    connection.execute("""UPDATE upload_attempts SET settled_at=now(), outcome='landed', landed_version_id=%s
+        WHERE id=%s""", (version, attempt))
+    archive = catalog.begin_replacement(file_id, object_key=KEY + path, provider_version_id=version,
+        size=len(data), storage_class="STANDARD", created_at="2026-11-01T10:00:00+00:00",
+        upload_attempt_id=str(attempt))
+    catalog.promote_replacement(file_id, archive_version_id=archive, plaintext_sha256=digest,
+                                verified_at="2026-11-01T10:00:00+00:00")
+    return file_id
+
 
 OTHER_VAULT = """INSERT INTO vaults(id, target_id, name, source_root)
     VALUES (8, (SELECT id FROM vault_targets WHERE bucket='bucket'), 'Other', %s)"""
@@ -369,7 +400,7 @@ class VaultReconnectTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 3)
 
-    def test_restore_reconciliation_never_imports_unknown_paths_or_cold_versions(self):
+    def test_restore_reconciliation_reads_no_cold_version_then_adopts_unknown_paths(self):
         content = {"known.jpg": b"new!", "unknown.jpg": b"else"}
         with PostgresConnection(str(self.db_path)) as connection:
             catalog = ArchiveCatalog(connection)
@@ -394,11 +425,137 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(self.row()["lifecycle"], "reconnect_required")
         s3.get_paginator = cold
         self.scan(s3=s3)
-        self.assertEqual([read["Key"].rsplit("/", 1)[1] for read in s3.reads], ["known.jpg"])
+        self.assertEqual(sorted(read["Key"].rsplit("/", 1)[1] for read in s3.reads), ["known.jpg", "unknown.jpg"])
         with PostgresConnection(str(self.db_path)) as connection:
-            self.assertEqual([r["path"] for r in connection.execute("SELECT path FROM files WHERE vault_id=7")], ["known.jpg"])
-            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
+            self.assertEqual(sorted(r["path"] for r in connection.execute("SELECT path FROM files WHERE vault_id=7")),
+                             ["known.jpg", "unknown.jpg"])
+            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 2)
         self.assertEqual(self.row()["lifecycle"], "active")
+
+    def cold(self, s3):
+        warm = s3.get_paginator
+        def glacier(_name):
+            pages = list(warm(_name).paginate())
+            for item in pages[0]["Versions"]:
+                item["StorageClass"] = "DEEP_ARCHIVE"
+            return SimpleNamespace(paginate=lambda **kwargs: iter(pages))
+        s3.get_paginator = glacier
+        return warm
+
+    def test_restore_adopts_files_uploaded_after_the_backup_without_uploading(self):
+        # #638: uploaded after the backup, so absent from the restored catalog.
+        content = {"after/same.bin": b"same", "after/gone.bin": b"gone", "after/other.bin": b"safe"}
+        (self.new / "after").mkdir()
+        (self.new / "after" / "same.bin").write_bytes(b"same")
+        (self.new / "after" / "other.bin").write_bytes(b"oops")
+        with PostgresConnection(str(self.db_path)) as connection:
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3(content)
+        result = self.scan(self.reconnect(), s3)
+        self.assertEqual(result["local"], 2, result)
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(sorted(read["VersionId"] for read in s3.reads), sorted("new-" + p for p in content))
+        with PostgresConnection(str(self.db_path)) as connection:
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            self.assertEqual(rows["after/same.bin"]["state"], "protected")
+            self.assertEqual(rows["after/gone.bin"]["state"], "cloud_only")
+            self.assertEqual(rows["after/other.bin"]["state"], "problem")
+            self.assertFalse(rows["after/other.bin"]["upload_eligible"])
+            self.assertFalse(rows["after/same.bin"]["upload_eligible"])
+            current = connection.execute("""SELECT av.object_key, av.provider_version_id, av.integrity,
+                    av.availability, av.verification_method
+                FROM files f JOIN archive_versions av ON av.id=f.current_version_id
+                WHERE f.vault_id=7 ORDER BY f.path""").fetchall()
+            self.assertEqual([(v["object_key"], v["provider_version_id"]) for v in current],
+                             sorted((KEY + p, "new-" + p) for p in content))
+            self.assertTrue(all((v["integrity"], v["availability"], v["verification_method"])
+                                == ("verified", "available", "read_back") for v in current))
+            # One version per file: nothing was written to S3 or left to write.
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions").fetchone()["n"], 3)
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"], 0)
+            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 3)
+        self.assertEqual(self.row()["lifecycle"], "active")
+
+    def test_a_cold_key_absent_from_the_backup_keeps_the_reconnect_suspended(self):
+        content = {"after/cold.bin": b"cold"}
+        (self.new / "after").mkdir()
+        (self.new / "after" / "cold.bin").write_bytes(b"cold")
+        with PostgresConnection(str(self.db_path)) as connection:
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3(content)
+        warm = self.cold(s3)
+        result = self.scan(self.reconnect(), s3)
+        self.assertEqual(result["reconnect_suspended"], 1)
+        self.assertEqual(s3.reads, [])
+        self.assertEqual(self.row()["lifecycle"], "reconnect_required")
+        with PostgresConnection(str(self.db_path)) as connection:
+            # No "never written" row the local scan or an upload could act on.
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM files").fetchone()["n"], 0)
+        s3.get_paginator = warm  # The Owner restored the object in S3.
+        self.scan(s3=s3)
+        self.assertEqual(self.row()["lifecycle"], "active")
+        with PostgresConnection(str(self.db_path)) as connection:
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            self.assertEqual(rows["after/cold.bin"]["state"], "protected")
+            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
+
+    def test_a_replaced_current_cleaned_up_after_the_backup_is_superseded_not_missing(self):
+        # #639: modified and uploaded again after the backup; Current Snapshot
+        # deleted the old version, so only the new one is listed.
+        (self.new / "doc.txt").write_bytes(b"new!")
+        with PostgresConnection(str(self.db_path)) as connection:
+            landed_current(connection, "doc.txt", b"old!", version="old-doc.txt")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3({"doc.txt": b"new!"})
+        self.scan(self.reconnect(), s3)
+        self.assertEqual(self.row()["lifecycle"], "active")
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 0)
+            versions = connection.execute(
+                "SELECT provider_version_id, availability FROM archive_versions").fetchall()
+            self.assertEqual([(v["provider_version_id"], v["availability"]) for v in versions],
+                             [("new-doc.txt", "available")])
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM cleanup_batches").fetchone()["n"], 0)
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            self.assertEqual(rows["doc.txt"]["state"], "protected")
+        self.scan(s3=s3)
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 0)
+
+    def test_a_missing_current_still_opens_its_problem_after_a_restore(self):
+        with PostgresConnection(str(self.db_path)) as connection:
+            landed_current(connection, "doc.txt", b"old!", version="old-doc.txt")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        result = self.scan(self.reconnect(), ListingS3({}))
+        self.assertEqual(result["reconnect_suspended"], 1)
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 1)
+            self.assertEqual(connection.execute(
+                "SELECT availability FROM archive_versions").fetchone()["availability"], "missing")
+
+
+    def test_a_failed_read_of_an_adopted_key_is_read_again_on_retry(self):
+        with PostgresConnection(str(self.db_path)) as connection:
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3({"after/new.bin": b"data"})
+        read = s3.get_object
+        def broken(**kwargs):
+            raise OSError("connection reset")
+        s3.get_object = broken
+        self.assertEqual(self.scan(self.reconnect(), s3)["reconnect_suspended"], 1)
+        with PostgresConnection(str(self.db_path)) as connection:
+            # The key is catalogued (never "never written") while unverified.
+            pending = connection.execute("""SELECT f.current_version_id, av.integrity FROM files f
+                JOIN archive_versions av ON av.id=f.replacing_version_id""").fetchone()
+            self.assertEqual((pending["current_version_id"], pending["integrity"]), (None, "unverified"))
+        s3.get_object = read
+        self.scan(s3=s3)
+        self.assertEqual(self.row()["lifecycle"], "active")
+        with PostgresConnection(str(self.db_path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions").fetchone()["n"], 1)
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            self.assertEqual(rows["after/new.bin"]["state"], "cloud_only")
+            self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
 
 MANAGED_UUID = "11111111-1111-1111-1111-111111111111"
