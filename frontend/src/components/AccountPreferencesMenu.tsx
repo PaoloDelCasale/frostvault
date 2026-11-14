@@ -24,10 +24,10 @@ const MENU_KEYS = {
 
 const FALLBACK_LABELS = {
   en: {
-    open: "Open account menu",
-    title: "Account",
-    description: "Account actions and personal preferences for this browser.",
-    close: "Close account menu",
+    open: "Open Owner menu",
+    title: "Owner",
+    description: "Owner actions and personal preferences for this browser.",
+    close: "Close Owner menu",
     openPreferences: "Open preferences",
     preferencesTitle: "Preferences",
     preferencesDescription: "Personal appearance settings for this browser.",
@@ -38,10 +38,10 @@ const FALLBACK_LABELS = {
     signOut: "Sign out",
   },
   it: {
-    open: "Apri menu account",
-    title: "Account",
-    description: "Azioni dell’account e preferenze personali per questo browser.",
-    close: "Chiudi menu account",
+    open: "Apri il menu del proprietario",
+    title: "Proprietario",
+    description: "Azioni del proprietario e preferenze personali per questo browser.",
+    close: "Chiudi il menu del proprietario",
     openPreferences: "Apri preferenze",
     preferencesTitle: "Preferenze",
     preferencesDescription: "Impostazioni personali di aspetto per questo browser.",

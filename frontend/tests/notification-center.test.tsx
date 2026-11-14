@@ -21,7 +21,7 @@ const catalog: Record<string, string> = {
   "ui.notifications_open": "Open notifications",
   "ui.notifications_open_unread": "Open notifications ({count} unread)",
   "ui.notifications_title": "Notifications",
-  "ui.notifications_description": "Recent activity for your Vault.",
+  "ui.notifications_description": "Recent activity across every Vault in this installation.",
   "ui.notifications_close": "Close notifications",
   "ui.notifications_loading": "Loading notifications…",
   "ui.notifications_empty": "You're all caught up.",
