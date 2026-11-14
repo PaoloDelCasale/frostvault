@@ -3,7 +3,8 @@
 Seams under test (confirmed):
 1. Fresh startup creates managed/; empty Vaults use managed/<uuid>
 2. Structural /sources and managed failures fail closed
-3. Direct rw mounts are discovered; ordinary children and nested mounts rejected
+3. Direct rw mounts (mountinfo, including same-filesystem binds) are
+   discovered; ordinary children degrade only their alias; nested mounts rejected
 4. Isolated custom-volume failure degrades only affected Vaults
 5. Runtime mount loss does not mass-remove Local Copies or allow local ops
 6. Returning mount requires a full local scan before local ops resume
@@ -195,21 +196,44 @@ class SourceVolumeDiscoveryTests(unittest.TestCase):
             [("photos", str(photos), "rw", "ok")],
         )
 
-    def test_ordinary_direct_child_is_rejected_with_actionable_diagnostic(self) -> None:
+    def test_ordinary_direct_child_degrades_only_its_alias(self) -> None:
         ordinary = self.sources / "photos"
         ordinary.mkdir()
+        (self.sources / "stray-file").write_text("x")
+        healthy = self.sources / "music"
+        healthy.mkdir()
 
         def is_mount(path: Path | str) -> bool:
-            return Path(path) == self.sources
+            return Path(path) in {self.sources, healthy}
 
         with patch.object(source_layout, "path_is_mount", side_effect=is_mount):
-            with self.assertRaises(source_layout.SourcesLayoutError) as raised:
-                source_layout.validate_sources_structure()
+            with patch.object(source_layout, "path_is_writable", return_value=True):
+                with self.assertLogs(source_layout.logger, "WARNING") as logs:
+                    source_layout.prepare_sources_layout()
+                invalid = source_layout.invalid_source_children()
+                volumes = source_layout.discover_source_volumes()
+                decision = source_layout.vault_local_access(str(ordinary / "family"))
 
-        message = str(raised.exception).lower()
-        self.assertIn("photos", message)
-        self.assertRegex(str(raised.exception), r"(?i)mount")
-        self.assertRegex(str(raised.exception), r"(?i)nested|direct|sibling|/sources/")
+        # ADR-0012: an invalid sibling is not structural (#640).
+        self.assertTrue(source_layout.sources_layout_is_ready())
+        self.assertEqual(
+            invalid, {"photos": "not_mount", "stray-file": "not_directory"}
+        )
+        self.assertEqual([v.alias for v in volumes], ["music"])
+        self.assertIn("photos", "\n".join(logs.output))
+        self.assertFalse(decision.local_operations_allowed)
+        self.assertTrue(decision.cloud_catalog_allowed)
+
+    def test_symlinked_direct_child_is_invalid(self) -> None:
+        target = Path(self._tmp.name) / "elsewhere"
+        target.mkdir()
+        (self.sources / "linked").symlink_to(target, target_is_directory=True)
+
+        source_layout.prepare_sources_layout()
+
+        self.assertTrue(source_layout.sources_layout_is_ready())
+        self.assertEqual(source_layout.invalid_source_children(), {"linked": "symlink"})
+        self.assertEqual(source_layout.discover_source_volumes(), [])
 
     def test_nested_mount_inside_custom_volume_is_rejected(self) -> None:
         photos = self.sources / "photos"
@@ -402,6 +426,67 @@ class SourceVolumeInventoryTests(unittest.TestCase):
         self.assertEqual(item["access"], "rw")
         self.assertEqual(item["health"], "ok")
         self.assertEqual(item["vault_count"], 1)
+
+    def test_same_filesystem_bind_mount_is_a_volume_and_invalid_sibling_is_isolated(self) -> None:
+        """#640: Unraid binds a folder of the /sources pool as a Source Volume.
+
+        ``os.path.ismount`` misses such a bind (same device as its parent);
+        mountinfo lists it. An ordinary sibling directory is reported as an
+        invalid volume and leaves the instance ready.
+        """
+        from app.services import health
+
+        bound = self.sources / "my photos"
+        bound.mkdir()
+        self.photos.rmdir()
+        self.photos.mkdir()  # still an ordinary directory: not in mountinfo
+
+        def escape(path: Path) -> str:
+            return str(path).replace(" ", "\\040")
+
+        mountinfo = "\n".join(
+            (
+                "21 1 0:20 / / rw - overlay overlay rw",
+                f"30 21 8:3 /frostvault-sources {escape(self.sources)} rw - xfs /dev/sda3 rw",
+                f"31 21 8:3 /frostvault-sources/managed/u-1 {escape(bound)} rw "
+                "- xfs /dev/sda3 rw",
+            )
+        ) + "\n"
+        with patch(
+            "app.services.source_identity.read_mountinfo_text", return_value=mountinfo
+        ), patch.object(source_layout, "path_is_writable", return_value=True):
+            self.assertTrue(source_layout.path_is_mount(bound))
+            self.assertTrue(source_layout.path_is_mount(str(self.sources) + "/"))
+            self.assertFalse(source_layout.path_is_mount(self.photos))
+            source_layout.prepare_sources_layout()
+            items = {item["alias"]: item for item in source_layout.source_volume_inventory()}
+            ready = health.readiness_report()["checks"]["sources_layout"]
+            decision = source_layout.vault_local_access(str(bound / "family"))
+            sibling = source_layout.vault_local_access(str(self.photos / "family"))
+
+        self.assertTrue(ready)
+        self.assertTrue(source_layout.sources_layout_is_ready())
+        self.assertEqual(
+            (items["my photos"]["access"], items["my photos"]["health"]), ("rw", "ok")
+        )
+        self.assertEqual(items["photos"]["access"], "none")
+        self.assertEqual(items["photos"]["health"], "invalid")
+        self.assertEqual(items["photos"]["diagnostic_code"], "source_volume.invalid")
+        self.assertTrue(decision.local_operations_allowed)
+        self.assertFalse(sibling.local_operations_allowed)
+        self.assertTrue(sibling.cloud_catalog_allowed)
+
+    def test_unreadable_mountinfo_fails_closed(self) -> None:
+        with patch(
+            "app.services.source_identity.read_mountinfo_text",
+            side_effect=PermissionError("denied"),
+        ):
+            self.assertFalse(source_layout.path_is_mount(self.sources))
+        with patch(
+            "app.services.source_identity.read_mountinfo_text",
+            return_value="garbage\n",
+        ):
+            self.assertFalse(source_layout.path_is_mount(self.sources))
 
 
 class MountVerificationTests(unittest.TestCase):

@@ -6,6 +6,7 @@ application environment setting redirects the production boundary.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import source_identity
+
+logger = logging.getLogger(__name__)
 
 PRODUCTION_SOURCES_ROOT = Path("/sources")
 MANAGED_DIR_NAME = "managed"
@@ -62,8 +65,19 @@ def path_is_symlink(path: Path | str) -> bool:
 
 
 def path_is_mount(path: Path | str) -> bool:
-    """Mount-point probe seam — mockable for non-Linux CI hosts."""
-    return os.path.ismount(Path(path))
+    """Mount-point probe seam — mockable for non-Linux CI hosts.
+
+    A path is a mount point when ``/proc/self/mountinfo`` lists a mount at
+    exactly that (lexically normalized) path. ``os.path.ismount`` compares
+    devices with the parent and so misses bind mounts from the same
+    filesystem, which are ordinary on Unraid (#640). Unreadable or malformed
+    mount metadata fails closed: nothing is a mount.
+    """
+    target = os.path.normpath(os.path.abspath(os.fspath(path)))
+    try:
+        return target in source_identity.mount_points()
+    except source_identity.MountIdentityError:
+        return False
 
 
 def path_is_writable(path: Path | str) -> bool:
@@ -143,16 +157,43 @@ def validate_sources_structure() -> None:
                     f"Unexpected foreign entry under managed sources: {entry}"
                 )
 
-    for entry in sorted(sources.iterdir(), key=lambda item: item.name):
+    # Invalid custom children (ordinary directories, files, symlinks) are not
+    # structural: ADR-0012 degrades only that Source Volume, reported by
+    # ``invalid_source_children`` and the inventory (#640).
+
+
+def _invalid_child_reason(entry: Path) -> str | None:
+    """Why a direct custom child of ``/sources`` is not a Source Volume."""
+    if path_is_symlink(entry):
+        return "symlink"
+    if not entry.is_dir():
+        return "not_directory"
+    if not path_is_mount(entry):
+        return "not_mount"
+    return None
+
+
+def invalid_source_children() -> dict[str, str]:
+    """Direct custom children of ``/sources`` that are not Source Volumes.
+
+    Maps alias to reason (``symlink``, ``not_directory``, ``not_mount``).
+    Each degrades only its own alias; ``managed`` is never reported here.
+    """
+    sources = get_sources_root()
+    invalid: dict[str, str] = {}
+    try:
+        if not sources.is_dir():
+            return invalid
+        entries = sorted(sources.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return invalid
+    for entry in entries:
         if entry.name == MANAGED_DIR_NAME:
             continue
-        if not entry.is_dir() or path_is_symlink(entry) or not path_is_mount(entry):
-            raise SourcesLayoutError(
-                f"Direct child {entry.name!r} under {sources} must be a real "
-                f"mount point mounted directly as /sources/{entry.name}; "
-                "ordinary directories and nested mounts are unsupported — place "
-                "content inside one Source Volume sibling instead"
-            )
+        reason = _invalid_child_reason(entry)
+        if reason is not None:
+            invalid[entry.name] = reason
+    return invalid
 
 
 def discover_source_volumes() -> list[SourceVolume]:
@@ -169,7 +210,7 @@ def discover_source_volumes() -> list[SourceVolume]:
     for entry in sorted(sources.iterdir(), key=lambda item: item.name):
         if entry.name == MANAGED_DIR_NAME:
             continue
-        if not entry.is_dir() or path_is_symlink(entry) or not path_is_mount(entry):
+        if _invalid_child_reason(entry) is not None:
             continue
         accessible = path_is_accessible(entry)
         access = "rw" if accessible and path_is_writable(entry) else "ro"
@@ -588,6 +629,7 @@ def source_volume_inventory() -> list[dict[str, object]]:
     if _identity_enforcement_ready:
         reconcile_source_volume_identities()
     live = {volume.alias: volume for volume in discover_source_volumes()}
+    invalid = invalid_source_children()
     with db() as connection:
         persisted = {
             row["alias"]
@@ -597,7 +639,7 @@ def source_volume_inventory() -> list[dict[str, object]]:
             "SELECT source_root FROM vaults WHERE root_released_at IS NULL"
         ).fetchall()
 
-    aliases = set(live) | persisted
+    aliases = set(live) | persisted | set(invalid)
     counts = {alias: 0 for alias in aliases}
     # Count roots from their stored namespace path only. Inventory must remain
     # usable for an absent/replaced volume and must not resolve or traverse a
@@ -614,6 +656,9 @@ def source_volume_inventory() -> list[dict[str, object]]:
         identity_health = state.get("identity_health")
         if identity_health in {"replaced", "identity_ambiguous", "identity_unsupported"}:
             health = str(identity_health)
+        elif volume is None and alias in invalid and alias not in persisted:
+            # Never a Source Volume: show why instead of hiding it (#640).
+            health = "invalid"
         elif volume is None or state.get("lost"):
             health = "absent"
         elif state.get("needs_scan"):
@@ -677,6 +722,14 @@ def prepare_sources_layout() -> None:
         validate_sources_structure()
         ensure_managed_directory()
         validate_sources_structure()
+        for alias, reason in invalid_source_children().items():
+            logger.warning(
+                "Direct child %r under the sources root is not a Source Volume "
+                "(%s); mount each filesystem directly as /sources/<alias>. Only "
+                "this alias is unavailable.",
+                alias,
+                reason,
+            )
     except SourcesLayoutError as exc:
         _structural_error = str(exc)
         if _sources_root_override is not None:
