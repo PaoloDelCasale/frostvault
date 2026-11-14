@@ -862,14 +862,14 @@
             },
             "type": "array"
           },
+          "manual_upload": {
+            "type": "boolean"
+          },
           "mode": {
             "type": "string"
           },
           "page": {
             "type": "number"
-          },
-          "protection_suspended": {
-            "type": "boolean"
           },
           "total": {
             "type": "number"
@@ -2800,14 +2800,14 @@
             },
             "type": "object"
           },
+          "manual_upload": {
+            "type": "boolean"
+          },
           "protection_state": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "protection_suspended": {
-            "type": "boolean"
           },
           "runtime": {
             "additionalProperties": {},

@@ -459,14 +459,15 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual(self.connection.execute('SELECT COUNT(*) AS n FROM archive_versions').fetchone()['n'], 2)
         self.assertEqual(self.connection.execute("SELECT local_presence FROM files WHERE local_presence='present'").fetchone()['local_presence'], 'present')
 
-    def test_suspension_is_separate_from_verified_content(self):
+    def test_manual_upload_is_separate_from_verified_content(self):
         from app.services.operation_policies import get_policy, set_policy
         self.seed('protected', archive=True, verified=True)
         set_policy(self.connection, 9, replace(get_policy(self.connection, 9), auto_upload=False))
         self.connection.commit()
         with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             summary = stats({'id': 9, 'source_root': '/source'})
-        self.assertTrue(summary['protection_suspended'])
+        self.assertTrue(summary['manual_upload'])
+        self.assertEqual(summary['protection_state'], 'protected')
         self.assertEqual(summary['states'], {'protected': 1})
 
     def test_cloud_request_failure_is_unconfirmed_but_known_missing_is_problem(self):

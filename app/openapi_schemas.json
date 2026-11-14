@@ -1043,7 +1043,7 @@
     "FilesResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": {
+        "manual_upload": {
           "type": "boolean"
         },
         "aggregate_status": {
@@ -1992,7 +1992,7 @@
     "StatsResponse": {
       "additionalProperties": true,
       "properties": {
-        "protection_suspended": {
+        "manual_upload": {
           "type": "boolean"
         },
         "protection_state": {

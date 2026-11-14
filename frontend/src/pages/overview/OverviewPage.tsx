@@ -4,7 +4,6 @@ import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Plus, ShieldChec
 
 import { fetchGeneralVaults, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
-import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
@@ -17,11 +16,11 @@ import { vaultFilesUrl } from "@/router";
 const STATS_REFRESH_MS = 60_000;
 type SortKey = "name" | "state" | "protected" | "local" | "cloud" | "cost" | "problems";
 /** Worst first, so an ascending sort puts the Vaults that need attention on top. */
-const STATE_RANK: Record<string, number> = { suspended: 0, problem: 1, unconfirmed: 2, pending: 3, stopped: 4, cloud_only: 5, protected: 6, unsupported: 7, excluded: 8, empty: 9, unknown: 10 };
+const STATE_RANK: Record<string, number> = { problem: 1, unconfirmed: 2, pending: 3, stopped: 4, cloud_only: 5, protected: 6, unsupported: 7, excluded: 8, empty: 9, unknown: 10 };
 
 type Row = {
   id: number; name: string; state: string; protected: number; files: number; local: number; cloud: number;
-  cost: number | null; problems: number; loaded: boolean;
+  cost: number | null; problems: number; loaded: boolean; manual: boolean; pending: number;
 };
 
 function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: Overview | undefined): Row {
@@ -30,7 +29,7 @@ function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview
   const summary = overview?.vaults.find((item) => item.id === vault.id);
   const state = vaultState(stats);
   return {
-    id: vault.id, name: vault.name, state, loaded: Boolean(stats),
+    id: vault.id, name: vault.name, state, loaded: Boolean(stats), manual: Boolean(stats?.manual_upload), pending: states.pending ?? 0,
     protected: states.protected ?? 0,
     files: Object.entries(states).filter(([name]) => name !== "excluded" && name !== "unsupported").reduce((sum, [, count]) => sum + count, 0),
     local: storage.local_bytes ?? 0, cloud: storage.cloud_bytes ?? 0,
@@ -70,7 +69,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     return sort.ascending ? order : -order;
   });
   const totals = rows.reduce((sum, row) => ({ protected: sum.protected + row.protected, files: sum.files + row.files }), { protected: 0, files: 0 });
-  const pending = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.pending ?? 0), 0);
+  const pending = rows.reduce((sum, row) => sum + row.pending, 0);
+  // Manual Upload Vaults wait for the Owner, not for automatic upload (#647).
+  const manualPending = rows.reduce((sum, row) => sum + (row.manual ? row.pending : 0), 0);
   // Stopped Uploads wait for the Owner, not for the queue (#630): counted apart.
   const stoppedFiles = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.stopped ?? 0), 0);
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
@@ -82,10 +83,12 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     { key: "cloud", label: t("overview.col_cloud"), numeric: true }, { key: "cost", label: t("overview.col_cost"), numeric: true },
     { key: "problems", label: t("overview.col_problems"), numeric: true },
   ];
+  // The pause action lives on the Vault page (#647); here only its badge.
+  const paused = (row: Row) => general.data?.items.find((item) => item.id === row.id)?.paused
+    ? <span className="w-fit rounded-full border border-line px-2 py-1 text-xs font-bold" title={t("vault_pause.help")} data-testid="overview-paused">{t("vault_pause.paused")}</span> : null;
   const cell = (row: Row, key: SortKey): ReactNode => {
     if (key === "name") return <a href={vaultFilesUrl(row.id)} className="font-bold text-ink no-underline hover:underline">{row.name}</a>;
-    if (key === "state") return <div className="grid justify-items-start gap-2"><VaultStateBadge state={row.state} t={t} />
-      <VaultPauseControl vaultId={row.id} paused={general.data?.items.find((item) => item.id === row.id)?.paused} /></div>;
+    if (key === "state") return <div className="grid justify-items-start gap-2"><VaultStateBadge state={row.state} manual={row.manual} t={t} />{paused(row)}</div>;
     if (!row.loaded && key !== "cost" && key !== "problems") return <span className="text-muted">—</span>;
     if (key === "protected") return `${number.format(row.protected)} / ${number.format(row.files)}`;
     if (key === "local") return formatBytes(row.local);
@@ -108,7 +111,8 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
         <Tile testId="tile-protected" icon={<ShieldCheck className="size-4" />} tone="good" label={t("overview.tile_protected")}
           value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? t("overview.tile_protected_of", { total: number.format(totals.files) }) : null} />
         <Tile testId="tile-pending" icon={<Clock className="size-4" />} tone={pending ? "warn" : "neutral"} label={t("overview.tile_pending")}
-          value={loaded ? number.format(pending) : "—"} detail={<>{t("overview.tile_pending_hint")}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: number.format(stoppedFiles) })}</span>}</>} />
+          value={loaded ? number.format(pending) : "—"} detail={<>{(!loaded || manualPending < pending || pending === 0) && t("overview.tile_pending_hint")}
+            {loaded && manualPending > 0 && <span className="block" data-testid="tile-pending-manual">{t("overview.tile_pending_manual", { count: number.format(manualPending) })}</span>}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: number.format(stoppedFiles) })}</span>}</>} />
         <Tile testId="tile-problems" icon={<CircleAlert className="size-4" />} tone={problems ? "bad" : "neutral"} label={t("overview.tile_problems")}
           value={problems === undefined ? "—" : number.format(problems)}
           detail={problems ? <a href="/problems" className="font-semibold text-ink underline">{t("overview.tile_problems_link")}</a> : t("overview.tile_problems_none")} />
@@ -137,14 +141,14 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
         </div>
         <ul className="grid gap-2 md:hidden" data-testid="overview-cards">{sorted.map((row) => <li key={row.id}>
           <a href={vaultFilesUrl(row.id)} className="grid min-w-0 gap-2 rounded-card border border-line bg-surface p-3 text-ink no-underline">
-            <span className="flex min-w-0 items-start justify-between gap-2"><span className="min-w-0 font-bold break-words">{row.name}</span><VaultStateBadge state={row.state} t={t} /></span>
+            <span className="flex min-w-0 items-start justify-between gap-2"><span className="min-w-0 font-bold break-words">{row.name}</span><span className="grid justify-items-end gap-1"><VaultStateBadge state={row.state} manual={row.manual} t={t} />{paused(row)}</span></span>
             <span className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
               <span className="text-muted">{t("overview.col_files")}</span><span className="text-right tabular-nums">{cell(row, "protected")}</span>
               <span className="text-muted">{t("overview.col_local")}</span><span className="text-right tabular-nums">{cell(row, "local")}</span>
               <span className="text-muted">{t("overview.col_cost")}</span><span className="text-right tabular-nums">{cell(row, "cost")}</span>
               {row.problems ? <><span className="text-muted">{t("overview.col_problems")}</span><span className="text-right">{cell(row, "problems")}</span></> : null}
             </span>
-          </a><div className="px-3 pb-3"><VaultPauseControl vaultId={row.id} paused={general.data?.items.find((item) => item.id === row.id)?.paused} /></div></li>)}</ul>
+          </a></li>)}</ul>
         <p className="text-xs text-muted">{t("essential.estimate_caveat")}</p>
       </section>
     </>}

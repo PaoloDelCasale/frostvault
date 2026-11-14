@@ -133,16 +133,16 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   const allChecked = rows.length > 0 && rows.every(checked);
   const checkbox = (target: Target) => <input className="size-5 accent-[var(--green)]" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} />;
   const highlighted = (target: Target) => target.item.path === focusPath;
-  const attention = Boolean(query.data?.protection_suspended) || problemCount > 0;
+  const attention = problemCount > 0;
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
     <VaultHeader vaultId={vaultId} vaultName={vaultName} active="files" t={t} />
     {attention && <div role="status" className="flex min-w-0 items-start gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/60 p-3 text-sm" data-testid="vault-attention">
       <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
       <p className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
-        {query.data?.protection_suspended && <span>{t("state.protection_suspended")} · <a className="font-semibold underline" href={vaultSettingsUrl(vaultId)}>{t("essential.review_protection")}</a></span>}
         {problemCount > 0 && <a className="font-semibold underline" href="/problems">{t("files.open_problems", { count: problemCount })}</a>}
       </p>
     </div>}
+    {query.data?.manual_upload && <p className="text-sm text-muted" data-testid="vault-manual-upload">{t("files.manual_upload_note")} <a className="font-semibold text-ink underline" href={vaultSettingsUrl(vaultId)}>{t("essential.review_protection")}</a></p>}
     <ActiveOperations vaultId={vaultId} t={t} />
     <div className="grid min-w-0 gap-3">
       <div className="flex min-w-0 flex-wrap items-center gap-2">

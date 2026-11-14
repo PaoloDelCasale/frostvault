@@ -1580,9 +1580,9 @@ export interface components {
             aggregate_status?: "ready" | "loading" | "stale";
             directory: string;
             items: components["schemas"]["ArchiveListItem"][];
+            manual_upload?: boolean;
             mode: string;
             page: number;
-            protection_suspended?: boolean;
             total: number;
         } & {
             [key: string]: unknown;
@@ -2131,8 +2131,8 @@ export interface components {
             last_known_states?: {
                 [key: string]: number;
             };
+            manual_upload?: boolean;
             protection_state?: string | null;
-            protection_suspended?: boolean;
             runtime: {
                 last_error?: string | null;
             } & {
