@@ -27,7 +27,7 @@ export function GeneralPage({ overview }: { overview?: Overview }) {
       <p className="text-sm text-muted">{t("system.subtitle")}</p>
     </div>
     <RecoveryKitSection />
-    <MetadataBackupsSection lastVerified={overview ? overview.last_verified_backup : undefined} />
+    <MetadataBackupsSection />
     <SourceVolumesSection />
     <SystemSection id="email" title={t("system.email_title")} summary={t("system.email_summary")}>
       {overview?.email_configured === false

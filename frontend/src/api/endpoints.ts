@@ -8,6 +8,7 @@ import type { ApiDownload } from "./client";
 import type {
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,
+  MetadataBackupVerification,
   RecoveryKitStatus,
   StopProtectionPayload,
   StopProtectionStatus,
@@ -124,6 +125,8 @@ export type MetadataBackupStatus = {
   last_run: MetadataBackupRun | null;
   succeeded_count: number;
   failed_count: number;
+  /** Last verified backup and next automatic verification (#648). */
+  verification?: MetadataBackupVerification;
 };
 
 export type MetadataBackupsResponse = {

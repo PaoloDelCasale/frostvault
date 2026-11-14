@@ -10,9 +10,11 @@ import {
   type MetadataBackupRun,
   type MetadataBackupStatus,
 } from "@/api";
+import type { MetadataBackupVerification } from "@/api/types";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
+import type { I18nContextValue } from "@/i18n/context";
 import { useI18n } from "@/i18n/useI18n";
 import { formatDateTime } from "@/pages/archive/format";
 
@@ -108,7 +110,45 @@ export async function verifyMetadataBackupIntegrity(
   }
 }
 
-export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string | null } = {}) {
+/** When the next automatic verification is due, or that it is disabled. */
+function expectedVerification(
+  verification: MetadataBackupVerification,
+  t: I18nContextValue["t"],
+): string {
+  return verification.automatic && verification.next_verification_at
+    ? t("general.metadata_backups_verification_expected", {
+        at: formatDateTime(verification.next_verification_at),
+      })
+    : t("general.metadata_backups_verification_disabled");
+}
+
+/** The last verified backup and, when newer, the most recent one (#648). */
+function VerificationSummary({ verification }: { verification: MetadataBackupVerification }) {
+  const { t } = useI18n();
+  const verified = verification.last_verified;
+  const latest = verification.latest;
+  return <div className="mt-2 grid gap-1 text-sm" data-testid="metadata-backups-verification">
+    <p className="font-semibold">
+      {t("essential.last_verified_backup")}:{" "}
+      {verified && verified.created_at && verified.verified_at
+        ? t("general.metadata_backups_summary_verified", {
+            id: verified.id,
+            created: formatDateTime(verified.created_at),
+            at: formatDateTime(verified.verified_at),
+          })
+        : t("essential.not_available")}
+    </p>
+    {latest && latest.created_at && latest.id !== verified?.id ? <p className="text-muted">
+      {t("general.metadata_backups_summary_latest", {
+        id: latest.id,
+        created: formatDateTime(latest.created_at),
+        expected: expectedVerification(verification, t),
+      })}
+    </p> : null}
+  </div>;
+}
+
+export function MetadataBackupsSection() {
   const { t } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
@@ -214,9 +254,7 @@ export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string
         <p className="mt-1 text-sm text-muted">
           {t("general.metadata_backups_subtitle")}
         </p>
-        {lastVerified !== undefined && <p className="mt-2 text-sm font-semibold">
-          {t("essential.last_verified_backup")}: {lastVerified ? formatDateTime(lastVerified) : t("essential.not_available")}
-        </p>}
+        {status?.verification ? <VerificationSummary verification={status.verification} /> : null}
       </div>
 
       <Panel className="grid gap-4 p-5">
@@ -351,7 +389,17 @@ export function MetadataBackupsSection({ lastVerified }: { lastVerified?: string
                               <time dateTime={run.verified_at}>{formatDateTime(run.verified_at)}</time>
                             </>
                           ) : (
-                            t("general.metadata_backups_not_verified")
+                            <>
+                              {t("general.metadata_backups_not_verified")}
+                              {status?.verification && run.status.toLowerCase() === "succeeded" ? <>
+                                <span className="mx-2" aria-hidden="true">
+                                  ·
+                                </span>
+                                {run.id === status.verification.pending_run_id
+                                  ? expectedVerification(status.verification, t)
+                                  : t("general.metadata_backups_verification_not_scheduled")}
+                              </> : null}
+                            </>
                           )}
                         </dd>
                       </div>

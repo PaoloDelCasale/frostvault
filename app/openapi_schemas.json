@@ -2914,8 +2914,94 @@
             "string",
             "null"
           ]
+        },
+        "metadata_backup_verification": {
+          "$ref": "#/components/schemas/MetadataBackupVerification"
         }
       }
+    },
+    "MetadataBackupVerification": {
+      "type": "object",
+      "properties": {
+        "last_verified": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "created_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "verified_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "created_at",
+            "verified_at"
+          ]
+        },
+        "latest": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "created_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "verified_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "created_at",
+            "verified_at"
+          ]
+        },
+        "pending_run_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "automatic": {
+          "type": "boolean"
+        },
+        "next_verification_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "last_verified",
+        "latest",
+        "pending_run_id",
+        "automatic",
+        "next_verification_at"
+      ]
     }
   }
 }

@@ -861,6 +861,9 @@
               "null"
             ]
           },
+          "metadata_backup_verification": {
+            "$ref": "#/components/schemas/MetadataBackupVerification"
+          },
           "month": {
             "type": "string"
           },
@@ -1819,6 +1822,89 @@
           "reason"
         ],
         "title": "MetadataBackupRunAction",
+        "type": "object"
+      },
+      "MetadataBackupVerification": {
+        "properties": {
+          "automatic": {
+            "type": "boolean"
+          },
+          "last_verified": {
+            "properties": {
+              "created_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "integer"
+              },
+              "verified_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "created_at",
+              "verified_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "latest": {
+            "properties": {
+              "created_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "integer"
+              },
+              "verified_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "created_at",
+              "verified_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "next_verification_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "last_verified",
+          "latest",
+          "pending_run_id",
+          "automatic",
+          "next_verification_at"
+        ],
         "type": "object"
       },
       "NotificationItem": {

@@ -125,11 +125,26 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
     states = summary.get("states") or {}
     counts = " · ".join(f"{translate('state.' + state, locale=locale)}: {count}"
                         for state, count in states.items())
+    verification = summary.get("metadata_backup_verification") or {}
+    verified = verification.get("last_verified")
+    backup = (translate("notification.weekly_summary.backup_run", locale=locale,
+                        id=verified["id"], created=verified["created_at"],
+                        verified=verified["verified_at"])
+              if verified else summary.get("last_verified_backup") or "—")
     lines = [counts, translate("notification.weekly_summary.metrics", locale=locale,
-             backup=summary.get("last_verified_backup") or "—", problems=summary.get("open_problems", 0),
+             backup=backup, problems=summary.get("open_problems", 0),
              files=summary.get("freed_files", 0), gib=f"{int(summary.get('freed_bytes', 0)) / 1024**3:.2f}",
              cost=f"{summary.get('monthly_cost_estimate', 0):.2f}", currency=summary.get("currency", "EUR"),
              blocked=summary.get("cleanup_blocked", 0))]
+    latest = verification.get("latest")
+    if latest and (not verified or latest["id"] != verified["id"]):
+        # A newer backup than the verified one says when its turn comes (#648).
+        expected = (translate("notification.weekly_summary.verification_expected", locale=locale,
+                              at=verification["next_verification_at"])
+                    if verification.get("next_verification_at")
+                    else translate("notification.weekly_summary.verification_disabled", locale=locale))
+        lines.append(translate("notification.weekly_summary.latest_backup", locale=locale,
+                               id=latest["id"], created=latest["created_at"], expected=expected))
     for vault in summary.get("vaults") or []:
         lines.append(translate("notification.weekly_summary.vault", locale=locale,
                      vault=vault["vault_id"], scan=vault.get("last_scan") or "—",

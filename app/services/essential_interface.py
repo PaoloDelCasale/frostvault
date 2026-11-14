@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .cost_estimates import estimate_storage_month, list_prices
-from . import notifications, cloud_preflight_gate
+from . import notifications, cloud_preflight_gate, metadata_backups
 
 
 def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
@@ -47,8 +47,8 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
         if isinstance(params, str):
             params = json.loads(params)
         baseline = params.get("monthly_cost_estimate")
-    # Metadata backup runs are rebuilt with backup/restore (#598).
-    backup = None
+    verification = metadata_backups.verification_overview(connection, now=now)
+    backup = verification["last_verified"]
     total = sum(totals.values())
     return {
         "vaults": [{**row, "monthly_estimate": round(totals.get(row["id"], 0), 6),
@@ -61,4 +61,5 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
         "cloud_preflight": cloud_preflight_gate.localized_snapshot(
             cloud_preflight_gate.snapshot(connection), locale),
         "last_verified_backup": backup["verified_at"] if backup else None,
+        "metadata_backup_verification": verification,
     }

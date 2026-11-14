@@ -6557,6 +6557,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         "backup_verify", _verify_latest_metadata_backup_once
                     )
                     last_backup_verify = current
+                    metadata_backup_service.mark_verification_attempt()
                 await asyncio.to_thread(_deliver_notifications_once)
             except Exception as exc:
                 await asyncio.to_thread(_record_background_loop_error, exc)

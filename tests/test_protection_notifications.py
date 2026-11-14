@@ -229,6 +229,37 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             monitor.maintain_notifications(c,now=NOW+timedelta(days=7))
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='weekly_summary'").fetchone()['n'],2)
 
+    def test_summary_shows_verified_backup_older_than_unverified_manual_one(self):
+        """#648: a newer manual backup does not hide the verified one."""
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
+            insert = ("INSERT INTO metadata_backup_runs(created_at,finished_at,reason,backend,status,verified_at) "
+                      "VALUES (%s,%s,%s,'postgresql',%s,%s) RETURNING id")
+            verified = c.execute(insert,(NOW-timedelta(hours=4),NOW-timedelta(hours=4),'scheduled','verified',
+                                         NOW-timedelta(hours=3))).fetchone()['id']
+            manual = c.execute(insert,(NOW-timedelta(hours=1),NOW-timedelta(hours=1),'manual','succeeded',
+                                       None)).fetchone()['id']
+            with patch('app.services.metadata_backups._last_verification_attempt_at',None):
+                summary = monitor.weekly_summary(c,now=NOW)
+                from app.services import essential_interface
+                overview = essential_interface.overview(c)
+        # /api/general exposes the same verified backup, not null.
+        self.assertEqual(overview['last_verified_backup'],(NOW-timedelta(hours=3)).isoformat())
+        self.assertEqual(overview['metadata_backup_verification']['last_verified']['id'],verified)
+        backup = summary['metadata_backup_verification']
+        self.assertEqual(summary['last_verified_backup'],(NOW-timedelta(hours=3)).isoformat())
+        self.assertEqual(backup['last_verified']['id'],verified)
+        self.assertEqual(backup['latest']['id'],manual)
+        self.assertEqual(backup['pending_run_id'],manual)
+        expected = NOW-timedelta(hours=3)+timedelta(seconds=settings.metadata_backup_verify_interval_seconds)
+        self.assertEqual(backup['next_verification_at'],expected.isoformat())
+        json.dumps(summary)  # stored as notification params
+        it = inbox.render_weekly_summary(summary,locale='it')
+        self.assertIn(f'Ultimo backup verificato: n. {verified} del ',it)
+        self.assertIn(f'Backup dei metadati più recente: n. {manual} del ',it)
+        self.assertIn(f'verifica prevista {expected.isoformat()}',it)
+        en = inbox.render_weekly_summary(summary,locale='en')
+        self.assertIn(f'Last verified backup: no. {verified} from ',en)
+
     def test_resolved_catalog_incident_is_read_without_dismissing_open_problems(self):
         from app.catalog import ArchiveCatalog
         from app.services.catalog_incidents import remember_missing_archives, resolve_archive_version_incidents

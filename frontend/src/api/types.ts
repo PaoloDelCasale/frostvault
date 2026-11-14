@@ -55,6 +55,7 @@ export type MeResponse = components["schemas"]["MeResponse"];
 export type MeStoppedVault = components["schemas"]["MeStoppedVault"];
 export type MeVault = components["schemas"]["MeVault"];
 export type MetadataBackupRunAction = components["schemas"]["MetadataBackupRunAction"];
+export type MetadataBackupVerification = components["schemas"]["MetadataBackupVerification"];
 export type NotificationItem = components["schemas"]["NotificationItem"];
 export type NotificationReadAction = components["schemas"]["NotificationReadAction"];
 export type NotificationsResponse = components["schemas"]["NotificationsResponse"];
