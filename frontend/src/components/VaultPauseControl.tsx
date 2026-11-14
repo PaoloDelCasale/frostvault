@@ -6,6 +6,7 @@ import type { components } from "@/api/openapi.generated";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { notify } from "@/components/toastQueue";
+import { errorMessage } from "@/lib/errorMessage";
 
 /** A hold is independent of protection/source state; never replaces their badge. */
 export function VaultPauseControl({ vaultId, paused }: { vaultId: number; paused: boolean | undefined }) {
@@ -23,7 +24,7 @@ export function VaultPauseControl({ vaultId, paused }: { vaultId: number; paused
       await client.invalidateQueries({ queryKey: ["general-vaults"] });
       await client.invalidateQueries({ queryKey: ["vaults"] });
       await client.invalidateQueries({ queryKey: ["notifications"] });
-    } catch (error) { notify(error instanceof Error ? error.message : String(error), "error"); }
+    } catch (error) { notify(errorMessage(error, t), "error"); }
     finally { setBusy(false); }
   }
   return <div className="grid gap-2" data-testid={`vault-pause-${vaultId}`}>

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { SourceDirectoryBrowseResponse, SourceDirectoryEntry } from "@/api";
 import { useI18n } from "@/i18n/useI18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 type BrowseFn = (
   volumeAlias: string,
@@ -32,6 +33,8 @@ export function SourceDirectoryBrowser({
   onSelect,
 }: SourceDirectoryBrowserProps) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [path, setPath] = useState("");
   const [listing, setListing] = useState<SourceDirectoryBrowseResponse | null>(
     null,
@@ -49,7 +52,7 @@ export function SourceDirectoryBrowser({
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setError(errorMessage(reason, translateRef.current));
           setListing(null);
         }
       })

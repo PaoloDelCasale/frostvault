@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchOperationPolicy, updateOperationPolicy, type OperationPolicy } from "@/api";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -11,7 +14,7 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     let live = true;
     setPolicy(null); setLoadError("");
     void fetchOperationPolicy(vaultId).then((data) => { if (live) setPolicy(data); })
-      .catch((error: unknown) => { if (live) setLoadError(String(error)); });
+      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
   async function change(value: string) {
@@ -19,7 +22,7 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     try {
       setPolicy(await updateOperationPolicy({ upload_verification: value === "inherit" ? null : value === "read_back" ? "read_back" : "s3_checksum" }, vaultId));
       onNotice(t("settings.verification_saved"));
-    } catch (error) { onNotice(String(error), true); }
+    } catch (error) { onNotice(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
   return <section className="grid gap-2">

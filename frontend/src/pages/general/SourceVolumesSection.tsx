@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   fetchGeneralSourceVolumes,
@@ -6,9 +6,12 @@ import {
 } from "@/api";
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n/useI18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 export function SourceVolumesSection() {
   const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [items, setItems] = useState<SourceVolumeInventoryItem[] | null>(null);
   const [error, setError] = useState("");
 
@@ -20,7 +23,7 @@ export function SourceVolumesSection() {
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setError(errorMessage(reason, translateRef.current));
         }
       });
     return () => {

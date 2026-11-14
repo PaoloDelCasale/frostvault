@@ -8,6 +8,7 @@ import {
 import { FormField, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 type RetentionPanelProps = {
   vaultId: number;
@@ -41,7 +42,7 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
         setLoadState(t("folder_settings.retention_loaded"));
       } catch (error) {
         setLoadState("");
-        setLoadError(error instanceof Error ? error.message : String(error));
+        setLoadError(errorMessage(error, t));
       }
     })();
   }, [ready, t, vaultId]);
@@ -56,7 +57,7 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
       }, vaultId));
       onNotice(t(enabled ? "folder_settings.retention_enabled" : "folder_settings.retention_disabled"));
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), true);
+      onNotice(errorMessage(error, t), true);
     } finally {
       setSaving(false);
     }

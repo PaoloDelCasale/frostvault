@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
 import { fetchLifecycle, updateLifecycleDefault, type LifecycleProfile, type LifecycleResponse } from "@/api";
@@ -9,11 +9,14 @@ import { useI18n } from "@/i18n";
 
 import { LIFECYCLE_CLASSES, validStoragePlan, type DraftTransition } from "./storagePlan";
 import { VaultMovePanel } from "./VaultMovePanel";
+import { errorMessage } from "@/lib/errorMessage";
 
 const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early"];
 
 export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t, ready } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [data, setData] = useState<LifecycleResponse | null>(null);
   const [selection, setSelection] = useState("archive_tiered");
   const [rules, setRules] = useState<DraftTransition[]>([]);
@@ -29,7 +32,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
 
   useEffect(() => {
     if (!ready) return;
-    void fetchLifecycle(vaultId).then(apply).catch((cause: unknown) => setError(String(cause)));
+    void fetchLifecycle(vaultId).then(apply).catch((cause: unknown) => setError(errorMessage(cause, translateRef.current)));
   }, [ready, vaultId]);
 
   async function save() {
@@ -45,7 +48,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       apply(next);
       onNotice(t(next.sync_pending ? "folder_settings.plan_sync_pending" : "folder_settings.plan_saved"));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause, t));
     } finally {
       setBusy(false);
     }

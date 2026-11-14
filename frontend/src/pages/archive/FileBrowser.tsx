@@ -16,6 +16,7 @@ import { navigate, vaultFilesUrl, vaultSettingsUrl } from "@/router";
 import { FileDetails } from "./FileDetails";
 import { RecoverSelection, type Target } from "./RecoverSelection";
 import { formatBytes, formatDateTime, formatNumber } from "./format";
+import { errorMessage } from "@/lib/errorMessage";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 export type FileBrowserProps = { t: Translate; vaultId: number; vaultName: string; capabilities: { delete_enabled: boolean; cloud_deletion_enabled: boolean }; problemCount?: number; onRefresh?: () => void };
@@ -91,7 +92,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     const errors: string[] = [];
     for (const target of release) {
       try { await vaultApi(target.vaultId).action("free-space", { path: target.item.path, is_directory: target.item.type === "directory" }); }
-      catch (error) { errors.push(`${target.vaultName} / ${target.item.path}: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) { errors.push(`${target.vaultName} / ${target.item.path}: ${errorMessage(error, t)}`); }
     }
     if (errors.length) setFreeOutcome({ freed: release.length - errors.length, total: release.length, errors });
     setRelease(null); refresh(); setBusy(false);
@@ -103,7 +104,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     if (busy) return;
     setBusy(true); setMessage("");
     try { for (const target of stoppedTargets) await vaultApi(target.vaultId).post("/api/upload", { path: target.item.path, is_directory: target.item.type === "directory" }); refresh(); }
-    catch (error) { setMessage(String(error)); }
+    catch (error) { setMessage(errorMessage(error, t)); }
     finally { setBusy(false); }
   }
   const counts = (stats.data?.states ?? {}) as Record<string, number>;

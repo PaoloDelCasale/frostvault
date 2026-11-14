@@ -5,6 +5,7 @@ import { vaultApi } from "@/api/vault";
 import type { BulkUploadAdmissionResponse, RetryFailedUploadsResponse } from "@/api/types";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { errorMessage } from "@/lib/errorMessage";
 
 function newRequestId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -58,7 +59,7 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
         const result = await apiRequest<RetryFailedUploadsResponse>(`/api/upload/retry-failed${vaultId === undefined ? "" : `?vault_id=${vaultId}`}`, { method: "POST" });
         setNotice(t("uploads.retry_result", { count: result.item_count }));
       }
-    } catch (reason) { setError(true); setNotice(String(reason)); }
+    } catch (reason) { setError(true); setNotice(errorMessage(reason, t)); }
     finally { setBusy(false); }
   }
   return <section className="grid gap-3">

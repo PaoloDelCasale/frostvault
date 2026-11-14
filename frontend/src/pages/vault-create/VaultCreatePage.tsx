@@ -17,6 +17,7 @@ import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
+import { errorMessage } from "@/lib/errorMessage";
 
 export type VaultCreatePageProps = {
   displayName: string;
@@ -98,13 +99,11 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       await selectVault({ vault_id: vault.id });
       navigateTo(`/?vault_id=${vault.id}`, onNavigate);
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : t("ui.vault_create.failed");
-      setError(message || t("ui.vault_create.failed"));
+      setError(
+        err instanceof ApiError || err instanceof TypeError
+          ? errorMessage(err, t)
+          : (err instanceof Error && err.message) || t("ui.vault_create.failed"),
+      );
     } finally {
       setSubmitting(false);
     }

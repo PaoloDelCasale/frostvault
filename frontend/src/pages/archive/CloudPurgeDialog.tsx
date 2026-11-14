@@ -31,6 +31,10 @@ export type CloudPurgeDialogProps = {
   settings: CloudDeletionSettings | null;
   preview: CloudDeletionPreview | null;
   t: Translate;
+  /** The deletion request is running: the dialog keeps itself and its fields locked. */
+  busy?: boolean;
+  /** Failure of the last request, shown inside the dialog (#651). */
+  error?: string;
   onConfirm: (payload: {
     reason: string;
     confirmation: string;
@@ -46,6 +50,8 @@ export function CloudPurgeDialog({
   settings,
   preview,
   t,
+  busy = false,
+  error = "",
   onConfirm,
 }: CloudPurgeDialogProps) {
   const id = useId();
@@ -61,7 +67,7 @@ export function CloudPurgeDialog({
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!reason.trim() || confirmation !== vaultName || !preview) return;
+    if (busy || !reason.trim() || confirmation !== vaultName || !preview) return;
     onConfirm({
       reason: reason.trim(),
       confirmation,
@@ -103,6 +109,7 @@ export function CloudPurgeDialog({
             id={`${id}-reason`}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
+            disabled={busy}
             required
             minLength={1}
             data-testid="cloud-purge-reason"
@@ -116,17 +123,24 @@ export function CloudPurgeDialog({
             id={`${id}-confirm`}
             value={confirmation}
             onChange={(event) => setConfirmation(event.target.value)}
+            disabled={busy}
             required
             minLength={1}
             data-testid="cloud-purge-confirmation"
             placeholder={vaultName}
           />
         </FormField>
+        {error ? (
+          <p role="alert" className="text-sm font-semibold text-destructive" data-testid="cloud-purge-error">
+            {error}
+          </p>
+        ) : null}
         <div className="mt-2 flex flex-wrap justify-end gap-2">
           <Button
             type="button"
             variant="secondary"
             className="min-h-11 min-w-11"
+            disabled={busy}
             onClick={() => onOpenChange(false)}
           >
             {t("ui.cancel")}
@@ -135,10 +149,11 @@ export function CloudPurgeDialog({
             type="submit"
             variant="danger"
             className="min-h-11 min-w-11"
-            disabled={!preview || !reason.trim() || confirmation !== vaultName}
+            disabled={busy || !preview || !reason.trim() || confirmation !== vaultName}
+            aria-busy={busy || undefined}
             data-testid="cloud-purge-submit"
           >
-            {t("ui.cloud_purge_submit")}
+            {busy ? t("ui.loading") : t("ui.cloud_purge_submit")}
           </Button>
         </div>
       </form>

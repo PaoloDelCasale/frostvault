@@ -43,16 +43,23 @@ export class ReauthenticationRedirectError extends Error {
 export class ApiError extends Error {
   readonly status: number;
   readonly messageKey?: string;
+  readonly messageParams?: Record<string, unknown>;
   readonly body: unknown;
 
   constructor(
     message: string,
-    options: { status: number; messageKey?: string; body?: unknown },
+    options: {
+      status: number;
+      messageKey?: string;
+      messageParams?: Record<string, unknown>;
+      body?: unknown;
+    },
   ) {
     super(message);
     this.name = "ApiError";
     this.status = options.status;
     this.messageKey = options.messageKey;
+    this.messageParams = options.messageParams;
     this.body = options.body ?? null;
   }
 }
@@ -143,21 +150,38 @@ function isReauthRequired(status: number, data: unknown): boolean {
   );
 }
 
-function errorMessageFromBody(
-  data: unknown,
-  status: number,
-): { message: string; messageKey?: string } {
+type BodyMessage = {
+  message: string;
+  messageKey?: string;
+  messageParams?: Record<string, unknown>;
+};
+
+/** A catalog-backed message; the English text is only used before i18n loads. */
+function catalogMessage(
+  key: string,
+  english: string,
+  params?: Record<string, unknown>,
+): BodyMessage {
+  const translated = config.translate?.(key, params);
+  return {
+    message: translated && translated !== key ? translated : english,
+    messageKey: key,
+    messageParams: params,
+  };
+}
+
+function errorMessageFromBody(data: unknown, status: number): BodyMessage {
   const translate = config.translate;
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
+    const params =
+      (record.message_params as Record<string, unknown> | undefined) ??
+      undefined;
     if (typeof record.message_key === "string" && translate) {
       return {
-        message: translate(
-          record.message_key,
-          (record.message_params as Record<string, unknown> | undefined) ??
-            undefined,
-        ),
+        message: translate(record.message_key, params),
         messageKey: record.message_key,
+        messageParams: params,
       };
     }
     if (typeof record.message === "string" && record.message) {
@@ -167,31 +191,24 @@ function errorMessageFromBody(
           typeof record.message_key === "string"
             ? record.message_key
             : undefined,
+        messageParams: params,
       };
     }
-    if (typeof record.detail === "string") {
+    if (typeof record.detail === "string" && record.detail) {
       return { message: record.detail };
     }
     if (Array.isArray(record.detail)) {
-      return {
-        message: record.detail
-          .map((item) =>
-            item && typeof item === "object" && "msg" in item
-              ? String((item as { msg: unknown }).msg)
-              : "Invalid value",
-          )
-          .join("; "),
-      };
+      // FastAPI/pydantic validation text is technical English: show the
+      // localized summary instead (the raw detail stays in ApiError.body).
+      return catalogMessage("ui.error_validation", "Some values are not valid.");
     }
     if (typeof record.error === "string" && record.error !== "reauth_required") {
       return { message: record.error };
     }
   }
-  const fallback =
-    status >= 500
-      ? `Internal server error (HTTP ${status})`
-      : `Operation failed (HTTP ${status})`;
-  return { message: fallback };
+  return status >= 500
+    ? catalogMessage("ui.error_server", `Server error (HTTP ${status}).`, { status })
+    : catalogMessage("ui.error_http", `The request failed (HTTP ${status}).`, { status });
 }
 
 function reauthenticationFailure(status = 403): ApiError {
@@ -317,9 +334,16 @@ async function parseBody(response: Response): Promise<unknown> {
     return JSON.parse(text) as unknown;
   } catch {
     if (response.ok) {
-      throw new Error(
-        `Invalid response from the server (HTTP ${response.status})`,
+      const { message, messageKey, messageParams } = catalogMessage(
+        "ui.error_invalid_response",
+        `Invalid response from the server (HTTP ${response.status}).`,
+        { status: response.status },
       );
+      throw new ApiError(message, {
+        status: response.status,
+        messageKey,
+        messageParams,
+      });
     }
     return {};
   }
@@ -356,7 +380,11 @@ async function requestResponseInCohort(
   const data = await parseBody(response);
   if (response.status === 401) {
     navigateTo(SIGN_IN_PATH);
-    throw new ApiError("Authentication required.", { status: 401, body: data });
+    const { message, messageKey } = catalogMessage(
+      "ui.error_auth_required",
+      "Authentication required.",
+    );
+    throw new ApiError(message, { status: 401, messageKey, body: data });
   }
 
   if (isReauthRequired(response.status, data) && allowReauthRetry) {
@@ -372,10 +400,14 @@ async function requestResponseInCohort(
     );
   }
 
-  const { message, messageKey } = errorMessageFromBody(data, response.status);
+  const { message, messageKey, messageParams } = errorMessageFromBody(
+    data,
+    response.status,
+  );
   throw new ApiError(message, {
     status: response.status,
     messageKey,
+    messageParams,
     body: data,
   });
 }
