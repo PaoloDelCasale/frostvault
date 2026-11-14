@@ -11,6 +11,7 @@ import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { VerificationEvidence } from "./VerificationEvidence";
 import { itemStateBadge } from "./protectionLabel";
 import { formatBytes, formatDateTime, recoveryTimeKey } from "./format";
+import { recoveryTimeline } from "./recoveryLabel";
 import type { Target } from "./RecoverSelection";
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -49,6 +50,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
     catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
+  const recovery = item?.recovery;
   const pending = data.data?.jobs.groups?.filter((job) => job.action === "cloud-purge" && job.status === "pending_delay") ?? [];
   return <>
     <Sheet open={!deletion && !replace} onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={target.item.name || target.item.path} description={`${target.vaultName} / ${target.item.path}`} closeLabel={t("ui.close")}>
@@ -56,7 +58,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
         {data.isPending && <p role="status">{t("ui.loading")}</p>}{data.error && <p role="alert">{String(data.error)}</p>}
         {item && <>
           <section className="grid gap-3" data-testid="details-summary">
-            <div className="flex flex-wrap items-center gap-2"><span className="sr-only">{t("essential.protection")}:</span><Badge {...itemStateBadge(item, t)} /></div>
+            <div className="flex flex-wrap items-center gap-2"><span className="sr-only">{t("essential.protection")}:</span><Badge {...itemStateBadge(item, t)} />{recovery?.active && <Badge state="restoring" label={t("state.recovering")} />}</div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               <Fact label={t("details.on_server")}>{t(item.local_exists ? "details.present" : "details.absent")}</Fact>
               <Fact label={t("details.in_cloud")}>{t(item.cloud_exists ? "details.present" : "details.not_confirmed")}</Fact>
@@ -64,9 +66,16 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
               <Fact label={t("essential.modified")}>{formatDateTime(item.modified_at)}</Fact>
               <Fact label={t("essential.last_verified")}>{formatDateTime(version?.verified_at)}</Fact>
               <Fact label={t("essential.cloud_class")}>{storage ? <StorageBadge storage={storage === "DEEP_ARCHIVE" ? "deep-archive" : storage.startsWith("GLACIER") ? "glacier" : "standard"} label={t(`storage.${storage}`)} /> : "—"}</Fact>
-              {Boolean(item.cloud_exists) && storage && <Fact label={t("details.recovery_time")}>{t(recoveryTimeKey(storage))}</Fact>}
+              {Boolean(item.cloud_exists) && storage && <Fact label={t("details.recovery_time")}>{recovery?.tier ? recoveryTimeline({ tier: recovery.tier, ready_by: recovery.ready_by }, t).join(" · ") : t(recoveryTimeKey(storage))}</Fact>}
             </dl>
-            {item.recover_eligible && <Button className="w-fit" disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
+            {/* A Recovery in progress is shown, never offered again (#646). */}
+            {recovery?.active
+              ? <p role="status" data-testid="recovery-progress">{[t("recovery.in_progress"), t(`recovery.state.${recovery.state}`), ...recoveryTimeline(recovery, t)].join(" · ")}</p>
+              : <>
+                {recovery?.state === "waiting_for_cloud" && <p role="note" data-testid="recovery-progress">{[t("recovery.cloud_continues"), ...recoveryTimeline(recovery, t)].join(" · ")}</p>}
+                {recovery?.state === "ready" && recovery.expires_at && <p role="note" data-testid="recovery-progress">{t("recovery.copy_until", { date: formatDateTime(recovery.expires_at) })}</p>}
+                {item.recover_eligible && <Button className="w-fit" disabled={busy} onClick={onRecover}>{t("ui.row_action_recover")}</Button>}
+              </>}
           </section>
           {item.state === "stopped" && <section role="note" className="grid justify-items-start gap-3 rounded-card border border-line p-3" data-testid="stopped-help"><p>{t("essential.stopped_help")}</p>
             {item.upload_eligible && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.upload_now")}</Button>}

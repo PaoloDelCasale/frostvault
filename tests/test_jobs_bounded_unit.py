@@ -29,7 +29,8 @@ class JobsMaterializationTests(unittest.TestCase):
                                active_status="queued", item_count=count, completed_count=count-1,
                                failed_count=0, resolved_failed_count=0, cancelled_count=0,
                                total_bytes=count*100, transferred_bytes=(count-1)*100,
-                               updated_at="2026-11-11", pending_until=None)
+                               updated_at="2026-11-11", pending_until=None,
+                               requested_at="2026-11-11T09:57:00+00:00", estimated_hours=None)
                 connection = Mock()
                 connection.execute.side_effect = [Mock(fetchall=lambda: rows), Mock(fetchall=lambda: [summary])]
                 with patch("app.services.job_queries.project_jobs", side_effect=lambda c,r:r) as project:
@@ -45,7 +46,8 @@ class JobsMaterializationTests(unittest.TestCase):
         summary = dict(group_key="empty",last_id=3,path="empty",group_path=None,action="recover",
                        message="",message_key=None,message_params=None,active_status=None,
                        item_count=3,completed_count=1,failed_count=1,resolved_failed_count=1,
-                       cancelled_count=1,total_bytes=0,transferred_bytes=0)
+                       cancelled_count=1,total_bytes=0,transferred_bytes=0,
+                       requested_at=None,estimated_hours=None)
         connection = Mock()
         connection.execute.side_effect = [Mock(fetchall=lambda: []),Mock(fetchall=lambda: [summary])]
         result = list_jobs(connection,vault_id=1,locale="en")

@@ -1530,6 +1530,23 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @description Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped. */
+        FileRecovery: {
+            /** @description A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable. */
+            active: boolean;
+            days: number | null;
+            /** @description End of the readable restored copy. */
+            expires_at: string | null;
+            /** @description Request instant plus the tier's restore hours; an estimate. */
+            ready_by: string | null;
+            requested_at: string | null;
+            /** @enum {string} */
+            state: "queued" | "awaiting_approval" | "waiting_for_cloud" | "ready" | "downloading";
+            /** @enum {string|null} */
+            tier: "Expedited" | "Standard" | "Bulk" | null;
+        } & {
+            [key: string]: unknown;
+        };
         FileVersionsResponse: {
             default_archive_version_id: string | null;
             default_restore_days: number;
@@ -1695,6 +1712,9 @@ export interface components {
             path: string;
             pending_until?: string | null;
             percent: number;
+            /** @description Expected end of the cloud restore: requested_at plus estimated_hours. */
+            ready_by?: string | null;
+            requested_at?: string | null;
             resolved_failed_count?: number;
             restore_days?: number | null;
             restore_tier?: string | null;
@@ -2332,6 +2352,7 @@ export interface components {
             recover_eligible?: boolean;
             /** @description Current exists, is verified and available. */
             recoverable?: boolean;
+            recovery?: components["schemas"]["FileRecovery"] | null;
             state: string;
             storage_class?: string | null;
             /** @constant */

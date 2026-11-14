@@ -122,7 +122,9 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     {target.item.type === "directory" ? <Folder className="size-4 shrink-0 text-green" aria-hidden="true" /> : <FileIcon className="size-4 shrink-0 text-muted" aria-hidden="true" />}
     <span className="min-w-0 break-words">{label(target)}</span>
   </button>;
-  const protection = (item: ArchiveListItem) => item.type === "directory" ? <FolderStates item={item} t={t} /> : <Badge size="sm" {...itemStateBadge(item, t)} />;
+  const protection = (item: ArchiveListItem) => item.type === "directory" ? <FolderStates item={item} t={t} /> : item.recovery?.active
+    ? <span className="flex flex-wrap gap-1"><Badge size="sm" {...itemStateBadge(item, t)} /><Badge size="sm" state="restoring" label={t("state.recovering")} /></span>
+    : <Badge size="sm" {...itemStateBadge(item, t)} />;
   const size = (item: ArchiveListItem) => formatBytes(item.type === "directory" ? item.total_size : Number((item.local_exists ? item.local_size : item.cloud_size) ?? 0));
   const modified = (item: ArchiveListItem) => formatDateTime(item.modified_at);
   function toggle(target: Target) { setSelected((current) => current.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path) ? current.filter((row) => row.vaultId !== target.vaultId || row.item.path !== target.item.path) : [...current, target]); }

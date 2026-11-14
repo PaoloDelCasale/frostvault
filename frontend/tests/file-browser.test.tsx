@@ -32,6 +32,12 @@ describe("essential file browser", () => {
     expect(table).not.toHaveTextContent("DEEP_ARCHIVE");
     expect(screen.queryByText(/VersionId/)).not.toBeInTheDocument();
   });
+  it("marks a file with a Recovery in progress next to its Cloud-only state (#646)", async () => {
+    setup([{ ...file, recover_eligible: false, recovery: { state: "waiting_for_cloud", active: true, tier: "Standard", days: 1, requested_at: null, ready_by: null, expires_at: null } }]);
+    const [badge] = await screen.findAllByText("state.recovering");
+    expect(badge).toHaveAttribute("data-state", "restoring");
+    expect(screen.getAllByText("state.cloud_only").length).toBeGreaterThan(0);
+  });
   it("names the Vault with its state and the Files | Settings tabs", async () => {
     setup(); const header = await screen.findByTestId("vault-header");
     expect(within(header).getByRole("heading", { level: 1, name: "First" })).toBeInTheDocument();

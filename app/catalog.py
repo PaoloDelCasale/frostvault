@@ -30,6 +30,7 @@ from .services.directory_aggregates import (
     stopped_upload_counts,
 )
 from .services.operation_policies import stopped_upload_sql
+from .services.recovery_progress import LATEST_RECOVERY_JOIN_SQL, project_recovery
 
 
 class VaultFileNotFound(LookupError):
@@ -2023,6 +2024,12 @@ class ArchiveCatalog:
                 cur.verification_method,
                 cur.verification_fallback,
                 cur.verification_egress_bytes,
+                cur.restore_state,
+                cur.restore_expiry,
+                recovery.recovery_job_status,
+                recovery.recovery_requested_at,
+                recovery.recovery_tier,
+                recovery.recovery_days,
                 ({_REQUESTED_VERIFICATION_SQL}) AS upload_verification_requested,
                 cleanup.id AS cleanup_batch_id,
                 EXISTS (
@@ -2033,6 +2040,7 @@ class ArchiveCatalog:
                 ) AS has_superseded
             FROM files f
             {CURRENT_JOIN_SQL}
+            {LATEST_RECOVERY_JOIN_SQL}
             LEFT JOIN cleanup_batches cleanup ON cleanup.file_id = f.id
             WHERE {" AND ".join(clauses)}
         """
@@ -2047,6 +2055,7 @@ class ArchiveCatalog:
     ) -> list[dict[str, Any]]:
         prefix = f"{directory}/" if directory else ""
         items: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
         for row in rows:
             local_exists = row["local_presence"] in {"present", "unsupported"}
             current_id = row["current_version_id"]
@@ -2054,6 +2063,7 @@ class ArchiveCatalog:
             protection = project_file(row, unconfirmed=self.protection_unconfirmed)
             upload_eligible = local_copy_is_upload_eligible(row)
             recoverable = current_is_recoverable(row)
+            recovery = project_recovery(row, local_exists=local_exists, now=now)
             if name_from_path:
                 name = row["path"]
             else:
@@ -2088,7 +2098,12 @@ class ArchiveCatalog:
                     "reconciliation_block": row["reconciliation_block"],
                     "cleanup": _cleanup_state(row),
                     "upload_eligible": upload_eligible and not self.protection_unconfirmed,
-                    "recover_eligible": not local_exists and recoverable,
+                    "recovery": recovery,
+                    # A Recovery in progress is resumed, never requested again.
+                    "recover_eligible": (
+                        not local_exists and recoverable
+                        and not (recovery is not None and recovery["active"])
+                    ),
                     "cleanup_eligible": (
                         local_copy_matches_current(row) and recoverable
                         and protection["state"] == "protected"

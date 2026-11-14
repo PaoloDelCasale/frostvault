@@ -1263,6 +1263,19 @@
         },
         "updated_at": {
           "type": "string"
+        },
+        "requested_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ready_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Expected end of the cloud restore: requested_at plus estimated_hours."
         }
       },
       "required": [
@@ -2349,6 +2362,16 @@
             null
           ],
           "description": "Exact cleanup of superseded versions."
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/FileRecovery"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3001,6 +3024,74 @@
         "pending_run_id",
         "automatic",
         "next_verification_at"
+      ]
+    },
+    "FileRecovery": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped.",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "awaiting_approval",
+            "waiting_for_cloud",
+            "ready",
+            "downloading"
+          ]
+        },
+        "active": {
+          "type": "boolean",
+          "description": "A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable."
+        },
+        "tier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "Expedited",
+            "Standard",
+            "Bulk",
+            null
+          ]
+        },
+        "days": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "requested_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ready_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Request instant plus the tier's restore hours; an estimate."
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "End of the readable restored copy."
+        }
+      },
+      "required": [
+        "state",
+        "active",
+        "tier",
+        "days",
+        "requested_at",
+        "ready_by",
+        "expires_at"
       ]
     }
   }

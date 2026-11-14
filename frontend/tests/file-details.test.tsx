@@ -71,6 +71,21 @@ describe("deliberate file Details", () => {
     expect(within(technical).getByText("exact")).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toHaveAccessibleName("same.jpg");
   });
+  it("shows a Recovery in progress with its tier and expected time instead of offering a new one (#646)", async () => {
+    setup("cloud_only", false, false, false, false, { recover_eligible: false, recovery: { state: "waiting_for_cloud", active: true, tier: "Standard", days: 1, requested_at: "2026-11-14T09:57:00Z", ready_by: "2026-11-14T21:57:00Z", expires_at: null } });
+    const progress = await screen.findByTestId("recovery-progress");
+    expect(progress).toHaveTextContent(/^recovery\.in_progress · recovery\.state\.waiting_for_cloud · recovery\.requested_at · recovery\.tier\.Standard · recovery\.ready_by$/);
+    const summary = screen.getByTestId("details-summary");
+    expect(within(summary).getByText("state.recovering")).toHaveAttribute("data-state", "restoring");
+    expect(within(summary).getByText("details.recovery_time").nextSibling).toHaveTextContent("recovery.tier.Standard · recovery.ready_by");
+    expect(screen.queryByRole("button", { name: "ui.row_action_recover" })).not.toBeInTheDocument();
+  });
+  it("says until when a restored copy stays available and keeps Recover", async () => {
+    setup("cloud_only", false, false, false, false, { recover_eligible: true, recovery: { state: "ready", active: false, tier: "Bulk", days: 3, requested_at: null, ready_by: null, expires_at: "2026-11-17T00:00:00Z" } });
+    expect(await screen.findByTestId("recovery-progress")).toHaveTextContent("recovery.copy_until");
+    expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeInTheDocument();
+    expect(screen.queryByText("state.recovering")).not.toBeInTheDocument();
+  });
   it("loads paginated targeted history and bidirectional links outside recent50", async () => {
     const calls = setup("protected",true);
     const user = userEvent.setup();
