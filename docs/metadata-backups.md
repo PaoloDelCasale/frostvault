@@ -156,6 +156,16 @@ the private scratch directory. The downloaded kit includes these steps offline.
    Volume and relative directory (empty for that volume's root). This explicitly
    accepts the mount for this Vault only, not its siblings. Allocation/containment
    and Job/scan concurrency gates remain mandatory. No files are moved.
+   A Vault created from the UI lives in its **own managed folder**
+   `/sources/managed/<Vault uuid>`: put that folder (same uuid, same content)
+   back under the new `/sources/managed` before starting the app, then choose
+   **This Vault's own managed folder** as the destination
+   (`{"volume_alias":"managed","relative_path":"<Vault uuid>"}` in the API).
+   Nothing reconnects automatically. FrostVault never creates the folder: if it
+   is missing, not a directory or a symbolic link, reconnect is refused with
+   *Managed folder missing*. Another Vault's managed folder, any other path
+   under `managed`, and moving a custom Source Volume Vault into `managed` are
+   refused. A managed Vault may still reconnect to a custom Source Volume.
 8. Reconnect reconciles S3 **without cloud deletions**, then rehashes the complete
    local tree. Matching files become **Protected**, absent files **Cloud-only**,
    different content **Cloud-only Conflict** with upload held back. An empty

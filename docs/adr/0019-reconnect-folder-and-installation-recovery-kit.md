@@ -18,6 +18,15 @@ is enrolled and pinned for the scan; future mount or directory replacement
 blocks local work again. The historical `relocation_state` fields are internal
 reconnect recovery state, not a second operation or public option.
 
+A managed Vault (#641) may also reconnect to its own `/sources/managed/<uuid>`,
+never another Vault's managed folder or other path under `managed`, and a custom
+Source Volume Vault never moves into `managed`. The folder is never created. Its
+boundary is the `/sources` mount: that mount's fingerprint must be available and
+unchanged across validation and no nested mount may intersect the folder. As for
+a newly created managed Vault, only the directory identity is stored; no
+per-Vault mount fingerprint is accepted. Gates, audit and the mandatory scan are
+the same; nothing reconnects automatically after a restore.
+
 Reconnect performs cloud reconciliation first, with cleanup disabled, then a
 mandatory complete local rehash. Unknown current cloud content needs a full
 exact-VersionId read before its digest can become recovery evidence; inaccessible

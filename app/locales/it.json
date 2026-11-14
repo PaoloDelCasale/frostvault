@@ -372,6 +372,8 @@
   "general.reconnect_help": "Accetta esplicitamente un nuovo volume sorgente o una cartella diversa per questo Vault. Gli altri Vault non vengono ricollegati. È richiesto un motivo.",
   "general.reconnect_old_root": "Cartella precedente",
   "general.reconnect_volume": "Volume sorgente di destinazione",
+  "general.reconnect_own_managed": "Cartella gestita di questo Vault",
+  "general.reconnect_own_managed_help": "La stessa cartella gestita in cui è stato creato questo Vault. Non viene mai ricreata: se manca, il ricollegamento è rifiutato.",
   "general.reconnect_path": "Cartella relativa al volume sorgente (vuoto = radice del volume)",
   "general.reconnect_reason": "Motivo del ricollegamento",
   "general.reconnect_scan_warning": "Le operazioni locali restano sospese finché la riconciliazione cloud e la scansione completa obbligatoria non terminano. File uguali: Protetti; assenti: Solo cloud; contenuti diversi: conflitti, mai caricati automaticamente.",

@@ -51,6 +51,36 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(client.post("/api/vaults/7/reconnect", json=payload).status_code, 403)
         self.assertEqual(client.post("/api/vaults/7/relocate", json=payload, headers=headers).status_code, 404)
 
+    def test_managed_reconnect_errors_name_the_refusal(self):
+        from app.services import source_identity, source_layout
+        sources = Path(self.tmp.name) / "sources"
+        own_uuid, other_uuid = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+        (sources / "managed").mkdir(parents=True)
+        source_layout.override_sources_root(sources)
+        self.addCleanup(source_layout.reset_sources_root_override)
+        for patcher in (patch.object(source_identity, "fingerprint_for_mount", return_value="mount"),
+                        patch.object(source_identity, "validate_root_mount_boundary"),
+                        patch.object(source_layout, "path_is_mount", return_value=False)):
+            patcher.start(); self.addCleanup(patcher.stop)
+        with PostgresConnection(str(self.db_path)) as connection:
+            connection.execute("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'bucket', 'eu-south-1')")
+            connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root, lifecycle)
+                VALUES (7, %s, (SELECT id FROM vault_targets), 'Photos', %s, 'reconnect_required')""",
+                (own_uuid, str(sources / "managed" / own_uuid)))
+        client, headers = self.client_for()
+        def post(relative_path):
+            return client.post("/api/vaults/7/reconnect", headers=headers, json={
+                "volume_alias": "managed", "relative_path": relative_path, "reason": "restore"})
+        response = post(own_uuid)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, "Managed folder missing"))
+        response = post(other_uuid)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Only this Vault's own managed folder can be reconnected")
+        (sources / "managed" / own_uuid).mkdir()
+        response = post(own_uuid)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["source_root"], str(sources / "managed" / own_uuid))
+
     def test_kit_requires_authentication_and_recent_reauthentication(self):
         anonymous = TestClient(app)
         self.assertIn(anonymous.get("/api/recovery-kit/download").status_code, (401, 403))
