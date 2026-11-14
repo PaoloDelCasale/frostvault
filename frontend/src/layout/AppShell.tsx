@@ -35,7 +35,7 @@ export function AppShell({ capabilities, handlers, t, queryClient: provided, chi
           <Snowflake className="size-5" aria-hidden="true" /><span className="hidden sm:inline">FrostVault</span>
         </a>
         <div className="flex min-w-0 flex-1 items-center sm:ml-2">
-          {capabilities.vaults.length > 0 && <VaultSwitcher vaults={capabilities.vaults} currentVaultId={capabilities.currentVaultId} problemCounts={problemCounts} t={t} onNavigate={navigateTo} />}
+          {capabilities.vaults.length > 0 && <VaultSwitcher vaults={capabilities.vaults} currentVaultId={capabilities.allVaults ? undefined : capabilities.currentVaultId} allVaults={capabilities.allVaults} problemCounts={problemCounts} t={t} onNavigate={navigateTo} />}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {activity}

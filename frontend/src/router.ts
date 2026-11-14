@@ -34,8 +34,9 @@ export function vaultFilesUrl(vaultId: number, params?: Record<string, string>):
   return `/vaults/${vaultId}/files${search ? `?${search}` : ""}`;
 }
 
-export function vaultSettingsUrl(vaultId: number): string {
-  return `/vaults/${vaultId}/settings`;
+/** `section` names a settings section to scroll to and highlight (`#protection`). */
+export function vaultSettingsUrl(vaultId: number, section?: string): string {
+  return `/vaults/${vaultId}/settings${section ? `#${section}` : ""}`;
 }
 
 /**
@@ -79,8 +80,9 @@ export function useLocation(): { pathname: string; search: string } {
 export function navigate(url: string, { replace = false }: { replace?: boolean } = {}): void {
   const target = new URL(url, window.location.origin);
   const normalized = legacyRedirect(target.pathname, target.search) ?? `${target.pathname}${target.search}`;
-  if (normalized === currentLocation()) return;
-  window.history[replace ? "replaceState" : "pushState"]({}, "", normalized);
+  // A fragment (`#protection`) is kept so the page can scroll to that section.
+  if (normalized === currentLocation() && !target.hash) return;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", `${normalized}${target.hash}`);
   // Views that keep their own query state listen to popstate as for Back.
   window.dispatchEvent(new PopStateEvent("popstate"));
   window.dispatchEvent(new Event(NAVIGATE_EVENT));
@@ -104,5 +106,5 @@ export function interceptLinkClick(event: MouseEvent | globalThis.MouseEvent): v
   const url = new URL(anchor.href, window.location.href);
   if (url.origin !== window.location.origin || isServerPath(url.pathname)) return;
   event.preventDefault();
-  navigate(`${url.pathname}${url.search}`);
+  navigate(`${url.pathname}${url.search}${url.hash}`);
 }

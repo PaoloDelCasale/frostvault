@@ -250,9 +250,9 @@ describe("MetadataBackupsSection", () => {
     expect(
       await screen.findByRole("heading", { name: "Metadata backups", level: 2 }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Full success · off-host copy")).toBeInTheDocument();
+    expect(screen.getByText("Full success · copy off this server")).toBeInTheDocument();
     expect(
-      screen.getByText("Local-only success · no off-host copy"),
+      screen.getByText("Local-only success · no copy off this server"),
     ).toBeInTheDocument();
     expect(screen.getByText("Failed")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();

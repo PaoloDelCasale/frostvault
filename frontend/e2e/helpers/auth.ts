@@ -58,7 +58,7 @@ export async function emergencyPasswordLogin(page: Page): Promise<E2ECredentials
   const credentials = loadCredentials();
   await page.goto("/login");
   await page.getByLabel(/password/i).fill(credentials.owner.password);
-  await page.locator("form").getByRole("button", { name: /^sign in$|^accedi$/i }).click();
+  await page.locator("form").getByRole("button", { name: /^(sign in|accedi)( with password| con la password)?$/i }).click();
   // Sign-in lands on the Overview; the scenarios start inside the primary Vault.
   await expect(page.getByRole("heading", { level: 1, name: /^overview$|^panoramica$/i })).toBeVisible({
     timeout: 20_000,

@@ -42,4 +42,14 @@ describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
     render(<AppShell capabilities={{ vaults, currentVaultId: 2, locale, locales: ["en", "it"] }} t={t}><p>Browser</p></AppShell>);
     expect(within(screen.getByRole("banner")).getByTestId("vault-switcher")).toHaveTextContent("Second");
   });
+
+  it("shows «All Vaults» with no checked Vault on a page about every Vault (#650)", async () => {
+    render(<AppShell capabilities={{ vaults, currentVaultId: 2, allVaults: true, locale, locales: ["en", "it"] }} t={t} section="overview"><p>Overview</p></AppShell>);
+    const switcher = within(screen.getByRole("banner")).getByTestId("vault-switcher");
+    expect(switcher).toHaveTextContent(t("nav.all_vaults"));
+    expect(switcher).not.toHaveTextContent("Second");
+    await userEvent.setup().click(switcher);
+    const menu = within(await screen.findByRole("dialog", { name: t("nav.switch_vault") }));
+    expect(menu.getByRole("button", { name: "Second" })).not.toHaveAttribute("aria-current");
+  });
 });

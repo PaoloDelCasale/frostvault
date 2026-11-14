@@ -500,6 +500,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/login/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Login Options
+         * @description Public sign-in choices for the login page: no secrets, no Session.
+         */
+        get: operations["login_options_api_login_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/logout": {
         parameters: {
             query?: never;
@@ -1824,6 +1844,12 @@ export interface components {
             messages: {
                 [key: string]: string;
             };
+        } & {
+            [key: string]: unknown;
+        };
+        LoginOptionsResponse: {
+            oidc_enabled: boolean;
+            oidc_provider_name: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -3311,6 +3337,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_options_api_login_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginOptionsResponse"];
                 };
             };
         };

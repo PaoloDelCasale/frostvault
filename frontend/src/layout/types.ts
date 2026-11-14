@@ -5,6 +5,8 @@ export type ShellSection = "overview" | "files" | "settings" | "problems" | "sys
 
 export type ShellCapabilities = {
   locale: string; locales: string[]; vaults: VaultListItem[]; currentVaultId?: number;
+  /** A page about every Vault (Overview, Problems, System): the switcher shows «All Vaults», unchecked. */
+  allVaults?: boolean;
 };
 export type ShellNavHandlers = {
   onSignOut?: () => void;

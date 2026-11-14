@@ -80,7 +80,7 @@ export default function App() {
   else if (route.name === "settings") page = current ? <div className="grid min-w-0 gap-4"><VaultHeader vaultId={current.id} vaultName={current.name} active="settings" t={t} />
     <VaultSettingsPanel key={current.id} vaultId={current.id} vaultName={current.name} onStopped={() => { void loadVaults().then(() => navigate("/")); }} /></div> : unavailable;
   else page = <p role="alert" className="rounded-card border border-line bg-surface p-4">{t("nav.not_found")}</p>;
-  return <AppShell capabilities={{ currentVaultId: current?.id, locale, locales: me.locales, vaults }} queryClient={client} t={t}
+  return <AppShell capabilities={{ currentVaultId: current?.id, allVaults: requested === undefined, locale, locales: me.locales, vaults }} queryClient={client} t={t}
     section={section} openProblems={overview.data?.open_problem_count} problemCounts={problemCounts}
     activity={<UploadActivity t={t} vaultId={current?.id} />} banner={preflight}
     handlers={{

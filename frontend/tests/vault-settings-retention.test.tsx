@@ -44,7 +44,7 @@ describe("VaultSettingsPanel — per-Vault local release", () => {
 
   it.each([90, 180, 365, 730])("saves %s days without changing upload rules", async (days) => {
     const user = userEvent.setup();
-    const updates = setup(180);
+    const updates = setup(days === 180 ? 90 : 180);
     await screen.findByText(/local copy retention loaded/i);
     await user.selectOptions(screen.getByRole("combobox", { name: /^free local space after/i }), String(days));
     await user.click(screen.getByRole("button", { name: /save local copy retention/i }));

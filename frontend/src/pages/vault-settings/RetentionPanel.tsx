@@ -47,9 +47,12 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
     })();
   }, [ready, t, vaultId]);
 
+  // Saving is offered only for a change from the stored retention.
+  const dirty = policy !== null && (enabled ? days : null) !== (policy.local_release_after_days ?? null);
+
   async function onSave(event: React.FormEvent) {
     event.preventDefault();
-    if (!policy) return;
+    if (!dirty) return;
     setSaving(true);
     try {
       acceptPolicy(await updateOperationPolicy({
@@ -96,7 +99,7 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
               {periods.map((period) => <option key={period} value={period}>{t(`folder_settings.retention_period_${period}`)}</option>)}
             </FormSelect>
           </FormField>
-          <Button type="submit" className="min-h-11 w-full sm:w-fit sm:justify-self-start" disabled={saving || !policy}>
+          <Button type="submit" variant={dirty ? "primary" : "secondary"} className="min-h-11 w-full sm:w-fit sm:justify-self-start" disabled={saving || !dirty}>
             {t("folder_settings.retention_save")}
           </Button>
         </form>

@@ -1250,6 +1250,15 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     }
 
 
+@app.get("/api/login/options", response_model=response_model("LoginOptionsResponse"))
+def login_options():
+    """Public sign-in choices for the login page: no secrets, no Session."""
+    return {
+        "oidc_enabled": settings.oidc_enabled,
+        "oidc_provider_name": settings.oidc_provider_name or None,
+    }
+
+
 @app.get("/api/i18n/catalog", response_model=response_model("I18nCatalogResponse"))
 def i18n_catalog(request: Request, locale: str | None = None):
     resolved = normalize_locale(locale) if locale else _request_locale(request)

@@ -142,7 +142,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
         {problemCount > 0 && <a className="font-semibold underline" href="/problems">{t("files.open_problems", { count: problemCount })}</a>}
       </p>
     </div>}
-    {query.data?.manual_upload && <p className="text-sm text-muted" data-testid="vault-manual-upload">{t("files.manual_upload_note")} <a className="font-semibold text-ink underline" href={vaultSettingsUrl(vaultId)}>{t("essential.review_protection")}</a></p>}
+    {query.data?.manual_upload && <p className="text-sm text-muted" data-testid="vault-manual-upload">{t("files.manual_upload_note")} <a className="font-semibold text-ink underline" href={vaultSettingsUrl(vaultId, "protection")}>{t("essential.review_protection")}</a></p>}
     <ActiveOperations vaultId={vaultId} t={t} />
     <div className="grid min-w-0 gap-3">
       <div className="flex min-w-0 flex-wrap items-center gap-2">

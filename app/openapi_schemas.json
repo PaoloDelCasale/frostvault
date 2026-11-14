@@ -3093,6 +3093,25 @@
         "ready_by",
         "expires_at"
       ]
+    },
+    "LoginOptionsResponse": {
+      "type": "object",
+      "properties": {
+        "oidc_enabled": {
+          "type": "boolean"
+        },
+        "oidc_provider_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "oidc_enabled",
+        "oidc_provider_name"
+      ],
+      "additionalProperties": true
     }
   }
 }
