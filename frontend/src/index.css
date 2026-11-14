@@ -99,6 +99,9 @@
   --state-cloud-fg: #24568f;
   --state-restoring-bg: var(--amber-soft);
   --state-restoring-fg: #775400;
+  /* «In attesa» waits, it is not a Problem: amber, not red (#658). */
+  --state-pending-bg: var(--amber-soft);
+  --state-pending-fg: #775400;
   --state-unsupported-bg: #e9eeee;
   --state-unsupported-fg: #4b5b51;
   --state-missing-bg: #eeeeee;
@@ -168,6 +171,8 @@
   --state-cloud-fg: #9dd3f5;
   --state-restoring-bg: #574313;
   --state-restoring-fg: #f4d278;
+  --state-pending-bg: #574313;
+  --state-pending-fg: #f4d278;
   --state-unsupported-bg: #303d36;
   --state-unsupported-fg: #bfcec3;
   --state-missing-bg: #303a35;

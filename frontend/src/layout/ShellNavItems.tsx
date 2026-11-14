@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { CircleAlert, FolderOpen, LayoutDashboard, Server, Settings } from "lucide-react";
 
+import { ProblemCount } from "@/components/ProblemCount";
 import { cn } from "@/lib/utils";
 import { vaultFilesUrl, vaultSettingsUrl } from "@/router";
 import { shellLabel, type ShellTranslator } from "./labels";
@@ -27,8 +28,7 @@ export function ShellNavItems({ section, currentVault, openProblems, t, onNaviga
   t?: ShellTranslator; onNavigate?: () => void;
 }) {
   const problems = openProblems === undefined ? null
-    : <span className={cn("shrink-0 rounded-badge px-2 text-xs font-bold tabular-nums", openProblems > 0 ? "bg-destructive text-destructive-foreground" : "bg-[var(--state-unsupported-bg)] text-muted")}
-      data-testid="nav-problem-count">{openProblems}</span>;
+    : <ProblemCount count={openProblems} testId="nav-problem-count" />;
   return <div className="grid min-w-0 gap-1">
     <NavLink href="/" icon={LayoutDashboard} label={shellLabel(t, "nav.overview", "Overview")} active={section === "overview"} onNavigate={onNavigate} />
     {currentVault && <div className="mt-3 grid gap-1" role="group" aria-label={currentVault.name}>

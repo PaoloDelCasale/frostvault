@@ -48,3 +48,12 @@ describe("Source Volume identity diagnostics", () => {
     expect(screen.getByText("A different Source Volume is mounted.")).toBeInTheDocument();
   });
 });
+
+describe("Source Volume health tone (#658)", () => {
+  it("colours unusable volumes as a problem, not neutral", async () => {
+    render(<SourceVolumesSection />);
+    const badges = await screen.findAllByTestId("source-health");
+    expect(badges.map((badge) => badge.getAttribute("data-tone"))).toEqual(["bad", "bad", "bad"]);
+    expect(badges[1]).toHaveClass("bg-[var(--state-problem-bg)]");
+  });
+});

@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Plus, ShieldChec
 
 import { fetchGeneralVaults, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
+import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
@@ -41,7 +42,7 @@ function Tile({ icon, label, value, detail, tone = "neutral", testId }: {
   icon: ReactNode; label: string; value: ReactNode; detail?: ReactNode; tone?: "neutral" | "good" | "warn" | "bad"; testId?: string;
 }) {
   const accent = { neutral: "text-muted", good: "text-green", warn: "text-[var(--state-restoring-fg)]", bad: "text-destructive" }[tone];
-  return <div className="grid min-w-0 content-start gap-1 rounded-card border border-line bg-surface p-4" data-testid={testId}>
+  return <div className="grid min-w-0 content-start gap-1 rounded-card border border-line bg-surface p-4" data-testid={testId} data-tone={tone}>
     <p className="flex items-center gap-2 text-sm font-semibold text-muted"><span className={accent}>{icon}</span>{label}</p>
     <p className="text-2xl font-extrabold tabular-nums">{value}</p>
     {detail ? <div className="text-sm text-muted">{detail}</div> : null}
@@ -77,6 +78,8 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
   const archived = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "stopping" || vault.lifecycle === "tombstone");
   const problems = overview?.open_problem_count;
+  // The tile takes its tone from the protected share, never green at 0 of N (#658).
+  const protectedTone = !loaded || totals.files === 0 ? "neutral" : totals.protected >= totals.files ? "good" : "warn";
   const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
     { key: "name", label: t("overview.col_vault") }, { key: "state", label: t("overview.col_state") },
     { key: "protected", label: t("overview.col_files"), numeric: true }, { key: "local", label: t("overview.col_local"), numeric: true },
@@ -94,7 +97,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     if (key === "local") return formatBytes(row.local);
     if (key === "cloud") return formatBytes(row.cloud);
     if (key === "cost") return row.cost === null ? "—" : money(row.cost);
-    return row.problems ? <span className="font-bold text-destructive">{number.format(row.problems)}</span> : <span className="text-muted">0</span>;
+    return row.problems ? <ProblemCount count={row.problems}>{number.format(row.problems)}</ProblemCount> : <span className="text-muted">0</span>;
   };
 
   return <div className="grid min-w-0 gap-6" data-testid="overview">
@@ -108,7 +111,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
       <a href="/vaults/new" className={buttonVariants({ variant: "primary", className: "no-underline" })}><Plus aria-hidden="true" />{t("nav.new_vault")}</a>
     </section> : <>
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label={t("overview.summary")}>
-        <Tile testId="tile-protected" icon={<ShieldCheck className="size-4" />} tone="good" label={t("overview.tile_protected")}
+        <Tile testId="tile-protected" icon={<ShieldCheck className="size-4" />} tone={protectedTone} label={t("overview.tile_protected")}
           value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? t("overview.tile_protected_of", { total: number.format(totals.files) }) : null} />
         <Tile testId="tile-pending" icon={<Clock className="size-4" />} tone={pending ? "warn" : "neutral"} label={t("overview.tile_pending")}
           value={loaded ? number.format(pending) : "—"} detail={<>{(!loaded || manualPending < pending || pending === 0) && t("overview.tile_pending_hint")}
@@ -145,8 +148,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
             <span className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
               <span className="text-muted">{t("overview.col_files")}</span><span className="text-right tabular-nums">{cell(row, "protected")}</span>
               <span className="text-muted">{t("overview.col_local")}</span><span className="text-right tabular-nums">{cell(row, "local")}</span>
+              <span className="text-muted">{t("overview.col_cloud")}</span><span className="text-right tabular-nums">{cell(row, "cloud")}</span>
               <span className="text-muted">{t("overview.col_cost")}</span><span className="text-right tabular-nums">{cell(row, "cost")}</span>
-              {row.problems ? <><span className="text-muted">{t("overview.col_problems")}</span><span className="text-right">{cell(row, "problems")}</span></> : null}
+              {row.problems ? <><span className="text-muted">{t("overview.col_problems")}</span><span className="justify-self-end">{cell(row, "problems")}</span></> : null}
             </span>
           </a></li>)}</ul>
         <p className="text-xs text-muted">{t("essential.estimate_caveat")}</p>

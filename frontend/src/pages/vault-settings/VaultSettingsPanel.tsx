@@ -4,6 +4,8 @@ import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from 
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { notify } from "@/components/toastQueue";
+import { SavedIndicator } from "@/components/SavedIndicator";
+import { useSavedFlash } from "@/components/useSavedFlash";
 import { Button } from "@/components/ui/button";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
@@ -40,6 +42,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const [stop, setStop] = useState(false);
   const [reconnect, setReconnect] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [autoSaved, flashAutoSaved] = useSavedFlash();
   const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
   const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
@@ -67,7 +70,8 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     setBusy(true);
     try {
       const next = (await updateOperationPolicy({ auto_upload: !auto }, vaultId)).auto_upload;
-      setAuto(next); show(t(next ? "settings.auto_on" : "settings.auto_off"));
+      // A checkbox saves on change and confirms beside itself, not with a toast (#658).
+      setAuto(next); flashAutoSaved();
     } catch (error) { show(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
@@ -78,7 +82,13 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <SettingsSection id="protection" highlighted={highlight === "protection"} title={t("settings.protection_title")} summary={t("settings.protection_summary")}
       more={<><p>{t("essential.protection_help")}</p><p>{t("uploads.retry_help")}</p></>}>
       {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
-      <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" className="size-5 accent-[var(--green)]" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>
+      <div className="grid gap-1">
+        <div className="flex flex-wrap items-center gap-x-3">
+          <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" className="size-5 accent-[var(--green)]" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>
+          <SavedIndicator visible={autoSaved} />
+        </div>
+        {auto === false && <p className="text-sm text-muted" data-testid="auto-upload-off-hint">{t("settings.auto_off")}</p>}
+      </div>
       <UploadRetryActions vaultId={vaultId} showHelp={false} />
     </SettingsSection>
     <SettingsSection id="verification" highlighted={highlight === "verification"} title={t("verification.title")} summary={t("settings.verification_summary")} more={<p>{t("verification.help")}</p>}>

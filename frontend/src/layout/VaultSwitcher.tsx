@@ -3,6 +3,7 @@ import { Check, ChevronsUpDown, Plus, Vault } from "lucide-react";
 
 import type { VaultListItem } from "@/api/types";
 import { Popover } from "@/components/Popover";
+import { ProblemCount } from "@/components/ProblemCount";
 import { cn } from "@/lib/utils";
 import { vaultFilesUrl } from "@/router";
 import { shellLabel, type ShellTranslator } from "./labels";
@@ -37,8 +38,8 @@ export function VaultSwitcher({ vaults, currentVaultId, allVaults = false, probl
         <button type="button" className={cn(item, vault.id === currentVaultId && "font-bold")} aria-current={vault.id === currentVaultId ? "true" : undefined} onClick={() => go(vaultFilesUrl(vault.id))}>
           <Check className={cn("size-4 shrink-0 text-green", vault.id !== currentVaultId && "invisible")} aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{vault.name}</span>
-          {problemCounts[vault.id] ? <span className="shrink-0 rounded-badge bg-[var(--state-local-bg)] px-2 text-xs font-bold text-[var(--state-local-fg)]">
-            {shellLabel(t, "nav.problem_count", "{count} problems", { count: problemCounts[vault.id] })}</span> : null}
+          {problemCounts[vault.id] ? <ProblemCount count={problemCounts[vault.id]}>
+            {shellLabel(t, "nav.problem_count", "{count} problems", { count: problemCounts[vault.id] })}</ProblemCount> : null}
         </button>
       </li>)}
       {!shown.length && <li className="px-2.5 py-3 text-sm text-muted">{shellLabel(t, "nav.no_vault_match", "No Vault matches")}</li>}
