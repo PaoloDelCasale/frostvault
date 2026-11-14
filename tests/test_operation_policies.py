@@ -436,6 +436,94 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         self.assertEqual(jobs[0]["action"], "upload")
         self.assertIsNone(jobs[0]["archive_version_id"])
 
+    def _stopped_upload(self, connection, name: str, content: bytes) -> Path:
+        """A stable Local Copy whose upload the Owner stopped (#630)."""
+        target = self.source / name
+        target.write_bytes(content)
+        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(target, (old, old))
+        file_id = ArchiveCatalog(connection).observe_local_copy(
+            vault_id=2, path=name, file_type="regular",
+            size=target.stat().st_size, mtime_ns=target.stat().st_mtime_ns,
+            observed_at="2026-07-01T11:00:00+00:00",
+        )
+        connection.execute(
+            "INSERT INTO jobs(vault_id, file_id, action, status, origin, message_key, "
+            "requested_at, updated_at, finished_at) VALUES (2, %s, 'upload', 'cancelled', "
+            "'manual', 'job.upload_stopped', %s, %s, %s)",
+            (file_id, *["2026-07-01T11:05:00+00:00"] * 3),
+        )
+        return target
+
+    def _rescan(self, connection, target: Path, *, invalidate: bool = False) -> None:
+        stat_result = target.stat()
+        ArchiveCatalog(connection).observe_local_copies_batch(
+            vault_id=2,
+            entries=[(target.name, "regular", stat_result.st_size,
+                      stat_result.st_mtime_ns, "2026-07-01T11:30:00+00:00")],
+            seen_at="2026-07-01T11:30:00+00:00",
+            invalidate_paths=[target.name] if invalidate else [],
+        )
+
+    def _state(self, connection, name: str) -> str:
+        rows = ArchiveCatalog(connection).list_file_rows(2)
+        return next(row["state"] for row in rows if row["path"] == name)
+
+    def test_stopped_upload_survives_reconnect_with_the_same_content(self) -> None:
+        # #645: Reconnect marks every Local Copy missing; the full scan finds
+        # the same fingerprint, so the Owner's stop still holds the File.
+        from app.services.operation_policies import queue_auto_uploads
+        from app.services.vault_relocation import prepare_reconnect_local_scan
+
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        with PostgresConnection(str(self.path)) as connection:
+            set_policy(connection, 2, OperationPolicy(auto_upload=True, stability_seconds=300))
+            scanned = self._stopped_upload(connection, "scanned.bin", b"same")
+            watched = self._stopped_upload(connection, "watched.bin", b"same too")
+            prepare_reconnect_local_scan(connection, 2)
+            self._rescan(connection, scanned)
+            # A watcher content event for a file put back unchanged.
+            self._rescan(connection, watched, invalidate=True)
+            self.assertEqual(self._state(connection, "scanned.bin"), "stopped")
+            self.assertEqual(self._state(connection, "watched.bin"), "stopped")
+            row = ArchiveCatalog(connection).get_file_by_path(2, "scanned.bin")
+            self.assertEqual(
+                row["local_copy"]["content_observed_at"],
+                datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc),
+            )
+            # The digest is still recomputed: identical stat proves nothing.
+            self.assertIsNone(row["local_copy"]["plaintext_sha256"])
+            queued = queue_auto_uploads(
+                connection, vault_id=2, source_root=str(self.source), now=now,
+            )
+        self.assertEqual(queued, 0)
+
+    def test_stopped_upload_hold_expires_when_reconnect_finds_changed_content(self) -> None:
+        from app.services.operation_policies import queue_auto_uploads
+        from app.services.vault_relocation import prepare_reconnect_local_scan
+
+        now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
+        with PostgresConnection(str(self.path)) as connection:
+            set_policy(connection, 2, OperationPolicy(auto_upload=True, stability_seconds=300))
+            target = self._stopped_upload(connection, "changed.bin", b"before")
+            prepare_reconnect_local_scan(connection, 2)
+            target.write_bytes(b"after, longer")
+            os.utime(target, (old, old))
+            self._rescan(connection, target)
+            self.assertEqual(self._state(connection, "changed.bin"), "pending")
+            queued = queue_auto_uploads(
+                connection, vault_id=2, source_root=str(self.source), now=now,
+            )
+        self.assertEqual(queued, 1)
+
+    def test_content_event_on_a_present_copy_still_releases_the_stop(self) -> None:
+        # A same-size write with a restored mtime is a content event (#619).
+        with PostgresConnection(str(self.path)) as connection:
+            target = self._stopped_upload(connection, "rewritten.bin", b"bytes")
+            self._rescan(connection, target, invalidate=True)
+            self.assertEqual(self._state(connection, "rewritten.bin"), "pending")
+
     def test_missing_cloud_copy_is_automatically_reuploaded(self) -> None:
         from app.services.operation_policies import queue_auto_uploads
         import os

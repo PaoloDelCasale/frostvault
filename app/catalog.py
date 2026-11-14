@@ -447,6 +447,17 @@ class ArchiveCatalog:
             (EXCLUDED.local_presence, EXCLUDED.local_file_type,
              EXCLUDED.local_size, EXCLUDED.local_mtime_ns)
         """
+        # The fingerprint is unchanged when a missing Local Copy comes back
+        # with the same type, size and mtime (#645): a Reconnect, a remount or
+        # a file put back. Its digest is recomputed, but the content was not
+        # observed to change, so its stability window, cleanup retention and
+        # Stopped Upload hold keep their start.
+        same_fingerprint_reappeared = """
+            f.local_presence = 'missing'
+            AND (f.local_file_type, f.local_size, f.local_mtime_ns)
+                IS NOT DISTINCT FROM
+                (EXCLUDED.local_file_type, EXCLUDED.local_size, EXCLUDED.local_mtime_ns)
+        """
         self._vault_lock_touch(vault_id)
         rows = self.connection.execute(
             f"""
@@ -486,7 +497,8 @@ class ArchiveCatalog:
                 local_seen_at = EXCLUDED.local_seen_at,
                 local_observed_at = EXCLUDED.local_observed_at,
                 local_content_observed_at = CASE
-                    WHEN {content_changed}
+                    WHEN ({content_changed} OR EXCLUDED.path = ANY(%s::text[]))
+                     AND NOT ({same_fingerprint_reappeared})
                     THEN EXCLUDED.local_observed_at
                     ELSE COALESCE(f.local_content_observed_at, EXCLUDED.local_observed_at)
                 END,
@@ -496,19 +508,18 @@ class ArchiveCatalog:
             (
                 vault_id, recovered,
                 paths, presences, types, sizes, mtimes, observed, seen_values,
-                sorted(set(invalidate_paths)),
+                sorted(set(invalidate_paths)), sorted(set(invalidate_paths)),
             ),
         ).fetchall()
         file_ids = {str(row["path"]): str(row["id"]) for row in rows}
         invalidated = sorted({path for path in invalidate_paths if path in file_ids})
         if invalidated:
-            # A content event restarts the stability window and forgets the
-            # fingerprint even when size and mtime were preserved.
+            # A content event forgets the digest even when size and mtime
+            # were preserved; the upsert restarted its stability window.
             self.connection.execute(
                 """
                 UPDATE files
-                SET local_sha256=NULL, matched_version_id=NULL,
-                    local_content_observed_at=local_observed_at
+                SET local_sha256=NULL, matched_version_id=NULL
                 WHERE vault_id=%s AND path = ANY(%s::text[])
                   AND local_presence IS NOT NULL
                 """,
