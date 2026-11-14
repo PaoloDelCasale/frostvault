@@ -7,6 +7,20 @@ import {
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n/useI18n";
 import { errorMessage } from "@/lib/errorMessage";
+import { cn } from "@/lib/utils";
+
+type HealthTone = "good" | "warn" | "bad";
+/** Volume health is coloured by state (#658): healthy green, needs a look amber, unusable red. */
+function sourceHealthTone(health: string): HealthTone {
+  if (health === "ok") return "good";
+  if (health === "read_only" || health === "scan_required") return "warn";
+  return "bad";
+}
+const HEALTH_TONE_CLASSES: Record<HealthTone, string> = {
+  good: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
+  warn: "bg-[var(--state-pending-bg)] text-[var(--state-pending-fg)]",
+  bad: "bg-[var(--state-problem-bg)] text-[var(--state-problem-fg)]",
+};
 
 export function SourceVolumesSection() {
   const { t } = useI18n();
@@ -62,7 +76,8 @@ export function SourceVolumesSection() {
                     <h3 className="text-lg font-bold">/sources/{item.alias}</h3>
                     <p className="mt-1 break-all text-sm text-muted">{item.path}</p>
                   </div>
-                  <span className="rounded-[10px] bg-canvas px-3 py-1 text-xs font-bold uppercase">
+                  <span data-testid="source-health" data-tone={sourceHealthTone(item.health)}
+                    className={cn("rounded-[10px] px-3 py-1 text-xs font-bold uppercase", HEALTH_TONE_CLASSES[sourceHealthTone(item.health)])}>
                     {t(`general.sources_health_${item.health}`)}
                   </span>
                 </div>

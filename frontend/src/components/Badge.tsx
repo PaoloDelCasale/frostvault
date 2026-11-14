@@ -19,7 +19,7 @@ export type BadgeState =
 
 /** Sole source of state-specific classes used by rendering and contrast checks. */
 export const BADGE_STATE_VARIANT_CLASSES = {
-  pending: "bg-[var(--state-local-bg)] text-[var(--state-local-fg)]",
+  pending: "bg-[var(--state-pending-bg)] text-[var(--state-pending-fg)]",
   protected: "bg-[var(--state-both-bg)] text-[var(--state-both-fg)]",
   problem: "bg-[var(--state-problem-bg)] text-[var(--state-problem-fg)]",
   unconfirmed: "bg-[var(--state-unsupported-bg)] text-[var(--state-unsupported-fg)]",

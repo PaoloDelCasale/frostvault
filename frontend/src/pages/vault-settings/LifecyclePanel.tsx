@@ -22,12 +22,15 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
   const [rules, setRules] = useState<DraftTransition[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [stored, setStored] = useState("");
 
   function apply(next: LifecycleResponse) {
     setData(next);
     const signature = JSON.stringify(next.profile.transitions);
     setSelection(Object.entries(next.guided_profiles).find(([, profile]) => JSON.stringify(profile.transitions) === signature)?.[0] ?? "custom");
-    setRules(next.profile.transitions.map((rule) => ({ days: String(rule.days), storage_class: rule.storage_class })));
+    const draft = next.profile.transitions.map((rule) => ({ days: String(rule.days), storage_class: rule.storage_class }));
+    setRules(draft);
+    setStored(JSON.stringify(draft));
   }
 
   useEffect(() => {
@@ -35,7 +38,11 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     void fetchLifecycle(vaultId).then(apply).catch((cause: unknown) => setError(errorMessage(cause, translateRef.current)));
   }, [ready, vaultId]);
 
+  // Saving is offered only for a change from the stored plan (#658).
+  const dirty = data !== null && JSON.stringify(rules) !== stored;
+
   async function save() {
+    if (!dirty) return;
     if (selection === "custom" && !validStoragePlan(rules)) {
       setError(t("folder_settings.plan_invalid"));
       return;
@@ -87,7 +94,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
             <Button type="button" variant="secondary" className="w-fit" disabled={busy || rules.length >= LIFECYCLE_CLASSES.length} onClick={() => setRules([...rules, { days: "", storage_class: "DEEP_ARCHIVE" }])}><Plus size={16} />{t("folder_settings.plan_add")}</Button>
           </div>}
           <p className="text-sm text-muted">{t("folder_settings.plan_caveats")}</p>
-          <Button type="button" variant="primary" disabled={busy} className="w-fit" onClick={() => void save()}>{t("folder_settings.plan_save")}</Button>
+          <Button type="button" variant={dirty ? "primary" : "secondary"} disabled={busy || !dirty} className="w-fit" onClick={() => void save()}>{t("folder_settings.plan_save")}</Button>
         </div> : <p role="status">{t("folder_settings.plan_loading")}</p>}
         {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
         {data && <VaultMovePanel key={`${vaultId}:${JSON.stringify(data.profile)}`} vaultId={vaultId} onNotice={onNotice} />}
