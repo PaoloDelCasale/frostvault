@@ -50,7 +50,6 @@
   "ui.navigation": "Navigation",
   "ui.vault_navigation": "Main navigation",
   "ui.loading": "Loading…",
-  "ui.private_archive": "FROSTVAULT",
   "ui.close": "Close",
   "ui.toast_close": "Close notification",
   "ui.file_list_loading": "Loading folder…",
@@ -746,5 +745,14 @@
   "recovery.keep_waiting": "Keep waiting",
   "recovery.stop_waiting_title": "Stop waiting for the recovery?",
   "recovery.stop_waiting_help": "FrostVault stops waiting for this recovery, but AWS does not stop: the cloud recovery continues and is charged anyway. A new «Recover» resumes it at no extra recovery cost while the temporary copy lasts.",
-  "recovery.stop_waiting_help_days": "FrostVault stops waiting for this recovery, but AWS does not stop: the cloud recovery continues and is charged anyway. A new «Recover» resumes it at no extra recovery cost while the temporary copy lasts ({days} days after the recovery completes)."
+  "recovery.stop_waiting_help_days": "FrostVault stops waiting for this recovery, but AWS does not stop: the cloud recovery continues and is charged anyway. A new «Recover» resumes it at no extra recovery cost while the temporary copy lasts ({days} days after the recovery completes).",
+  "ui.retry": "Retry",
+  "ui.empty_folder": "This folder is empty.",
+  "ui.empty_filter": "No files in this folder match the selected filter.",
+  "ui.vault_create.volumes_failed": "Source Volumes could not be loaded: for now you can only create an empty Vault. “Use existing directory” returns once the volumes load.",
+  "essential.open_problem_named": "Open problem and remedy: {title}",
+  "essential.problem_vault": "Vault: {name}",
+  "essential.problem_system": "System",
+  "ui.notifications_show_more": "Show all",
+  "ui.notifications_show_less": "Show less"
 }
