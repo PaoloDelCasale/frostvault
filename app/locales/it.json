@@ -459,6 +459,7 @@
   "ui.cloud_purge_reason": "Motivo di questa eliminazione permanente",
   "ui.cloud_purge_confirm_label": "Scrivi il nome esatto del Vault ({vault}) per confermare",
   "ui.cloud_purge_submit": "Programma eliminazione dal cloud tra sette giorni",
+  "ui.cloud_purge_scheduling": "Programmazione in corso…",
   "ui.cloud_purge_local_note": "Non è possibile eliminare dal cloud i file presenti sul server. Se un file locale ricompare, la richiesta viene annullata.",
   "ui.operation_not_cancellable": "Hai smesso di attendere. Il recupero dal cloud su AWS continua: un nuovo «Recupera» lo riprende senza costi di recupero aggiuntivi finché dura la copia temporanea.",
   "ui.reauth_password_title": "Conferma la tua identità",

@@ -459,6 +459,7 @@
   "ui.cloud_purge_reason": "Reason for deleting from cloud",
   "ui.cloud_purge_confirm_label": "Type the exact folder name ({vault}) to confirm",
   "ui.cloud_purge_submit": "Schedule cloud deletion in seven days",
+  "ui.cloud_purge_scheduling": "Scheduling…",
   "ui.cloud_purge_local_note": "Files present on the server cannot be deleted from the cloud. A reappearing local file cancels the request.",
   "ui.operation_not_cancellable": "You stopped waiting. The cloud recovery on AWS continues: a new «Recover» resumes it at no extra recovery cost while the temporary copy lasts.",
   "ui.reauth_password_title": "Confirm your identity",
