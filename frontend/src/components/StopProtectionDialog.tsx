@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { cancelStoppedFolderDeletion, fetchStopProtection, stopProtection } from "@/api";
 import type { StopProtectionStatus } from "@/api/types";
@@ -6,12 +6,14 @@ import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
+import { formatDateTime } from "@/pages/archive/format";
 
 export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, onCompleted }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   vaultId: number;
   vaultName: string;
+  /** Runs when the dialog closes after a change, so the outcome stays readable until then (#652). */
   onCompleted?: () => void | Promise<void>;
 }) {
   const { t } = useI18n();
@@ -21,6 +23,15 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const changed = useRef(false);
+
+  function handleOpenChange(next: boolean) {
+    onOpenChange(next);
+    if (!next && changed.current) {
+      changed.current = false;
+      void onCompleted?.();
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -44,7 +55,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setError("");
     try {
       setOperation(await stopProtection(vaultId, { cloud_disposition: choice, confirmation, reason }));
-      await onCompleted?.();
+      changed.current = true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally { setBusy(false); }
@@ -55,7 +66,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setError("");
     try {
       setOperation(await cancelStoppedFolderDeletion(vaultId));
-      await onCompleted?.();
+      changed.current = true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally { setBusy(false); }
@@ -67,7 +78,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     try {
       setOperation(await stopProtection(vaultId, { cloud_disposition: "keep", confirmation: vaultName,
         reason: t("stop_protection.keep_remaining") }));
-      await onCompleted?.();
+      changed.current = true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally { setBusy(false); }
@@ -76,14 +87,15 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
   const failed = operation?.jobs.some((job) => job.status === "failed")
     && operation.jobs.every((job) => ["completed", "cancelled", "failed"].includes(job.status));
 
-  return <Dialog open={open} onOpenChange={onOpenChange} title={t("stop_protection.title")}
+  return <Dialog open={open} onOpenChange={handleOpenChange} title={t("stop_protection.title")}
+    closeLabel={t("ui.close")}
     description={t("stop_protection.description", { vault: vaultName })}>
     <div className="grid gap-4">
       <p className="text-sm text-muted">{t("stop_protection.local_retained")}</p>
       {error ? <p role="alert" className="text-destructive">{error}</p> : null}
       {operation?.stopped ? <div className="grid gap-3" data-testid="stop-protection-status">
         <p>{t(operation.root_released ? "stop_protection.stopped" : "stop_protection.pending")}</p>
-        {operation.pending_until ? <p>{t("stop_protection.deadline", { date: operation.pending_until })}</p> : null}
+        {operation.pending_until ? <p>{t("stop_protection.deadline", { date: formatDateTime(operation.pending_until) })}</p> : null}
         <p className="text-sm text-muted">{t("stop_protection.cloud_retained_help")}</p>
         {failed && !operation.root_released ? <>
           <p role="alert">{t("stop_protection.failed_help")}</p>
@@ -99,6 +111,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
             setError(failure instanceof Error ? failure.message : String(failure));
           });
         }}>{t("stop_protection.refresh")}</Button>
+        <Button onClick={() => handleOpenChange(false)}>{t("ui.close")}</Button>
       </div> : <form onSubmit={(event) => void submit(event)} className="grid gap-4">
         <FormField label={t("stop_protection.cloud_choice")} htmlFor="stop-cloud-choice">
           <select id="stop-cloud-choice" value={choice} onChange={(event) => setChoice(event.target.value === "delete" ? "delete" : "keep")}
