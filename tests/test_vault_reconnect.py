@@ -149,7 +149,8 @@ class VaultReconnectTests(unittest.TestCase):
             ({"relative_path": "missing"}, "inaccessible"),
             ({"relative_path": "linked"}, "symlink"),
             ({"volume_alias": "../photos"}, "volume_unavailable"),
-            ({"volume_alias": "managed"}, "volume_unavailable"),
+            ({"volume_alias": "managed"}, "managed_not_own"),
+            ({"volume_alias": "managed", "relative_path": "11111111-1111-1111-1111-111111111111"}, "managed_not_own"),
             ({"runtime_busy": True}, "active_jobs"),
         ]:
             with self.subTest(overrides=overrides):
@@ -398,6 +399,167 @@ class VaultReconnectTests(unittest.TestCase):
             self.assertEqual([r["path"] for r in connection.execute("SELECT path FROM files WHERE vault_id=7")], ["known.jpg"])
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
         self.assertEqual(self.row()["lifecycle"], "active")
+
+
+MANAGED_UUID = "11111111-1111-1111-1111-111111111111"
+OTHER_UUID = "22222222-2222-2222-2222-222222222222"
+
+
+class ManagedVaultReconnectTests(unittest.TestCase):
+    """#641: a restored managed Vault reconnects to its own managed folder only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_path = Path(self.tmp.name) / "catalog"
+        result = run_alembic(self.db_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.settings = replace(Settings(), database_dsn=database_dsn(str(self.db_path)))
+        patcher = patch("app.database.settings", self.settings)
+        patcher.start(); self.addCleanup(patcher.stop)
+        self.sources = Path(self.tmp.name) / "sources"
+        self.managed = self.sources / "managed"
+        self.own = self.managed / MANAGED_UUID
+        self.other = self.managed / OTHER_UUID
+        self.own.mkdir(parents=True)
+        self.other.mkdir()
+        source_layout.override_sources_root(self.sources)
+        self.addCleanup(source_layout.reset_sources_root_override)
+        self.addCleanup(vault_relocation._runtime_suspended_vaults.discard, 7)
+        mount = patch.object(source_layout, "path_is_mount", side_effect=lambda p: Path(p) == self.sources)
+        self.mount = mount.start(); self.addCleanup(mount.stop)
+        identity = patch.object(source_identity, "fingerprint_for_mount", return_value="sources-mount")
+        self.identity = identity.start(); self.addCleanup(identity.stop)
+        boundary = patch.object(source_identity, "validate_root_mount_boundary")
+        self.boundary = boundary.start(); self.addCleanup(boundary.stop)
+        with PostgresConnection(str(self.db_path)) as connection:
+            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
+            connection.execute("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'bucket', 'eu-south-1')")
+            for vault_id, vault_uuid, name, root in ((7, MANAGED_UUID, "Photos", self.own),
+                                                     (8, OTHER_UUID, "Other", self.other)):
+                connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)
+                    VALUES (%s, %s, (SELECT id FROM vault_targets WHERE bucket='bucket'), %s, %s)""",
+                    (vault_id, vault_uuid, name, str(root)))
+                vault_relocation.enroll_vault_root_identity(connection, vault_id, str(root))
+
+    def row(self, vault_id=7):
+        with PostgresConnection(str(self.db_path)) as connection:
+            return connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
+
+    def reconnect(self, **overrides):
+        args = dict(vault_id=7, volume_alias="managed", relative_path=MANAGED_UUID,
+                    actor="owner", reason="restored backup")
+        args.update(overrides)
+        with PostgresConnection(str(self.db_path)) as connection:
+            return vault_relocation.reconnect_vault_root(connection, **args)
+
+    def refused(self, reason, **overrides):
+        with self.assertRaises(vault_relocation.VaultRelocationError) as error:
+            self.reconnect(**overrides)
+        self.assertEqual(error.exception.reason, reason)
+        row = self.row()
+        self.assertEqual(row["source_root"], str(self.own))
+        self.assertFalse(7 in vault_relocation._runtime_suspended_vaults)
+
+    def restore(self, content):
+        digest = hashlib.sha256(b"old!").digest()
+        with PostgresConnection(str(self.db_path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            for path in content:
+                file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=4,
+                                                     mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
+                version = catalog.begin_replacement(file_id, object_key=f"vaults/{MANAGED_UUID}/" + path,
+                    provider_version_id="old-" + path, size=4, storage_class="STANDARD",
+                    created_at="2026-11-01T10:00:00+00:00")
+                catalog.promote_replacement(file_id, archive_version_id=version, plaintext_sha256=digest,
+                                            verified_at="2026-11-01T10:00:00+00:00")
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+
+    def scan(self, vault, s3):
+        from app.storage import scan_vault
+        with (patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.s3_client", return_value=s3),
+              patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0),
+              patch("app.storage.queue_auto_uploads", return_value=0),
+              patch("app.storage.queue_auto_local_cleanups", return_value=0)):
+            return scan_vault(dict(vault))
+
+    def test_restored_managed_vault_reconnects_to_own_folder_and_becomes_protected(self):
+        content = {"photo.jpg": b"new!", "gone.jpg": b"only"}
+        (self.own / "photo.jpg").write_bytes(content["photo.jpg"])
+        self.restore(content)
+        self.assertEqual(self.row()["lifecycle"], "reconnect_required")
+        reconnected = self.reconnect()
+        self.assertEqual(reconnected["source_root"], str(self.own))
+        self.assertEqual(reconnected["lifecycle"], "reconnect_required")
+        self.assertIsNone(reconnected["reconnect_volume_fingerprint"])
+        self.assertEqual(reconnected["root_identity"], vault_relocation.root_identity(self.own))
+        self.boundary.assert_called_with(self.sources, self.own)
+        with PostgresConnection(str(self.db_path)) as connection:
+            event = connection.execute(
+                "SELECT detail FROM audit_events WHERE event='vault_folder_reconnected'").fetchone()
+        self.assertEqual(event["detail"]["source_root"], str(self.own))
+        self.assertTrue(event["detail"]["mandatory_full_scan"])
+        s3 = ListingS3(content)
+        result = self.scan(reconnected, s3)
+        self.assertEqual(result["local"], 1, result)
+        self.assertEqual(s3.deleted, [])
+        self.assertEqual(self.row()["lifecycle"], "active")
+        with PostgresConnection(str(self.db_path)) as connection:
+            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS n FROM metadata_restore_vaults WHERE vault_id=7").fetchone()["n"], 0)
+        self.assertEqual(rows["photo.jpg"]["state"], "protected")
+        self.assertEqual(rows["gone.jpg"]["state"], "cloud_only")
+        # The sibling managed Vault stays suspended until it is reconnected too.
+        self.assertEqual(self.row(8)["lifecycle"], "reconnect_required")
+
+    def test_other_vault_managed_folder_or_arbitrary_path_is_refused(self):
+        self.restore({})
+        self.refused("managed_not_own", relative_path=OTHER_UUID)
+        self.refused("managed_not_own", relative_path="")
+        self.refused("managed_not_own", relative_path=f"{MANAGED_UUID}/sub")
+        self.refused("managed_not_own", relative_path="../photos")
+
+    def test_custom_volume_vault_cannot_move_into_managed(self):
+        custom = self.sources / "photos" / "dir"
+        custom.mkdir(parents=True)
+        with PostgresConnection(str(self.db_path)) as connection:
+            connection.execute("UPDATE vaults SET source_root=%s WHERE id=7", (str(custom),))
+        with self.assertRaises(vault_relocation.VaultRelocationError) as error:
+            self.reconnect()
+        self.assertEqual(error.exception.reason, "managed_not_own")
+        self.assertEqual(self.row()["source_root"], str(custom))
+
+    def test_missing_or_symlinked_own_folder_is_refused_and_never_created(self):
+        self.restore({})
+        moved = self.managed / "moved"
+        self.own.rename(moved)
+        self.refused("managed_missing")
+        self.assertFalse(self.own.exists())
+        self.own.symlink_to(moved, target_is_directory=True)
+        self.refused("managed_missing")
+        self.own.unlink()
+        self.own.write_bytes(b"not a directory")
+        self.refused("managed_missing")
+
+    def test_nested_mount_or_unavailable_sources_identity_fails_closed(self):
+        self.restore({})
+        self.mount.side_effect = lambda p: Path(p) in {self.sources, self.own}
+        self.refused("different_volume")
+        self.mount.side_effect = lambda p: Path(p) == self.sources
+        self.boundary.side_effect = source_identity.MountIdentityError("nested mounts are unsupported")
+        self.refused("identity_ambiguous")
+        self.boundary.side_effect = None
+        self.identity.side_effect = source_identity.MountIdentityError("absent")
+        self.refused("identity_ambiguous")
+        self.identity.side_effect = ["sources-mount", "replaced"]
+        self.refused("identity_mismatch")
+        self.identity.side_effect = None
+        self.assertEqual(self.reconnect()["source_root"], str(self.own))
+
+    def test_active_jobs_still_block_managed_reconnect(self):
+        self.refused("active_jobs", runtime_busy=True)
 
 
 if __name__ == "__main__": unittest.main()

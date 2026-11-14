@@ -216,6 +216,87 @@ def _active_jobs(connection: Any, vault_id: int) -> bool:
     return row is not None
 
 
+def _source_volume_destination(
+    connection: Any, *, vault_id: int, volume_alias: str, relative_path: str,
+) -> tuple[Path, str, str]:
+    """Validate a directory on a custom Source Volume and its mount identity."""
+    volumes = {item.alias: item for item in source_layout.discover_source_volumes()}
+    volume = volumes.get(volume_alias)
+    if volume is None or volume.health != "ok" or volume.access != "rw":
+        raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
+    # This is the ONLY explicit acceptance seam. Ambiguous/unsupported mount
+    # identity still fails closed, before traversing any candidate content.
+    try:
+        fingerprint = source_identity.fingerprint_for_mount(volume.path)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume identity is unavailable") from exc
+    _, destination = _candidate(volume, relative_path)
+    _reject_overlap(connection, vault_id=vault_id, destination=destination)
+    identity = root_identity(destination)
+    try:
+        source_identity.validate_root_mount_boundary(volume.path, destination)
+        current_fingerprint = source_identity.fingerprint_for_mount(volume.path)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume boundary is unavailable") from exc
+    if current_fingerprint != fingerprint:
+        raise VaultRelocationError("identity_mismatch", "Source Volume changed during reconnect")
+    return destination, identity, fingerprint
+
+
+def _own_managed_destination(
+    connection: Any, vault: dict[str, Any], relative_path: str,
+) -> tuple[Path, str]:
+    """Accept only this Vault's own ``/sources/managed/<uuid>`` folder (#641).
+
+    The managed folder lives inside the ``/sources`` mount, not on a mount of
+    its own: the boundary is that mount. Its fingerprint must be available and
+    unchanged across the check, and no nested mount may intersect the folder.
+    The folder is never created: a missing one is an explicit refusal.
+    """
+    vault_uuid = str(vault["uuid"])
+    own = source_layout.managed_vault_path(vault_uuid)
+    current = os.path.normpath(str(vault["source_root"]))
+    if current != os.path.normpath(str(own)) or (relative_path or "").strip() != vault_uuid:
+        raise VaultRelocationError(
+            "managed_not_own",
+            "Only this Vault's own managed folder can be reconnected",
+        )
+    sources = source_layout.get_sources_root()
+    try:
+        fingerprint = source_identity.fingerprint_for_mount(sources)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume identity is unavailable") from exc
+    managed = source_layout.get_managed_root()
+    try:
+        managed_info = managed.lstat()
+        own_info = own.lstat()
+    except FileNotFoundError as exc:
+        raise VaultRelocationError("managed_missing", "Managed folder missing") from exc
+    except OSError as exc:
+        raise VaultRelocationError("inaccessible", "Destination is inaccessible") from exc
+    for info in (managed_info, own_info):
+        if not stat.S_ISDIR(info.st_mode):
+            raise VaultRelocationError(
+                "managed_missing", "Managed folder missing or not a real directory",
+            )
+    if source_layout.path_is_mount(managed) or source_layout.path_is_mount(own):
+        raise VaultRelocationError("different_volume", "Destination crosses a nested mount")
+    if not os.access(own, os.R_OK | os.X_OK) or not source_layout.path_is_writable(own):
+        raise VaultRelocationError(
+            "inaccessible", "Destination is not readable, traversable, and writable",
+        )
+    _reject_overlap(connection, vault_id=int(vault["id"]), destination=own)
+    identity = root_identity(own)
+    try:
+        source_identity.validate_root_mount_boundary(sources, own)
+        current_fingerprint = source_identity.fingerprint_for_mount(sources)
+    except source_identity.MountIdentityError as exc:
+        raise VaultRelocationError("identity_ambiguous", "Source Volume boundary is unavailable") from exc
+    if current_fingerprint != fingerprint:
+        raise VaultRelocationError("identity_mismatch", "Source Volume changed during reconnect")
+    return own, identity
+
+
 def _reconnect_vault_root(
     connection: Any,
     *,
@@ -249,30 +330,19 @@ def _reconnect_vault_root(
         )
     if runtime_busy or _active_jobs(connection, vault_id):
         raise VaultRelocationError("active_jobs", "Vault has active Jobs or a scan")
-    if (not volume_alias or volume_alias == source_layout.MANAGED_DIR_NAME
-            or Path(volume_alias).parts != (volume_alias,)
+    if (not volume_alias or Path(volume_alias).parts != (volume_alias,)
             or not source_layout.sources_layout_is_ready()):
         raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
-    volumes = {item.alias: item for item in source_layout.discover_source_volumes()}
-    volume = volumes.get(volume_alias)
-    if volume is None or volume.health != "ok" or volume.access != "rw":
-        raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
-    # This is the ONLY explicit acceptance seam. Ambiguous/unsupported mount
-    # identity still fails closed, before traversing any candidate content.
-    try:
-        fingerprint = source_identity.fingerprint_for_mount(volume.path)
-    except source_identity.MountIdentityError as exc:
-        raise VaultRelocationError("identity_ambiguous", "Source Volume identity is unavailable") from exc
-    _, destination = _candidate(volume, relative_path)
-    _reject_overlap(connection, vault_id=vault_id, destination=destination)
-    identity = root_identity(destination)
-    try:
-        source_identity.validate_root_mount_boundary(volume.path, destination)
-        current_fingerprint = source_identity.fingerprint_for_mount(volume.path)
-    except source_identity.MountIdentityError as exc:
-        raise VaultRelocationError("identity_ambiguous", "Source Volume boundary is unavailable") from exc
-    if current_fingerprint != fingerprint:
-        raise VaultRelocationError("identity_mismatch", "Source Volume changed during reconnect")
+    if volume_alias == source_layout.MANAGED_DIR_NAME:
+        destination, identity = _own_managed_destination(connection, vault, relative_path)
+        # A managed root is no Source Volume: its local access never consults
+        # a per-Vault mount acceptance, exactly as for a newly created Vault.
+        fingerprint = None
+    else:
+        destination, identity, fingerprint = _source_volume_destination(
+            connection, vault_id=vault_id, volume_alias=volume_alias,
+            relative_path=relative_path,
+        )
 
     previous_root = str(vault["source_root"])
     connection.execute(

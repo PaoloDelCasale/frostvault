@@ -3121,6 +3121,8 @@ _VAULT_RECONNECT_ERROR_STATUS: dict[str, tuple[int, str]] = {
     "invalid_path": (422, "Reconnect destination is invalid"),
     "not_directory": (422, "Reconnect destination is not a directory"),
     "volume_unavailable": (409, "Destination Source Volume is unavailable"),
+    "managed_not_own": (409, "Only this Vault's own managed folder can be reconnected"),
+    "managed_missing": (409, "Managed folder missing"),
     "different_volume": (409, "Destination crosses a nested mount"),
     "symlink": (409, "Reconnect paths cannot contain symbolic links"),
     "inaccessible": (409, "Reconnect destination is inaccessible"),
