@@ -9,17 +9,11 @@ import { formatBytes, pickDurationUnit } from "./format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
-function countedLabel(count: number, baseKey: string, t: Translate): string {
-  const form = count === 1 ? "one" : "other";
-  return t(`${baseKey}_${form}`, { n: count });
-}
-
 function formatDelay(seconds: number, t: Translate): string {
   const { value, unit } = seconds >= 86400
     ? { value: Math.round(seconds / 86400), unit: "days" }
     : pickDurationUnit(seconds);
-  const form = value === 1 ? "one" : "other";
-  return t(`ui.duration_${unit}_${form}`, { n: value });
+  return t(`ui.duration_${unit}`, { count: value });
 }
 
 export type CloudPurgeDialogProps = {
@@ -90,9 +84,9 @@ export function CloudPurgeDialog({
         {preview ? (
           <p className="text-sm font-bold text-ink" data-testid="cloud-purge-preview">
             {t("ui.cloud_purge_preview", {
-              objects: countedLabel(preview.object_count, "ui.cloud_purge_object", t),
-              versions: countedLabel(preview.version_count, "ui.cloud_purge_version", t),
-              markers: countedLabel(preview.delete_marker_count, "ui.cloud_purge_marker", t),
+              objects: t("ui.cloud_purge_object", { count: preview.object_count }),
+              versions: t("ui.cloud_purge_version", { count: preview.version_count }),
+              markers: t("ui.cloud_purge_marker", { count: preview.delete_marker_count }),
               bytes: formatBytes(preview.byte_count),
             })}
           </p>

@@ -6,22 +6,30 @@ import {
   formatCount,
   formatDate,
   formatEur,
+  formatMoney,
   pickDurationUnit,
 } from "@/pages/archive/format";
+import { translate } from "@/i18n/translate";
 
 describe("formatBytes", () => {
   // Independent expected values (not recomputed via /1024 loops).
   it.each([
     [0, "0 B"],
     [500, "500 B"],
-    [1023, "1023 B"],
-    [1024, "1.0 KB"],
-    [1536, "1.5 KB"],
-    [1048576, "1.0 MB"],
-    [1073741824, "1.0 GB"],
-    [1099511627776, "1.0 TB"],
+    [1023, "1,023 B"],
+    [1024, "1.0 KiB"],
+    [1536, "1.5 KiB"],
+    [1048576, "1.0 MiB"],
+    [1073741824, "1.0 GiB"],
+    [1099511627776, "1.0 TiB"],
   ] as const)("formats %s as %s", (value, expected) => {
-    expect(formatBytes(value)).toBe(expected);
+    expect(formatBytes(value, "en")).toBe(expected);
+  });
+
+  it("uses binary units with the Italian decimal comma", () => {
+    expect(formatBytes(1536, "it")).toBe("1,5 KiB");
+    expect(formatBytes(1610612736, "it")).toBe("1,5 GiB");
+    expect(formatBytes(1023, "it")).toBe("1023 B");
   });
 
   it("renders an em dash for nullish values", () => {
@@ -75,6 +83,16 @@ describe("formatEur", () => {
     expect(formatEur(value, locale)).toBe(expected);
   });
 
+  it("formats other currencies, signed deltas and missing amounts", () => {
+    expect(formatMoney(3.42, { currency: "USD", locale: "en" })).toBe("$3.42");
+    expect(formatMoney(3.42, { locale: "it" })).toMatch(/^3,42\s€$/);
+    expect(formatMoney(1.5, { locale: "en", signed: true })).toBe("+€1.50");
+    expect(formatMoney(-1.5, { locale: "en", signed: true })).toBe("-€1.50");
+    expect(formatMoney(0, { locale: "en", signed: true })).toBe("€0.00");
+    expect(formatMoney(null)).toBe("—");
+    expect(formatMoney("0.5", { locale: "en" })).toBe("€0.50");
+  });
+
   it("uses the Italian decimal comma and trailing symbol", () => {
     expect(formatEur(0.270513, "it")).toMatch(/^0,27\s€$/);
     expect(formatEur(0.00002, "it")).toMatch(/^< 0,01\s€$/);
@@ -91,5 +109,32 @@ describe("formatDate", () => {
     expect(formatDate("2026-11-01", "en")).toBe("Nov 1, 2026");
     expect(formatDate("not a date", "en")).toBe("not a date");
     expect(formatDate(null, "en")).toBe("—");
+  });
+});
+
+describe("translate plurals", () => {
+  const messages = {
+    "files.selected_one": "{count} selezionato",
+    "files.selected_other": "{count} selezionati",
+    "only.other_other": "{count} items",
+    "plain": "{count} things",
+  };
+
+  it("selects _one and _other with Intl.PluralRules", () => {
+    expect(translate(messages, "files.selected", { count: 1 }, "it")).toBe("1 selezionato");
+    expect(translate(messages, "files.selected", { count: 0 }, "it")).toBe("0 selezionati");
+    expect(translate(messages, "files.selected", { count: 2 }, "en")).toBe("2 selezionati");
+  });
+
+  it("groups the count digits for the locale", () => {
+    expect(translate(messages, "files.selected", { count: 1234 }, "en")).toBe("1,234 selezionati");
+    expect(translate(messages, "files.selected", { count: 1234 }, "it")).toBe("1234 selezionati");
+    expect(translate(messages, "files.selected", { count: 12345 }, "it")).toBe("12.345 selezionati");
+  });
+
+  it("falls back to _other, then to the bare key", () => {
+    expect(translate(messages, "only.other", { count: 1 }, "en")).toBe("1 items");
+    expect(translate(messages, "plain", { count: 1 }, "en")).toBe("1 things");
+    expect(translate(messages, "files.selected", { count: "3" }, "en")).toBe("files.selected");
   });
 });

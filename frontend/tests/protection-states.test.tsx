@@ -43,8 +43,11 @@ describe("protection-state labels", () => {
   });
 
   it("keeps last evidence and its date visible when the volume is absent", () => {
+    // The i18n provider sets <html lang>; dates follow it (#654).
+    document.documentElement.lang = "it";
     const badge = itemStateBadge({ ...file("unconfirmed"), last_known_state: "protected", last_known_at: "2026-11-03" }, t);
-    expect(badge.label).toBe("Non accertato · Ultimo stato noto: Protetto (2026-11-03)");
+    expect(badge.label).toBe("Non accertato · Ultimo stato noto: Protetto (3 nov 2026)");
+    document.documentElement.lang = "";
   });
 
   it("does not claim the changed bytes are protected by a previous snapshot", () => {

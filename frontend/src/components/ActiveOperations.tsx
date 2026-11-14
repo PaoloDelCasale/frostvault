@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { recoveryTimeline } from "@/pages/archive/recoveryLabel";
 import { errorMessage } from "@/lib/errorMessage";
+import { formatEur } from "@/pages/archive/format";
 
 type Props = { vaultId: number; moves?: boolean; t: (key: string, params?: Record<string, string | number>) => string };
 
@@ -41,7 +42,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
         // Hours of cloud restore: say what is awaited and until when, not a 0% bar (#646).
         ? [t("operation.restoring"), ...(job.item_count > 1 ? [`${job.completed_count}/${job.item_count}`] : []), ...recoveryTimeline({ requested_at: job.requested_at, tier: job.restore_tier, ready_by: job.ready_by }, t)].join(" · ")
         : `${t(`operation.${job.status}`)} · ${job.completed_count}/${job.item_count} · ${Math.round(job.percent)}%`}</p>
-      {job.status === "pending_approval" && <><p>{t("essential.approval_cost", { cost: job.estimated_cost_eur == null ? "—" : Number(job.estimated_cost_eur).toFixed(2), hours: job.estimated_hours ?? "—" })}</p><Button disabled={busy !== null} onClick={() => void mutate(job.id, job.action, true)}>{t("ui.approve_restore")}</Button></>}
+      {job.status === "pending_approval" && <><p>{t("essential.approval_cost", { cost: formatEur(job.estimated_cost_eur), hours: job.estimated_hours ?? "—" })}</p><Button disabled={busy !== null} onClick={() => void mutate(job.id, job.action, true)}>{t("ui.approve_restore")}</Button></>}
       {job.action === "recover" && job.status === "restoring"
         ? <Button variant="secondary" disabled={busy !== null} onClick={() => setStopWaiting({ id: job.id, days: job.restore_days })}>{t("recovery.stop_waiting")}</Button>
         : <Button variant="secondary" disabled={busy !== null} onClick={() => void mutate(job.id, job.action)}>{t("ui.cancel")}</Button>}
@@ -53,7 +54,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
     {query.error && <p role="alert">{errorMessage(query.error, t)}</p>}
     {message && <p role="status">{message}</p>}
     <ConfirmDialog open={stopWaiting !== null} onOpenChange={(open) => { if (!open) setStopWaiting(null); }} title={t("recovery.stop_waiting_title")}
-      description={stopWaiting?.days ? t("recovery.stop_waiting_help_days", { days: stopWaiting.days }) : t("recovery.stop_waiting_help")}
+      description={stopWaiting?.days ? t("recovery.stop_waiting_help_days", { count: stopWaiting.days }) : t("recovery.stop_waiting_help")}
       confirmLabel={t("recovery.stop_waiting")} cancelLabel={t("recovery.keep_waiting")} tone="default"
       onConfirm={() => { const target = stopWaiting; setStopWaiting(null); if (target) void mutate(target.id, "recover", false, true); }} />
   </section>;

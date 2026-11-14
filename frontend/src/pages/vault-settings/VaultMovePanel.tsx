@@ -60,7 +60,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       {estimate && <>
         <div className="grid gap-1" data-testid="vault-move-estimate">
           <p className="text-sm"><strong className="text-base">{t("move.estimate_monthly", { monthly: approximately(formatEur(estimate.estimated_monthly_eur, locale)) })}</strong>{" "}
-            {t("move.estimate_scope", { count: new Intl.NumberFormat(locale).format(estimate.eligible_count), size: formatBytes(estimate.total_bytes) })}</p>
+            {t("move.estimate_scope", { count: estimate.eligible_count, size: formatBytes(estimate.total_bytes, locale) })}</p>
           <p className="text-sm text-muted">{t("move.estimate_pricing", { retrieval: formatEur(estimate.estimated_retrieval_eur, locale), region: estimate.region, date: formatDate(estimate.pricing_effective_at, locale) })}</p>
         </div>
         <p className="text-sm text-muted">{t("move.exclusions")}</p>

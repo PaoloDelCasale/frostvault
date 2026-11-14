@@ -250,7 +250,7 @@ export function fetchI18nCatalog(locale?: string): Promise<I18nCatalogResponse> 
   return apiRequest<I18nCatalogResponse>(`/api/i18n/catalog${query}`).then(
     (catalog) => {
       configureApiClient({
-        translate: (key, params) => translate(catalog.messages, key, params),
+        translate: (key, params) => translate(catalog.messages, key, params, catalog.locale),
       });
       return catalog;
     },

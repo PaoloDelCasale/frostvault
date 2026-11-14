@@ -170,7 +170,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     {query.data?.aggregate_status === "loading" && <p role="status">{t("ui.file_list_loading")}</p>}
     {stoppedCount > 0 && <div role="note" className="flex min-w-0 flex-wrap items-center gap-3 rounded-card border border-line bg-surface p-3 text-sm" data-testid="stopped-uploads">
       <CirclePause className="size-4 shrink-0 text-muted" aria-hidden="true" />
-      <p className="min-w-0 flex-1">{t("files.stopped_notice", { count: formatNumber(stoppedCount) })}</p>
+      <p className="min-w-0 flex-1">{t("files.stopped_notice", { count: stoppedCount })}</p>
       <Button variant="secondary" disabled={busy} onClick={() => void uploadStopped()}>{t("essential.upload_now")}</Button>
     </div>}
     {selected.length > 0 && <div className="sticky top-[72px] z-10 flex min-w-0 flex-wrap items-center gap-2 rounded-card border border-green bg-surface p-2 shadow-md" role="region" aria-label={t("files.selection_bar")} data-testid="selection-bar">
@@ -225,8 +225,8 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     {message && <p role="alert">{message}</p>}
     {effectiveDetails && <FileDetails key={`${effectiveDetails.vaultId}:${effectiveDetails.item.path}`} target={effectiveDetails} onClose={() => { setDetails(null); if (focusPath) update({ file: "" }); }} onRecover={() => { setRecover([effectiveDetails]); setDetails(null); if (focusPath) update({ file: "" }); }} onRefresh={refresh} t={t} />}
     {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}
-    <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { count: formatNumber(release?.length ?? 0) })} confirmLabel={busy ? t("ui.free_space_running") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" keepOpenOnConfirm onConfirm={() => void free()}>
-      <details className="rounded-card border border-line" data-testid="free-space-items"><summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold">{t("files.free_space_show_items", { count: formatNumber(release?.length ?? 0) })}</summary>
+    <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { count: release?.length ?? 0 })} confirmLabel={busy ? t("ui.free_space_running") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" keepOpenOnConfirm onConfirm={() => void free()}>
+      <details className="rounded-card border border-line" data-testid="free-space-items"><summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold">{t("files.free_space_show_items", { count: release?.length ?? 0 })}</summary>
         <ul className="grid gap-1 border-t border-line p-3 text-sm">{release?.map((row) => <li key={`${row.vaultId}:${row.item.path}`} className="break-all">{`${row.vaultName} / ${row.item.path}`}</li>)}</ul></details>
     </ConfirmDialog>
   </section>;

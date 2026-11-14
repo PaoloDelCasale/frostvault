@@ -152,7 +152,7 @@ describe("essential file browser", () => {
     await user.click(screen.getByRole("checkbox", { name: "files.select_page" }));
     await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "essential.free_now" }));
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent('ui.confirm_free_space_description {"count":"100"}');
+    expect(dialog).toHaveTextContent('ui.confirm_free_space_description {"count":100}');
     expect(dialog).not.toHaveTextContent("2026/f0.jpg, ");
     const list = within(dialog).getByTestId("free-space-items");
     expect(list.tagName).toBe("DETAILS"); expect(list).not.toHaveAttribute("open");

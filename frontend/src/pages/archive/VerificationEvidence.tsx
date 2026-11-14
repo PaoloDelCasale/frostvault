@@ -1,3 +1,5 @@
+import { formatBytes } from "./format";
+
 export function VerificationEvidence({ method, requested, fallback, egress, t }: {
   method?: string | null; requested?: string | null; fallback?: string | null; egress?: number | null;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -6,6 +8,6 @@ export function VerificationEvidence({ method, requested, fallback, egress, t }:
     <p>{t("verification.requested")}: {requested ? t(`verification.${requested}`) : "—"}</p>
     <p>{t("verification.method")}: {method ? t(`verification.${method}`) : "—"}</p>
     {fallback && <p role="status">{t(`verification.${fallback}`)}</p>}
-    {method === "read_back" && <p>{t("verification.egress")}{egress != null ? ` (${egress.toLocaleString()} bytes)` : ""}</p>}
+    {method === "read_back" && <p>{t("verification.egress")}{egress != null ? ` (${formatBytes(egress)})` : ""}</p>}
   </section>;
 }

@@ -1,15 +1,27 @@
-/** Byte, duration, and count formatting for archive statistics. */
+/**
+ * The one formatting module for amounts, sizes, counts and dates (#654).
+ * Everything follows the active locale (`<html lang>`, set by the i18n
+ * provider) unless a `locale` is passed explicitly.
+ */
 
-export function formatBytes(value: number | null | undefined): string {
+/** The page language set by the i18n provider (`<html lang>`). */
+const pageLocale = () => (typeof document !== "undefined" && document.documentElement.lang) || undefined;
+
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
+/** A size in binary (IEC) units with the locale's decimal separator: `1,5 GiB`. */
+export function formatBytes(value: number | null | undefined, locale?: string): string {
   if (value === null || value === undefined) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
   let n = Number(value);
+  if (!Number.isFinite(n)) return "—";
   let i = 0;
-  while (n >= 1024 && i < units.length - 1) {
+  while (Math.abs(n) >= 1024 && i < BYTE_UNITS.length - 1) {
     n /= 1024;
     i++;
   }
-  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  const digits = i === 0 ? 0 : 1;
+  const number = new Intl.NumberFormat(locale ?? pageLocale(), { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
+  return `${number} ${BYTE_UNITS[i]}`;
 }
 
 export type DurationUnit = "seconds" | "minutes" | "hours";
@@ -45,18 +57,17 @@ export function formatCompactCount(value: number): string {
   }).format(n);
 }
 
-/** The page language set by the i18n provider (`<html lang>`). */
-const pageLocale = () => (typeof document !== "undefined" && document.documentElement.lang) || undefined;
-
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat(pageLocale()).format(value);
 }
 
 /** Human date and time in the page language; "—" when absent or invalid. */
-export function formatDateTime(value: unknown): string {
+export function formatDateTime(value: unknown, locale?: string): string {
   if (typeof value !== "string" || !value) return "—";
+  // A date-only value has no time to show: keep it on its calendar day.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDate(value, locale);
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(pageLocale(), { dateStyle: "medium", timeStyle: "short" });
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale ?? pageLocale(), { dateStyle: "medium", timeStyle: "short" });
 }
 
 /** Human calendar date in `locale`; date-only ISO values (`2026-11-01`) stay on their calendar day. */
@@ -68,12 +79,29 @@ export function formatDate(value: unknown, locale?: string): string {
   return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", ...(dateOnly ? { timeZone: "UTC" } : {}) });
 }
 
-/** A euro amount with two decimals in `locale`; positive amounts under one cent read "< 0.01 €". */
-export function formatEur(value: number, locale?: string): string {
-  const money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export type MoneyOptions = { currency?: string; locale?: string; signed?: boolean };
+
+/**
+ * An amount with two decimals in the locale's currency format: `3,42 €` / `€3.42`.
+ * Positive amounts under one cent read "< 0,01 €"; `signed` shows `+`/`-` for deltas.
+ * Absent or invalid amounts read "—".
+ */
+export function formatMoney(value: number | string | null | undefined, { currency = "EUR", locale, signed = false }: MoneyOptions = {}): string {
+  if (value === null || value === undefined || value === "") return "—";
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "—";
-  return amount > 0 && amount < 0.01 ? `< ${money.format(0.01)}` : money.format(amount);
+  let money: Intl.NumberFormat;
+  try {
+    money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: currency || "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: signed ? "exceptZero" : "auto" });
+  } catch {
+    money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: signed ? "exceptZero" : "auto" });
+  }
+  return !signed && amount > 0 && amount < 0.01 ? `< ${money.format(0.01)}` : money.format(amount);
+}
+
+/** A euro amount (see {@link formatMoney}). */
+export function formatEur(value: number | string | null | undefined, locale?: string): string {
+  return formatMoney(value, { locale });
 }
 
 /** How long a cold recovery takes, by S3 storage class. */

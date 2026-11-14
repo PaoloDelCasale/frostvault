@@ -3,7 +3,9 @@ import { expect, test } from "@playwright/test";
 
 const messages = JSON.parse(fs.readFileSync(new URL("../../../app/locales/it.json", import.meta.url), "utf8")) as Record<string, string>;
 const lastKnownAt = "2026-11-08T22:00:00.000000+00:00";
-const longLabel = `${messages["state.unconfirmed"]} · ${messages["state.last_known"].replace("{state}", messages["state.protected"]).replace("{date}", lastKnownAt)}`;
+// The badge shows the date in the page language, never the raw ISO value (#654).
+const shownAt = new Date(lastKnownAt).toLocaleString("it", { dateStyle: "medium", timeStyle: "short" });
+const longLabel = `${messages["state.unconfirmed"]} · ${messages["state.last_known"].replace("{state}", messages["state.protected"]).replace("{date}", shownAt)}`;
 
 // Exercise the real SPA, catalog, Badge and responsive file-browser layout without
 // depending on a filesystem scan or mutating the shared seeded Vaults.

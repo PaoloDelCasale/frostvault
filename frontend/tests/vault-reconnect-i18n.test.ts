@@ -12,10 +12,12 @@ describe("Reconnect and installation kit English/Italian contract", () => {
   it("localizes prompts without retaining superseded relocation options", () => {
     const keys = [...components.matchAll(/t\("(general\.reconnect[^"]*|recovery_kit\.[^"]*)"/g)].map((match) => match[1]!);
     expect(keys.length).toBeGreaterThan(15);
+    // Counted strings live as `<key>_one` / `<key>_other` (#654).
+    const message = (catalog: Record<string, string>, key: string) => catalog[key] ?? catalog[`${key}_other`];
     for (const key of new Set(keys)) {
-      expect(en[key], key).toBeTruthy();
-      expect(itMessages[key], key).toBeTruthy();
-      expect(itMessages[key]).not.toBe(en[key]);
+      expect(message(en, key), key).toBeTruthy();
+      expect(message(itMessages, key), key).toBeTruthy();
+      expect(message(itMessages, key)).not.toBe(message(en, key));
     }
     expect(Object.keys(en).some((key) => key.startsWith("general.relocation") || key === "general.relocate_vault")).toBe(false);
   });
@@ -23,7 +25,9 @@ describe("Reconnect and installation kit English/Italian contract", () => {
     expect(en["general.reconnect_scan_warning"]).toMatch(/full scan.*conflicts/i);
     expect(itMessages["general.reconnect_scan_warning"]).toMatch(/scansione completa.*conflitti/i);
     expect(en["recovery_kit.help"]).toMatch(/no catalog/i);
-    expect(en["recovery_kit.restore_warning"]).toContain("{date}");
-    expect(en["recovery_kit.restore_warning"]).toContain("{count}");
+    for (const form of ["one", "other"]) {
+      expect(en[`recovery_kit.restore_warning_${form}`]).toContain("{date}");
+      expect(en[`recovery_kit.restore_warning_${form}`]).toContain("{count}");
+    }
   });
 });

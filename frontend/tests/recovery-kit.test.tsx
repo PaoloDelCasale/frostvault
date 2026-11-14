@@ -34,7 +34,8 @@ describe("Installation Recovery Kit", () => {
     renderSection();
     expect(await screen.findByText(fingerprint)).toBeInTheDocument();
     const warning = screen.getByTestId("metadata-restore-warning");
-    expect(warning).toHaveTextContent("2026-11-02T10:00:00Z");
+    expect(warning).toHaveTextContent(/Nov 2, 2026, \d{1,2}:\d{2}\s?[AP]M/);
+    expect(warning).not.toHaveTextContent("2026-11-02T");
     expect(warning).toHaveTextContent("42 files updated");
     await userEvent.click(screen.getByRole("button", { name: /I have stored/i }));
     expect(await screen.findByText("Custody confirmed for the current kit.")).toBeInTheDocument();

@@ -111,7 +111,9 @@ describe("shared component i18n coverage parity", () => {
       const source = await readFile(file, "utf8");
       for (const match of source.matchAll(T_KEY_CALL)) {
         const key = match[1];
-        if (!(key in en) || !(key in it)) {
+        // Counted strings live as `<key>_one` / `<key>_other` (#654).
+        const defined = (catalog: Record<string, string>) => key in catalog || `${key}_other` in catalog;
+        if (!defined(en) || !defined(it)) {
           missing.push(`${path.relative(srcRoot, file)}: ${key}`);
         }
       }
