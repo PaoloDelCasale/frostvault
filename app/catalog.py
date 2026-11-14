@@ -1114,13 +1114,16 @@ class ArchiveCatalog:
             self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
 
     def mark_unseen_archive_versions_missing(
-        self, *, vault_id: int, scan_id: Any, scan_started_at: Any
+        self, *, vault_id: int, scan_id: Any, scan_started_at: Any,
+        superseded: bool = True,
     ) -> list[dict[str, Any]]:
         """Mark unseen versions missing and return the new transitions.
 
         Versions with a concurrent upload Job on their file, versions seen in
         this scan and versions created after it started are left unchanged so
-        they cannot open false loss incidents.
+        they cannot open false loss incidents. With ``superseded=False`` only
+        Current and the replacement in progress can become missing: a
+        superseded version that is gone is not a loss (#639).
         """
         terminal = list(TERMINAL_JOB_STATUSES)
         rows = self.connection.execute(
@@ -1133,6 +1136,8 @@ class ArchiveCatalog:
               AND av.availability <> 'missing'
               AND av.availability_checked_at IS DISTINCT FROM %s
               AND av.created_at <= %s
+              AND (%s OR av.id = f.current_version_id
+                   OR av.id = f.replacing_version_id)
               AND NOT EXISTS (
                   SELECT 1 FROM jobs active_upload
                   WHERE active_upload.file_id = av.file_id
@@ -1144,7 +1149,7 @@ class ArchiveCatalog:
             """,
             (
                 _required_timestamp(scan_id), vault_id, _required_timestamp(scan_id),
-                _required_timestamp(scan_started_at), terminal,
+                _required_timestamp(scan_started_at), bool(superseded), terminal,
             ),
         ).fetchall()
         # Bulk reconciliation can touch an unbounded set of paths.
@@ -1160,6 +1165,107 @@ class ArchiveCatalog:
             }
             for row in rows
         ]
+
+    # -- Reconnect after a metadata restore ---------------------------------
+
+    def adopt_cloud_path(self, vault_id: int, path: str, *, at: Any) -> str:
+        """The Vault File at ``path``, created with no Local Copy if absent.
+
+        Used only by the cloud reconciliation of a metadata restore (#638):
+        content uploaded after the backup has no row in the restored catalog.
+        The Local Copy stays unobserved until the local rehash finds it.
+        """
+        self._vault_lock_touch(vault_id)
+        row = self.connection.execute(
+            """
+            INSERT INTO files(vault_id, path, path_since) VALUES (%s, %s, %s)
+            ON CONFLICT (vault_id, path) DO NOTHING
+            RETURNING id
+            """,
+            (vault_id, path, _required_timestamp(at)),
+        ).fetchone()
+        if row is None:
+            row = self.connection.execute(
+                "SELECT id FROM files WHERE vault_id=%s AND path=%s", (vault_id, path),
+            ).fetchone()
+        self._mark_path_aggregates_dirty(vault_id, path)
+        return str(row["id"])
+
+    def close_absent_superseded_versions(
+        self, *, vault_id: int, scan_id: Any, provider: str,
+        source_root: str, root_identity: str | None,
+    ) -> list[str]:
+        """Close superseded versions a complete listing proved gone (#639).
+
+        After a metadata restore the catalog still holds versions that the
+        Current Snapshot cleanup deleted after the backup. Their cleanup is
+        complete: they are recorded as found absent in a cleanup batch kept
+        by the verified Current and removed with that proof, exactly as a
+        finished cleanup does. Only landed application writes of a file
+        without an open cleanup batch qualify; any other superseded version
+        is left untouched. Returns the closed Archive Version ids.
+        """
+        stamp = _required_timestamp(scan_id)
+        rows = self.connection.execute(
+            """
+            SELECT av.id, f.id AS file_id, f.current_version_id, f.path_since
+            FROM files f
+            JOIN archive_versions cur
+              ON cur.id = f.current_version_id AND cur.integrity = 'verified'
+            JOIN archive_versions av ON av.file_id = f.id
+            LEFT JOIN upload_attempts a ON a.id = av.upload_attempt_id
+            LEFT JOIN copy_attempts ca ON ca.id = av.copy_attempt_id
+            WHERE f.vault_id = %s
+              AND av.id <> f.current_version_id
+              AND av.id IS DISTINCT FROM f.replacing_version_id
+              AND av.integrity <> 'mismatch'
+              AND av.availability_checked_at IS DISTINCT FROM %s
+              AND av.created_at <= %s
+              AND ((a.outcome = 'landed' AND a.landed_version_id = av.provider_version_id)
+                   OR (ca.outcome = 'landed'
+                       AND ca.landed_version_id = av.provider_version_id))
+              AND NOT EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id)
+            ORDER BY f.id, av.id
+            FOR UPDATE OF f
+            """,
+            (vault_id, stamp, stamp),
+        ).fetchall()
+        by_file: dict[str, list[Mapping[str, Any]]] = {}
+        for row in rows:
+            by_file.setdefault(str(row["file_id"]), []).append(row)
+        closed: list[str] = []
+        for file_id, versions in by_file.items():
+            batch = self.connection.execute(
+                """
+                INSERT INTO cleanup_batches(vault_id, file_id, keeper_id, provider,
+                                            path_since, source_root, root_identity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (
+                    vault_id, file_id, versions[0]["current_version_id"], provider,
+                    versions[0]["path_since"], source_root, root_identity,
+                ),
+            ).fetchone()["id"]
+            ids = [str(row["id"]) for row in versions]
+            self.connection.execute(
+                """
+                INSERT INTO cleanup_candidates(batch_id, file_id, archive_version_id)
+                SELECT %s, %s, unnest(%s::uuid[])
+                """,
+                (batch, file_id, ids),
+            )
+            # Found absent by the complete listing: the deletion is done.
+            self.connection.execute(
+                "UPDATE cleanup_candidates SET deleted_at=now() WHERE batch_id=%s",
+                (batch,),
+            )
+            self.connection.execute(
+                "DELETE FROM archive_versions WHERE id = ANY(%s::uuid[])", (ids,),
+            )
+            self.connection.execute("DELETE FROM cleanup_batches WHERE id=%s", (batch,))
+            self._mark_file_aggregates_dirty(vault_id, file_id)
+            closed.extend(ids)
+        return closed
 
     # -- lookups ------------------------------------------------------------
 
