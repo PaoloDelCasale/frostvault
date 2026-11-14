@@ -371,6 +371,8 @@
   "general.reconnect_vault": "Ricollega la cartella",
   "general.reconnect_help": "Accetta esplicitamente un nuovo volume sorgente o una cartella diversa per questo Vault. Gli altri Vault non vengono ricollegati. È richiesto un motivo.",
   "general.reconnect_old_root": "Cartella precedente",
+  "general.reconnect_current_root": "Cartella attuale",
+  "general.reconnect_active_hint": "Serve solo se i dati di questo Vault sono stati spostati su un altro volume o in un'altra cartella. Dopo un ripristino dei metadati la scelta più comune è la cartella gestita di questo Vault.",
   "general.reconnect_volume": "Volume sorgente di destinazione",
   "general.reconnect_own_managed": "Cartella gestita di questo Vault",
   "general.reconnect_own_managed_help": "La stessa cartella gestita in cui è stato creato questo Vault. Non viene mai ricreata: se manca, il ricollegamento è rifiutato.",
