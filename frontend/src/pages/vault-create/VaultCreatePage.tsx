@@ -12,7 +12,6 @@ import type {
 } from "@/api";
 
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
-import { AuthCard } from "@/components/AuthCard";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { Button } from "@/components/ui/button";
@@ -44,6 +43,8 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const [relativePath, setRelativePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [volumesFailed, setVolumesFailed] = useState(false);
+  const [volumesAttempt, setVolumesAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,18 +56,21 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
           .filter((item) => item.health === "ok" && item.access === "rw")
           .map((item) => item.alias)
           .sort();
+        setVolumesFailed(false);
         setVolumeOptions(usable);
         if (usable.length > 0) {
           setVolumeAlias(usable[0]);
         }
       })
       .catch(() => {
-        if (!cancelled) setVolumeOptions([]);
+        if (cancelled) return;
+        setVolumeOptions([]);
+        setVolumesFailed(true);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [volumesAttempt]);
 
   const adoptAvailable = volumeOptions.length > 0;
 
@@ -110,23 +114,17 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   }
 
   return (
-    <Surface className={`relative grid place-items-center bg-canvas px-4 py-[30px] ${embedded ? "" : "min-h-screen"}`}>
+    <Surface className={`relative bg-canvas ${embedded ? "" : "min-h-screen px-4 py-[30px]"}`}>
       {!embedded && <div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(1rem,env(safe-area-inset-right))]">
         <AccountPreferencesMenu />
       </div>}
-      <div className="w-full max-w-[min(440px,100%)]">
-        <AuthCard>
-          <p className="m-0 mb-1.5 text-[12px] font-extrabold tracking-[0.16em] text-green">
-            {t("ui.private_archive")}
-          </p>
-          <h1 className="m-0 text-[clamp(1.75rem,5vw,2.25rem)] font-bold tracking-[-0.04em] text-ink">
-            {t("ui.vault_create.title")}
-          </h1>
-          <p className="mt-2 text-sm text-muted">
-            {t("ui.vault_create.subtitle", { name: displayName })}
-          </p>
-
-            <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
+      <div className="grid w-full max-w-[min(560px,100%)] gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold">{t("ui.vault_create.title")}</h1>
+          <p className="text-sm text-muted">{t("ui.vault_create.subtitle", { name: displayName })}</p>
+        </div>
+        <div className="rounded-panel border border-line bg-surface p-4">
+            <form className="grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
               <FormField label={t("ui.vault_create.name")} htmlFor="vault-name">
                 <FormInput
                   id="vault-name"
@@ -171,6 +169,17 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                     {t("ui.vault_create.mode_adopt")}
                   </label>
                 </fieldset>
+              ) : null}
+
+              {volumesFailed ? (
+                <div className="grid gap-2 rounded-[10px] border border-line bg-canvas px-3.5 py-3 text-sm text-ink" role="status" data-testid="vault-create-volumes-error">
+                  <p className="m-0">{t("ui.vault_create.volumes_failed")}</p>
+                  <div>
+                    <Button type="button" variant="secondary" onClick={() => setVolumesAttempt((value) => value + 1)}>
+                      {t("ui.retry")}
+                    </Button>
+                  </div>
+                </div>
               ) : null}
 
               {creationMode === "adopt" && adoptAvailable ? (
@@ -228,7 +237,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                 </Button>
               </div>
             </form>
-        </AuthCard>
+        </div>
       </div>
 
     </Surface>

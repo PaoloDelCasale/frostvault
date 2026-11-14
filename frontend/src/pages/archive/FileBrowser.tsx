@@ -214,7 +214,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
         <span className="text-xs text-muted">{t("essential.modified")}: {modified(target.item)}</span>
       </div>
     </li>)}</ul>
-    {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && <p className="rounded-card border border-dashed border-line p-6 text-center text-muted" data-testid="file-list-empty">{t("ui.empty_no_matches")}</p>}
+    {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && <p className="rounded-card border border-dashed border-line p-6 text-center text-muted" data-testid="file-list-empty" data-empty={searching ? "search" : state ? "filter" : "folder"}>{t(searching ? "ui.empty_no_matches" : state ? "ui.empty_filter" : "ui.empty_folder")}</p>}
     {total > 0 && <nav aria-label={t("files.pages")} className="flex flex-wrap items-center justify-between gap-2">
       <p data-testid="page-label" className="text-sm text-muted tabular-nums">{t("files.range", { from: formatNumber(from), to: formatNumber(to), total: formatNumber(total) })}</p>
       {total > PAGE_SIZE && <div className="flex gap-2">

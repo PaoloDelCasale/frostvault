@@ -72,6 +72,16 @@ describe("essential file browser", () => {
     await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files/detail?") && url.endsWith("vault_id=2"))).toBe(true));
     expect(calls.some((url) => url.includes("/select"))).toBe(false);
   });
+  it.each([
+    ["", "folder", "ui.empty_folder"],
+    ["?state=cloud_only", "filter", "ui.empty_filter"],
+    ["?q=missing&state=cloud_only", "search", "ui.empty_no_matches"],
+  ])("tells an empty folder, a filter and a search without results apart (%s) (#657)", async (search, kind, key) => {
+    setup([], search);
+    const empty = await screen.findByTestId("file-list-empty");
+    expect(empty).toHaveAttribute("data-empty", kind);
+    expect(empty).toHaveTextContent(key);
+  });
   it("folder rows show a badge per state, never Mixed", async () => {
     setup([{ type: "directory", name: "2026", path: "2026", state: "problem", item_count: 7, total_size: 99, state_counts: { protected: 5, cloud_only: 2 } }]);
     expect((await screen.findAllByText("state.protected 5"))[0]).toHaveAttribute("data-state", "protected");

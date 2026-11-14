@@ -31,11 +31,11 @@ describe("plaintext Vault creation", () => {
       <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>
     </ApiQueryProvider>);
   }
-  function requests({ adopt = false, fail = false, messages = en } = {}) {
+  function requests({ adopt = false, fail = false, messages = en, volumesFail = false } = {}) {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) return Promise.resolve(json({ locale: messages === en ? "en" : "it", locales: ["en", "it"], messages }));
-      if (url === "/api/general/source-volumes") return Promise.resolve(json({ items: adopt ? [{ alias: "photos", health: "ok", access: "rw" }] : [] }));
+      if (url === "/api/general/source-volumes") return Promise.resolve(volumesFail ? json({ detail: "boom" }, 500) : json({ items: adopt ? [{ alias: "photos", health: "ok", access: "rw" }] : [] }));
       if (url.startsWith("/api/source-volumes/photos/browse")) return Promise.resolve(json({ volume_alias: "photos", relative_path: "albums", items: [{ name: "2024", relative_path: "albums/2024", navigable: true, selectable: true, occupation: null }] }));
       if (url === "/api/vaults" && init?.method === "POST") return Promise.resolve(fail
         ? json({ message_key: "ui.vault_create.failed", detail: "Invalid name" }, 422)
@@ -88,5 +88,26 @@ describe("plaintext Vault creation", () => {
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
     expect(payload()).toEqual({ name: "Photos", creation_mode: "adopt", volume_alias: "photos", relative_path: "albums/2024" });
+  });
+
+  it("uses the standard page header, without the sign-in card label", async () => {
+    requests();
+    renderPage();
+    const heading = await screen.findByRole("heading", { level: 1, name: en["ui.vault_create.title"] });
+    expect(heading).toHaveClass("text-2xl");
+    expect(screen.queryByText("FROSTVAULT")).not.toBeInTheDocument();
+  });
+
+  it("explains inline why an existing directory cannot be used when volumes fail to load (#657)", async () => {
+    requests({ volumesFail: true });
+    const user = userEvent.setup();
+    renderPage();
+    const notice = await screen.findByTestId("vault-create-volumes-error");
+    expect(notice).toHaveTextContent(en["ui.vault_create.volumes_failed"]);
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    requests({ adopt: true });
+    await user.click(screen.getByRole("button", { name: en["ui.retry"] }));
+    expect(await screen.findByRole("radio", { name: en["ui.vault_create.mode_adopt"] })).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-create-volumes-error")).not.toBeInTheDocument();
   });
 });

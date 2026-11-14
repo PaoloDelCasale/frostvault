@@ -75,7 +75,7 @@ export default function App() {
   if (route.name === "overview") page = <OverviewPage vaults={vaults} overview={overview.data} />;
   else if (route.name === "new-vault") page = <VaultCreatePage displayName={me.display_name} onNavigate={(url) => { void loadVaults().then(() => navigate(url)); }} embedded />;
   else if (route.name === "system") page = <GeneralPage overview={overview.data} />;
-  else if (route.name === "problems") page = <ProblemsPage />;
+  else if (route.name === "problems") page = <ProblemsPage vaults={vaults} />;
   else if (route.name === "files") page = current ? <FileBrowser key={`${current.id}:${locale}`} t={t} vaultId={current.id} vaultName={current.name} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} problemCount={problemCounts[current.id] ?? 0} onRefresh={refresh} /> : unavailable;
   else if (route.name === "settings") page = current ? <div className="grid min-w-0 gap-4"><VaultHeader vaultId={current.id} vaultName={current.name} active="settings" t={t} />
     <VaultSettingsPanel key={current.id} vaultId={current.id} vaultName={current.name} onStopped={() => { void loadVaults().then(() => navigate("/")); }} /></div> : unavailable;

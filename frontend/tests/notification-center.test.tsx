@@ -122,6 +122,22 @@ describe("NotificationCenter", () => {
     expect(screen.getByTestId("notification-unread-badge")).toHaveTextContent("1");
   });
 
+  it("expands a long remedy without a Vault link to read it in full (#657)", async () => {
+    const user = userEvent.setup();
+    const body = "Grant s3:GetBucketPublicAccessBlock to the FrostVault IAM user, then wait for the next automatic probe before retrying the upload of every pending file.";
+    const fetchMock = vi.fn(async () => jsonResponse({ unread_count: 1, has_more: false,
+      items: [{ ...notificationItem({ id: 7, body }), vault_id: null }] }));
+    renderCenter(fetchMock);
+    await user.click(await screen.findByRole("button", { name: "Open notifications (1 unread)" }));
+    const text = await screen.findByTestId("notification-body");
+    expect(text).toHaveClass("line-clamp-2");
+    const toggle = screen.getByRole("button", { name: "Show all" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(text).not.toHaveClass("line-clamp-2");
+    expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("defaults to unread-only inbox, hides read history, and removes a marked item", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn()

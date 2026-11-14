@@ -47,6 +47,9 @@ type UnreadMutationContext = MutationContext<NotificationsResponse> & {
 const UNREAD_PAGE_SIZE = 50;
 const READ_PAGE_SIZE = 30;
 
+/** Bodies longer than this may overflow the two-line clamp. */
+const NOTIFICATION_CLAMP_CHARS = 120;
+
 function notificationLabel(
   t: NotificationTranslator | undefined,
   key: string,
@@ -99,6 +102,10 @@ function NotificationRow({
   const title = notificationContent(item.title);
   const body = notificationContent(item.body);
   const unread = !item.read && item.problem_status !== "resolved";
+  const [expanded, setExpanded] = useState(false);
+  // Long remedies are clamped to two lines; the toggle reveals the full text
+  // even for notifications without a Vault page to open (#657).
+  const expandable = item.event !== "weekly_summary" && (body.length > NOTIFICATION_CLAMP_CHARS || body.includes("\n"));
   return (
     <li
       className={cn(
@@ -130,9 +137,22 @@ function NotificationRow({
           </time>
         </div>
         {body ? (
-          <p className={cn("mt-0.5 whitespace-pre-line break-words text-sm leading-snug text-muted", item.event !== "weekly_summary" && "line-clamp-2")}>
+          <p id={`notification-body-${item.id}`} className={cn("mt-0.5 whitespace-pre-line break-words text-sm leading-snug text-muted", expandable && !expanded && "line-clamp-2")} data-testid="notification-body">
             {body}
           </p>
+        ) : null}
+        {expandable ? (
+          <button
+            type="button"
+            className="min-h-11 text-xs font-bold text-ink underline"
+            aria-expanded={expanded}
+            aria-controls={`notification-body-${item.id}`}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded
+              ? notificationLabel(t, "ui.notifications_show_less", "Show less")
+              : notificationLabel(t, "ui.notifications_show_more", "Show all")}
+          </button>
         ) : null}
         {item.problem_status ? (
           <p className="text-xs font-bold" data-testid="notification-problem-status">

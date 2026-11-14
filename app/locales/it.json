@@ -50,7 +50,6 @@
   "ui.navigation": "Navigazione",
   "ui.vault_navigation": "Navigazione principale",
   "ui.loading": "Caricamento…",
-  "ui.private_archive": "FROSTVAULT",
   "ui.close": "Chiudi",
   "ui.toast_close": "Chiudi notifica",
   "ui.file_list_loading": "Caricamento cartella…",
@@ -746,5 +745,14 @@
   "recovery.keep_waiting": "Continua ad attendere",
   "recovery.stop_waiting_title": "Smettere di attendere il recupero?",
   "recovery.stop_waiting_help": "FrostVault smette di attendere questo recupero, ma AWS non si ferma: il recupero dal cloud continua e viene addebitato comunque. Un nuovo «Recupera» lo riprende senza costi di recupero aggiuntivi finché dura la copia temporanea.",
-  "recovery.stop_waiting_help_days": "FrostVault smette di attendere questo recupero, ma AWS non si ferma: il recupero dal cloud continua e viene addebitato comunque. Un nuovo «Recupera» lo riprende senza costi di recupero aggiuntivi finché dura la copia temporanea ({days} giorni dal termine del recupero)."
+  "recovery.stop_waiting_help_days": "FrostVault smette di attendere questo recupero, ma AWS non si ferma: il recupero dal cloud continua e viene addebitato comunque. Un nuovo «Recupera» lo riprende senza costi di recupero aggiuntivi finché dura la copia temporanea ({days} giorni dal termine del recupero).",
+  "ui.retry": "Riprova",
+  "ui.empty_folder": "Questa cartella è vuota.",
+  "ui.empty_filter": "Nessun file di questa cartella corrisponde al filtro selezionato.",
+  "ui.vault_create.volumes_failed": "Impossibile caricare i volumi sorgente: per ora puoi creare solo un Vault vuoto. «Usa una directory esistente» tornerà disponibile quando i volumi si caricano.",
+  "essential.open_problem_named": "Apri problema e rimedio: {title}",
+  "essential.problem_vault": "Vault: {name}",
+  "essential.problem_system": "Sistema",
+  "ui.notifications_show_more": "Mostra tutto",
+  "ui.notifications_show_less": "Mostra meno"
 }
