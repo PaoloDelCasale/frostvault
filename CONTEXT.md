@@ -57,6 +57,12 @@ recoveries continue. It stays paused until the Owner resumes it; it never
 deletes or stops protection.
 _Avoid_: Stopped, Suspended, Disabled, Operating window
 
+**Manual Upload**:
+A Vault whose automatic upload the Owner has turned off by choice: new and
+changed Local Copies wait until the Owner uploads them. It is a setting, not a
+failure or a Problem; the Vault's protection follows its files.
+_Avoid_: Protection suspended, Protezione sospesa, Suspended
+
 **Delayed Cloud Deletion**:
 The Owner's explicit permanent removal of Cloud-only content after a seven-day
 cancellable delay; it never removes Local Copies or follows an SMB deletion.
@@ -164,6 +170,13 @@ _Avoid_: Integrity, restore state
 A queued or running operation targeting one stable Vault File and, when known,
 one exact Archive Version.
 _Avoid_: Task, request
+
+**Recovery**:
+The Owner's request to bring a Vault File's Current Snapshot back from the cloud
+as a Local Copy, including any wait for a cold storage class to become readable
+(the cloud restore). In the Italian UI it is always «Recupero» / «Recupera»;
+«Ripristino» names only the restore of a metadata backup.
+_Avoid_: Restore, Ripristino, Download
 
 **Restore Approval**:
 The Owner's explicit consent, given once for a whole recovery request, before a
