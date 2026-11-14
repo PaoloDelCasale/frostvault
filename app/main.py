@@ -1457,8 +1457,8 @@ def _protection_observation(connection: Any, vault: dict[str, Any], access: Any)
         or vault.get("lifecycle", "active") != "active"
         or observation_is_unconfirmed(health)
     )
-    suspended = not get_policy(connection, int(vault["id"])).auto_upload
-    return unconfirmed, suspended
+    manual_upload = not get_policy(connection, int(vault["id"])).auto_upload
+    return unconfirmed, manual_upload
 
 
 @app.get(
@@ -1478,7 +1478,7 @@ def list_files(
     directory = normalize_directory(directory, api=True)
     access = vault_local_access(vault.get("source_root") or "")
     with db() as connection:
-        unconfirmed, suspended = _protection_observation(connection, vault, access)
+        unconfirmed, manual_upload = _protection_observation(connection, vault, access)
         catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
         listing = catalog.list_files_page(
             vault["id"],
@@ -1498,7 +1498,7 @@ def list_files(
         "directory": directory,
         "mode": listing["mode"],
         "aggregate_status": listing.get("aggregate_status", "ready"),
-        "protection_suspended": suspended,
+        "manual_upload": manual_upload,
     }
 
 
@@ -1527,7 +1527,7 @@ def search_all_files(
         scoped = []
         for vault in vaults:
             access = vault_local_access(vault.get("source_root") or "")
-            unconfirmed, _suspended = _protection_observation(connection, vault, access)
+            unconfirmed, _manual = _protection_observation(connection, vault, access)
             scoped.append({**vault, "unconfirmed": unconfirmed})
         return ArchiveCatalog(connection).search_protected_vaults(
             scoped, search=q, state=state, page=page, page_size=page_size,
@@ -1571,7 +1571,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
     access = vault_local_access(source_root)
     with db() as connection:
         # Cheap SQL aggregates only — never materialize every Vault File row.
-        unconfirmed, suspended = _protection_observation(connection, vault, access)
+        unconfirmed, manual_upload = _protection_observation(connection, vault, access)
         summary = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed).summary(vault["id"])
         from .services.component_health import (
             load_vault_health,
@@ -1596,7 +1596,7 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
                 break
     return {
         **summary,
-        "protection_suspended": suspended,
+        "manual_upload": manual_upload,
         "runtime": runtime,
         "source_volume": {
             "alias": access.volume_alias,

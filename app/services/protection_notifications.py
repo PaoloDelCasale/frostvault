@@ -61,18 +61,10 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
     from .source_layout import vault_local_access
     vault_id = int(vault["id"])
     policy = get_policy(connection, vault_id)
-    suspended = connection.execute(
-        "SELECT suspended_at FROM vault_operation_policies WHERE vault_id=%s", (vault_id,),
-    ).fetchone()
-    suspended_since = suspended["suspended_at"] if suspended else None
-    if not policy.auto_upload and not suspended_since:
-        suspended_since = now.isoformat()
-        connection.execute("UPDATE vault_operation_policies SET suspended_at=%s WHERE vault_id=%s",
-                           (suspended_since, vault_id))
+    # Manual Upload is the Owner's choice, not a failure (#647): it never opens
+    # a Problem, and one opened by an earlier release is resolved here.
     inbox.set_problem(connection, key=f"blocked:{vault_id}:suspended", event="protection_blocked",
-                      vault_id=vault_id, active=not policy.auto_upload and
-                      now - _time(suspended_since, now) >= timedelta(hours=24),
-                      params={"component": "suspended"})
+                      vault_id=vault_id, active=False)
     access = vault_local_access(str(vault["source_root"]))
     # Share the source episode with failed scans, without allowing a mount-only
     # check to clear a failed full source scan. Its next success owns resolution.
@@ -141,7 +133,7 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
         for state in STATES:
             totals[state] += counts[state]
         vaults.append({"vault_id": vault["id"], "states": counts,
-                       "suspended": not get_policy(connection, vault["id"]).auto_upload,
+                       "manual_upload": not get_policy(connection, vault["id"]).auto_upload,
                        "last_scan": (health.get("source") or {}).get("last_success_at"),
                        "last_audit": (health.get("audit") or {}).get("last_success_at")})
     from .metadata_backups import verification_overview

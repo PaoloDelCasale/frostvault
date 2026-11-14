@@ -53,7 +53,7 @@ class DelayRuleTests(unittest.TestCase):
                 'last_verified_backup': '2026-11-02', 'open_problems': 2,
                 'freed_bytes': 2*1024**3, 'freed_files': 6, 'cleanup_blocked': 1,
                 'monthly_cost_estimate': 1.23, 'currency': 'EUR',
-                'vaults': [{'vault_id': 9, 'last_scan': 'scan-date', 'last_audit': 'audit-date', 'suspended': True}]}
+                'vaults': [{'vault_id': 9, 'last_scan': 'scan-date', 'last_audit': 'audit-date', 'manual_upload': True}]}
         en = inbox.render_weekly_summary(data, locale='en')
         it = inbox.render_weekly_summary(data, locale='it')
         for text in (en, it):
@@ -183,19 +183,33 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertIsNone(timers['stopped.jpg'])
             self.assertIsNotNone(timers['failed.jpg'])
 
-    def test_source_and_suspension_are_blocked_with_no_secret_details(self):
+    def test_source_is_blocked_with_no_secret_details(self):
         with self.connect() as c:
-            c.execute("INSERT INTO vault_operation_policies(vault_id,auto_upload,suspended_at) VALUES (%s,FALSE,%s)",
-                      (self.vault_id,(NOW-timedelta(hours=25)).isoformat()))
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
             with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
                 monitor.monitor_vault(c,vault,now=NOW)
                 monitor.monitor_vault(c,vault,now=NOW)
-            self.assertEqual(inbox.count_open_problems(c),2)
-            c.execute('UPDATE vault_operation_policies SET auto_upload=TRUE,suspended_at=NULL WHERE vault_id=%s',(self.vault_id,))
+            self.assertEqual(inbox.count_open_problems(c),1)
             with patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
                 monitor.monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
+
+    def test_manual_upload_is_never_a_problem_and_an_old_one_is_resolved(self):
+        # Manual Upload is the Owner's choice (#647), however long it lasts.
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
+            c.execute("INSERT INTO vault_operation_policies(vault_id,auto_upload,suspended_at) VALUES (%s,FALSE,%s)",
+                      (self.vault_id,(NOW-timedelta(days=30)).isoformat()))
+            # An episode opened by an earlier release must not stay dangling.
+            inbox.set_problem(c,key=f'blocked:{self.vault_id}:suspended',event='protection_blocked',
+                              vault_id=self.vault_id,active=True,params={'component':'suspended'})
+            self.assertEqual(inbox.count_open_problems(c),1)
+            vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
+            monitor.monitor_vault(c,vault,now=NOW)
+            monitor.monitor_vault(c,vault,now=NOW+timedelta(days=2))
+            self.assertEqual(inbox.count_open_problems(c),0)
+            row = c.execute("SELECT problem_status FROM notifications WHERE dedupe_key=%s",
+                            (f'blocked:{self.vault_id}:suspended',)).fetchone()
+            self.assertEqual(row['problem_status'],'resolved')
 
     def test_partial_unreadable_scan_does_not_invent_global_source_blockage(self):
         from app.services.component_health import record_component_health
@@ -222,7 +236,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             data = rows[0]['message_params']
             self.assertEqual(set(data['states']),set(monitor.STATES))
             self.assertIsNone(data['last_verified_backup'])
-            for key in ('last_scan','last_audit','suspended'):
+            for key in ('last_scan','last_audit','manual_upload'):
                 self.assertIn(key,data['vaults'][0])
             for key in ('open_problems','freed_bytes','monthly_cost_estimate','cleanup_blocked'):
                 self.assertIn(key,data)

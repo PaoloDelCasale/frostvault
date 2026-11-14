@@ -148,7 +148,7 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
     for vault in summary.get("vaults") or []:
         lines.append(translate("notification.weekly_summary.vault", locale=locale,
                      vault=vault["vault_id"], scan=vault.get("last_scan") or "—",
-                     audit=vault.get("last_audit") or "—", suspended=vault["suspended"]))
+                     audit=vault.get("last_audit") or "—", manual_upload=vault.get("manual_upload", vault.get("suspended"))))
     for problem in summary.get("problems") or []:
         lines.append(translate(problem["body_key"], locale=locale,
                                **_localized_params(_message_params(problem), locale))

@@ -4,14 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, setCsrfToken } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { ToastRegion } from "@/components/Toast";
-import { OverviewPage } from "@/pages/overview/OverviewPage";
+import { VaultHeader } from "@/layout/VaultHeader";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
 import { createVaultAccessFetch, jsonResponse } from "./vault-settings-harness";
 
 afterEach(resetApiClientForTests);
 
 describe("Persistent Vault pause controls (#537)", () => {
-  function setup(page: "overview" | "settings", failed = false) {
+  function setup(page: "header" | "settings", failed = false) {
     let paused = false;
     const posts: { url: string; init?: RequestInit }[] = [];
     const inventory = () => jsonResponse({ items: [{ id: 2, uuid: "photos", name: "Photos", paused, lifecycle: "active", source_root: "/sources/photos", s3_prefix: "photos" }] });
@@ -30,23 +30,23 @@ describe("Persistent Vault pause controls (#537)", () => {
       },
     });
     configureApiClient({ fetch: fetcher }); setCsrfToken("pause-csrf");
-    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>{page === "overview"
-      ? <OverviewPage vaults={[{ id: 2, uuid: "photos", name: "Photos" }]} />
+    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>{page === "header"
+      ? <VaultHeader vaultId={2} vaultName="Photos" active="files" t={(key) => key} />
       : <VaultSettingsPanel vaultId={2} vaultName="Photos" onStopped={vi.fn()} />}<ToastRegion closeLabel="Close notification" /></I18nProvider></ApiQueryProvider>);
     return posts;
   }
 
-  it.each(["overview", "settings"] as const)("pauses/resumes in %s, shows separate badge and CSRF POST without cancellation", async (page) => {
+  it.each(["header", "settings"] as const)("pauses/resumes in %s, shows separate badge and CSRF POST without cancellation", async (page) => {
     const posts = setup(page);
     const user = userEvent.setup();
-    const scope = page === "overview" ? within(await screen.findByTestId("overview-table")) : within(await screen.findByTestId("vault-settings"));
+    const scope = page === "header" ? within(await screen.findByTestId("vault-header")) : within(await screen.findByTestId("vault-settings"));
     const button = await scope.findByRole("button", { name: "Pause cloud work" });
     await waitFor(() => expect(button).toBeEnabled());
     await user.click(button);
     expect(await scope.findByText("Paused Vault")).toBeInTheDocument();
     expect(posts[0].url).toBe("/api/vaults/2/pause");
     expect(new Headers(posts[0].init?.headers).get("X-CSRF-Token")).toBe("pause-csrf");
-    if (page === "overview") expect(scope.getByText("Protected")).toBeInTheDocument();
+    if (page === "header") expect(scope.getByText("state.protected")).toBeInTheDocument();
     await user.click(scope.getByRole("button", { name: "Resume cloud work" }));
     await waitFor(() => expect(scope.queryByText("Paused Vault")).not.toBeInTheDocument());
     expect(posts.map((p) => p.url)).toEqual(["/api/vaults/2/pause", "/api/vaults/2/resume"]);
