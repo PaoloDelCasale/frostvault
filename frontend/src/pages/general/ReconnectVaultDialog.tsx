@@ -7,6 +7,13 @@ import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 
+const MANAGED_ALIAS = "managed";
+
+/** A Vault created in `/sources/managed/<uuid>` may reconnect to that folder only (#641). */
+function ownsManagedFolder(vault: GeneralVault | null): boolean {
+  return !!vault && vault.source_root.replace(/\/+$/, "").endsWith(`/${MANAGED_ALIAS}/${vault.uuid}`);
+}
+
 type Props = {
   vault: GeneralVault | null;
   open: boolean;
@@ -22,6 +29,8 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   const [path, setPath] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const ownManaged = ownsManagedFolder(vault);
+  const managedSelected = ownManaged && alias === MANAGED_ALIAS;
 
   useEffect(() => {
     if (!open) return;
@@ -40,7 +49,11 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
     if (!vault || !alias || reason.trim().length < 3) return;
     setSubmitting(true);
     try {
-      await reconnectGeneralVault(vault.id, { volume_alias: alias, relative_path: path, reason: reason.trim() });
+      await reconnectGeneralVault(vault.id, {
+        volume_alias: alias,
+        relative_path: managedSelected ? vault.uuid : path,
+        reason: reason.trim(),
+      });
       onOpenChange(false);
       onNotice(t("general.reconnect_started"));
       await onCompleted();
@@ -56,12 +69,17 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
         <FormField label={t("general.reconnect_volume")} htmlFor="reconnect-volume">
           <select id="reconnect-volume" required value={alias} onChange={(event) => setAlias(event.target.value)} className="min-h-11 rounded border border-input bg-surface px-3">
             <option value="">—</option>
+            {ownManaged && <option value={MANAGED_ALIAS}>{t("general.reconnect_own_managed")}</option>}
             {volumes.filter((v) => v.access === "rw").map((v) => <option key={v.alias} value={v.alias}>{v.alias} · {v.health}</option>)}
           </select>
         </FormField>
-        <FormField label={t("general.reconnect_path")} htmlFor="reconnect-path">
-          <FormInput id="reconnect-path" maxLength={1024} value={path} onChange={(event) => setPath(event.target.value)} />
-        </FormField>
+        {managedSelected ? (
+          <p className="break-all text-sm text-muted">{t("general.reconnect_own_managed_help")}</p>
+        ) : (
+          <FormField label={t("general.reconnect_path")} htmlFor="reconnect-path">
+            <FormInput id="reconnect-path" maxLength={1024} value={path} onChange={(event) => setPath(event.target.value)} />
+          </FormField>
+        )}
         <FormField label={t("general.reconnect_reason")} htmlFor="reconnect-reason">
           <FormInput id="reconnect-reason" required minLength={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
         </FormField>

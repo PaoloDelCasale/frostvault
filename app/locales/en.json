@@ -372,6 +372,8 @@
   "general.reconnect_help": "Explicitly accept a new Source Volume or different folder for this Vault. Other Vaults are not reconnected. A reason is required.",
   "general.reconnect_old_root": "Previous folder",
   "general.reconnect_volume": "Destination Source Volume",
+  "general.reconnect_own_managed": "This Vault's own managed folder",
+  "general.reconnect_own_managed_help": "The same managed folder this Vault was created in. It is never created again: if it is missing, reconnect is refused.",
   "general.reconnect_path": "Folder relative to the Source Volume (empty = volume root)",
   "general.reconnect_reason": "Reason for reconnecting",
   "general.reconnect_scan_warning": "Local work stays suspended until cloud reconciliation and the mandatory full scan succeed. Matching files become Protected, missing files Cloud-only; different bytes are held as conflicts, never uploaded automatically.",
