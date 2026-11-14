@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 import tarfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -670,6 +670,7 @@ def backup_status(connection: Any) -> dict[str, Any]:
             "last_run": None,
             "succeeded_count": 0,
             "failed_count": 0,
+            "verification": verification_overview(connection),
         }
     run = _row_run(latest)
     return {
@@ -677,6 +678,116 @@ def backup_status(connection: Any) -> dict[str, Any]:
         "last_run": run,
         "succeeded_count": int(succeeded),
         "failed_count": int(failed),
+        "verification": verification_overview(connection),
+    }
+
+
+# Wall-clock time the maintenance loop last started an automatic restore
+# verification, successful or not. The loop's own mark is monotonic and lives
+# in memory; this mirror only lets the API say when the next one is due (#648).
+_last_verification_attempt_at: datetime | None = None
+
+
+def mark_verification_attempt(at: datetime | None = None) -> None:
+    global _last_verification_attempt_at
+    _last_verification_attempt_at = at or datetime.now(timezone.utc)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _iso(value: Any) -> str | None:
+    parsed = _as_datetime(value)
+    return parsed.isoformat() if parsed else None
+
+
+def next_verification_at(
+    *,
+    interval_seconds: int,
+    last_verified_at: Any,
+    last_attempt_at: Any,
+    now: datetime,
+) -> datetime | None:
+    """When the maintenance loop next restore-verifies a backup; None if disabled.
+
+    The loop runs it ``interval_seconds`` after its last attempt; after a
+    restart it counts from the last durable verification. Without either, or
+    when overdue, it runs on the next maintenance cycle: ``now``.
+    """
+    if interval_seconds <= 0:
+        return None
+    marks = [mark for mark in (_as_datetime(last_verified_at),
+                               _as_datetime(last_attempt_at)) if mark]
+    if not marks:
+        return now
+    return max(now, max(marks) + timedelta(seconds=interval_seconds))
+
+
+def verification_overview(
+    connection: Any,
+    *,
+    interval_seconds: int | None = None,
+    now: datetime | None = None,
+    last_attempt_at: Any = None,
+) -> dict[str, Any]:
+    """The newest verified backup, the newest usable one and the next verification.
+
+    ``pending_run_id`` is the run the next automatic verification checks: the
+    newest succeeded, not yet verified run (as ``storage`` selects it).
+    """
+    now = now or datetime.now(timezone.utc)
+    if interval_seconds is None:
+        interval_seconds = settings.metadata_backup_verify_interval_seconds
+    if last_attempt_at is None:
+        last_attempt_at = _last_verification_attempt_at
+    columns = "id, created_at, verified_at, status"
+    verified = connection.execute(
+        f"SELECT {columns} FROM metadata_backup_runs WHERE verified_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    # The loop's schedule after a restart counts from the latest verification.
+    last_verification = connection.execute(
+        "SELECT MAX(verified_at) AS at FROM metadata_backup_runs"
+    ).fetchone()
+    latest = connection.execute(
+        f"SELECT {columns} FROM metadata_backup_runs "
+        "WHERE status IN ('succeeded', 'verified') ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    pending = connection.execute(
+        "SELECT id FROM metadata_backup_runs WHERE status='succeeded' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+    def brief(row: Any) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {"id": int(row["id"]), "created_at": _iso(row["created_at"]),
+                "verified_at": _iso(row["verified_at"])}
+
+    upcoming = next_verification_at(
+        interval_seconds=interval_seconds,
+        last_verified_at=last_verification["at"] if last_verification else None,
+        last_attempt_at=last_attempt_at,
+        now=now,
+    )
+    return {
+        "last_verified": brief(verified),
+        "latest": brief(latest),
+        "pending_run_id": int(pending["id"]) if pending else None,
+        "automatic": interval_seconds > 0,
+        "next_verification_at": upcoming.isoformat() if upcoming else None,
     }
 
 

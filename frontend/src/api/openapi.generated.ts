@@ -1577,6 +1577,7 @@ export interface components {
             currency?: string;
             email_configured?: boolean;
             last_verified_backup?: string | null;
+            metadata_backup_verification?: components["schemas"]["MetadataBackupVerification"];
             month?: string;
             monthly_estimate?: number;
             open_problem_count?: number;
@@ -1847,6 +1848,21 @@ export interface components {
         MetadataBackupRunAction: {
             /** Reason */
             reason: string;
+        };
+        MetadataBackupVerification: {
+            automatic: boolean;
+            last_verified: {
+                created_at: string | null;
+                id: number;
+                verified_at: string | null;
+            } | null;
+            latest: {
+                created_at: string | null;
+                id: number;
+                verified_at: string | null;
+            } | null;
+            next_verification_at: string | null;
+            pending_run_id: number | null;
         };
         NotificationItem: {
             body: string;

@@ -26,6 +26,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -331,6 +332,39 @@ class MetadataVerifyRunBindingTests(unittest.TestCase):
             "verify must stamp the succeeded run whose local_path/digest was restore-tested",
         )
         self.assertIsNotNone(row["verified_at"])
+
+
+class NextVerificationTests(unittest.TestCase):
+    """#648: when the maintenance loop next restore-verifies a backup."""
+
+    NOW = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+
+    def next_at(self, **kwargs):
+        values = {"interval_seconds": 7 * 86400, "last_verified_at": None,
+                  "last_attempt_at": None, "now": self.NOW, **kwargs}
+        return metadata_backups.next_verification_at(**values)
+
+    def test_disabled_interval_has_no_next_verification(self) -> None:
+        self.assertIsNone(self.next_at(interval_seconds=0,
+                                       last_verified_at=self.NOW.isoformat()))
+
+    def test_counts_from_the_last_verification(self) -> None:
+        verified = self.NOW - timedelta(days=2)
+        self.assertEqual(self.next_at(last_verified_at=verified.isoformat()),
+                         verified + timedelta(days=7))
+
+    def test_a_later_attempt_without_success_moves_the_schedule(self) -> None:
+        attempt = self.NOW - timedelta(hours=1)
+        self.assertEqual(
+            self.next_at(last_verified_at=self.NOW - timedelta(days=20),
+                         last_attempt_at=attempt),
+            attempt + timedelta(days=7),
+        )
+
+    def test_never_run_or_overdue_is_due_on_the_next_cycle(self) -> None:
+        self.assertEqual(self.next_at(), self.NOW)
+        self.assertEqual(self.next_at(last_verified_at=self.NOW - timedelta(days=9)),
+                         self.NOW)
 
 
 class DefaultObjectStoreFailClosedTests(unittest.TestCase):

@@ -144,8 +144,8 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
                        "suspended": not get_policy(connection, vault["id"]).auto_upload,
                        "last_scan": (health.get("source") or {}).get("last_success_at"),
                        "last_audit": (health.get("audit") or {}).get("last_success_at")})
-    # Metadata backups are rebuilt by #598; until then no verified backup is known.
-    verified = {"at": None}
+    from .metadata_backups import verification_overview
+    verification = verification_overview(connection, now=now)
     freed = connection.execute("SELECT count(*) AS files, COALESCE(sum(total_bytes),0) AS bytes FROM jobs "
                                "WHERE action='free-space' AND status='completed' AND updated_at >= %s",
                                ((now - timedelta(days=7)).isoformat(),)).fetchone()
@@ -157,7 +157,8 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
                                              "WHERE availability='available' GROUP BY storage_class").fetchall())
     problems = connection.execute("SELECT event, vault_id, body_key, message_params FROM notifications "
                                   "WHERE problem_status='open' ORDER BY id").fetchall()
-    return {"states": totals, "vaults": vaults, "last_verified_backup": verified["at"],
+    return {"states": totals, "vaults": vaults, "last_verified_backup": (verification["last_verified"] or {}).get("verified_at"),
+            "metadata_backup_verification": verification,
             "open_problems": len(problems), "problems": [dict(row) for row in problems],
             "freed_files": int(freed["files"]), "freed_bytes": int(freed["bytes"]),
             "cleanup_blocked": int(cleanup_blocked["total"]),

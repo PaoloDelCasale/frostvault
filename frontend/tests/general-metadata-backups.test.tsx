@@ -15,6 +15,7 @@ import {
 } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { MetadataBackupsSection } from "@/pages/general/MetadataBackupsSection";
+import { formatDateTime } from "@/pages/archive/format";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -260,6 +261,95 @@ describe("MetadataBackupsSection", () => {
     expect(screen.getByText("Configured off-host storage is unavailable")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Download artifact" })).toHaveLength(2);
     expect(screen.queryByText("/data/backups/metadata-3.bak.enc")).not.toBeInTheDocument();
+  });
+
+  it("summarises the verified backup when a newer manual one is not verified yet (#648)", async () => {
+    const run = (id: number, reason: string, status: string, verified_at: string | null) => ({
+      ...INTEGRITY_RUN,
+      id,
+      reason,
+      status,
+      created_at: `2026-11-14T0${id}:00:00+00:00`,
+      verified_at,
+    });
+    const verifiedRun = run(1, "scheduled", "verified", "2026-11-14T01:30:00+00:00");
+    const listed = [run(3, "manual", "succeeded", null), run(2, "manual", "succeeded", null), verifiedRun];
+    const next = "2026-11-21T01:30:00+00:00";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
+      }
+      if (url === "/api/general/metadata-backups") {
+        return jsonResponse({
+          status: {
+            last_status: "succeeded",
+            last_run: listed[0],
+            succeeded_count: 3,
+            failed_count: 0,
+            verification: {
+              last_verified: { id: 1, created_at: verifiedRun.created_at, verified_at: verifiedRun.verified_at },
+              latest: { id: 3, created_at: listed[0].created_at, verified_at: null },
+              pending_run_id: 3,
+              automatic: true,
+              next_verification_at: next,
+            },
+          },
+          runs: listed,
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    configureApiClient({ fetch: fetchMock });
+
+    renderSection();
+
+    const summary = await screen.findByTestId("metadata-backups-verification");
+    expect(summary).toHaveTextContent(
+      `Last verified metadata backup: No. 1 from ${formatDateTime(verifiedRun.created_at)}, verified ${formatDateTime(verifiedRun.verified_at)}`,
+    );
+    expect(summary).not.toHaveTextContent("Not yet available");
+    expect(summary).toHaveTextContent(
+      `Most recent backup: No. 3 from ${formatDateTime(listed[0].created_at)}, verification expected ${formatDateTime(next)}`,
+    );
+    const newest = screen.getByRole("article", { name: "Backup run #3" });
+    expect(newest).toHaveTextContent(`Not verified·verification expected ${formatDateTime(next)}`);
+    const older = screen.getByRole("article", { name: "Backup run #2" });
+    expect(older).toHaveTextContent("automatic verification only checks the most recent backup");
+  });
+
+  it("says when automatic verification is disabled and nothing is verified yet", async () => {
+    const latest = { ...INTEGRITY_RUN };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) {
+        return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
+      }
+      if (url === "/api/general/metadata-backups") {
+        const response = integrityResponse(latest);
+        return jsonResponse({
+          ...response,
+          status: {
+            ...response.status,
+            verification: {
+              last_verified: null,
+              latest: { id: latest.id, created_at: latest.created_at, verified_at: null },
+              pending_run_id: latest.id,
+              automatic: false,
+              next_verification_at: null,
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    configureApiClient({ fetch: fetchMock });
+
+    renderSection();
+
+    const summary = await screen.findByTestId("metadata-backups-verification");
+    expect(summary).toHaveTextContent("Last verified metadata backup: Not yet available");
+    expect(summary).toHaveTextContent("automatic verification disabled");
   });
 
   it("keeps a synchronous run visibly pending, refreshes, and surfaces POST errors", async () => {
