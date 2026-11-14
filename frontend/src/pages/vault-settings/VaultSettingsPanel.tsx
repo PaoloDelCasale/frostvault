@@ -15,12 +15,12 @@ import { UploadVerificationPanel } from "./UploadVerificationPanel";
 import { errorMessage } from "@/lib/errorMessage";
 
 /** One settings topic: title, a one-line summary, the controls, and optional longer help. */
-function SettingsSection({ id, title, summary, more, danger, children }: {
-  id: string; title: string; summary: ReactNode; more?: ReactNode; danger?: boolean; children: ReactNode;
+function SettingsSection({ id, title, summary, more, danger, highlighted, children }: {
+  id: string; title: string; summary: ReactNode; more?: ReactNode; danger?: boolean; highlighted?: boolean; children: ReactNode;
 }) {
   const { t } = useI18n();
-  return <section aria-labelledby={`settings-${id}`} data-section={id}
-    className={cn("grid min-w-0 gap-4 rounded-panel border bg-surface p-4 sm:p-5", danger ? "border-[var(--state-problem-bg)]" : "border-line")}>
+  return <section id={id} aria-labelledby={`settings-${id}`} data-section={id} data-highlighted={highlighted ? "true" : undefined}
+    className={cn("grid min-w-0 scroll-mt-4 gap-4 rounded-panel border bg-surface p-4 transition-shadow sm:p-5", danger ? "border-[var(--state-problem-bg)]" : "border-line", highlighted && "ring-2 ring-ring ring-offset-2 ring-offset-bg")}>
     <div className="grid gap-1">
       <h2 id={`settings-${id}`} className={cn("text-lg font-bold", danger && "text-destructive")}>{title}</h2>
       <p className="text-sm text-muted">{summary}</p>
@@ -44,6 +44,18 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
   const stopped = vault?.lifecycle === "stopping" || vault?.lifecycle === "tombstone";
+  // A link such as «Controlla protezione» names its section (`#protection`):
+  // scroll to it and highlight it briefly, so the cause is the first thing seen.
+  const [highlight, setHighlight] = useState(() => window.location.hash.slice(1));
+  useEffect(() => {
+    const target = window.location.hash.slice(1);
+    const section = target ? document.getElementById(target) : null;
+    if (!section?.matches("[data-section]")) { setHighlight(""); return; }
+    setHighlight(target);
+    section.scrollIntoView?.({ block: "start" });
+    const timer = window.setTimeout(() => setHighlight(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [vaultId]);
   useEffect(() => {
     let live = true;
     setLoadError("");
@@ -60,27 +72,27 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     finally { setBusy(false); }
   }
   return <div className="grid min-w-0 gap-4" data-testid="vault-settings">
-    {!stopped && <SettingsSection id="pause" title={t("vault_pause.pause")} summary={t("vault_pause.help")}>
+    {!stopped && <SettingsSection id="pause" highlighted={highlight === "pause"} title={t("vault_pause.pause")} summary={t("vault_pause.help")}>
       <VaultPauseControl key={vaultId} vaultId={vaultId} paused={vault?.paused} />
     </SettingsSection>}
-    <SettingsSection id="protection" title={t("settings.protection_title")} summary={t("settings.protection_summary")}
+    <SettingsSection id="protection" highlighted={highlight === "protection"} title={t("settings.protection_title")} summary={t("settings.protection_summary")}
       more={<><p>{t("essential.protection_help")}</p><p>{t("uploads.retry_help")}</p></>}>
       {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
       <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" className="size-5 accent-[var(--green)]" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>
       <UploadRetryActions vaultId={vaultId} showHelp={false} />
     </SettingsSection>
-    <SettingsSection id="verification" title={t("verification.title")} summary={t("settings.verification_summary")} more={<p>{t("verification.help")}</p>}>
+    <SettingsSection id="verification" highlighted={highlight === "verification"} title={t("verification.title")} summary={t("settings.verification_summary")} more={<p>{t("verification.help")}</p>}>
       <UploadVerificationPanel vaultId={vaultId} onNotice={show} />
     </SettingsSection>
-    <SettingsSection id="local" title={t("settings.local_title")} summary={t("settings.local_summary")}
+    <SettingsSection id="local" highlighted={highlight === "local"} title={t("settings.local_title")} summary={t("settings.local_summary")}
       more={<><p>{t("folder_settings.retention_help")}</p><p>{t("folder_settings.retention_example")}</p><p>{t("folder_settings.retention_never")}</p></>}>
       <RetentionPanel vaultId={vaultId} onNotice={show} />
     </SettingsSection>
-    <SettingsSection id="plan" title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
+    <SettingsSection id="plan" highlighted={highlight === "plan"} title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
       <details className="rounded-card border border-line"><summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("settings.plan_open")}</summary>
         <div className="border-t border-line p-3"><LifecyclePanel vaultId={vaultId} onNotice={show} /></div></details>
     </SettingsSection>
-    <SettingsSection id="danger" danger title={t("settings.danger_title")} summary={t("settings.danger_summary")}>
+    <SettingsSection id="danger" highlighted={highlight === "danger"} danger title={t("settings.danger_title")} summary={t("settings.danger_summary")}>
       {vault && !stopped && <div className="grid gap-2 border-b border-line pb-4">
         <p className="text-sm">{t("general.reconnect_help")}</p>
         {vault.lifecycle === "active" && <p className="text-sm text-muted">{t("general.reconnect_active_hint")}</p>}

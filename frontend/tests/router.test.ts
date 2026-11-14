@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { interceptLinkClick, legacyRedirect, navigate, parseRoute } from "@/router";
+import { interceptLinkClick, legacyRedirect, navigate, parseRoute, vaultSettingsUrl } from "@/router";
 
 afterEach(() => { window.history.replaceState({}, "", "/"); document.body.innerHTML = ""; });
 
@@ -31,6 +31,14 @@ describe("client routes (#512)", () => {
   it("normalizes legacy targets when navigating", () => {
     navigate("/?vault_id=4&file=x");
     expect(`${window.location.pathname}${window.location.search}`).toBe("/vaults/4/files?file=x");
+  });
+
+  it("keeps a settings section fragment through navigation (#650)", () => {
+    expect(vaultSettingsUrl(4, "protection")).toBe("/vaults/4/settings#protection");
+    document.body.innerHTML = `<a id="to" href="${vaultSettingsUrl(4, "protection")}">to</a>`;
+    document.body.addEventListener("click", interceptLinkClick, { once: true });
+    document.getElementById("to")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+    expect(`${window.location.pathname}${window.location.hash}`).toBe("/vaults/4/settings#protection");
   });
 
   it("intercepts plain internal links but leaves server, download and modified clicks alone", () => {

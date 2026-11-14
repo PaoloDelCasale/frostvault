@@ -25,6 +25,7 @@ import type {
   FileVersionsResponse,
   GlobPreviewResponse,
   I18nCatalogResponse,
+  LoginOptionsResponse,
   JobCancelPayload,
   JobCancelResponse,
   JobsResponse,
@@ -237,6 +238,11 @@ export function selectVault(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/** Public sign-in choices for the login page (no Session required). */
+export function fetchLoginOptions(): Promise<LoginOptionsResponse> {
+  return apiRequest<LoginOptionsResponse>("/api/login/options");
 }
 
 export function fetchI18nCatalog(locale?: string): Promise<I18nCatalogResponse> {

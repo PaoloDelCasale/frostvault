@@ -422,7 +422,8 @@ instead of trying other credentials available on the computer.
    [Traefik trust and verification guide](docs/traefik.md).
    Set `OIDC_ENABLED=true` and configure
    `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for single sign-on; OIDC
-   is configured only through these variables. List your LAN in
+   is configured only through these variables. The optional `OIDC_PROVIDER_NAME`
+   names the provider on the sign-in button (for example `Pocket ID`). List your LAN in
    `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
 
 4. Set `VAULT_S3_BUCKET` and `AWS_DEFAULT_REGION` to the versioned, private bucket.

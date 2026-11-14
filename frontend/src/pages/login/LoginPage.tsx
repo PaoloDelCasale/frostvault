@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { ApiError, loginWithPassword } from "@/api/client";
+import { fetchLoginOptions } from "@/api/endpoints";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -29,6 +30,16 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [redirectingOidc, setRedirectingOidc] = useState(false);
+  // null while loading; `oidc: null` when the options could not be read.
+  const [options, setOptions] = useState<{ oidc: boolean | null; name: string | null } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void fetchLoginOptions()
+      .then((data) => { if (live) setOptions({ oidc: data.oidc_enabled, name: data.oidc_provider_name ?? null }); })
+      .catch(() => { if (live) setOptions({ oidc: null, name: null }); });
+    return () => { live = false; };
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,6 +58,57 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
     }
   }
 
+  // OIDC is the normal sign-in when configured; unknown options keep both methods.
+  const oidcFirst = options?.oidc === true;
+  const oidcLabel = options?.name ? t("login.oidc_named", { name: options.name }) : t("login.oidc");
+
+  function oidcButton(variant: "primary" | "secondary") {
+    return (
+      <Button
+        type="button"
+        variant={variant}
+        className="w-full"
+        disabled={submitting || redirectingOidc}
+        onClick={() => {
+          setRedirectingOidc(true);
+          onNavigate("/auth/oidc/login");
+        }}
+      >
+        {oidcLabel}
+      </Button>
+    );
+  }
+
+  function passwordForm(variant: "primary" | "secondary") {
+    return (
+      <form className="mt-4 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
+        <FormField label={t("login.password")} htmlFor="login-password">
+          <FormInput
+            id="login-password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            autoFocus={variant === "primary"}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </FormField>
+        {error ? (
+          <div
+            className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
+            role="alert"
+          >
+            {error}
+          </div>
+        ) : null}
+        <Button type="submit" variant={variant} disabled={submitting}>
+          {t(variant === "primary" ? "login.submit" : "login.emergency_submit")}
+        </Button>
+      </form>
+    );
+  }
+
   return (
     <div className="grid min-h-svh place-items-center bg-canvas px-4 text-ink">
       <main className="my-[30px] w-[min(440px,calc(100%-32px))]">
@@ -57,49 +119,22 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
           <h1 className="mt-2 text-[27px] font-bold tracking-tight">
             {t("login.welcome")}
           </h1>
-          <p className="mt-2 text-sm text-muted">{t("login.subtitle")}</p>
-          <p className="mt-3 text-sm text-muted">{t("login.admin_recovery")}</p>
-
-          <form className="mt-6 grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
-            <FormField label={t("login.password")} htmlFor="login-password">
-              <FormInput
-                id="login-password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                autoFocus
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </FormField>
-            {error ? (
-              <div
-                className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink"
-                role="alert"
-              >
-                {error}
-              </div>
-            ) : null}
-            <Button type="submit" variant="primary" disabled={submitting}>
-              {t("login.submit")}
-            </Button>
-          </form>
-
-          <div className="mt-4">
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full"
-              disabled={submitting || redirectingOidc}
-              onClick={() => {
-                setRedirectingOidc(true);
-                onNavigate("/auth/oidc/login");
-              }}
-            >
-              {t("login.oidc")}
-            </Button>
-          </div>
+          {options && (oidcFirst ? (
+            <>
+              <div className="mt-6">{oidcButton("primary")}</div>
+              <section className="mt-6 border-t border-line pt-5" aria-labelledby="login-emergency-title">
+                <h2 id="login-emergency-title" className="text-sm font-bold">{t("login.emergency_title")}</h2>
+                <p className="mt-1 text-sm text-muted">{t("login.emergency_help")}</p>
+                {passwordForm("secondary")}
+              </section>
+            </>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted">{t("login.password_help")}</p>
+              {passwordForm("primary")}
+              {options.oidc === null && <div className="mt-4">{oidcButton("secondary")}</div>}
+            </>
+          ))}
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <label className="flex min-h-11 flex-col justify-center gap-1 text-sm font-bold text-muted">

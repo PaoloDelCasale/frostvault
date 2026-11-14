@@ -51,6 +51,7 @@ export type LifecycleTransition = components["schemas"]["LifecycleTransition"];
 export type LifecycleTransitionUpdate = components["schemas"]["LifecycleTransitionUpdate"];
 export type LocaleUpdate = components["schemas"]["LocaleUpdate"];
 export type LocaleUpdateResponse = components["schemas"]["LocaleUpdateResponse"];
+export type LoginOptionsResponse = components["schemas"]["LoginOptionsResponse"];
 export type LoginRequest = components["schemas"]["LoginRequest"];
 export type MeResponse = components["schemas"]["MeResponse"];
 export type MeStoppedVault = components["schemas"]["MeStoppedVault"];

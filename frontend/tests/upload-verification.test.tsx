@@ -19,7 +19,7 @@ describe("new-upload verification choice", () => {
     renderVaultAccess({ vaultId: 7, fetchImpl: fetch });
     const select = await screen.findByRole("combobox", { name: "New upload verification" });
     expect(select).toHaveValue("inherit");
-    expect(await screen.findByText("Effective for new uploads: S3 SHA-256 ingestion proof")).toBeInTheDocument();
+    expect(await screen.findByText("Effective for new uploads: S3 SHA-256 check on receipt")).toBeInTheDocument();
     await userEvent.setup().selectOptions(select, "read_back");
     expect(await screen.findByText("Effective for new uploads: Full SHA-256 read-back")).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url, init]) => String(url) === "/api/vault/operation-policy?vault_id=7" && init?.method === "PUT")).toBe(true);
@@ -36,7 +36,7 @@ describe("new-upload verification choice", () => {
     renderVaultAccess({ fetchImpl: fetch });
     const select = await screen.findByRole("combobox", { name: "New upload verification" });
     await userEvent.setup().selectOptions(select, "inherit");
-    expect(await screen.findByText("Effective for new uploads: S3 SHA-256 ingestion proof")).toBeInTheDocument();
+    expect(await screen.findByText("Effective for new uploads: S3 SHA-256 check on receipt")).toBeInTheDocument();
   });
   it.each(["en", "it"] as const)("shows actual fallback/method/egress evidence in %s, not today's policy", (locale) => {
     const catalog = loadCatalog(locale);

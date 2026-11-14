@@ -122,6 +122,8 @@ class Settings:
     oidc_client_id: str = os.getenv("OIDC_CLIENT_ID", "")
     oidc_client_secret: str = os.getenv("OIDC_CLIENT_SECRET", "")
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile")
+    # Optional display name of the provider for the sign-in button (#650).
+    oidc_provider_name: str = os.getenv("OIDC_PROVIDER_NAME", "").strip()
     oidc_login_ttl_seconds: int = max(
         60, int(os.getenv("OIDC_LOGIN_TTL_SECONDS", "600"))
     )

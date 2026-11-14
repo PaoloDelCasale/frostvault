@@ -1749,6 +1749,25 @@
         ],
         "type": "object"
       },
+      "LoginOptionsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "oidc_enabled": {
+            "type": "boolean"
+          },
+          "oidc_provider_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "oidc_enabled",
+          "oidc_provider_name"
+        ],
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "password": {
@@ -5437,6 +5456,25 @@
           }
         },
         "summary": "Login"
+      }
+    },
+    "/api/login/options": {
+      "get": {
+        "description": "Public sign-in choices for the login page: no secrets, no Session.",
+        "operationId": "login_options_api_login_options_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Login Options"
       }
     },
     "/api/logout": {

@@ -39,12 +39,18 @@ describe("LoginPage local sign-in", () => {
   const fetchMock = vi.fn();
   const navigate = vi.fn();
   const en = loadCatalog("en");
+  let options: unknown;
+  let loginResponse: Response;
 
   beforeEach(() => {
     resetApiClientForTests();
     fetchMock.mockReset();
     navigate.mockReset();
     window.localStorage.clear();
+    options = { oidc_enabled: true, oidc_provider_name: null };
+    loginResponse = jsonResponse({ message_key: "api.signed_in", message: "Signed in" });
+    fetchMock.mockImplementation(async (url: string) =>
+      url === "/api/login/options" ? (options instanceof Response ? options : jsonResponse(options)) : loginResponse);
     configureApiClient({ fetch: fetchMock });
   });
 
@@ -74,34 +80,57 @@ describe("LoginPage local sign-in", () => {
     );
   }
 
-  it("displays the network gate and administrator recovery guidance", () => {
+  function loginCalls() {
+    return fetchMock.mock.calls.filter(([url]) => url === "/api/login");
+  }
+
+  it("makes OIDC the primary sign-in and keeps the Emergency Password secondary", async () => {
     renderPage();
 
-    expect(screen.getByText(en["login.subtitle"])).toBeInTheDocument();
-    expect(screen.getByText(en["login.admin_recovery"])).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: en["login.oidc"] }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/Break-glass/i)).not.toBeInTheDocument();
+    const oidc = await screen.findByRole("button", { name: en["login.oidc"] });
+    expect(oidc).toHaveAttribute("data-variant", "primary");
+    const emergency = screen.getByRole("region", { name: en["login.emergency_title"] });
+    expect(emergency).toHaveTextContent(en["login.emergency_help"]);
+    expect(screen.getByRole("button", { name: en["login.emergency_submit"] })).toHaveAttribute("data-variant", "secondary");
+    expect(screen.queryByText(/Pocket ID|loopback|Break-glass/i)).not.toBeInTheDocument();
   });
 
-  it("submits local credentials to POST /api/login and redirects to the archive on success", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ message_key: "api.signed_in", message: "Signed in" }),
-      );
+  it("names the configured identity provider on the OIDC button", async () => {
+    options = { oidc_enabled: true, oidc_provider_name: "Pocket ID" };
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+    expect(await screen.findByRole("button", { name: "Sign in with Pocket ID" })).toHaveAttribute("data-variant", "primary");
+  });
+
+  it("keeps the password form primary and hides OIDC when it is not configured", async () => {
+    options = { oidc_enabled: false, oidc_provider_name: null };
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: en["login.submit"] })).toHaveAttribute("data-variant", "primary");
+    expect(screen.getByText(en["login.password_help"])).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: en["login.oidc"] })).not.toBeInTheDocument();
+  });
+
+  it("offers both methods with the password first when the options cannot be read", async () => {
+    options = jsonResponse({ detail: "boom" }, 500);
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: en["login.submit"] })).toHaveAttribute("data-variant", "primary");
+    expect(screen.getByRole("button", { name: en["login.oidc"] })).toHaveAttribute("data-variant", "secondary");
+  });
+
+  it("submits the Emergency Password to POST /api/login and redirects to the archive on success", async () => {
+    renderPage();
+
+    fireEvent.change(await screen.findByLabelText(en["login.password"]), {
       target: { value: "correct-horse-battery" },
     });
-    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+    fireEvent.click(screen.getByRole("button", { name: en["login.emergency_submit"] }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(loginCalls()).toHaveLength(1);
     });
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("/api/login");
+    const [, init] = loginCalls()[0]!;
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({
       password: "correct-horse-battery",
@@ -111,13 +140,14 @@ describe("LoginPage local sign-in", () => {
     });
   });
 
-  it("clears the active theme on the login screen without removing Owner preferences", () => {
+  it("clears the active theme on the login screen without removing Owner preferences", async () => {
     localStorage.setItem(THEME_ACTIVE_USER_STORAGE_KEY, "42");
     localStorage.setItem(themeStorageKey(42), "dark");
     renderPage();
+    await screen.findByRole("button", { name: en["login.oidc"] });
     expect(localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(themeStorageKey(42))).toBe("dark");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(loginCalls()).toHaveLength(0);
   });
 
   it("navigates directly to OIDC without a Worker handshake", async () => {
@@ -126,7 +156,7 @@ describe("LoginPage local sign-in", () => {
       expect(window.localStorage.getItem(THEME_ACTIVE_USER_STORAGE_KEY)).toBeNull();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: en["login.oidc"] }));
+    fireEvent.click(await screen.findByRole("button", { name: en["login.oidc"] }));
 
     await waitFor(() => {
       expect(navigate).toHaveBeenCalledWith("/auth/oidc/login");
@@ -134,33 +164,29 @@ describe("LoginPage local sign-in", () => {
   });
 
   it("shows a localized error and does not redirect when credentials are wrong", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ detail: "Incorrect password" }, 401),
-    );
+    loginResponse = jsonResponse({ detail: "Incorrect password" }, 401);
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+    fireEvent.change(await screen.findByLabelText(en["login.password"]), {
       target: { value: "wrong" },
     });
-    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+    fireEvent.click(screen.getByRole("button", { name: en["login.emergency_submit"] }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(en["login.failed"]);
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("explains local sign-in network gating when the backend refuses with 403", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse(
-        { detail: "Break-glass login is not allowed from this network" },
-        403,
-      ),
+  it("explains Emergency Password network gating when the backend refuses with 403", async () => {
+    loginResponse = jsonResponse(
+      { detail: "Break-glass login is not allowed from this network" },
+      403,
     );
     renderPage();
 
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+    fireEvent.change(await screen.findByLabelText(en["login.password"]), {
       target: { value: "secret" },
     });
-    fireEvent.click(screen.getByRole("button", { name: en["login.submit"] }));
+    fireEvent.click(screen.getByRole("button", { name: en["login.emergency_submit"] }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       en["login.local_unavailable"],
@@ -192,7 +218,7 @@ describe("LoginPage local sign-in", () => {
 
     render(<LocaleHarness />);
 
-    fireEvent.change(screen.getByLabelText(en["login.password"]), {
+    fireEvent.change(await screen.findByLabelText(en["login.password"]), {
       target: { value: "typed-pass" },
     });
 
@@ -201,10 +227,9 @@ describe("LoginPage local sign-in", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: it["login.submit"] })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: it["login.emergency_submit"] })).toBeInTheDocument();
     });
-    expect(screen.getByText(it["login.subtitle"])).toBeInTheDocument();
-    expect(screen.getByText(it["login.admin_recovery"])).toBeInTheDocument();
+    expect(screen.getByText(it["login.emergency_help"])).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: it["login.oidc"] }),
     ).toBeInTheDocument();

@@ -30,7 +30,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     expect(summary).toHaveTextContent("storage for 2 files (4.0 KB)");
     expect(summary).toHaveTextContent("Source retrieval < €0.01. AWS list prices for eu-west-1, published Nov 1, 2026");
     expect(screen.getByText(/3 skipped: already equal or colder/)).toBeInTheDocument();
-    expect(screen.getByText(/exact cold source version must be explicitly restored/)).toBeInTheDocument();
+    expect(screen.getByText(/exact cold source version must be explicitly recovered/)).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Move eligible files to" }));
     expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(1);
     await user.keyboard("{Escape}");
