@@ -55,12 +55,12 @@ jobs:
       - name: Use PostgreSQL 16 client tools
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+          sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           . /etc/os-release
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
-          sudo apt-get update -qq
+          sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get install -y postgresql-client-16
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: Run PostgreSQL unit-test shard
@@ -152,12 +152,12 @@ jobs:
       - name: Use PostgreSQL 16 client tools for backup guard tests
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+          sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           . /etc/os-release
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/frostvault-pgdg.list
-          sudo apt-get update -qq
+          sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get install -y postgresql-client-16
           echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       - name: PostgreSQL schema guard and baseline tests
