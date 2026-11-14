@@ -1,7 +1,8 @@
-"""Baseline schema and the simple schema guard (ADR-0035, #601).
+"""Baseline schema and the schema guard (ADR-0035, ADR-0041, #601, #679).
 
-A database is initialized only when empty, used only at ``0001_baseline``, and
-otherwise refused before any write: at app start and in metadata restore.
+A database is initialized only when empty, upgraded only from an earlier
+revision of the linear chain, used at the head, and otherwise refused before
+any write: at app start and in metadata restore.
 Refusal tests make the database read-only first, so any write the guard
 attempted would fail differently from the expected refusal.
 """
@@ -53,6 +54,28 @@ def _tables(path: Path) -> set[str]:
             "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
         ).fetchall()
     return {row["tablename"] for row in rows}
+
+
+def _migrate_to(dsn: str, revision: str) -> None:
+    """Bring an empty fixture database to ``revision`` exactly, like an old release."""
+    from alembic import command
+    from alembic.config import Config
+
+    engine = schema_guard._engine(dsn)
+    try:
+        with engine.begin() as connection:
+            config = Config(str(schema_guard._REPOSITORY_ROOT / "alembic.ini"))
+            config.set_main_option("script_location", str(schema_guard._REPOSITORY_ROOT / "migrations"))
+            config.attributes["connection"] = connection
+            command.upgrade(config, revision)
+    finally:
+        engine.dispose()
+
+
+def _revision(path: Path) -> list[str]:
+    with PostgresConnection(str(path)) as connection:
+        return [row["version_num"] for row in
+                connection.execute("SELECT version_num FROM alembic_version").fetchall()]
 
 
 def _make_read_only(path: Path) -> None:
@@ -143,6 +166,58 @@ class StartupGuardTests(_GuardFixture):
         )
         self.assertNotIn("owner", _tables(self.path))
 
+    def test_catalog_of_the_frozen_baseline_is_upgraded_at_start(self) -> None:
+        _migrate_to(self.dsn, "0001_baseline")
+        self.execute(
+            "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')"
+        )
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
+            columns = {row["column_name"] for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'upload_snapshots'"
+            ).fetchall()}
+            owner = connection.execute("SELECT display_name FROM owner").fetchone()
+        self.assertLessEqual({"owner_uid", "owner_gid", "file_mode"}, columns)
+        self.assertEqual(owner["display_name"], "Kept")
+
+    def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
+        _migrate_to(self.dsn, "0001_baseline")
+        upgrade = schema_guard._alembic_upgrade
+
+        def upgrade_then_fail(connection) -> None:
+            upgrade(connection)
+            raise RuntimeError("simulated crash after DDL")
+
+        with patch.object(schema_guard, "_alembic_upgrade", upgrade_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                prepare_schema(self.dsn)
+        self.assertEqual(_revision(self.path), ["0001_baseline"])
+
+    def test_upgrade_schema_upgrades_but_never_initializes(self) -> None:
+        from app.schema_guard import upgrade_schema
+
+        self.assert_refused_without_writes(lambda: upgrade_schema(self.dsn), "empty")
+        self.assertEqual(_tables(self.path), set())
+        self.fresh_database()
+        _migrate_to(self.dsn, "0001_baseline")
+        self.assertIs(upgrade_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        self.assertIs(upgrade_schema(self.dsn), SchemaState.CURRENT)
+
+    def test_outdated_catalog_is_refused_by_restore_registration(self) -> None:
+        from app.services.recovery_kit import record_metadata_restore
+
+        _migrate_to(self.dsn, "0001_baseline")
+
+        def restore() -> None:
+            with PostgresConnection(str(self.path)) as connection:
+                record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+
+        self.assert_refused_without_writes(restore, "earlier revision", "upgrade_schema")
+
     def test_nonempty_database_without_alembic_version_is_refused(self) -> None:
         objects = {
             "table": "CREATE TABLE users (id bigint)",
@@ -167,6 +242,8 @@ class StartupGuardTests(_GuardFixture):
     def test_divergent_or_empty_revision_records_are_refused(self) -> None:
         cases = {
             "two revisions": [HEAD_SCHEMA_REVISION, "0072_upload_lineage_indexes"],
+            "two chain revisions": ["0001_baseline", HEAD_SCHEMA_REVISION],
+            "a newer release": ["0099_from_the_future"],
             "no revision row": [],
         }
         for case, revisions in cases.items():
@@ -259,6 +336,19 @@ class RestoreGuardTests(_GuardFixture):
             with self.assertRaisesRegex(metadata_backups.BackupError, "0072_upload_lineage_indexes"):
                 metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
 
+    def test_backup_verification_accepts_a_dump_of_an_earlier_chain_revision(self) -> None:
+        from app.services import metadata_backups
+
+        _migrate_to(self.dsn, "0001_baseline")
+        self.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')")
+        dump = metadata_backups._dump_postgres_bytes(self.dsn)
+        with tempfile.TemporaryDirectory() as work, patch.object(
+            metadata_backups, "settings", SimpleNamespace(database_dsn=self.dsn),
+        ):
+            result = metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
+        self.assertEqual(result["schema_revision"], "0001_baseline")
+        self.assertEqual(result["owner_count"], 1)
+
     def test_backup_verification_accepts_a_dump_at_head(self) -> None:
         from app.services import metadata_backups
 
@@ -273,10 +363,10 @@ class RestoreGuardTests(_GuardFixture):
 
 
 class BaselineRevisionTests(unittest.TestCase):
-    def test_baseline_is_the_only_revision(self) -> None:
+    def test_revisions_form_the_linear_chain_of_the_guard(self) -> None:
         versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
         self.assertEqual(sorted(p.name for p in versions.glob("*.py")),
-                         ["0001_baseline.py", "__init__.py"])
+                         sorted([f"{r}.py" for r in schema_guard.SCHEMA_REVISIONS] + ["__init__.py"]))
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
@@ -284,18 +374,26 @@ class BaselineRevisionTests(unittest.TestCase):
         config.set_main_option("script_location", str(versions.parent))
         scripts = ScriptDirectory.from_config(config)
         self.assertEqual(scripts.get_heads(), [HEAD_SCHEMA_REVISION])
-        self.assertIsNone(scripts.get_revision(HEAD_SCHEMA_REVISION).down_revision)
+        self.assertEqual(schema_guard.SCHEMA_REVISIONS[0], "0001_baseline")
+        previous = None
+        for revision in schema_guard.SCHEMA_REVISIONS:
+            self.assertLessEqual(len(revision), 32)  # alembic_version.version_num
+            self.assertEqual(scripts.get_revision(revision).down_revision, previous)
+            previous = revision
+        self.assertEqual(previous, HEAD_SCHEMA_REVISION)
 
-    def test_baseline_sql_has_no_accidental_sqlalchemy_bind_parameters(self) -> None:
+    def test_migration_sql_has_no_accidental_sqlalchemy_bind_parameters(self) -> None:
         import importlib
 
         import sqlalchemy as sa
 
-        migration = importlib.import_module("migrations.versions.0001_baseline")
-        with patch.object(migration, "op") as operations:
-            migration.upgrade()
-        for call in operations.execute.call_args_list:
-            self.assertEqual(sa.text(call.args[0]).compile().params, {})
+        for revision in schema_guard.SCHEMA_REVISIONS:
+            with self.subTest(revision=revision):
+                migration = importlib.import_module(f"migrations.versions.{revision}")
+                with patch.object(migration, "op") as operations:
+                    migration.upgrade()
+                for call in operations.execute.call_args_list:
+                    self.assertEqual(sa.text(call.args[0]).compile().params, {})
 
 
 class BaselineSchemaTests(unittest.TestCase):

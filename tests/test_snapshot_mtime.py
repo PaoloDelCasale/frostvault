@@ -19,7 +19,9 @@ class SnapshotMtimeTests(unittest.TestCase):
             source.write_bytes(b"old")
             snapshot, _ = prepare_upload_snapshot(source, lambda: None)
             data = json.loads(snapshot.as_json())
-            data.pop("mtime_ns", None)
+            # Pre-#573 snapshots predate #679 too: neither mtime nor ownership.
+            for key in ("mtime_ns", "uid", "gid", "mode"):
+                data.pop(key, None)
             legacy = json.dumps(data, separators=(",", ":"))
             restored = UploadSnapshot.from_json(legacy)
             self.assertIsNone(restored.mtime_ns)

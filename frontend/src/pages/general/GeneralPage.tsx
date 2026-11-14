@@ -26,6 +26,9 @@ export function GeneralPage({ overview }: { overview?: Overview }) {
       <h1 className="text-2xl font-bold">{t("nav.system")}</h1>
       <p className="text-sm text-muted">{t("system.subtitle")}</p>
     </div>
+    {overview?.runs_as_root
+      ? <p role="status" data-testid="runs-as-root" className="rounded-card border border-[var(--health-warn-border)] bg-amber-soft p-4">{t("system.runs_as_root")}</p>
+      : null}
     <RecoveryKitSection />
     <MetadataBackupsSection />
     <SourceVolumesSection />

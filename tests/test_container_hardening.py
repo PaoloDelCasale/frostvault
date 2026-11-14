@@ -281,6 +281,7 @@ class EntrypointHardeningTests(unittest.TestCase):
         self.assertIn("validate_numeric_id", entrypoint)
         self.assertIn("RUNTIME_IDENTITY=\"${PUID}:${PGID}\"", entrypoint)
         self.assertIn("exec gosu \"${RUNTIME_IDENTITY}\" \"$0\" \"$@\"", entrypoint)
+        self.assertIn("python -m app.runtime_privileges || exit 64", entrypoint)
         self.assertNotRegex(entrypoint, r"(?m)^\s*(?:groupadd|useradd)\b")
 
     def test_entrypoint_only_prepares_runtime_mounts_not_sources(self) -> None:
@@ -721,9 +722,19 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
         self,
         puid: str,
         pgid: str,
+        cap_add: tuple[str, ...] = (),
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         temporary, root, project_name, _, _, _ = self._new_compose_project()
         try:
+            if cap_add:
+                override = root / "override.yaml"
+                text = override.read_text(encoding="utf-8")
+                marker = '    restart: "no"\n'
+                self.assertIn(marker, text)
+                override.write_text(
+                    text.replace(marker, marker + f"    cap_add: [{', '.join(cap_add)}]\n", 1),
+                    encoding="utf-8",
+                )
             self._write_environment(
                 root,
                 {
@@ -792,15 +803,23 @@ class ReadOnlyRootFilesystemSmokeTests(unittest.TestCase):
                     rf"(?i)(unable to find {principal}|{principal}.*not.*found|no matching entries)",
                 )
 
-    def test_compose_root_overrides_reach_entrypoint_rejection(self) -> None:
-        for puid, pgid, name in (("0", "100", "PUID"), ("99", "0", "PGID")):
+    def test_compose_half_root_overrides_reach_entrypoint_rejection(self) -> None:
+        for puid, pgid in (("0", "100"), ("99", "0")):
             with self.subTest(PUID=puid, PGID=pgid):
                 completed, output = self._run_compose_identity_case(puid, pgid)
                 self.assertEqual(completed.returncode, 64, output)
-                self.assertIn(
-                    f"{name} must be a canonical positive decimal ID from 1 through 2147483647",
-                    output,
-                )
+                self.assertIn("PUID and PGID must both be 0 to run as root", output)
+                self.assertNotIn("compose-command-ran", output)
+
+    def test_compose_root_mode_starts_only_without_permission_bypass(self) -> None:
+        completed, output = self._run_compose_identity_case("0", "0", ("CHOWN", "KILL"))
+        self.assertEqual(completed.returncode, 0, output)
+        self.assertIn("compose-command-ran", output)
+        for capability in ("DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "SYS_ADMIN"):
+            with self.subTest(cap_add=capability):
+                completed, output = self._run_compose_identity_case("0", "0", (capability,))
+                self.assertEqual(completed.returncode, 64, output)
+                self.assertIn(f"CAP_{capability}", output)
                 self.assertNotIn("compose-command-ran", output)
 
     def test_compose_rejects_out_of_range_puid_and_pgid_before_entrypoint(self) -> None:

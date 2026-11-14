@@ -3,7 +3,7 @@
 TEST_POSTGRES_URL must name a *test server* with a CREATEDB role. Every fixture
 uses its own uniquely named database; the configured database is never mutated.
 Paths are opaque fixture identities, not database files. Schema fixtures clone a
-template created once per process by the real ``0001_baseline`` Alembic run.
+template created once per process by the real Alembic run up to the head.
 """
 from __future__ import annotations
 

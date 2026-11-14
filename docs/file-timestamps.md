@@ -28,8 +28,11 @@ changed Local Copy or S3 `LastModified`. A cloud-only file uploaded before this 
 may have permanently lost its original mtime. No automatic backfill, re-upload or
 rewriting of existing cloud versions is performed.
 
-Precision is bounded by the destination filesystem. File ownership, modes, atime,
-ctime, directory timestamps and extended attributes are outside this contract.
+Precision is bounded by the destination filesystem. File owner and mode follow
+the same path since #679 (see
+[Original owner and mode in Recovery](filesystem-permissions.md#original-owner-and-mode-in-recovery));
+atime, ctime, directory timestamps and extended attributes are outside this
+contract.
 Malformed timestamp evidence fails recovery rather than silently publishing a
 file with an invented date. Timestamp metadata is not a cryptographic integrity
 proof; existing exact-version SHA-256 verification is unchanged.

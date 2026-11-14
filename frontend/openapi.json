@@ -950,6 +950,9 @@
           "pricing_effective_at": {
             "type": "string"
           },
+          "runs_as_root": {
+            "type": "boolean"
+          },
           "vaults": {
             "items": {
               "properties": {

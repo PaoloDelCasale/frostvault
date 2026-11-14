@@ -449,8 +449,12 @@ def verify_restore_isolated(
 
 
 def _require_current_dump_revision(dump_path: Path, env: dict[str, str]) -> str:
-    """Read the dump's Alembic revision without a database; refuse any other."""
-    from ..schema_guard import SCHEMA_HEAD
+    """Read the dump's Alembic revision without a database; refuse one outside the chain.
+
+    A dump of an earlier revision of the chain is accepted: once restored it
+    is upgraded with ``upgrade_schema`` (ADR-0041).
+    """
+    from ..schema_guard import SCHEMA_HEAD, SCHEMA_REVISIONS
 
     listed = subprocess.run(
         ["pg_restore", "--data-only", "--table=alembic_version", "--file=-", str(dump_path)],
@@ -470,14 +474,14 @@ def _require_current_dump_revision(dump_path: Path, env: dict[str, str]) -> str:
             copying = False
         elif copying:
             revisions.append(line)
-    if revisions != [SCHEMA_HEAD]:
+    if len(revisions) != 1 or revisions[0] not in SCHEMA_REVISIONS:
         found = ", ".join(revision[:64] for revision in revisions[:3]) or "no revision"
         raise BackupError(
             f"Metadata backup refused: its schema revision is {found}, this "
-            f"release requires {SCHEMA_HEAD}. Backups of other schemas are "
-            "never upgraded or adopted."
+            f"release accepts {', '.join(SCHEMA_REVISIONS)} (upgraded to "
+            f"{SCHEMA_HEAD}). Backups of other schemas are never upgraded or adopted."
         )
-    return SCHEMA_HEAD
+    return revisions[0]
 
 
 def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[str, Any]:
@@ -497,8 +501,8 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
     )
     if list_result.returncode != 0:
         raise BackupError("PostgreSQL dump failed verification")
-    # Schema guard (ADR-0035): a backup of another schema is refused before
-    # anything is restored, even into a scratch database. There is no upgrade.
+    # Schema guard (ADR-0035, ADR-0041): a backup outside the revision chain is
+    # refused before anything is restored, even into a scratch database.
     schema_revision = _require_current_dump_revision(dump_path, env)
 
     temp_db_name = f"metadata_backup_verify_{os.getpid()}"

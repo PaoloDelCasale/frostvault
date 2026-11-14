@@ -1623,6 +1623,7 @@ export interface components {
             open_problem_count?: number;
             previous_month_delta?: number | null;
             pricing_effective_at?: string;
+            runs_as_root?: boolean;
             vaults?: {
                 id: number;
                 /** @enum {string} */

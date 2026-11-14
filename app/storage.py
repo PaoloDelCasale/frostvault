@@ -4131,6 +4131,38 @@ def _publish_without_replacing(temporary: Path, destination: Path) -> None:
     temporary.unlink()
 
 
+def _apply_original_ownership(fd: int, ownership: Any) -> bool:
+    """Give the published Local Copy its original mode, then owner (#679).
+
+    Works on the open descriptor of the published inode, so a path swapped
+    after publication is never touched. The mode goes first: once the file
+    belongs to another uid, a process without CAP_FOWNER may no longer chmod
+    it. ``chown`` needs CAP_CHOWN for another owner; when it is refused (for
+    example with a non-root PUID) the previous mode comes back and the file
+    keeps the runtime identity's ownership, as before #679. Returns whether
+    the original ownership was applied; a refusal never fails the Recovery.
+    """
+    before = os.fstat(fd)
+    try:
+        os.fchmod(fd, ownership.mode)
+        os.fchown(fd, ownership.uid, ownership.gid)
+    except OSError:
+        # EPERM without CAP_CHOWN; EINVAL for an id unmapped in a user namespace.
+        try:
+            os.fchmod(fd, stat.S_IMODE(before.st_mode))
+        except OSError:
+            pass
+        return False
+    if stat.S_IMODE(os.fstat(fd).st_mode) != ownership.mode:
+        # chown(2) may clear set-user/group-ID bits; the owner can reapply them
+        # only while it is still us (uid 0 without CAP_FSETID cannot).
+        try:
+            os.fchmod(fd, ownership.mode)
+        except PermissionError:
+            pass
+    return True
+
+
 def process_recover(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Recovery stopped")
     validate_cloud_vault(job)
@@ -4139,7 +4171,7 @@ def process_recover(job: dict[str, Any]) -> None:
     if target["local_presence"] == "present":
         raise RuntimeError("A local copy is already present")
 
-    from .services.upload_snapshot import recovery_mtime_ns
+    from .services.upload_snapshot import recovery_mtime_ns, recovery_ownership
 
     expected_digest = str(target["version_sha256"]).lower()
     object_key = str(target["object_key"])
@@ -4161,6 +4193,8 @@ def process_recover(job: dict[str, Any]) -> None:
     if str(head.get("VersionId") or provider_version_id) != provider_version_id or head.get("DeleteMarker"):
         raise RuntimeError("The provider returned a different Archive Version")
     original_mtime_ns = recovery_mtime_ns(target.get("upload_snapshot_json"), head.get("Metadata") or {})
+    original_ownership = recovery_ownership(target.get("upload_snapshot_json"), head.get("Metadata") or {})
+    ownership_applied: bool | None = None
     head_class = head.get("StorageClass") or storage_class
     restore_state, restore_expiry = restore_header_state(head.get("Restore"))
     needs_restore = storage_class_requires_restore(head_class)
@@ -4247,8 +4281,21 @@ def process_recover(job: dict[str, Any]) -> None:
                 raise RuntimeError("The recovery target changed before publication")
             generation = int(live["local_generation"])
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _publish_without_replacing(temporary, destination)
-            published_stat = destination.lstat()
+            # Still ours and readable: ownership changes only after publication,
+            # through this descriptor of the verified inode.
+            published_fd = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+            try:
+                opened = os.fstat(published_fd)
+                if (opened.st_dev, opened.st_ino, opened.st_ctime_ns) != (
+                    recovered_stat.st_dev, recovered_stat.st_ino, recovered_stat.st_ctime_ns,
+                ):
+                    raise RuntimeError("Recovered plaintext changed before publication")
+                _publish_without_replacing(temporary, destination)
+                if original_ownership is not None:
+                    ownership_applied = _apply_original_ownership(published_fd, original_ownership)
+                published_stat = os.fstat(published_fd)
+            finally:
+                os.close(published_fd)
             recovered_at = now_iso()
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
@@ -4278,7 +4325,14 @@ def process_recover(job: dict[str, Any]) -> None:
     finally:
         temporary.unlink(missing_ok=True)
     set_job_progress(job["id"], int(job.get("total_bytes") or recovered_stat.st_size))
-    set_job(job["id"], "completed", f"Recovered to {destination}")
+    if ownership_applied is False:
+        set_job(job["id"], "completed", message_key="job.recovered_to_without_ownership",
+                message_params={"target": str(destination), "uid": original_ownership.uid,
+                                "gid": original_ownership.gid,
+                                "mode": f"{original_ownership.mode:04o}"})
+    else:
+        set_job(job["id"], "completed", message_key="job.recovered_to",
+                message_params={"target": str(destination)})
 
 
 class _PurgeUnsettled(JobLeaseLost):

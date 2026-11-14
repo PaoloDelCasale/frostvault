@@ -29,7 +29,8 @@ def _job_snapshot(connection, job_id):
         return None
     return UploadSnapshot.from_record(
         size=row["size"], plaintext_sha256=row["plaintext_sha256"], part_size=row["part_size"],
-        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"])
+        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"], owner_uid=row["owner_uid"],
+        owner_gid=row["owner_gid"], file_mode=row["file_mode"])
 
 
 class UploadModeTests(unittest.TestCase):
