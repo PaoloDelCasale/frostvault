@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+import os
 import secrets
 import uuid
 from collections.abc import Iterable, Mapping
@@ -198,9 +199,14 @@ def _spa_index_response() -> FileResponse:
 async def lifespan(_: FastAPI):
     shutdown_state.reset()
     validate_settings()
+    if os.geteuid() == 0:
+        # #679: PUID=0 is an explicit choice; the entrypoint already checked
+        # that root holds no capability that bypasses file permissions.
+        from .runtime_privileges import ROOT_WARNING
+        print(ROOT_WARNING, flush=True)
     prepare_sources_layout()
-    # Schema guard (ADR-0035): initialize an empty database, refuse any
-    # database that is not at the baseline head, before any write.
+    # Schema guard (ADR-0035, ADR-0041): initialize an empty database, upgrade
+    # one of an earlier revision, refuse any other, before any write.
     initialize_database()
     # Identity must be reconciled before scans, workers, or watchers start.
     reconcile_source_volume_identities()

@@ -105,8 +105,9 @@ requires non-empty values for both, with no network-wide defaults; it does not
 validate equivalence or automatically derive either value. Review them before
 starting. Avoid printing a rendered Compose configuration: it may contain secrets.
 
-On start an empty database is initialized; a database at another schema
-revision is refused before any write (ADR-0035).
+On start an empty database is initialized; one of an earlier v0.6+ revision is
+upgraded; a database at any other schema revision is refused before any write
+(ADR-0035, ADR-0041).
 
 Confirm there is no `ports:` mapping on `frostvault`. Reach the panel only
 through Traefik. Local development can keep using `compose.yaml`, which binds

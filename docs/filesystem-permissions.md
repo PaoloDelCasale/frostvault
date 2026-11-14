@@ -1,8 +1,10 @@
 # Filesystem permissions
 
-The archive container runs as a configurable non-root identity (`PUID`/`PGID`,
-default `99:100` for Unraid compatibility). It never changes ownership or modes
-under vault source directories. Operators must grant the runtime identity read
+The archive container runs as a configurable identity (`PUID`/`PGID`, default
+non-root `99:100` for Unraid compatibility; root as an explicit option, see
+[Running as root](#running-as-root-puid0)). It never changes ownership or modes
+under vault source directories, except that a Recovery gives the recovered file
+its [original owner and mode](#original-owner-and-mode-in-recovery). Operators must grant the runtime identity read
 and traverse access for cataloging, upload, and streamed upload verification.
 Verification reads the remote plaintext without creating a temporary file in the
 Vault root. Recovery, rename, and Local Copy cleanup remain write operations and
@@ -70,9 +72,10 @@ ownership and modes while FrostVault runs.
 
 ### Valid identity values and Compose errors
 
-Set both values to canonical, non-root decimal IDs from `1` through
-`2147483647`, with no sign, whitespace, or leading zero. `0` is rejected by the
-entrypoint even though Docker can start a root process. Values above
+Set both values to canonical decimal IDs from `1` through `2147483647`, with no
+sign, whitespace, or leading zero, or both to `0` for the
+[root mode](#running-as-root-puid0). A single `0` (for example `PUID=0
+PGID=100`) is rejected by the entrypoint. Values above
 `2147483647` are rejected by current Docker daemons while processing Compose's
 `user` field. An unknown non-numeric `PUID` or `PGID` is likewise rejected by
 Docker during its user/group lookup before `/entrypoint.sh` runs; a non-numeric
@@ -82,7 +85,99 @@ produce the entrypoint's error message. Compose expands the value but does not
 validate it: `docker compose config` can render a malformed `user` successfully,
 then the Docker daemon rejects it when the service starts. Fix `.env` and use
 `docker compose config` to inspect the rendered value; do not add capabilities
-or run as root to bypass the rejection.
+to bypass the rejection.
+
+## Two modes: 99:100 (default) or root
+
+| | `PUID=99 PGID=100` (default) | `PUID=0 PGID=0` |
+|---|---|---|
+| Who it is | `nobody:users`, the usual owner of SMB shares | root **without** root privileges |
+| Upload and scan | files readable by `99:100` (others' `644` included) | the same, plus files readable only by root |
+| Recovery in place | only in directories writable by `99:100`; the file belongs to `99:100` | also in root's `755` directories; the file gets its original owner and mode |
+| Suited to | shares written over SMB or by containers running as `99:100` | shares written by containers running as root (Immich, Frigate) |
+
+Upload and scan work in both modes on the typical Unraid shares. Recovery in
+place does not work with `99:100` on shares that containers running as root
+wrote (`root:root`, directories `755`): no directory there is writable.
+
+### Running as root (PUID=0)
+
+Root is an explicit choice: set **both** `PUID=0` and `PGID=0`, and harden the
+container so uid 0 is only an ordinary owner of root's files:
+
+```yaml
+    environment:
+      PUID: 0
+      PGID: 0
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, KILL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - "/tmp:uid=0,gid=0,mode=1777"
+      - "/run:uid=0,gid=0,mode=0755"
+```
+
+With the supplied manifests, `PUID=0` and `PGID=0` in `.env` already render
+`user: "0:0"` and the tmpfs owners; add `cap_add: [CHOWN, KILL]` in an override.
+
+Before anything starts as root, the entrypoint reads `CapEff` and `CapBnd` from
+`/proc/self/status` and **refuses to start** (exit code 64, with the reason) if
+the process holds, or could regain, any capability that bypasses file
+permissions:
+
+- `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` (read, write and traverse
+  anything);
+- `CAP_FOWNER` (change modes and timestamps of others' files);
+- `CAP_SYS_ADMIN`;
+
+or if `no-new-privileges` is not active (`NoNewPrivs: 1`). A process with uid 0
+and none of these capabilities is subject to the normal permission checks: it
+gets access to files owned by root (Immich, Frigate), not to everything. There
+is no switch to another user with `gosu`. The container logs and the **System**
+page say «FrostVault runs as root».
+
+Capabilities added back in root mode:
+
+| Capability | Why |
+|---|---|
+| `CHOWN` | gives a recovered file its original owner; without it the file stays `0:0` and the Job outcome says so |
+| `KILL` | optional: FrostVault signals only processes of its own uid, which needs no capability; it bypasses no file permission |
+
+Risks: a compromised FrostVault running as root can modify every file owned by
+root that is mounted into the container, in addition to everything writable by
+any user (`666`/`777`, typical on Unraid shares, which `99:100` can already
+modify). It cannot read files of other owners without read permission, cannot
+change their permissions, and cannot gain capabilities. Mount into `/sources`
+only the shares FrostVault protects. The gain in security of `99:100` is small
+on `nobody:users 777/666` shares, while its cost is a Recovery that does not
+work on the data that containers running as root wrote. Most containers on
+Unraid, Immich and Frigate included, make the same choice.
+
+## Original owner and mode in Recovery
+
+Each upload records the uid, gid and permission bits (`chmod` mode, including
+set-user-ID, set-group-ID and sticky) of the Local Copy it hashed, next to its
+modification time: in the catalog (Upload Snapshot) and in the S3 object's
+user metadata `frostvault-uid`, `frostvault-gid` and `frostvault-mode` (4-digit
+octal). A metadata backup carries the catalog copy; a catalogless Recovery reads
+the S3 copy of the exact version.
+
+A Recovery first publishes the verified file, then, through the open file of
+the published inode, sets the original mode and then the original owner:
+
+- with `CHOWN` (root mode) the file comes back as it was, for example
+  `root:root 644` or the SMB user's `1002:100 766`;
+- when the owner may not be changed (any other `PUID`, or root without
+  `CHOWN`) nothing changes from before: the file keeps the runtime identity's
+  owner and default mode, and the Job outcome says that the original owner and
+  mode were not applied;
+- if the file already belongs to the runtime identity, its mode is applied.
+
+The kernel clears the set-user-ID and set-group-ID bits when the owner changes;
+without `CAP_FSETID` FrostVault cannot set them again on a file of another
+owner. Files uploaded before v0.8.0 have no recorded owner: their Recovery is
+unchanged. Directory owners and modes created by a Recovery are not restored.
 
 ## Linux (native bind mounts)
 
@@ -115,7 +210,9 @@ Before Compose starts, create/own/mode the repository's `./data` directory with
 the `99:100` preflight above (or use an equivalently prepared cache/pool bind
 source). In the Unraid share settings, grant read/write to the user or group
 that maps to `99:100`. Do not run the container as root to “fix” SMB permission
-errors; fix the share ACLs instead. The panel reports unreadable files and
+errors; fix the share ACLs instead. Use the [root mode](#running-as-root-puid0)
+for shares that containers running as root write (for example the Immich
+library or Frigate recordings), where Recovery in place needs it. The panel reports unreadable files and
 unwritable directories without rewriting modes.
 
 ## Docker Desktop (macOS / Windows)

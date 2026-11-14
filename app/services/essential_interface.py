@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -58,6 +59,8 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
         "previous_month_delta": round(total - float(baseline), 6) if baseline is not None else None,
         "currency": prices.currency, "pricing_effective_at": prices.effective_at,
         "email_configured": notifications.email_configured(),
+        # #679: PUID=0 is an explicit choice; the System page says so.
+        "runs_as_root": os.geteuid() == 0,
         "cloud_preflight": cloud_preflight_gate.localized_snapshot(
             cloud_preflight_gate.snapshot(connection), locale),
         "last_verified_backup": backup["verified_at"] if backup else None,

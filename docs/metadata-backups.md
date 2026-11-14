@@ -68,12 +68,15 @@ internal-error problems/metrics.
 
 ### Schema revision
 
-A metadata backup restores only into the release whose schema revision made it
-([ADR-0035](adr/0035-database-rebuilt-from-scratch.md)). There is no upgrade
-path: verification reads the dump's `alembic_version` before restoring anything
-and refuses a backup of any other revision, and the application refuses to
-start on, or to register a restore into, a database that is not at its revision.
-Nothing is ever stamped, upgraded, reset or adopted.
+A metadata backup restores into the release that made it or into a later one
+([ADR-0035](adr/0035-database-rebuilt-from-scratch.md),
+[ADR-0041](adr/0041-linear-migrations-after-the-frozen-baseline.md)).
+Verification reads the dump's `alembic_version` before restoring anything and
+accepts only a revision of the linear chain that starts at `0001_baseline`
+(v0.6.0 and later); a restored catalog of an earlier revision is upgraded in
+place with the chain's own migrations (step 5). A v0.5.x backup, or a revision
+this release does not know (made by a newer release), is refused. Nothing
+outside the chain is ever stamped, upgraded, reset or adopted.
 
 ## Main route: manual PostgreSQL 16 restore
 
@@ -116,24 +119,28 @@ the private scratch directory. The downloaded kit includes these steps offline.
    psql -d frostvault_restored -At -c 'SELECT version_num FROM alembic_version'
    ```
 
-4. Validate metadata counts and revision against the matching release: the
-   revision must be the one of the release you run, otherwise FrostVault refuses
-   the catalog (recover it with the release that made it; there is no upgrade
-   or stamp). Point `PGDATABASE` at the restored database and **unset
+4. Validate metadata counts and revision: the revision must be the one of the
+   release you run or an earlier one of v0.6+ (upgraded in step 5); FrostVault
+   refuses any other catalog (recover a newer one with the release that made
+   it; there is no stamp). Point `PGDATABASE` at the restored database and **unset
    `DATABASE_URL`**, or securely replace that DSN with the restored database's
    DSN: a configured `DATABASE_URL` takes precedence over `PG*` for FrostVault
    commands. Verify the target before any application command. Reapply
    non-secret deployment settings as needed.
-5. **Before starting the app**, register the actual backup date from the saved
-   manifest against that restored database (refused unless it is at this
-   release's schema revision):
+5. **Before starting the app**, upgrade the restored catalog to this release's
+   schema revision (a no-op when it is already there; an empty database or a
+   catalog outside the chain is refused) and register the actual backup date
+   from the saved manifest against that restored database:
 
    ```bash
    python - <<'PY'
    import json
    from pathlib import Path
+   from app.config import settings
    from app.database import db
+   from app.schema_guard import upgrade_schema
    from app.services.recovery_kit import record_metadata_restore
+   upgrade_schema(settings.database_dsn)
    with db() as connection:
        record_metadata_restore(connection, json.loads(Path('restore-manifest.json').read_text())['created_at'])
    PY

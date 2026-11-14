@@ -25,6 +25,12 @@ MAX_PART_SIZE = 1024 * CHUNK_SIZE
 MAX_OBJECT_SIZE = 5 * 1024**4
 MODES = frozenset({"s3_checksum", "read_back"})
 MTIME_METADATA_KEY = "frostvault-mtime-ns"
+# #679: the original owner and permission bits, recorded with the mtime.
+UID_METADATA_KEY = "frostvault-uid"
+GID_METADATA_KEY = "frostvault-gid"
+MODE_METADATA_KEY = "frostvault-mode"
+MAX_OWNER_ID = 2**32 - 2  # (uid_t)-1 means "unchanged" to chown(2)
+MAX_FILE_MODE = 0o7777
 
 
 def validate_mtime_ns(value: Any) -> int:
@@ -32,6 +38,56 @@ def validate_mtime_ns(value: Any) -> int:
     if type(value) is not int or not -(2**63) <= value < 2**63:
         raise ValueError("Invalid original file modification time")
     return value
+
+
+def validate_owner_id(value: Any) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_OWNER_ID:
+        raise ValueError("Invalid original file owner")
+    return value
+
+
+def validate_file_mode(value: Any) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_FILE_MODE:
+        raise ValueError("Invalid original file mode")
+    return value
+
+
+@dataclass(frozen=True)
+class FileOwnership:
+    """Original uid, gid and permission bits of the archived Local Copy (#679)."""
+    uid: int
+    gid: int
+    mode: int
+
+    def __post_init__(self) -> None:
+        validate_owner_id(self.uid)
+        validate_owner_id(self.gid)
+        validate_file_mode(self.mode)
+
+    @classmethod
+    def of(cls, value: os.stat_result) -> FileOwnership:
+        return cls(value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode))
+
+    def metadata(self) -> dict[str, str]:
+        return {UID_METADATA_KEY: str(self.uid), GID_METADATA_KEY: str(self.gid),
+                MODE_METADATA_KEY: f"{self.mode:04o}"}
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, str]) -> FileOwnership | None:
+        """Exact S3 user metadata; all three keys or none, in canonical form."""
+        raw = [metadata.get(key) for key in (UID_METADATA_KEY, GID_METADATA_KEY, MODE_METADATA_KEY)]
+        if all(value is None for value in raw):
+            return None
+        if any(not isinstance(value, str) or not 1 <= len(value) <= 10 for value in raw):
+            raise ValueError("Invalid original file ownership")
+        try:
+            uid, gid, mode = int(raw[0], 10), int(raw[1], 10), int(raw[2], 8)
+        except ValueError as exc:
+            raise ValueError("Invalid original file ownership") from exc
+        ownership = cls(uid, gid, mode)
+        if ownership.metadata() != dict(zip((UID_METADATA_KEY, GID_METADATA_KEY, MODE_METADATA_KEY), raw)):
+            raise ValueError("Invalid original file ownership")
+        return ownership
 
 
 def fingerprint(value: os.stat_result) -> tuple[int, ...]:
@@ -51,6 +107,8 @@ class UploadSnapshot:
     part_size: int
     part_checksums: tuple[str, ...]
     mtime_ns: int | None = None
+    # None for snapshots made before #679: no ownership is ever invented.
+    ownership: FileOwnership | None = None
 
     def as_json(self) -> str:
         data = {"format": 1, "size": self.size, "plaintext_sha256": self.plaintext_sha256,
@@ -60,24 +118,34 @@ class UploadSnapshot:
         # Preserve the exact encoding of immutable pre-#573 snapshots.
         if self.mtime_ns is not None:
             data["mtime_ns"] = validate_mtime_ns(self.mtime_ns)
+        if self.ownership is not None:
+            data.update(uid=self.ownership.uid, gid=self.ownership.gid, mode=self.ownership.mode)
         return json.dumps(data, separators=(",", ":"))
 
     def file_metadata(self) -> dict[str, str]:
-        return ({MTIME_METADATA_KEY: str(validate_mtime_ns(self.mtime_ns))}
-                if self.mtime_ns is not None else {})
+        metadata = ({MTIME_METADATA_KEY: str(validate_mtime_ns(self.mtime_ns))}
+                    if self.mtime_ns is not None else {})
+        if self.ownership is not None:
+            metadata.update(self.ownership.metadata())
+        return metadata
 
     @classmethod
     def from_json(cls, raw: str) -> UploadSnapshot:
         data = json.loads(raw)
         if data.get("format") != 1 or data.get("algorithm") != "SHA256":
             raise ValueError("Unsupported Upload Snapshot evidence")
+        owned = [key in data for key in ("uid", "gid", "mode")]
+        if any(owned) and not all(owned):
+            raise ValueError("Invalid original file ownership")
         return cls(data["size"], data["plaintext_sha256"], data["checksum_type"],
                    data["checksum_sha256"], data["part_size"], tuple(data["part_checksums"]),
-                   validate_mtime_ns(data["mtime_ns"]) if "mtime_ns" in data else None)._validated()
+                   validate_mtime_ns(data["mtime_ns"]) if "mtime_ns" in data else None,
+                   FileOwnership(data["uid"], data["gid"], data["mode"]) if all(owned) else None)._validated()
 
     @classmethod
     def from_record(cls, *, size: int, plaintext_sha256: bytes, part_size: int,
-                    part_sha256: list[bytes], mtime_ns: int) -> UploadSnapshot:
+                    part_sha256: list[bytes], mtime_ns: int, owner_uid: int | None = None,
+                    owner_gid: int | None = None, file_mode: int | None = None) -> UploadSnapshot:
         """Rebuild the snapshot stored once in ``upload_snapshots`` (#588).
 
         The stored row keeps raw digests only; the checksum type and the
@@ -87,8 +155,12 @@ class UploadSnapshot:
         parts = tuple(base64.b64encode(bytes(part)).decode("ascii") for part in part_sha256)
         multipart = size >= MULTIPART_THRESHOLD
         checksum = composite_checksum(parts) if multipart else base64.b64encode(digest).decode("ascii")
+        owned = (owner_uid, owner_gid, file_mode)
+        if any(value is None for value in owned) and any(value is not None for value in owned):
+            raise ValueError("Invalid original file ownership")
+        ownership = FileOwnership(owner_uid, owner_gid, file_mode) if owner_uid is not None else None
         return cls(size, digest.hex(), "COMPOSITE" if multipart else "FULL_OBJECT", checksum,
-                   part_size, parts, validate_mtime_ns(mtime_ns))._validated()
+                   part_size, parts, validate_mtime_ns(mtime_ns), ownership)._validated()
 
     def record(self) -> dict[str, Any]:
         """The ``upload_snapshots`` columns of this snapshot; mtime is required (#573)."""
@@ -96,7 +168,10 @@ class UploadSnapshot:
         return {"size": self.size, "plaintext_sha256": bytes.fromhex(self.plaintext_sha256),
                 "part_size": self.part_size,
                 "part_sha256": [base64.b64decode(part, validate=True) for part in self.part_checksums],
-                "mtime_ns": validate_mtime_ns(self.mtime_ns)}
+                "mtime_ns": validate_mtime_ns(self.mtime_ns),
+                "owner_uid": self.ownership.uid if self.ownership else None,
+                "owner_gid": self.ownership.gid if self.ownership else None,
+                "file_mode": self.ownership.mode if self.ownership else None}
 
     def _validated(self) -> UploadSnapshot:
         snapshot = self
@@ -141,6 +216,19 @@ def recovery_mtime_ns(snapshot_json: str | None, metadata: dict[str, str]) -> in
     if str(value) != raw:
         raise ValueError("Invalid original file modification time")
     return value
+
+
+def recovery_ownership(snapshot_json: str | None, metadata: dict[str, str]) -> FileOwnership | None:
+    """Like ``recovery_mtime_ns``: catalog evidence first, then exact S3 metadata.
+
+    Objects uploaded before #679 carry neither, and recovery then keeps the
+    runtime identity's ownership and default mode.
+    """
+    if snapshot_json:
+        value = UploadSnapshot.from_json(snapshot_json).ownership
+        if value is not None:
+            return value
+    return FileOwnership.from_metadata(metadata)
 
 
 def composite_checksum(parts: tuple[str, ...]) -> str:
@@ -189,7 +277,7 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
     multipart = size >= MULTIPART_THRESHOLD
     snapshot = UploadSnapshot(size, plaintext.hexdigest(), "COMPOSITE" if multipart else "FULL_OBJECT",
                               composite_checksum(tuple(parts)) if multipart else base64.b64encode(plaintext.digest()).decode("ascii"),
-                              part_size, tuple(parts), before.st_mtime_ns)
+                              part_size, tuple(parts), before.st_mtime_ns, FileOwnership.of(before))
     return snapshot, before
 
 

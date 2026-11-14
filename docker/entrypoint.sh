@@ -1,8 +1,10 @@
 #!/bin/sh
-# Start as a configurable non-root archive identity without ever changing
-# /etc at runtime. Compose starts directly as numeric PUID:PGID; the image
-# bakes in only the documented Unraid default (99:100). A root docker-run
-# fallback uses gosu with numeric IDs, never runtime account creation.
+# Start as a configurable archive identity without ever changing /etc at
+# runtime. Compose starts directly as numeric PUID:PGID; the image bakes in
+# only the documented Unraid default (99:100). A root docker-run fallback uses
+# gosu with numeric IDs, never runtime account creation. PUID=0 PGID=0 is an
+# explicit opt-in (#679): root, but without the capabilities that bypass file
+# permissions and with no-new-privileges, checked before anything starts.
 # Do not chown vault sources.
 set -eu
 
@@ -20,10 +22,13 @@ validate_numeric_id() {
   variable_name="$1"
   value="$2"
 
-  # Canonical decimal form avoids accepting signs, whitespace, octal-looking
-  # values, or root. Root would defeat the container's non-root contract.
+  # Canonical decimal form avoids accepting signs, whitespace or octal-looking
+  # values. 0 is accepted only as the explicit PUID=0 PGID=0 pair below.
   case "${value}" in
-    ''|0|0*|*[!0-9]*)
+    0)
+      return 0
+      ;;
+    ''|0*|*[!0-9]*)
       fail "${variable_name} must be a canonical positive decimal ID from 1 through 2147483647. Set PUID and PGID to matching non-root host IDs (for example PUID=1000 PGID=1000)."
       ;;
   esac
@@ -44,6 +49,11 @@ PY
 
 validate_numeric_id "PUID" "${PUID}"
 validate_numeric_id "PGID" "${PGID}"
+if [ "${PUID}" = 0 ] || [ "${PGID}" = 0 ]; then
+  if [ "${PUID}:${PGID}" != "0:0" ]; then
+    fail "PUID and PGID must both be 0 to run as root, or both canonical positive decimal IDs from 1 through 2147483647 (for example PUID=1000 PGID=1000)."
+  fi
+fi
 RUNTIME_IDENTITY="${PUID}:${PGID}"
 
 is_web_command() {
@@ -66,6 +76,17 @@ assert_writable_runtime_directories() {
     fi
   done
 }
+
+if [ "${RUNTIME_IDENTITY}" = "0:0" ]; then
+  # Root mode: no identity switch. Refuse to start while root still holds a
+  # capability that bypasses file permissions or could gain one.
+  assert_runtime_identity
+  python -m app.runtime_privileges || exit 64
+  if is_web_command "$@"; then
+    assert_writable_runtime_directories
+  fi
+  exec "$@"
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   # A direct docker run normally retains the capabilities needed for gosu and

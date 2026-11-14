@@ -78,18 +78,23 @@ PY
    pg_restore --exit-on-error --no-owner --no-acl -d frostvault_restored restore.dump
    Validate counts and the schema revision with the matching release:
    psql -d frostvault_restored -At -c 'SELECT version_num FROM alembic_version'
-   FrostVault refuses a catalog at any other revision and never upgrades, stamps
-   or adopts it; recover such a backup with the release that made it. Point
+   FrostVault accepts the revision of this release or an earlier v0.6+ one
+   (upgraded in step 5) and refuses any other: it never stamps or adopts a
+   v0.5.x or unknown catalog. Point
    PGDATABASE at frostvault_restored and UNSET DATABASE_URL (or securely replace
    it with the restored DSN): FrostVault's DATABASE_URL takes precedence over
    PG*. Verify the target. Preserve deployment settings independently; changes
    after the backup must be reapplied manually.
-5. BEFORE starting FrostVault, register the backup date in that restored database:
+5. BEFORE starting FrostVault, upgrade the restored catalog to this release's
+   revision (a no-op when it is already there) and register the backup date:
    python - <<'PY'
 import json
 from pathlib import Path
+from app.config import settings
 from app.database import db
+from app.schema_guard import upgrade_schema
 from app.services.recovery_kit import record_metadata_restore
+upgrade_schema(settings.database_dsn)
 with db() as connection:
     record_metadata_restore(connection, json.loads(Path('restore-manifest.json').read_text())['created_at'])
 PY
@@ -128,6 +133,12 @@ and apply it, for example after setting KEY and VERSION for ./recovered-file:
      python3 -c 'import os,sys; p=sys.argv[1]; ns=int(sys.argv[2]); os.utime(p, ns=(os.stat(p).st_atime_ns,ns), follow_symlinks=False)' ./recovered-file "$MTIME_NS"
    fi
 Older uploads may lack this metadata: their original modification time is unknown.
+Since v0.8.0 the same metadata also records the original owner and mode
+(frostvault-uid, frostvault-gid, frostvault-mode in octal). As root, apply them
+the same way, mode first:
+   META=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" --region "$REGION" --query 'Metadata.["frostvault-uid","frostvault-gid","frostvault-mode"]' --output text)
+   set -- $META
+   if [ "$1" != None ] && [ -n "$3" ]; then chmod "$3" ./recovered-file && chown "$1:$2" ./recovered-file; fi
 S3 LastModified is the upload/copy time, NOT the original file modification time.
 For GLACIER/DEEP_ARCHIVE, set KEY to the exact key and VERSION to its VersionId:
    aws s3api list-object-versions --bucket "$BUCKET" --prefix "$PREFIX" --region "$REGION"
@@ -196,7 +207,8 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
     """Manual restore seam; invoke only against the restored isolated database.
 
     The schema guard runs first: a restored catalog that is not at this
-    release's revision is refused before any write (ADR-0035).
+    release's revision is refused before any write (ADR-0035); one of an
+    earlier v0.6+ release is upgraded beforehand with ``upgrade_schema``.
 
     The app must be stopped. Old Jobs and local inode/mtime evidence cannot
     acquire authority on a replacement server, even if pathnames still match:

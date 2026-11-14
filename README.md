@@ -328,6 +328,13 @@ of an existing catalog. It deliberately changes only `./data`: prepare
 source permissions. Full Linux, Unraid, Docker Desktop, and invalid-identity
 guidance is in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
 
+`PUID=0 PGID=0` runs FrostVault as root **without** root privileges, for shares
+written by containers running as root (for example the Immich library): keep
+`cap_drop: [ALL]` and `no-new-privileges`, and add back only `CHOWN` so a
+Recovery restores the original owner and mode. The entrypoint refuses to start
+as root with any capability that bypasses file permissions. See
+[Running as root](docs/filesystem-permissions.md#running-as-root-puid0).
+
 ### Local development with PostgreSQL
 
 The local configuration uses:
@@ -437,14 +444,16 @@ CREATE USER frostvault WITH PASSWORD 'A-LONG-PASSWORD';
 CREATE DATABASE frostvault OWNER frostvault;
 ```
 
-The v0.6 schema is a single Alembic revision, `0001_baseline`
-([ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)). On every start
-the application checks the database before any write: an **empty** database is
-initialized with `alembic upgrade head`; a database **at `0001_baseline`** is
-used; any other database (an older FrostVault revision, or tables without
-`alembic_version`) is **refused** with a clear message. FrostVault never
-upgrades, stamps, resets or adopts an older catalog, and refuses metadata
-backups of other revisions: v0.6 starts from an empty database and new Vaults
+The v0.6 schema starts at the Alembic revision `0001_baseline`
+([ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)), followed by
+linear migrations ([ADR-0041](docs/adr/0041-linear-migrations-after-the-frozen-baseline.md)).
+On every start the application checks the database before any write: an
+**empty** database is initialized with `alembic upgrade head`; a database at an
+**earlier v0.6+ revision** is upgraded in place; a database at this release's
+revision is used; any other database (a v0.5.x revision, a newer release's
+revision, or tables without `alembic_version`) is **refused** with a clear
+message. FrostVault never stamps, resets or adopts a v0.5.x catalog, and
+refuses its metadata backups: v0.6 starts from an empty database and new Vaults
 use new cloud namespaces. Keep the previous release to read an older catalog or
 backup.
 
@@ -559,9 +568,10 @@ docker compose up -d
 docker compose logs -f frostvault
 ```
 
-On start an empty database is initialized and any database that is not at
-this release's schema revision is refused before any write (see
-[ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)).
+On start an empty database is initialized, one of an earlier v0.6+ release is
+upgraded, and any other database is refused before any write (see
+[ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md) and
+[ADR-0041](docs/adr/0041-linear-migrations-after-the-frozen-baseline.md)).
 
 The service listens on `127.0.0.1:8080` by default. Use an HTTPS reverse proxy or
 Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.

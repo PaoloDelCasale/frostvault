@@ -446,8 +446,8 @@ class UploadAttempt:
 
 
 _SNAPSHOT_COLUMNS = """s.id AS snapshot_id, s.vault_id, s.file_id, s.path, s.path_since, s.source_root,
-    s.root_identity, s.provider, s.local_generation, s.size, s.mtime_ns, s.plaintext_sha256,
-    s.part_size, s.part_sha256, s.verification, s.closed_at, v.uuid AS vault_uuid,
+    s.root_identity, s.provider, s.local_generation, s.size, s.mtime_ns, s.owner_uid,
+    s.owner_gid, s.file_mode, s.plaintext_sha256, s.part_size, s.part_sha256, s.verification, s.closed_at, v.uuid AS vault_uuid,
     t.bucket, t.region"""
 _SNAPSHOT_FROM = """upload_snapshots s JOIN vaults v ON v.id=s.vault_id
     JOIN vault_targets t ON t.id=v.target_id"""
@@ -460,7 +460,8 @@ _ATTEMPT_FROM = "upload_attempts a JOIN " + _SNAPSHOT_FROM + " ON s.id=a.snapsho
 def _admitted(row: dict[str, Any]) -> AdmittedSnapshot:
     snapshot = UploadSnapshot.from_record(
         size=row["size"], plaintext_sha256=row["plaintext_sha256"], part_size=row["part_size"],
-        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"])
+        part_sha256=row["part_sha256"], mtime_ns=row["mtime_ns"], owner_uid=row["owner_uid"],
+        owner_gid=row["owner_gid"], file_mode=row["file_mode"])
     pinned = {"vault_id": row["vault_id"], "file_id": str(row["file_id"]),
               "bucket": row["bucket"], "region": row["region"],
               "key": expected_cloud_key(row["path"], f"vaults/{row['vault_uuid']}"),
@@ -603,12 +604,13 @@ def _admit(connection: Any, job: dict[str, Any], pinned: dict[str, Any], snapsho
     record = snapshot.record()
     row = connection.execute(
         """INSERT INTO upload_snapshots(vault_id, file_id, path, path_since, source_root,
-               root_identity, provider, local_generation, size, mtime_ns, plaintext_sha256,
-               part_size, part_sha256, verification, created_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+               root_identity, provider, local_generation, size, mtime_ns, owner_uid, owner_gid,
+               file_mode, plaintext_sha256, part_size, part_sha256, verification, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
         (pinned["vault_id"], pinned["file_id"], pinned["path"], pinned["path_since"],
          pinned["source_root"], pinned["root_identity"], pinned["provider"], local_generation,
-         record["size"], record["mtime_ns"], record["plaintext_sha256"], record["part_size"],
+         record["size"], record["mtime_ns"], record["owner_uid"], record["owner_gid"],
+         record["file_mode"], record["plaintext_sha256"], record["part_size"],
          record["part_sha256"], requested, timestamp)).fetchone()
     _link(connection, job["id"], row["id"], requested)
     return AdmittedSnapshot(str(row["id"]), pinned["vault_id"], pinned["file_id"], dict(pinned),

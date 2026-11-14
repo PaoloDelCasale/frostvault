@@ -1,14 +1,19 @@
-"""The simple schema guard of ADR-0035.
+"""The schema guard of ADR-0035, with the linear migrations of ADR-0041.
 
-One Alembic revision, ``SCHEMA_HEAD``, holds the whole schema. Before the app
-serves traffic, and before a restored catalog is touched, a database is one of:
+``0001_baseline`` froze when the Owner created the production catalog; since
+then ``SCHEMA_REVISIONS`` is the linear chain of Alembic revisions, ending at
+``SCHEMA_HEAD``. Before the app serves traffic, and before a restored catalog
+is touched, a database is one of:
 
 - empty: it holds no object at all, and is initialized with Alembic;
 - current: ``alembic_version`` holds exactly ``SCHEMA_HEAD``;
-- anything else (another revision, several, or objects without
+- outdated: ``alembic_version`` holds exactly one earlier revision of the
+  chain; it is upgraded in place to ``SCHEMA_HEAD`` with the chain's own
+  migrations;
+- anything else (a v0.5.x or unknown revision, several, or objects without
   ``alembic_version``): refused before any write.
 
-An old catalog is never stamped, upgraded, reset or adopted.
+A catalog outside the chain is never stamped, upgraded, reset or adopted.
 """
 from __future__ import annotations
 
@@ -20,16 +25,18 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import tuple_row
 
 
-SCHEMA_HEAD = "0001_baseline"
+# Oldest first; every revision's down_revision is the one before it.
+SCHEMA_REVISIONS = ("0001_baseline", "0002_file_ownership")
+SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # Serializes concurrent starts on an empty database ("FVSCHEMA" in ASCII).
 _INITIALIZE_LOCK_KEY = 0x4656534348454D41
 
 _REMEDY = (
-    "FrostVault never upgrades, stamps or adopts another schema: point it at "
-    "an empty PostgreSQL database, or restore a metadata backup made by this "
-    "release."
+    "FrostVault upgrades only a catalog of an earlier v0.6+ release and never "
+    "stamps or adopts another schema: point it at an empty PostgreSQL "
+    "database, or restore a metadata backup made by a v0.6+ release."
 )
 
 # Objects a fresh PostgreSQL database never holds outside the system schemas.
@@ -72,12 +79,13 @@ SELECT EXISTS (
 
 
 class DatabaseSchemaError(RuntimeError):
-    """The database is refused: it is neither empty nor at ``SCHEMA_HEAD``."""
+    """The database is refused: it is neither empty nor in ``SCHEMA_REVISIONS``."""
 
 
 class SchemaState(Enum):
     EMPTY = "empty"
     CURRENT = "current"
+    OUTDATED = "outdated"
 
 
 def _rows(connection: Any, statement: str) -> list[tuple]:
@@ -97,6 +105,8 @@ def inspect_schema(connection: Any) -> SchemaState:
         revisions = [row[0] for row in _rows(connection, "SELECT version_num FROM alembic_version")]
         if revisions == [SCHEMA_HEAD]:
             return SchemaState.CURRENT
+        if len(revisions) == 1 and revisions[0] in SCHEMA_REVISIONS:
+            return SchemaState.OUTDATED
         found = ", ".join(sorted(map(str, revisions))) or "no revision"
         raise DatabaseSchemaError(
             f"Database refused: its schema revision is {found}, this release "
@@ -112,10 +122,17 @@ def inspect_schema(connection: Any) -> SchemaState:
 
 def require_current_schema(connection: Any) -> None:
     """Refuse, before any write, a database that is not at ``SCHEMA_HEAD``."""
-    if inspect_schema(connection) is not SchemaState.CURRENT:
+    state = inspect_schema(connection)
+    if state is SchemaState.EMPTY:
         raise DatabaseSchemaError(
             f"Database refused: it is empty, this operation requires a catalog "
             f"at {SCHEMA_HEAD}."
+        )
+    if state is SchemaState.OUTDATED:
+        raise DatabaseSchemaError(
+            f"Database refused: it is at an earlier revision, this operation "
+            f"requires a catalog at {SCHEMA_HEAD}. Upgrade it first with "
+            f"app.schema_guard.upgrade_schema (the app does it at start)."
         )
 
 
@@ -139,25 +156,41 @@ def _alembic_upgrade(connection: Any) -> None:
     command.upgrade(config, SCHEMA_HEAD)
 
 
-def prepare_schema(dsn: str) -> SchemaState:
-    """Initialize an empty database or accept a current one; refuse the rest.
+def prepare_schema(dsn: str, *, initialize_empty: bool = True) -> SchemaState:
+    """Initialize an empty database, upgrade an outdated one, accept a current one.
 
-    Classification and initialization share one transaction under an
-    advisory lock, so concurrent starts on an empty database initialize it
-    exactly once and a failed initialization leaves it empty. Returns the
-    state found before any initialization.
+    Classification and migration share one transaction under an advisory
+    lock, so concurrent starts initialize or upgrade a database exactly once
+    and a failed migration leaves it as it was (PostgreSQL DDL is
+    transactional). Returns the state found before any migration. With
+    ``initialize_empty=False`` an empty database is refused, not initialized.
     """
     engine = _engine(dsn)
     try:
         with engine.begin() as connection:
             connection.exec_driver_sql(f"SELECT pg_advisory_xact_lock({_INITIALIZE_LOCK_KEY})")
             state = inspect_schema(connection)
-            if state is SchemaState.EMPTY:
+            if state is SchemaState.EMPTY and not initialize_empty:
+                raise DatabaseSchemaError(
+                    f"Database refused: it is empty, this operation requires a "
+                    f"catalog at {SCHEMA_HEAD}."
+                )
+            if state is not SchemaState.CURRENT:
                 _alembic_upgrade(connection)
                 if inspect_schema(connection) is not SchemaState.CURRENT:
                     raise DatabaseSchemaError(
-                        f"Database initialization did not reach {SCHEMA_HEAD}"
+                        f"Database migration did not reach {SCHEMA_HEAD}"
                     )
             return state
     finally:
         engine.dispose()
+
+
+def upgrade_schema(dsn: str) -> SchemaState:
+    """Bring a restored catalog of an earlier v0.6+ release to ``SCHEMA_HEAD``.
+
+    Used by the manual metadata restore before ``record_metadata_restore``:
+    it never initializes an empty database and refuses anything outside the
+    chain, exactly like the start.
+    """
+    return prepare_schema(dsn, initialize_empty=False)

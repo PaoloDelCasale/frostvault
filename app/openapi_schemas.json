@@ -2902,6 +2902,9 @@
         "email_configured": {
           "type": "boolean"
         },
+        "runs_as_root": {
+          "type": "boolean"
+        },
         "cloud_preflight": {
           "type": "object",
           "properties": {
