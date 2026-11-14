@@ -101,11 +101,11 @@ export async function openMobileDrawer(page: Page): Promise<void> {
 /** Open the shell account / secondary-actions surface (#224). */
 export async function openAccountMenu(page: Page): Promise<void> {
   const trigger = page.getByRole("button", {
-    name: /open account menu|apri menu account/i,
+    name: /open owner menu|apri il menu del proprietario/i,
   });
   await expect(trigger).toBeVisible();
   await trigger.click();
   await expect(
-    page.getByRole("dialog", { name: /^account$/i }),
+    page.getByRole("dialog", { name: /^(owner|proprietario)$/i }),
   ).toBeVisible();
 }

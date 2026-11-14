@@ -122,7 +122,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
 
   test("language and sign out remain in Owner preferences", async ({ page }) => {
     await emergencyPasswordLogin(page); await openAccountMenu(page);
-    const account = page.getByRole("dialog", { name: /^account$/i });
+    const account = page.getByRole("dialog", { name: /^owner$/i });
     await account.getByRole("combobox", { name: /^language$/i }).selectOption("it");
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("file-search")).toHaveAttribute("placeholder", /^cerca in questo vault/i);
