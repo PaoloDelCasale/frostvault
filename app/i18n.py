@@ -71,6 +71,7 @@ CRITICAL_KEYS: frozenset[str] = frozenset(
         "job.source_changed_stalled",
         "job.upload_stopped",
         "job.recovery_stopped",
+        "job.recovery_stopped_waiting",
         "job.recovery_approval_expired",
         "notification.recovery_approval.title",
         "notification.recovery_approval.body",

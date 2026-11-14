@@ -131,6 +131,75 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         self.assertEqual((item["recovery"]["state"], item["recovery"]["active"], item["recovery"]["tier"]),
                          ("waiting_for_cloud", False, "Standard"))
 
+    def _process(self, restore_header=None):
+        client = Mock()
+        head = {"ContentLength": 1, "StorageClass": "DEEP_ARCHIVE", "VersionId": "s3-version-1"}
+        if restore_header:
+            head["Restore"] = restore_header
+        client.head_object = Mock(return_value=head)
+        worker = SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, restore_days=3,
+                                 restore_tier="Bulk", restore_high_impact_gib=100, restore_high_impact_eur=10.0,
+                                 restore_approval_hold_seconds=3600)
+        with (patch("app.storage.settings", worker), patch("app.storage.validate_cloud_vault"),
+              patch("app.storage.s3_client", return_value=client)):
+            process_jobs_once()
+        return client
+
+    def _stop_waiting(self):
+        with PostgresConnection(str(self.database_path)) as connection:
+            ids = [row["id"] for row in connection.execute(
+                "SELECT id FROM jobs WHERE action='recover' AND status NOT IN ('completed','failed','cancelled')")]
+            ArchiveCatalog(connection).cancel_jobs(
+                vault_id=VAULT, job_ids=ids, message="Recovery stopped",
+                message_key="job.recovery_stopped", now=datetime.now(timezone.utc).isoformat())
+
+    def _resume(self):
+        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
+        with patch("app.main.settings", runtime):
+            queue_jobs("cold/c0.bin", "recover", VAULT, 1, False, restore_tier="Bulk", restore_days=3)
+        client = self._process('ongoing-request="true"')
+        client.restore_object.assert_not_called()
+
+    def test_resumed_recovery_shows_the_first_cloud_request(self):
+        """#677: a new «Recupera» after «Smetti di attendere» keeps the AWS request time."""
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE jobs SET requested_at=requested_at - interval '5 minutes' WHERE action='recover'")
+        first = self._requested_at()
+        self._stop_waiting()
+        with PostgresConnection(str(self.database_path)) as connection:
+            [row] = connection.execute("SELECT message_key FROM jobs WHERE action='recover'").fetchall()
+        self.assertEqual(row["message_key"], "job.recovery_stopped_waiting")
+        self._resume()
+        recovery = self._item()["recovery"]
+        self.assertEqual((recovery["state"], recovery["active"], recovery["tier"], recovery["days"]),
+                         ("waiting_for_cloud", True, "Standard", 1))
+        self.assertEqual(_instant(recovery["requested_at"]), first)
+        self.assertEqual(_instant(recovery["ready_by"]), first + timedelta(hours=12))
+        with PostgresConnection(str(self.database_path)) as connection:
+            [group] = list_jobs(connection, vault_id=VAULT, locale="it", actions=["recover"], active_only=True)["groups"]
+        self.assertEqual(group["requested_at"], first)
+        # A second stop and resume still leads back to the first request.
+        self._stop_waiting()
+        self._resume()
+        self.assertEqual(_instant(self._item()["recovery"]["requested_at"]), first)
+
+    def test_recovery_stopped_before_aws_resumes_nothing(self):
+        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE jobs SET status='queued' WHERE action='recover'")
+        self._stop_waiting()
+        with PostgresConnection(str(self.database_path)) as connection:
+            [row] = connection.execute("SELECT message_key FROM jobs WHERE action='recover'").fetchall()
+        self.assertEqual(row["message_key"], "job.recovery_stopped")
+        with patch("app.main.settings", runtime):
+            queue_jobs("cold/c0.bin", "recover", VAULT, 1, False, restore_tier="Bulk", restore_days=3)
+        with PostgresConnection(str(self.database_path)) as connection:
+            latest = connection.execute(
+                "SELECT requested_at FROM jobs WHERE action='recover' ORDER BY id DESC LIMIT 1").fetchone()["requested_at"]
+        recovery = self._item()["recovery"]
+        self.assertEqual(_instant(recovery["requested_at"]), latest)
+        self.assertEqual(recovery["tier"], "Bulk")
+
     def test_restored_copy_is_available_until_its_expiry(self):
         expiry = datetime.now(timezone.utc) + timedelta(days=1)
         with PostgresConnection(str(self.database_path)) as connection:

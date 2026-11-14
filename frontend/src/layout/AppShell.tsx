@@ -23,7 +23,9 @@ export function AppShell({ capabilities, handlers, t, queryClient: provided, chi
 }) {
   const [drawer, setDrawer] = useState(false);
   const fallback = useMemo(() => createAppQueryClient(), []);
-  const current = capabilities.vaults.find((vault) => vault.id === capabilities.currentVaultId);
+  // A global page (Overview, System, Problems) belongs to no Vault: the
+  // sidebar keeps no Vault section there, like the switcher (#677).
+  const current = capabilities.allVaults ? undefined : capabilities.vaults.find((vault) => vault.id === capabilities.currentVaultId);
   const navigateTo = (url: string) => { setDrawer(false); if (handlers?.onNavigate) handlers.onNavigate(url); else window.location.assign(url); };
   const nav = (onNavigate?: () => void) => <ShellNavItems section={section} currentVault={current} openProblems={openProblems} t={t} onNavigate={onNavigate} />;
   return <div className="min-h-svh bg-canvas text-ink">

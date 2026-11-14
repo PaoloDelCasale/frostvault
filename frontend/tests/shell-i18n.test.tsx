@@ -53,4 +53,12 @@ describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
     const menu = within(await screen.findByRole("dialog", { name: t("nav.switch_vault") }));
     expect(menu.getByRole("button", { name: "Second" })).not.toHaveAttribute("aria-current");
   });
+
+  it("keeps no Vault section in the sidebar on a page about every Vault (#677)", () => {
+    const { unmount } = render(<AppShell capabilities={{ vaults, currentVaultId: 2, allVaults: true, locale, locales: ["en", "it"] }} t={t} section="overview"><p>Overview</p></AppShell>);
+    expect(screen.queryByRole("group", { name: "Second" })).not.toBeInTheDocument();
+    unmount();
+    render(<AppShell capabilities={{ vaults, currentVaultId: 2, locale, locales: ["en", "it"] }} t={t} section="files"><p>Browser</p></AppShell>);
+    expect(screen.getAllByRole("group", { name: "Second" }).length).toBeGreaterThan(0);
+  });
 });

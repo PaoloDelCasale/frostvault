@@ -7,7 +7,7 @@ A Job row holds only its core; the read model joins its File (path), group
 from typing import Any
 
 from app.i18n import present_job_message, translate
-from .recovery_progress import ready_by
+from .recovery_progress import origin_sql, ready_by
 from .upload_remediation import project_jobs
 
 PAGE_SIZE = 50
@@ -113,9 +113,16 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         LEFT JOIN active ON active.group_key=t.group_key
         ORDER BY t.last_id DESC
         """, [*params, vault_id, groups_before_id or 2**63-1, PAGE_SIZE+1]).fetchall()
+    origins = _resumed_restore_origins(connection, vault_id, [
+        row["group_key"] for row in aggregates[:PAGE_SIZE]
+        if row["action"] == "recover" and row["active_status"] is not None])
     groups = []
     for row in aggregates[:PAGE_SIZE]:
         group = dict(row)
+        origin = origins.get(group["group_key"])
+        if origin is not None and origin < group["requested_at"]:
+            # A resumed cloud restore began with its first request (#677).
+            group["requested_at"] = origin
         group["id"] = group.pop("group_key")
         group.pop("last_id")
         group["path"] = group.pop("group_path") or group["path"]
@@ -147,3 +154,18 @@ def group_jobs(connection: Any, *, vault_id: int, group_id: str, locale: str,
         (vault_id, group_id, before_id or 2**63-1, limit+1)).fetchall()
     return {"items": localized_jobs(connection, rows[:limit], locale),
             "next_before_id": rows[limit-1]["id"] if len(rows)>limit else None}
+
+
+def _resumed_restore_origins(connection: Any, vault_id: int, group_keys: list[str]) -> dict[str, Any]:
+    """First request of the cloud restores that active Recovery groups resume."""
+    if not group_keys:
+        return {}
+    rows = connection.execute(f"""
+        SELECT COALESCE(j.group_id::text, 'job-' || j.id::text) AS group_key,
+            min(o.origin_requested_at) AS origin
+        FROM jobs j CROSS JOIN LATERAL {origin_sql("j")} o
+        WHERE j.vault_id=%s AND j.action='recover' AND j.status NOT IN {TERMINAL}
+          AND COALESCE(j.group_id::text, 'job-' || j.id::text) = ANY(%s)
+        GROUP BY 1
+        """, [vault_id, group_keys]).fetchall()
+    return {row["group_key"]: row["origin"] for row in rows}

@@ -30,7 +30,8 @@ from .services.directory_aggregates import (
     stopped_upload_counts,
 )
 from .services.operation_policies import stopped_upload_sql
-from .services.recovery_progress import LATEST_RECOVERY_JOIN_SQL, project_recovery
+from .i18n import DEFAULT_LOCALE, translate
+from .services.recovery_progress import LATEST_RECOVERY_JOIN_SQL, STOPPED_WAITING_KEY, project_recovery
 
 
 class VaultFileNotFound(LookupError):
@@ -2030,6 +2031,9 @@ class ArchiveCatalog:
                 recovery.recovery_requested_at,
                 recovery.recovery_tier,
                 recovery.recovery_days,
+                recovery_origin.origin_requested_at,
+                recovery_origin.origin_tier,
+                recovery_origin.origin_days,
                 ({_REQUESTED_VERIFICATION_SQL}) AS upload_verification_requested,
                 cleanup.id AS cleanup_batch_id,
                 EXISTS (
@@ -2879,16 +2883,23 @@ class ArchiveCatalog:
         which drops any lease (schema trigger), so the next renewal, progress
         or status write of a worker holding that lease finds nothing to update.
         """
+        # A Recovery stopped while AWS restores says so: the cloud restore goes
+        # on and a new Recovery resumes it from its first request (#677).
+        waiting_key = STOPPED_WAITING_KEY if message_key == "job.recovery_stopped" else message_key
+        waiting_message = translate(waiting_key, locale=DEFAULT_LOCALE) if waiting_key != message_key else message
         rows = self.connection.execute(
             """
             UPDATE jobs
-            SET status='cancelled', message=%s, message_key=%s,
+            SET status='cancelled',
+                message=CASE WHEN action='recover' AND status='restoring' THEN %s ELSE %s END,
+                message_key=CASE WHEN action='recover' AND status='restoring' THEN %s ELSE %s END,
                 message_params='{}'::jsonb, updated_at=%s
             WHERE vault_id=%s AND id = ANY(%s::bigint[])
               AND status NOT IN ('completed', 'failed', 'cancelled')
             RETURNING id
             """,
-            (message, message_key, now, vault_id, [int(job_id) for job_id in job_ids]),
+            (waiting_message, message, waiting_key, message_key, now, vault_id,
+             [int(job_id) for job_id in job_ids]),
         ).fetchall()
         return [int(row["id"]) for row in rows]
 
