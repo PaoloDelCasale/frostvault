@@ -81,7 +81,7 @@ describe("BottomSheet", () => {
 
     const hint = screen.getByText(longHint);
     expect(hint.className).toMatch(/text-sm/);
-    expect(hint.className).toMatch(/text-white/);
+    expect(hint.className).toMatch(/text-destructive-foreground/);
 
     const freeHint = screen.getByText(
       "Removes only the Local Copy. Cloud Archive Versions stay recoverable.",

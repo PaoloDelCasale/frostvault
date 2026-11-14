@@ -42,6 +42,7 @@
   --color-accent: var(--green-soft);
   --color-accent-foreground: var(--ink);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--line);
   --color-input: var(--input);
   --color-ring: var(--green);
@@ -72,7 +73,9 @@
   --secondary-foreground: var(--ink);
   --accent: var(--green-soft);
   --accent-foreground: var(--ink);
+  /* Destructive background, also used as text on surface/canvas; foreground is the text on it. */
   --destructive: #a33a31;
+  --destructive-foreground: #ffffff;
   --border: var(--line);
   --input: #cbd6ce;
   --ring: var(--green);
@@ -148,6 +151,8 @@
 
   --primary-foreground: #08150d;
   --destructive: #d86f66;
+  /* Dark text on the light red, like --primary-foreground on green (#653). */
+  --destructive-foreground: #200b09;
   --input: #476052;
   --overlay: rgba(0, 0, 0, 0.62);
   --shadow-color: rgba(0, 0, 0, 0.42);
@@ -212,6 +217,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

@@ -596,7 +596,7 @@ export function NotificationCenter({
           {unreadCount > 0 ? (
             <span
               aria-hidden="true"
-              className="absolute -top-1 -right-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-destructive px-1 text-[11px] font-extrabold text-white"
+              className="absolute -top-1 -right-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-destructive px-1 text-[11px] font-extrabold text-destructive-foreground"
               data-testid="notification-unread-badge"
             >
               {unreadBadge}

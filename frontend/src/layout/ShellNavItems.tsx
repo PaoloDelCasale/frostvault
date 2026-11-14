@@ -27,7 +27,7 @@ export function ShellNavItems({ section, currentVault, openProblems, t, onNaviga
   t?: ShellTranslator; onNavigate?: () => void;
 }) {
   const problems = openProblems === undefined ? null
-    : <span className={cn("shrink-0 rounded-badge px-2 text-xs font-bold tabular-nums", openProblems > 0 ? "bg-destructive text-white" : "bg-[var(--state-unsupported-bg)] text-muted")}
+    : <span className={cn("shrink-0 rounded-badge px-2 text-xs font-bold tabular-nums", openProblems > 0 ? "bg-destructive text-destructive-foreground" : "bg-[var(--state-unsupported-bg)] text-muted")}
       data-testid="nav-problem-count">{openProblems}</span>;
   return <div className="grid min-w-0 gap-1">
     <NavLink href="/" icon={LayoutDashboard} label={shellLabel(t, "nav.overview", "Overview")} active={section === "overview"} onNavigate={onNavigate} />

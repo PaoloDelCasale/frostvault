@@ -58,7 +58,7 @@ function ActionList({
             <span
               className={cn(
                 "w-full text-left text-sm font-normal leading-snug text-pretty",
-                action.tone === "danger" ? "text-white" : "text-ink",
+                action.tone === "danger" ? "text-destructive-foreground" : "text-ink",
               )}
             >
               {action.description}
