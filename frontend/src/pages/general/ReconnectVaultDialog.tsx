@@ -82,7 +82,7 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
         ) : alias ? (
           <div className="grid gap-2" role="group" aria-labelledby="reconnect-path-label">
             <p id="reconnect-path-label" className="text-sm font-semibold">{t("general.reconnect_path")}</p>
-            <SourceDirectoryBrowser key={alias} volumeAlias={alias} browse={browseSourceVolume} selectedPath={path} onSelect={setPath} />
+            <SourceDirectoryBrowser key={alias} volumeAlias={alias} browse={(volume, relative) => browseSourceVolume(volume, relative, vault?.id)} selectedPath={path} onSelect={setPath} />
           </div>
         ) : null}
         <FormField label={t("general.reconnect_reason")} htmlFor="reconnect-reason">

@@ -126,8 +126,12 @@ def _resolve_directory(volume: source_layout.SourceVolume, relative_path: str) -
 def _occupied_vault_roots(
     connection: Any,
     volume: source_layout.SourceVolume,
+    exclude_vault_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Vault roots under ``volume``, including disabled/unavailable Vaults."""
+    """Vault roots under ``volume``, including disabled/unavailable Vaults.
+
+    ``exclude_vault_id`` leaves out the Vault being reconnected: its own root
+    is a valid Reconnect Folder (#656)."""
     # Filter by the lexical namespace before canonicalizing any stored root;
     # a different, currently replaced Source Volume must not be resolved just
     # because the owner is browsing this healthy volume.
@@ -136,8 +140,9 @@ def _occupied_vault_roots(
     rows = connection.execute(
         """
         SELECT id, name, source_root FROM vaults
-        WHERE root_released_at IS NULL
-        """
+        WHERE root_released_at IS NULL AND id IS DISTINCT FROM %s
+        """,
+        (exclude_vault_id,),
     ).fetchall()
     occupied: list[dict[str, Any]] = []
     for row in rows:
@@ -247,6 +252,7 @@ def browse_source_directories(
     *,
     volume_alias: str,
     relative_path: str = "",
+    exclude_vault_id: int | None = None,
 ) -> dict[str, Any]:
     """Lazy directory-only listing for the Vault-root picker.
 
@@ -255,7 +261,7 @@ def browse_source_directories(
     """
     volume = _volume_or_raise(volume_alias)
     canonical = canonicalize_relative_path(relative_path)
-    occupied = _occupied_vault_roots(connection, volume)
+    occupied = _occupied_vault_roots(connection, volume, exclude_vault_id)
 
     for item in occupied:
         root = item["relative_path"]

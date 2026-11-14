@@ -560,9 +560,11 @@ export function fetchGeneralSourceVolumes(): Promise<SourceVolumeInventoryRespon
 export function browseSourceVolume(
   volumeAlias: string,
   path = "",
+  reconnectVaultId?: number,
 ): Promise<SourceDirectoryBrowseResponse> {
   const query = new URLSearchParams();
   if (path) query.set("path", path);
+  if (reconnectVaultId !== undefined) query.set("reconnect_vault_id", String(reconnectVaultId));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return apiRequest<SourceDirectoryBrowseResponse>(
     `/api/source-volumes/${encodeURIComponent(volumeAlias)}/browse${suffix}`,

@@ -3095,15 +3095,20 @@ def _source_directory_http_error(
 def browse_source_volume(
     volume_alias: str,
     path: str = Query(default=""),
+    reconnect_vault_id: int | None = Query(default=None),
     _: dict[str, Any] = Depends(current_user),
 ):
-    """Lazy directory browser for choosing a Vault root on a Source Volume."""
+    """Lazy directory browser for choosing a Vault root on a Source Volume.
+
+    ``reconnect_vault_id`` treats that Vault's own root as free: Reconnect may
+    accept the same folder again (#656)."""
     try:
         with db() as connection:
             return source_directories_service.browse_source_directories(
                 connection,
                 volume_alias=volume_alias,
                 relative_path=path,
+                exclude_vault_id=reconnect_vault_id,
             )
     except source_directories_service.SourceDirectoryError as exc:
         raise _source_directory_http_error(exc) from exc

@@ -14,12 +14,14 @@ function json(data: unknown, status = 200) { return new Response(JSON.stringify(
 function vault(sourceRoot: string): GeneralVault {
   return { id: 7, uuid, name: "Photos", lifecycle: "reconnect_required", source_root: sourceRoot, s3_prefix: `vaults/${uuid}/` };
 }
+const browsed: string[] = [];
 function setup(target: GeneralVault) {
   const bodies: unknown[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("/api/i18n/catalog")) return json({ locale: "en", locales: ["en", "it"], messages });
     if (url.startsWith("/api/source-volumes/photos/browse")) {
+      browsed.push(url);
       return json({ volume_alias: "photos", relative_path: "", items: [
         { name: "album", relative_path: "album", navigable: true, selectable: true, occupation: null },
       ] });
@@ -75,6 +77,8 @@ describe("Reconnect of a managed Vault (#641)", () => {
     expect(within(group).getByRole("button", { name: "Selected: album" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(confirm);
     await waitFor(() => expect(bodies).toEqual([{ volume_alias: "photos", relative_path: "album", reason: "disk moved" }]));
+    // The Vault's own root is not "occupied" while reconnecting it.
+    expect(browsed.every((url) => url.includes("reconnect_vault_id=7"))).toBe(true);
   });
 
   it("focuses the first field on open and names the close button in the UI language (#656)", async () => {
