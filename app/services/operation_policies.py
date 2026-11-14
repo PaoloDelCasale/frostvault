@@ -32,15 +32,18 @@ def stopped_upload_holds_automatic_admission_sql(job: str, file: str) -> str:
 
     A failed automatic upload, any cancelled automatic upload and any upload the
     Owner cancelled (``job.upload_stopped``, manual or automatic) hold the File
-    until its content is observed again (#618). A manual upload closed for
-    another reason (removed file, metadata restore) or a failed manual upload
-    does not.
+    until its content is observed again (#618). A Removed File Closure
+    (``job.upload_file_removed``, automatic or manual) never holds: the file
+    was gone, so its return is admitted on its own stability window even with
+    the same fingerprint (#645). A manual upload closed for another reason
+    (metadata restore) or a failed manual upload does not hold either.
     """
     return f"""(
         {job}.action='upload'
         AND {job}.requested_at >= COALESCE({file}.local_content_observed_at, {file}.local_observed_at)
         AND (
-            ({job}.origin='automatic' AND {job}.status IN ('failed', 'cancelled'))
+            ({job}.origin='automatic' AND {job}.status IN ('failed', 'cancelled')
+             AND {job}.message_key IS DISTINCT FROM 'job.upload_file_removed')
             OR ({job}.status='cancelled' AND {job}.message_key='job.upload_stopped')
         )
     )"""

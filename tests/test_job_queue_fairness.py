@@ -575,11 +575,11 @@ class RemovedFileTests(QueueFixture):
         self.assertEqual(self.run_once(), 1)
         with self.db() as connection:
             self.assertEqual(connection.execute("SELECT local_presence FROM files").fetchone()["local_presence"], "missing")
-        # The same bytes (same size and mtime) come back.
+        # The same bytes (same size and mtime) come back. The Removed File
+        # Closure never holds the file, and an unchanged fingerprint keeps its
+        # earlier stability window (#645), so it is admitted again at once.
         self.advance(10)
         self.write(2, "same.jpg", b"identical")
-        self.assertEqual(self.queue(2), 0)  # a new stability window, not instantly
-        self.advance(300)
         self.assertEqual(self.queue(2), 1)
         self.assertEqual([row["status"] for row in self.jobs(2)], ["cancelled", "queued"])
 
