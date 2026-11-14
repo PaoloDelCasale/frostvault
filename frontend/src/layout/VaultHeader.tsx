@@ -14,7 +14,7 @@ export function VaultHeader({ vaultId, vaultName, active, t }: {
 }) {
   const stats = useVaultStats(vaultId);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false, enabled: active === "files" });
-  const vault = general.data?.items.find((item) => item.id === vaultId);
+  const vault = general.data?.items?.find((item) => item.id === vaultId);
   // Settings has its own pause section; an archived Vault has no cloud work to pause.
   const pause = active === "files" && vault && vault.lifecycle !== "stopping" && vault.lifecycle !== "tombstone";
   const tab = (name: "files" | "settings", href: string) => <a href={href} aria-current={active === name ? "page" : undefined}
