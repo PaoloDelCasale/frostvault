@@ -7,6 +7,7 @@ rendering responses or UI chrome. See docs/adr/0006-english-default-i18n.md.
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -159,11 +160,40 @@ def catalog(locale: str | None = None) -> dict[str, str]:
     return dict(_load_catalog(normalize_locale(locale)))
 
 
+def plural_category(count: Any) -> str | None:
+    """CLDR plural category for English and Italian, or ``None`` if not a count.
+
+    Both supported languages use ``one`` for exactly the integer 1 and
+    ``other`` for everything else (the frontend uses ``Intl.PluralRules``).
+    """
+    if isinstance(count, bool) or not isinstance(count, (int, float)):
+        return None
+    return "one" if count == 1 and float(count).is_integer() else "other"
+
+
+def _resolve_key(catalog_: Mapping[str, str], key: str, params: Mapping[str, Any]) -> str:
+    """Counted strings: ``<key>_<category>``, then ``<key>_other``, then ``<key>``."""
+    category = plural_category(params.get("count"))
+    if category is not None:
+        for candidate in (f"{key}_{category}", f"{key}_other"):
+            if candidate in catalog_:
+                return candidate
+    return key
+
+
+def has_message(key: str, locale: str | None = None) -> bool:
+    """Whether ``key`` is defined, directly or as plural variants."""
+    keys = _load_catalog(normalize_locale(locale))
+    return key in keys or f"{key}_other" in keys
+
+
 def translate(key: str, locale: str | None = None, **params: Any) -> str:
     resolved = normalize_locale(locale)
-    message = _load_catalog(resolved).get(key)
+    current = _load_catalog(resolved)
+    message = current.get(_resolve_key(current, key, params))
     if message is None and resolved != DEFAULT_LOCALE:
-        message = _load_catalog(DEFAULT_LOCALE).get(key)
+        english = _load_catalog(DEFAULT_LOCALE)
+        message = english.get(_resolve_key(english, key, params))
     if message is None:
         return key
     if not params:
@@ -179,12 +209,59 @@ def catalog_keys(locale: str | None = None) -> frozenset[str]:
 
 
 def missing_critical_keys(locale: str | None = None) -> frozenset[str]:
-    return CRITICAL_KEYS - catalog_keys(locale)
+    return frozenset(key for key in CRITICAL_KEYS if not has_message(key, locale))
 
 
 def unused_critical_keys() -> frozenset[str]:
     """Critical keys that are not present in the English source catalog."""
-    return CRITICAL_KEYS - catalog_keys(DEFAULT_LOCALE)
+    return missing_critical_keys(DEFAULT_LOCALE)
+
+
+_BYTE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+
+
+def _localized_digits(text: str, locale: str | None) -> str:
+    """Swap English separators for Italian ones (``1,234.5`` → ``1.234,5``)."""
+    if normalize_locale(locale) == "it":
+        return text.translate(str.maketrans({",": ".", ".": ","}))
+    return text
+
+
+def format_bytes(value: Any, locale: str | None = None) -> str:
+    """A size in binary (IEC) units with the locale's decimal separator, as in the SPA."""
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return "—"
+    index = 0
+    while abs(amount) >= 1024 and index < len(_BYTE_UNITS) - 1:
+        amount /= 1024
+        index += 1
+    digits = f"{amount:,.0f}" if index == 0 else f"{amount:,.1f}"
+    return f"{_localized_digits(digits, locale)} {_BYTE_UNITS[index]}"
+
+
+def format_money(value: Any, locale: str | None = None, currency: str = "EUR") -> str:
+    """Two-decimal amount as the SPA shows it: ``€1,234.56`` / ``1.234,56 €``.
+
+    Positive amounts under one cent read ``< €0.01``; invalid amounts ``—``.
+    """
+    try:
+        amount = Decimal(str(value if value is not None else 0))
+    except InvalidOperation:
+        return "—"
+    if not amount.is_finite():
+        return "—"
+    subcent = 0 < amount < Decimal("0.01")
+    shown = Decimal("0.01") if subcent else amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    digits = _localized_digits(f"{abs(shown):,.2f}", locale)
+    sign = "-" if shown < 0 else ""
+    symbol = "€" if currency == "EUR" else None
+    if normalize_locale(locale) == "it":
+        money = f"{sign}{digits} {symbol or currency}"
+    else:
+        money = f"{sign}{symbol}{digits}" if symbol else f"{sign}{digits} {currency}"
+    return f"< {money}" if subcent else money
 
 
 def locale_key_parity() -> dict[str, frozenset[str]]:

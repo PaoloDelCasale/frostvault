@@ -27,7 +27,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     expect(screen.getByText(/destination bills at least 180 days/)).toBeInTheDocument();
     const summary = screen.getByTestId("vault-move-estimate");
     expect(within(summary).getByText("< €0.01/month").tagName).toBe("STRONG");
-    expect(summary).toHaveTextContent("storage for 2 files (4.0 KB)");
+    expect(summary).toHaveTextContent("storage for 2 files (4.0 KiB)");
     expect(summary).toHaveTextContent("Source retrieval < €0.01. AWS list prices for eu-west-1, published Nov 1, 2026");
     expect(screen.getByText(/3 skipped: already equal or colder/)).toBeInTheDocument();
     expect(screen.getByText(/exact cold source version must be explicitly recovered/)).toBeInTheDocument();
@@ -50,7 +50,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     const summary = await screen.findByTestId("vault-move-estimate");
     expect(within(summary).getByText("≈ €0.27/month").tagName).toBe("STRONG");
-    expect(summary).toHaveTextContent("storage for 593 files (20.6 GB)");
+    expect(summary).toHaveTextContent("storage for 593 files (20.6 GiB)");
     expect(summary).toHaveTextContent("Source retrieval €0.00. AWS list prices for eu-west-1, published Oct 15, 2026 (USD used 1:1 as EUR).");
     expect(summary).not.toHaveTextContent("22172592158");
     expect(summary).not.toHaveTextContent("0.270513");
@@ -67,7 +67,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     await user.click(await screen.findByText(loadCatalog("it")["settings.plan_open"], { exact: true }));
     const summary = await screen.findByTestId("vault-move-estimate");
     expect(within(summary).getByText(/^≈ 0,27\s€\/mese$/).tagName).toBe("STRONG");
-    expect(summary).toHaveTextContent(/di archiviazione per 12\.593 file \(20\.6 GB\)/);
+    expect(summary).toHaveTextContent(/di archiviazione per 12\.593 file \(20,6 GiB\)/);
     expect(summary).toHaveTextContent(/Lettura dalla sorgente < 0,01\s€\./);
     expect(summary).toHaveTextContent("pubblicato il 15 ott 2026");
   });

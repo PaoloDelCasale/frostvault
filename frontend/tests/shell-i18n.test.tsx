@@ -1,13 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import { translate } from "@/i18n/translate";
 import { AppShell } from "@/layout/AppShell";
 import { loadCatalog } from "./vault-settings-harness";
 
 const vaults = [{ id: 1, name: "First", uuid: "first" }, { id: 2, name: "Second", uuid: "second" }];
 
 describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
-  const catalog = loadCatalog(locale); const t = (key: string) => catalog[key] ?? key;
+  const catalog = loadCatalog(locale); const t = (key: string, params?: Record<string, unknown>) => translate(catalog, key, params, locale);
 
   it("does not claim zero open problems when the global overview is unavailable", () => {
     render(<AppShell capabilities={{ vaults: [], locale, locales: ["en", "it"] }} t={t}><p>Browser</p></AppShell>);
@@ -22,7 +23,7 @@ describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
     expect(menu.getByRole("link", { name: t("nav.overview") })).toHaveAttribute("href", "/");
     expect(menu.getByRole("link", { name: t("nav.files") })).toHaveAttribute("aria-current", "page");
     expect(menu.getByRole("link", { name: t("nav.settings") })).toHaveAttribute("href", "/vaults/2/settings");
-    expect(menu.getByRole("link", { name: t("nav.problems_open").replace("{count}", "2") })).toHaveAttribute("href", "/problems");
+    expect(menu.getByRole("link", { name: t("nav.problems_open", { count: 2 }) })).toHaveAttribute("href", "/problems");
     expect(menu.getByRole("link", { name: t("nav.system") })).toHaveAttribute("href", "/system");
     expect(menu.queryByText("First")).not.toBeInTheDocument();
     await user.click(menu.getByRole("link", { name: t("nav.system") }));

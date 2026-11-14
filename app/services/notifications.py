@@ -13,15 +13,13 @@ import smtplib
 import ssl
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from typing import Any, Protocol
 
 from psycopg.types.json import Jsonb
 
 from ..config import settings
-from ..i18n import catalog as locale_catalog
-from ..i18n import normalize_locale, parse_message_params, translate
+from ..i18n import format_bytes, format_money, has_message, parse_message_params, translate
 
 
 # Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
@@ -65,7 +63,7 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     """Translate a keyed ``remediation`` param; its stored text stays English."""
     localized = dict(params)
     key = localized.get("remediation_key")
-    if isinstance(key, str) and key in locale_catalog("en"):
+    if isinstance(key, str) and has_message(key, "en"):
         localized["remediation"] = translate(key, locale=locale)
     return localized
 
@@ -73,22 +71,7 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
 def _recovery_approval_params(params: Mapping[str, Any], locale: str | None = None) -> dict[str, Any]:
     """Keep the stored decimal evidence; apply #530's sub-cent rule at render."""
     localized = dict(params)
-    try:
-        amount = Decimal(str(params.get("cost") or 0))
-    except InvalidOperation:
-        amount = Decimal("NaN")
-    if not amount.is_finite():
-        localized["cost"] = "—"
-        return localized
-    subcent = 0 < amount < Decimal("0.01")
-    shown = Decimal("0.01") if subcent else amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    digits = f"{shown:,.2f}"
-    if normalize_locale(locale) == "it":
-        digits = digits.translate(str.maketrans({",": ".", ".": ","}))
-        money = f"{digits} €"
-    else:
-        money = f"€{digits}"
-    localized["cost"] = f"< {money}" if subcent else money
+    localized["cost"] = format_money(params.get("cost") or 0, locale)
     return localized
 
 
@@ -107,12 +90,10 @@ def _localized_notification_text(
     if not key:
         return fallback
     key = str(key)
-    resolved_catalog = locale_catalog(locale)
-    if key not in resolved_catalog:
+    if not has_message(key, locale):
         # ``translate`` normally falls back to English, so check that catalog
         # explicitly before deciding that this is an unknown new key.
-        english_catalog = locale_catalog("en")
-        if key not in english_catalog:
+        if not has_message(key, "en"):
             return fallback
     params = _localized_params(_message_params(row), locale)
     if row.get("event") == "recovery_approval":
@@ -133,8 +114,8 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
               if verified else summary.get("last_verified_backup") or "—")
     lines = [counts, translate("notification.weekly_summary.metrics", locale=locale,
              backup=backup, problems=summary.get("open_problems", 0),
-             files=summary.get("freed_files", 0), gib=f"{int(summary.get('freed_bytes', 0)) / 1024**3:.2f}",
-             cost=f"{summary.get('monthly_cost_estimate', 0):.2f}", currency=summary.get("currency", "EUR"),
+             files=summary.get("freed_files", 0), size=format_bytes(int(summary.get("freed_bytes", 0)), locale),
+             cost=format_money(summary.get("monthly_cost_estimate", 0), locale, summary.get("currency") or "EUR"),
              blocked=summary.get("cleanup_blocked", 0))]
     latest = verification.get("latest")
     if latest and (not verified or latest["id"] != verified["id"]):

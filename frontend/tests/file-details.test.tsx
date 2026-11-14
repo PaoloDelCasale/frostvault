@@ -93,7 +93,7 @@ describe("deliberate file Details", () => {
     const user = userEvent.setup();
     await screen.findByText("exact");
     await user.click(screen.getByText("remediation.history"));
-    await screen.findByText("2026-11-01 · Historical failure");
+    await screen.findByText("Nov 1, 2026 · Historical failure");
     await user.click(screen.getByRole("button", { name: "remediation.older" }));
     await waitFor(() => expect(calls).toContain("/api/files/jobs?path=same.jpg&before_id=100&vault_id=2"));
     await user.click(screen.getByRole("button", { name: "remediation.job · operation.failed" }));

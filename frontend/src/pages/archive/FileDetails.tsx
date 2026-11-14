@@ -93,7 +93,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             <p>{t("remediation.target")}: {resume.archive_version_id ?? "—"}</p>
             {resume.reason && <p>{t("remediation.reason")}: {t(`reconciliation.reason.${resume.reason}`)}</p>}
             {resume.state !== "resolved" && <p>{t("remediation.help")}</p>}
-            {resume.state === "retrying" && <p>{t("remediation.retry", { count: resume.retry_count, at: resume.due_at })}</p>}
+            {resume.state === "retrying" && <p>{t("remediation.retry", { count: resume.retry_count, at: formatDateTime(resume.due_at) })}</p>}
             {resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.resolved_by_job_id!)}>{t("remediation.resolved_by", { id: resume.resolved_by_job_id })}</Button>}
             {resume.current_job_id && !resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.current_job_id!)}>{t("remediation.job", { id: resume.current_job_id })}</Button>}
             {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path, remediation_id: resume.id }))}>{t("reconciliation.resume")}</Button>}
@@ -110,7 +110,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {history.error && <p role="alert">{errorMessage(history.error, t)}</p>}
             {history.data?.items.map((job) => <div key={job.id} className="grid gap-1 border-b border-line py-2">
               <Button variant="secondary" onClick={() => setJobId(job.id)}>{t("remediation.job", { id: job.id })} · {t(`operation.${job.status}`)}</Button>
-              <p>{job.requested_at} · {job.message}</p>
+              <p>{formatDateTime(job.requested_at)} · {job.message}</p>
               {job.remediation_rejection && <p>{t(`reconciliation.reason.${job.remediation_rejection}`)}</p>}
               {job.remediation?.state === "resolved" && <p>{t("remediation.resolved_by", { id: job.remediation.resolved_by_job_id ?? 0 })}</p>}
             </div>)}
@@ -119,7 +119,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
           </details>
           {linkedJob.error && <p role="alert">{errorMessage(linkedJob.error, t)}</p>}
           {linkedJob.data && <section className="grid gap-2 rounded-card border border-line p-3">
-            <h2>{t("remediation.job", { id: linkedJob.data.id })} · {t(`operation.${linkedJob.data.status}`)}</h2><p>{linkedJob.data.requested_at} · {linkedJob.data.message}</p>
+            <h2>{t("remediation.job", { id: linkedJob.data.id })} · {t(`operation.${linkedJob.data.status}`)}</h2><p>{formatDateTime(linkedJob.data.requested_at)} · {linkedJob.data.message}</p>
             {linkedJob.data.remediation_rejection && <p>{t(`reconciliation.reason.${linkedJob.data.remediation_rejection}`)}</p>}
             {linkedJob.data.remediation?.original_job_ids.map((id) => <Button key={id} variant="secondary" onClick={() => setJobId(id)}>{t("remediation.original", { id })}</Button>)}
             {linkedJob.data.remediation?.current_job_id && <Button variant="secondary" onClick={() => setJobId(linkedJob.data!.remediation!.current_job_id!)}>{t("remediation.job", { id: linkedJob.data.remediation.current_job_id })}</Button>}

@@ -20,7 +20,7 @@ const LOCALE_COOKIE = "frostvault_locale";
 
 function applyCatalogToApiClient(catalog: I18nCatalogResponse): void {
   configureApiClient({
-    translate: (key, params) => translate(catalog.messages, key, params),
+    translate: (key, params) => translate(catalog.messages, key, params, catalog.locale),
   });
 }
 
@@ -88,11 +88,12 @@ export function I18nProvider({
   const value = useMemo<I18nContextValue>(() => {
     const catalog = catalogQuery.data;
     const messages = catalog?.messages ?? {};
+    const locale = catalog?.locale ?? initialLocale ?? "en";
     return {
-      locale: catalog?.locale ?? initialLocale ?? "en",
+      locale,
       locales: catalog?.locales ?? ["en", "it"],
       ready: Boolean(catalog),
-      t: (key, params) => translate(messages, key, params),
+      t: (key, params) => translate(messages, key, params, locale),
       setLocale,
     };
   }, [catalogQuery.data, initialLocale, setLocale]);

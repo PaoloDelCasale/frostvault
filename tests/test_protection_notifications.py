@@ -57,8 +57,13 @@ class DelayRuleTests(unittest.TestCase):
         en = inbox.render_weekly_summary(data, locale='en')
         it = inbox.render_weekly_summary(data, locale='it')
         for text in (en, it):
-            for value in ('2026-11-02', 'scan-date', 'audit-date', '2.00 GiB', '1.23 EUR'):
+            for value in ('2026-11-02', 'scan-date', 'audit-date'):
                 self.assertIn(value, text)
+        # #654: the same binary units and currency format as the SPA.
+        self.assertIn('6 file, 2,0 GiB', it)
+        self.assertIn('1,23 €', it)
+        self.assertIn('6 files, 2.0 GiB', en)
+        self.assertIn('€1.23', en)
         self.assertIn('Pending: 3', en)
         self.assertIn('In attesa: 3', it)
         self.assertIn('Solo cloud: 5', it)

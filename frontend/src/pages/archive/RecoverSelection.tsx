@@ -4,6 +4,7 @@ import { vaultApi } from "@/api/vault";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
+import { formatEur } from "./format";
 
 export type Target = { item: ArchiveListItem; vaultId: number; vaultName: string };
 type Preview = { targets: Target[]; estimate: RecoverEstimateResponse; retention: number | null };
@@ -59,13 +60,13 @@ export function RecoverSelection({ targets, onClose, onDone, t }: { targets: Tar
   const needsApproval = previews?.some((row) => row.estimate.high_impact);
   const totalCost = previews?.reduce((sum, row) => sum + (row.estimate.requires_restore && row.estimate.estimate ? Number(row.estimate.estimate.estimated_cost_eur) : 0), 0) ?? 0;
   const maxHours = previews?.reduce((max, row) => Math.max(max, row.estimate.requires_restore && row.estimate.estimate ? Number(row.estimate.estimate.estimated_hours) : 0), 0) ?? 0;
-  const rows = previews?.map(({ targets: group, estimate, retention }) => <div key={group[0].vaultId} className="break-words border-t border-line pt-3"><strong>{group[0].vaultName}</strong>{group.map((target, index) => <p key={index}>{t("essential.return_path", { path: `${target.vaultName} / ${target.item.path}` })}</p>)}<p>{retention ? t("essential.recovered_retention", { days: retention }) : t("essential.recovered_keep")}</p><p>{estimate.requires_restore && estimate.estimate ? t("essential.recover_estimate", { cost: Number(estimate.estimate.estimated_cost_eur).toFixed(2), hours: estimate.estimate.estimated_hours }) : t("essential.ready_now")}</p>{estimate.high_impact && <p className="font-semibold" data-testid="recover-needs-approval">{t("essential.recover_needs_approval")}</p>}</div>);
+  const rows = previews?.map(({ targets: group, estimate, retention }) => <div key={group[0].vaultId} className="break-words border-t border-line pt-3"><strong>{group[0].vaultName}</strong>{group.map((target, index) => <p key={index}>{t("essential.return_path", { path: `${target.vaultName} / ${target.item.path}` })}</p>)}<p>{retention ? t("essential.recovered_retention", { count: retention }) : t("essential.recovered_keep")}</p><p>{estimate.requires_restore && estimate.estimate ? t("essential.recover_estimate", { cost: formatEur(estimate.estimate.estimated_cost_eur), hours: estimate.estimate.estimated_hours }) : t("essential.ready_now")}</p>{estimate.high_impact && <p className="font-semibold" data-testid="recover-needs-approval">{t("essential.recover_needs_approval")}</p>}</div>);
   const actions = <><Button variant="secondary" disabled={busy} onClick={onClose}>{t("ui.cancel")}</Button><Button disabled={busy || !previews} onClick={() => void recover()}>{busy ? t("ui.recover_starting") : t("ui.row_action_recover")}</Button></>;
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={t("ui.row_action_recover")} closeLabel={t("ui.close")} description={t("essential.recover_help")} footer={actions}>
     <div className="grid gap-4">
       {cold && <label className="grid gap-2">{t("essential.recover_speed")}<select className="min-h-11 rounded border border-input bg-surface px-3" value={tier} disabled={busy} onChange={(event) => setTier(event.target.value)}><option value="Bulk">{t("essential.bulk")}</option><option value="Standard">{t("essential.standard")}</option></select></label>}
       {!previews && !error && <p role="status">{t("ui.loading")}</p>}
-      {previews && targets.length > 1 && <p className="font-semibold" data-testid="recover-summary">{t(cold ? "essential.recover_summary_cold" : "essential.recover_summary", { count: targets.length, cost: totalCost.toFixed(2), hours: maxHours })}</p>}
+      {previews && targets.length > 1 && <p className="font-semibold" data-testid="recover-summary">{t(cold ? "essential.recover_summary_cold" : "essential.recover_summary", { count: targets.length, cost: formatEur(totalCost), hours: maxHours })}</p>}
       {previews && targets.length > 3 ? <details><summary className="min-h-11 w-fit cursor-pointer py-2 font-semibold">{t("essential.recover_items")}</summary><div className="grid gap-3">{rows}</div></details> : rows}
       {needsApproval && <p role="note" className="font-semibold" data-testid="recover-approval-notice">{t("essential.recover_approval_notice")}</p>}
       {cold && <p>{t("ui.recover_irreversible_note")}</p>}

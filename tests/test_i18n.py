@@ -5,6 +5,41 @@ import unittest
 from app import i18n
 
 
+class PluralAndFormattingTests(unittest.TestCase):
+    """#654: counted strings and locale-aware sizes and amounts."""
+
+    def test_count_selects_one_and_other_in_both_languages(self) -> None:
+        self.assertEqual(i18n.translate("nav.problem_count", locale="it", count=1), "1 problema")
+        self.assertEqual(i18n.translate("nav.problem_count", locale="it", count=3), "3 problemi")
+        self.assertEqual(i18n.translate("nav.problem_count", locale="it", count=0), "0 problemi")
+        self.assertEqual(i18n.translate("nav.problem_count", locale="en", count=1), "1 problem")
+        self.assertEqual(i18n.translate("nav.problem_count", locale="en", count=2), "2 problems")
+
+    def test_plural_key_without_count_and_unknown_keys(self) -> None:
+        self.assertTrue(i18n.has_message("nav.problem_count"))
+        self.assertFalse(i18n.has_message("nav.problem_count_two"))
+        self.assertEqual(i18n.translate("missing.counted", count=1), "missing.counted")
+        self.assertIsNone(i18n.plural_category(True))
+        self.assertIsNone(i18n.plural_category("1"))
+        self.assertEqual(i18n.plural_category(1.5), "other")
+
+    def test_format_bytes_uses_binary_units_and_locale_separator(self) -> None:
+        self.assertEqual(i18n.format_bytes(0, "en"), "0 B")
+        self.assertEqual(i18n.format_bytes(1536, "en"), "1.5 KiB")
+        self.assertEqual(i18n.format_bytes(1536, "it"), "1,5 KiB")
+        self.assertEqual(i18n.format_bytes(2 * 1024**3, "it"), "2,0 GiB")
+        self.assertEqual(i18n.format_bytes(1024**4, "en"), "1.0 TiB")
+        self.assertEqual(i18n.format_bytes("junk", "en"), "—")
+
+    def test_format_money_matches_the_spa(self) -> None:
+        self.assertEqual(i18n.format_money("1234.5", "en"), "€1,234.50")
+        self.assertEqual(i18n.format_money("1234.5", "it"), "1.234,50 €")
+        self.assertEqual(i18n.format_money("0.00002", "it"), "< 0,01 €")
+        self.assertEqual(i18n.format_money("3.42", "en", "USD"), "3.42 USD")
+        self.assertEqual(i18n.format_money("nan", "en"), "—")
+        self.assertEqual(i18n.format_money("x", "en"), "—")
+
+
 class TranslateTests(unittest.TestCase):
     def test_translate_returns_english_default_for_known_key(self) -> None:
         self.assertEqual(i18n.translate("ui.sign_out"), "Sign out")

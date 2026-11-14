@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { acknowledgeRecoveryKit, downloadRecoveryKit, fetchRecoveryKitStatus, type RecoveryKitStatus } from "@/api";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
+import { formatDateTime } from "@/pages/archive/format";
 import { useI18n } from "@/i18n/useI18n";
 
 export function RecoveryKitSection() {
@@ -58,7 +59,7 @@ export function RecoveryKitSection() {
             : <Button className="w-fit" disabled={busy} variant="secondary" onClick={() => void acknowledge()}>{t("recovery_kit.acknowledge")}</Button>}
         </> : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
         {status?.metadata_restore ? <p role="alert" data-testid="metadata-restore-warning">
-          {t("recovery_kit.restore_warning", { date: status.metadata_restore.backup_created_at, count: status.metadata_restore.updated_files })}
+          {t("recovery_kit.restore_warning", { date: formatDateTime(status.metadata_restore.backup_created_at), count: status.metadata_restore.updated_files })}
         </p> : null}
         {error ? <p role="alert">{t(error)}</p> : null}
       </Panel>

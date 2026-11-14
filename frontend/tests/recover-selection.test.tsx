@@ -73,7 +73,7 @@ describe("essential recovery", () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 3.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
     const many = Array.from({ length: 7 }, (_, index) => ({ ...target, item: { ...target.item, name: `f${index}.jpg`, path: `f${index}.jpg` } }));
     render(<RecoverSelection targets={many} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
-    expect(await screen.findByTestId("recover-summary")).toHaveTextContent('essential.recover_summary_cold{"count":7,"cost":"3.50","hours":12}');
+    expect(await screen.findByTestId("recover-summary")).toHaveTextContent('essential.recover_summary_cold{"count":7,"cost":"€3.50","hours":12}');
     const dialog = screen.getByRole("dialog");
     expect(dialog.className).toMatch(/max-h-\[calc\(100dvh/);
     const body = screen.getByTestId("dialog-body");

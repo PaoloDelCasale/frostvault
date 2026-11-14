@@ -10,7 +10,7 @@ import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { buttonVariants } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { formatBytes } from "@/pages/archive/format";
+import { formatBytes, formatMoney } from "@/pages/archive/format";
 import { vaultFilesUrl } from "@/router";
 
 const STATS_REFRESH_MS = 60_000;
@@ -60,7 +60,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     refetchInterval: STATS_REFRESH_MS,
   })) });
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
-  const money = (value: number) => `${value.toFixed(2)} ${overview?.currency ?? ""}`.trim();
+  const money = (value: number, signed = false) => formatMoney(value, { currency: overview?.currency, locale, signed });
   const rows = vaults.map((vault, index) => rowFor(vault, stats[index]?.data, overview));
   const sorted = [...rows].sort((a, b) => {
     const value = (row: Row) => sort.key === "name" ? row.name.toLocaleLowerCase() : sort.key === "state" ? STATE_RANK[row.state] ?? 10 : row[sort.key] ?? -1;
@@ -112,14 +112,14 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
           value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? t("overview.tile_protected_of", { total: number.format(totals.files) }) : null} />
         <Tile testId="tile-pending" icon={<Clock className="size-4" />} tone={pending ? "warn" : "neutral"} label={t("overview.tile_pending")}
           value={loaded ? number.format(pending) : "—"} detail={<>{(!loaded || manualPending < pending || pending === 0) && t("overview.tile_pending_hint")}
-            {loaded && manualPending > 0 && <span className="block" data-testid="tile-pending-manual">{t("overview.tile_pending_manual", { count: number.format(manualPending) })}</span>}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: number.format(stoppedFiles) })}</span>}</>} />
+            {loaded && manualPending > 0 && <span className="block" data-testid="tile-pending-manual">{t("overview.tile_pending_manual", { count: manualPending })}</span>}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: stoppedFiles })}</span>}</>} />
         <Tile testId="tile-problems" icon={<CircleAlert className="size-4" />} tone={problems ? "bad" : "neutral"} label={t("overview.tile_problems")}
           value={problems === undefined ? "—" : number.format(problems)}
           detail={problems ? <a href="/problems" className="font-semibold text-ink underline">{t("overview.tile_problems_link")}</a> : t("overview.tile_problems_none")} />
         <Tile testId="tile-cost" icon={<Euro className="size-4" />} label={t("overview.tile_cost", { month: overview?.month ?? "—" })}
           value={overview ? money(overview.monthly_estimate) : "—"}
           detail={overview ? <span title={t("essential.estimate_caveat")}>{overview.previous_month_delta === null ? t("essential.no_comparison")
-            : t("essential.month_delta", { cost: overview.previous_month_delta.toFixed(2), currency: overview.currency })}</span> : null} />
+            : t("essential.month_delta", { cost: money(overview.previous_month_delta, true) })}</span> : null} />
       </section>
 
       <section className="grid min-w-0 gap-2" aria-labelledby="overview-vaults">
