@@ -41,6 +41,7 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   const [release, setRelease] = useState<Target[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [freeOutcome, setFreeOutcome] = useState<{ freed: number; total: number; errors: string[] } | null>(null);
   const scope = useMemo(() => vaultApi(vaultId), [vaultId]);
   const stats = useVaultStats(vaultId);
   const q = params.get("q") ?? "", state = params.get("state") ?? "", directory = params.get("directory") ?? "";
@@ -83,12 +84,17 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     const item = target.item;
     return item.type === "directory" ? Boolean(item.available_actions?.[action]) : action === "recover" ? Boolean(item.recover_eligible) : Boolean(item.cleanup_eligible);
   }
+  /** Frees every target; a failure does not stop the rest and is reported as «X of N freed» (#652). */
   async function free() {
     if (!release || busy) return;
-    setBusy(true); setMessage("");
-    try { for (const target of release) await vaultApi(target.vaultId).action("free-space", { path: target.item.path, is_directory: target.item.type === "directory" }); setRelease(null); refresh(); }
-    catch (error) { setMessage(String(error)); }
-    finally { setBusy(false); }
+    setBusy(true); setMessage(""); setFreeOutcome(null);
+    const errors: string[] = [];
+    for (const target of release) {
+      try { await vaultApi(target.vaultId).action("free-space", { path: target.item.path, is_directory: target.item.type === "directory" }); }
+      catch (error) { errors.push(`${target.vaultName} / ${target.item.path}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    if (errors.length) setFreeOutcome({ freed: release.length - errors.length, total: release.length, errors });
+    setRelease(null); refresh(); setBusy(false);
   }
   /** Stopped Uploads of this level (#630): files, and folders holding some. */
   const stoppedTargets = global ? [] : rows.filter(({ item }) => item.type === "directory" ? Number((item.state_counts as Record<string, number> | undefined)?.stopped ?? 0) > 0 : item.state === "stopped");
@@ -171,6 +177,14 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
       {selected.length === 1 && selected[0]?.item.type === "file" && <Button variant="secondary" onClick={() => setDetails(selected[0] ?? null)}>{t("essential.details")}</Button>}
       <Button variant="ghost" className="ml-auto" onClick={() => setSelected([])}><X aria-hidden="true" />{t("files.clear_selection")}</Button>
     </div>}
+    {freeOutcome && <div role="alert" className="flex min-w-0 items-start gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/60 p-3 text-sm" data-testid="free-space-outcome">
+      <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+      <div className="grid min-w-0 flex-1 gap-1">
+        <p className="font-semibold">{t("files.free_space_partial", { freed: formatNumber(freeOutcome.freed), total: formatNumber(freeOutcome.total) })}</p>
+        <ul className="grid gap-1">{freeOutcome.errors.map((error, index) => <li key={index} className="break-words">{error}</li>)}</ul>
+      </div>
+      <Button variant="ghost" className="shrink-0" aria-label={t("ui.close")} onClick={() => setFreeOutcome(null)}><X aria-hidden="true" /></Button>
+    </div>}
     <div className="hidden min-w-0 overflow-hidden rounded-card border border-line bg-surface md:block">
       <table className="w-full table-fixed text-sm" data-testid="file-list-table">
         <thead className="bg-canvas/60 text-left text-xs font-semibold text-muted uppercase"><tr>
@@ -208,6 +222,9 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     {message && <p role="alert">{message}</p>}
     {effectiveDetails && <FileDetails key={`${effectiveDetails.vaultId}:${effectiveDetails.item.path}`} target={effectiveDetails} onClose={() => { setDetails(null); if (focusPath) update({ file: "" }); }} onRecover={() => { setRecover([effectiveDetails]); setDetails(null); if (focusPath) update({ file: "" }); }} onRefresh={refresh} t={t} />}
     {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}
-    <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { path: release?.map((row) => `${row.vaultName} / ${row.item.path}`).join(", ") ?? "" })} confirmLabel={busy ? t("ui.loading") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" onConfirm={() => void free()} />
+    <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { count: formatNumber(release?.length ?? 0) })} confirmLabel={busy ? t("ui.loading") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" keepOpenOnConfirm onConfirm={() => void free()}>
+      <details className="rounded-card border border-line" data-testid="free-space-items"><summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold">{t("files.free_space_show_items", { count: formatNumber(release?.length ?? 0) })}</summary>
+        <ul className="grid gap-1 border-t border-line p-3 text-sm">{release?.map((row) => <li key={`${row.vaultId}:${row.item.path}`} className="break-all">{`${row.vaultName} / ${row.item.path}`}</li>)}</ul></details>
+    </ConfirmDialog>
   </section>;
 }

@@ -116,6 +116,45 @@ describe("essential file browser", () => {
     await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "files.clear_selection" }));
     expect(screen.queryByTestId("selection-bar")).not.toBeInTheDocument();
   });
+  it("confirms free space as a count with a collapsed list and reports a partial outcome near the selection (#652)", async () => {
+    const local = { type: "file", name: "", state: "protected", cleanup_eligible: true, local_exists: true, local_size: 10 };
+    const items = Array.from({ length: 100 }, (_, index) => ({ ...local, name: `f${index}.jpg`, path: `2026/f${index}.jpg` }));
+    const posted: string[] = [];
+    configureApiClient({ fetch: vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("/api/free-space")) {
+        const body = JSON.parse(String(init?.body)) as { path: string }; posted.push(body.path);
+        return body.path === "2026/f3.jpg" ? jsonResponse({ detail: "Archive Version not verified" }, 409) : jsonResponse({ ok: true });
+      }
+      if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+      if (url.startsWith("/api/stats")) return jsonResponse({ states: {}, storage: {}, runtime: {}, source_volume: {} });
+      return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
+    }) });
+    window.history.replaceState({}, "", "/");
+    render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={1} vaultName="First" t={(key, params) => params ? `${key} ${JSON.stringify(params)}` : key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
+    await screen.findAllByText("f0.jpg"); const user = userEvent.setup();
+    await user.click(screen.getByRole("checkbox", { name: "files.select_page" }));
+    await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "essential.free_now" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent('ui.confirm_free_space_description {"count":"100"}');
+    expect(dialog).not.toHaveTextContent("2026/f0.jpg, ");
+    const list = within(dialog).getByTestId("free-space-items");
+    expect(list.tagName).toBe("DETAILS"); expect(list).not.toHaveAttribute("open");
+    expect(within(list).getAllByRole("listitem", { hidden: true })).toHaveLength(100);
+    // The paths live in the scrolling body; the actions stay outside it, always reachable.
+    const body = within(dialog).getByTestId("confirm-dialog-body");
+    expect(body).toHaveClass("overflow-y-auto", "min-h-0"); expect(body).toContainElement(list);
+    expect(dialog).toHaveClass("max-h-[calc(100dvh-1.75rem)]", "flex-col");
+    const confirm = within(dialog).getByRole("button", { name: "essential.free_now" });
+    expect(body).not.toContainElement(confirm);
+    await user.click(confirm);
+    const outcome = await screen.findByTestId("free-space-outcome");
+    expect(posted).toHaveLength(100);
+    expect(outcome).toHaveTextContent('files.free_space_partial {"freed":"99","total":"100"}');
+    expect(outcome).toHaveTextContent("First / 2026/f3.jpg: Archive Version not verified");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("free-space-outcome").compareDocumentPosition(screen.getByTestId("file-list-table")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
   it("labels the page as a readable range", async () => {
     setup(); await screen.findAllByText("photo.jpg");
     expect(screen.getByTestId("page-label")).toHaveTextContent("files.range");
