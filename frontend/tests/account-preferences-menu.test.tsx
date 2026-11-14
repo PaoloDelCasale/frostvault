@@ -42,17 +42,17 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: /open account menu/i });
+    const trigger = screen.getByRole("button", { name: /open owner menu/i });
     await user.click(trigger);
 
-    const dialog = await screen.findByRole("dialog", { name: /^account$/i });
+    const dialog = await screen.findByRole("dialog", { name: /^owner$/i });
     expect(
       within(dialog).getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: /^account$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /^owner$/i })).not.toBeInTheDocument();
     });
     expect(trigger).toHaveFocus();
   });
@@ -69,15 +69,15 @@ describe("AccountPreferencesMenu focus restore (#224)", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: /open account menu/i });
+    const trigger = screen.getByRole("button", { name: /open owner menu/i });
     await user.click(trigger);
 
-    const dialog = await screen.findByRole("dialog", { name: /^account$/i });
+    const dialog = await screen.findByRole("dialog", { name: /^owner$/i });
     await user.click(
-      within(dialog).getByRole("button", { name: /close account menu/i }),
+      within(dialog).getByRole("button", { name: /close owner menu/i }),
     );
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: /^account$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /^owner$/i })).not.toBeInTheDocument();
     });
     expect(trigger).toHaveFocus();
   });
@@ -103,7 +103,7 @@ describe("AppShell desktop header single-row alignment (#224)", () => {
     expect(screen.getByRole("navigation", { name: /main navigation/i })).toBeInTheDocument();
     expect(within(header).getByTestId("notification-bell")).toBeInTheDocument();
     expect(
-      within(header).getByRole("button", { name: /open account menu/i }),
+      within(header).getByRole("button", { name: /open owner menu/i }),
     ).toBeInTheDocument();
     expect(within(header).getByTestId("vault-switcher")).toBeInTheDocument();
     expect(

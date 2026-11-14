@@ -153,7 +153,7 @@ export function CloudPurgeDialog({
             aria-busy={busy || undefined}
             data-testid="cloud-purge-submit"
           >
-            {busy ? t("ui.loading") : t("ui.cloud_purge_submit")}
+            {busy ? t("ui.cloud_purge_scheduling") : t("ui.cloud_purge_submit")}
           </Button>
         </div>
       </form>

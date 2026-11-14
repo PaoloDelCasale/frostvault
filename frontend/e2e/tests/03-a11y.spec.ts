@@ -27,7 +27,7 @@ test.describe("essential interface accessibility", () => {
   });
   test("account menu returns focus, sidebar stays outside header on desktop", async ({ page }) => {
     await emergencyPasswordLogin(page);
-    const trigger = page.getByRole("button", { name: /open account menu/i });
+    const trigger = page.getByRole("button", { name: /open owner menu/i });
     await openAccountMenu(page); await page.keyboard.press("Escape"); await expect(trigger).toBeFocused();
     await expect(page.getByRole("banner").getByRole("navigation")).toHaveCount(0);
     await expect(page.getByTestId("notification-bell")).toBeVisible();
