@@ -68,7 +68,7 @@ export function SourceVolumesSection() {
                     <dt className="font-bold text-muted">
                       {t("general.sources_access")}
                     </dt>
-                    <dd>{item.access}</dd>
+                    <dd>{t(`general.sources_access_${item.access}`)}</dd>
                   </div>
                   <div>
                     <dt className="font-bold text-muted">

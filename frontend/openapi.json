@@ -6001,7 +6001,7 @@
     },
     "/api/source-volumes/{volume_alias}/browse": {
       "get": {
-        "description": "Lazy directory browser for choosing a Vault root on a Source Volume.",
+        "description": "Lazy directory browser for choosing a Vault root on a Source Volume.\n\n``reconnect_vault_id`` treats that Vault's own root as free: Reconnect may\naccept the same folder again (#656).",
         "operationId": "browse_source_volume_api_source_volumes__volume_alias__browse_get",
         "parameters": [
           {
@@ -6021,6 +6021,22 @@
               "default": "",
               "title": "Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reconnect_vault_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reconnect Vault Id"
             }
           }
         ],

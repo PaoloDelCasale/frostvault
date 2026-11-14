@@ -769,6 +769,9 @@ export interface paths {
         /**
          * Browse Source Volume
          * @description Lazy directory browser for choosing a Vault root on a Source Volume.
+         *
+         *     ``reconnect_vault_id`` treats that Vault's own root as free: Reconnect may
+         *     accept the same folder again (#656).
          */
         get: operations["browse_source_volume_api_source_volumes__volume_alias__browse_get"];
         put?: never;
@@ -3726,6 +3729,7 @@ export interface operations {
         parameters: {
             query?: {
                 path?: string;
+                reconnect_vault_id?: number | null;
             };
             header?: never;
             path: {

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
-import { Toast } from "@/components/Toast";
+import { notify } from "@/components/toastQueue";
 import { Button } from "@/components/ui/button";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
@@ -36,16 +36,17 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const [busy, setBusy] = useState(false);
   const [stop, setStop] = useState(false);
   const [reconnect, setReconnect] = useState(false);
-  const [notice, setNotice] = useState<{ message: string; error: boolean } | null>(null);
-  const show = useCallback((message: string, error = false) => setNotice({ message, error }), []);
+  const [loadError, setLoadError] = useState("");
+  const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
   const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
   const stopped = vault?.lifecycle === "stopping" || vault?.lifecycle === "tombstone";
   useEffect(() => {
     let live = true;
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) show(String(error), true); });
+    setLoadError("");
+    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(String(error)); });
     return () => { live = false; };
-  }, [vaultId, show]);
+  }, [vaultId]);
   async function toggle() {
     if (auto === null) return;
     setBusy(true);
@@ -61,6 +62,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     </SettingsSection>}
     <SettingsSection id="protection" title={t("settings.protection_title")} summary={t("settings.protection_summary")}
       more={<><p>{t("essential.protection_help")}</p><p>{t("uploads.retry_help")}</p></>}>
+      {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
       <label className="flex min-h-11 items-center gap-3 font-semibold"><input type="checkbox" className="size-5 accent-[var(--green)]" checked={auto ?? false} disabled={auto === null || busy} onChange={() => void toggle()} />{t("folder_settings.policy_auto_upload")}</label>
       <UploadRetryActions vaultId={vaultId} showHelp={false} />
     </SettingsSection>
@@ -90,6 +92,5 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <ReconnectVaultDialog open={reconnect} onOpenChange={setReconnect} vault={vault} onNotice={show}
       onCompleted={async () => { await client.invalidateQueries({ queryKey: ["general-vaults"] }); }} />
     <StopProtectionDialog open={stop} onOpenChange={setStop} vaultId={vaultId} vaultName={vaultName} onCompleted={onStopped} />
-    <Toast open={notice !== null} message={notice?.message ?? ""} variant={notice?.error ? "error" : "success"} onClose={() => setNotice(null)} />
   </div>;
 }

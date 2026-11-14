@@ -12,6 +12,7 @@ import {
   resetApiClientForTests,
   type ApiFetch,
 } from "@/api";
+import { ToastRegion } from "@/components/Toast";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
 
@@ -126,6 +127,7 @@ export function renderVaultAccess(
           vaultName={options.vaultName ?? "Test Archive"}
           onStopped={options.onStopped ?? (() => undefined)}
         />
+        <ToastRegion closeLabel="Close notification" />
       </I18nProvider>
     </ApiQueryProvider>,
   );

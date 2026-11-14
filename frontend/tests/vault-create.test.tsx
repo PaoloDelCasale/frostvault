@@ -83,7 +83,7 @@ describe("plaintext Vault creation", () => {
     await user.click(await screen.findByRole("radio", { name: en["ui.vault_create.mode_adopt"] }));
     await screen.findByTestId("vault-create-adopt");
     await user.type(screen.getByRole("textbox", { name: en["ui.vault_create.name"] }), "Photos");
-    const buttons = await screen.findAllByRole("button", { name: en["ui.source_directory_browser_select"] });
+    const buttons = await screen.findAllByRole("button", { name: new RegExp(`^${en["ui.source_directory_browser_select"]} `) });
     await user.click(buttons[0]!);
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));

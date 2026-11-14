@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import type { GeneralVault, SourceVolumeInventoryItem } from "@/api";
-import { fetchGeneralSourceVolumes, reconnectGeneralVault } from "@/api";
+import { browseSourceVolume, fetchGeneralSourceVolumes, reconnectGeneralVault } from "@/api";
 import { Dialog } from "@/components/Dialog";
+import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
@@ -26,7 +27,8 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   const { t } = useI18n();
   const [volumes, setVolumes] = useState<SourceVolumeInventoryItem[]>([]);
   const [alias, setAlias] = useState("");
-  const [path, setPath] = useState("");
+  const [path, setPath] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const ownManaged = ownsManagedFolder(vault);
@@ -35,23 +37,24 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setAlias(""); setPath(""); setReason(""); setVolumes([]);
+    setAlias(""); setPath(null); setReason(""); setVolumes([]); setLoadError("");
     void fetchGeneralSourceVolumes().then((data) => {
       if (!cancelled) setVolumes(data.items);
     }).catch((error: unknown) => {
-      if (!cancelled) onNotice(error instanceof Error ? error.message : String(error), true);
+      if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
     });
     return () => { cancelled = true; };
-  }, [open, vault?.id, onNotice]);
+  }, [open, vault?.id]);
+  const ready = !!alias && (managedSelected || path !== null) && reason.trim().length >= 3;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!vault || !alias || reason.trim().length < 3) return;
+    if (!vault || !ready) return;
     setSubmitting(true);
     try {
       await reconnectGeneralVault(vault.id, {
         volume_alias: alias,
-        relative_path: managedSelected ? vault.uuid : path,
+        relative_path: managedSelected ? vault.uuid : path ?? "",
         reason: reason.trim(),
       });
       onOpenChange(false);
@@ -63,28 +66,30 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={t("general.reconnect_vault")} description={t("general.reconnect_help")}>
+    <Dialog open={open} onOpenChange={onOpenChange} title={t("general.reconnect_vault")} description={t("general.reconnect_help")} closeLabel={t("ui.close")}>
       <form className="grid gap-4" onSubmit={(event) => void submit(event)}>
         <p className="break-all text-sm text-muted">{t(vault?.lifecycle === "reconnect_required" ? "general.reconnect_old_root" : "general.reconnect_current_root")}: {vault?.source_root}</p>
+        {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
         <FormField label={t("general.reconnect_volume")} htmlFor="reconnect-volume">
-          <select id="reconnect-volume" required value={alias} onChange={(event) => setAlias(event.target.value)} className="min-h-11 rounded border border-input bg-surface px-3">
+          <select id="reconnect-volume" required value={alias} onChange={(event) => { setAlias(event.target.value); setPath(null); }} className="min-h-11 rounded border border-input bg-surface px-3">
             <option value="">—</option>
             {ownManaged && <option value={MANAGED_ALIAS}>{t("general.reconnect_own_managed")}</option>}
-            {volumes.filter((v) => v.access === "rw").map((v) => <option key={v.alias} value={v.alias}>{v.alias} · {v.health}</option>)}
+            {volumes.filter((v) => v.access === "rw").map((v) => <option key={v.alias} value={v.alias}>{v.alias} · {t(`general.sources_health_${v.health}`)}</option>)}
           </select>
         </FormField>
         {managedSelected ? (
           <p className="break-all text-sm text-muted">{t("general.reconnect_own_managed_help")}</p>
-        ) : (
-          <FormField label={t("general.reconnect_path")} htmlFor="reconnect-path">
-            <FormInput id="reconnect-path" maxLength={1024} value={path} onChange={(event) => setPath(event.target.value)} />
-          </FormField>
-        )}
+        ) : alias ? (
+          <div className="grid gap-2" role="group" aria-labelledby="reconnect-path-label">
+            <p id="reconnect-path-label" className="text-sm font-semibold">{t("general.reconnect_path")}</p>
+            <SourceDirectoryBrowser key={alias} volumeAlias={alias} browse={(volume, relative) => browseSourceVolume(volume, relative, vault?.id)} selectedPath={path} onSelect={setPath} />
+          </div>
+        ) : null}
         <FormField label={t("general.reconnect_reason")} htmlFor="reconnect-reason">
           <FormInput id="reconnect-reason" required minLength={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
         </FormField>
         <p className="text-sm text-muted">{t("general.reconnect_scan_warning")}</p>
-        <Button type="submit" disabled={submitting || !alias || reason.trim().length < 3}>
+        <Button type="submit" disabled={submitting || !ready}>
           {submitting ? t("general.reconnect_submitting") : t("general.reconnect_confirm")}
         </Button>
       </form>

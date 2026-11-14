@@ -88,6 +88,7 @@ export function ReauthPasswordGate({ children }: { children: ReactNode }) {
           if (!next) rejectWaiters();
         }}
         title={t("ui.reauth_password_title")}
+        closeLabel={t("ui.close")}
         description={t("ui.reauth_password_description")}
         className="w-[min(28rem,calc(100%-1.75rem))]"
       >

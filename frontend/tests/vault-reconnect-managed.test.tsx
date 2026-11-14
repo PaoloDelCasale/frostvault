@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type GeneralVault } from "@/api";
@@ -14,11 +14,18 @@ function json(data: unknown, status = 200) { return new Response(JSON.stringify(
 function vault(sourceRoot: string): GeneralVault {
   return { id: 7, uuid, name: "Photos", lifecycle: "reconnect_required", source_root: sourceRoot, s3_prefix: `vaults/${uuid}/` };
 }
+const browsed: string[] = [];
 function setup(target: GeneralVault) {
   const bodies: unknown[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("/api/i18n/catalog")) return json({ locale: "en", locales: ["en", "it"], messages });
+    if (url.startsWith("/api/source-volumes/photos/browse")) {
+      browsed.push(url);
+      return json({ volume_alias: "photos", relative_path: "", items: [
+        { name: "album", relative_path: "album", navigable: true, selectable: true, occupation: null },
+      ] });
+    }
     if (url === "/api/general/source-volumes") {
       return json({ items: [{ alias: "photos", path: "/sources/photos", access: "rw", health: "ok", diagnostic: null, vault_count: 0 }] });
     }
@@ -42,7 +49,7 @@ describe("Reconnect of a managed Vault (#641)", () => {
   it("offers the Vault's own managed folder and sends its uuid as the folder", async () => {
     const bodies = setup(vault(`/sources/managed/${uuid}`));
     const select = await screen.findByLabelText("Destination Source Volume");
-    await waitFor(() => expect(screen.getByRole("option", { name: "photos · ok" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: "photos · Healthy" })).toBeInTheDocument());
     await userEvent.selectOptions(select, "managed");
     expect(screen.queryByLabelText(messages["general.reconnect_path"])).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Reason for reconnecting"), "restored backup");
@@ -52,7 +59,32 @@ describe("Reconnect of a managed Vault (#641)", () => {
 
   it("never offers managed to a Vault on a custom Source Volume", async () => {
     setup(vault("/sources/photos/album"));
-    await screen.findByRole("option", { name: "photos · ok" });
+    await screen.findByRole("option", { name: "photos · Healthy" });
     expect(screen.queryByRole("option", { name: messages["general.reconnect_own_managed"] })).not.toBeInTheDocument();
+  });
+
+  it("picks the folder with the Source Volume browser, not a typed path (#656)", async () => {
+    const bodies = setup(vault("/sources/photos/old"));
+    const select = await screen.findByLabelText("Destination Source Volume");
+    await screen.findByRole("option", { name: "photos · Healthy" });
+    expect(screen.queryByRole("textbox", { name: messages["general.reconnect_path"] })).not.toBeInTheDocument();
+    await userEvent.selectOptions(select, "photos");
+    const group = await screen.findByRole("group", { name: messages["general.reconnect_path"] });
+    await userEvent.type(screen.getByLabelText("Reason for reconnecting"), "disk moved");
+    const confirm = screen.getByRole("button", { name: "Accept folder and scan" });
+    expect(confirm).toBeDisabled();
+    await userEvent.click(await within(group).findByRole("button", { name: "Select album" }));
+    expect(within(group).getByRole("button", { name: "Selected: album" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(confirm);
+    await waitFor(() => expect(bodies).toEqual([{ volume_alias: "photos", relative_path: "album", reason: "disk moved" }]));
+    // The Vault's own root is not "occupied" while reconnecting it.
+    expect(browsed.every((url) => url.includes("reconnect_vault_id=7"))).toBe(true);
+  });
+
+  it("focuses the first field on open and names the close button in the UI language (#656)", async () => {
+    setup(vault("/sources/photos/old"));
+    const select = await screen.findByLabelText("Destination Source Volume");
+    await waitFor(() => expect(select).toHaveFocus());
+    expect(screen.getByRole("button", { name: messages["ui.close"] })).toBeInTheDocument();
   });
 });

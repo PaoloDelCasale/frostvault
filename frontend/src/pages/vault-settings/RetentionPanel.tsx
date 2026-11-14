@@ -19,6 +19,7 @@ const periods: ReleasePeriod[] = [90, 180, 365, 730];
 export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
   const { t, ready } = useI18n();
   const [loadState, setLoadState] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [days, setDays] = useState<ReleasePeriod>(180);
@@ -33,17 +34,17 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
   useEffect(() => {
     if (!ready) return;
     setLoadState(t("folder_settings.retention_loading"));
+    setLoadError("");
     void (async () => {
       try {
         acceptPolicy(await fetchOperationPolicy(vaultId));
         setLoadState(t("folder_settings.retention_loaded"));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setLoadState(message);
-        onNotice(message, true);
+        setLoadState("");
+        setLoadError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [onNotice, ready, t, vaultId]);
+  }, [ready, t, vaultId]);
 
   async function onSave(event: React.FormEvent) {
     event.preventDefault();
@@ -65,6 +66,7 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
     <section data-panel="retention">
       <div>
         <p className="sr-only" role="status">{loadState}</p>
+        {loadError ? <p role="alert" className="mb-3 text-sm text-destructive">{loadError}</p> : null}
         <form className="grid gap-3" onSubmit={(event) => void onSave(event)}>
           <label className="flex min-h-11 items-center gap-3 text-sm font-bold text-ink">
             <input
