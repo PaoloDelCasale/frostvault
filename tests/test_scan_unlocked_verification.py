@@ -83,11 +83,11 @@ class UnlockedVerificationTests(_AdoptionFixture):
         real_hash = self.storage.hash_stable_regular_file
         fired = []
 
-        def hook(path):
+        def hook(path, **kwargs):
             if path.name == "img08.heic" and not fired:
                 fired.append(True)
                 during_hash()
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         with ExitStack() as stack:
             for item in (

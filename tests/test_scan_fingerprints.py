@@ -78,7 +78,7 @@ class ScanFingerprintTests(_AdoptionFixture):
         active = {"now": 0, "peak": 0}
         overlapped = threading.Event()
 
-        def counting(path):
+        def counting(path, **kwargs):
             with lock:
                 active["now"] += 1
                 active["peak"] = max(active["peak"], active["now"])
@@ -88,7 +88,7 @@ class ScanFingerprintTests(_AdoptionFixture):
                 # Wait (bounded) for a second reader, so overlap does not
                 # depend on how fast the tiny files are read.
                 overlapped.wait(2)
-                return real_hash(path)
+                return real_hash(path, **kwargs)
             finally:
                 with lock:
                     active["now"] -= 1
@@ -109,9 +109,9 @@ class ScanFingerprintTests(_AdoptionFixture):
         threads = set()
         real_hash = storage.hash_stable_regular_file
 
-        def record(path):
+        def record(path, **kwargs):
             threads.add(threading.get_ident())
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         self._scan(vault, self._concurrency(1),
                    patch("app.storage.hash_stable_regular_file", side_effect=record))
@@ -124,12 +124,12 @@ class ScanFingerprintTests(_AdoptionFixture):
         real_hash = storage.hash_stable_regular_file
         published_before_last: list[int] = []
 
-        def observe(path):
+        def observe(path, **kwargs):
             if path.name == "photo.jpg":  # the last path in catalog order
                 published_before_last.append(
                     sum(1 for value in self._digests(int(vault["id"])).values() if value)
                 )
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         self._scan(
             vault, self._concurrency(1),
@@ -147,9 +147,9 @@ class ScanFingerprintTests(_AdoptionFixture):
         real_hash = storage.hash_stable_regular_file
         seen: list[dict] = []
 
-        def observe(path):
+        def observe(path, **kwargs):
             seen.append(snapshot_runtime_status_for_stats(vault_id))
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         self._scan(vault, self._concurrency(1),
                    patch("app.storage.hash_stable_regular_file", side_effect=observe))
@@ -171,11 +171,11 @@ class ScanFingerprintTests(_AdoptionFixture):
         real_hash = storage.hash_stable_regular_file
         calls = []
 
-        def supersede(path):
+        def supersede(path, **kwargs):
             calls.append(path)
             with storage.status_lock:
                 storage.runtime_status[vault_id]["scan_id"] = "newer-scan"
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         result = self._scan(
             vault, self._concurrency(2),
@@ -192,10 +192,10 @@ class ScanFingerprintTests(_AdoptionFixture):
         vault = self._vault()
         real_hash = storage.hash_stable_regular_file
 
-        def deny(path):
+        def deny(path, **kwargs):
             if path.name == "img03.heic":
                 raise PermissionError("denied")
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         result = self._scan(vault, self._concurrency(4),
                             patch("app.storage.hash_stable_regular_file", side_effect=deny))

@@ -123,3 +123,26 @@ an estimate of the time left; a first adoption shows none.
   observation changes; its file is queued again by the next admission pass.
 - Changes made while the scan verifies are applied by the watcher at once
   instead of after the scan.
+
+## Amendment: process shutdown (#696, 2026-11-15)
+
+Accepted by the Owner. `docker compose stop` during a large adoption failed the
+worker drain ("Background workers exceeded the shutdown drain budget", exit 1).
+
+- At process shutdown a running full scan stops cooperatively at the next
+  batch boundary, in every phase: the traversal commits the batch in progress
+  when its folder identity still holds, the verification publishes the digests
+  already hashed (by the same compare-and-swap), the cloud listing stops between
+  pages and batches.
+- Reads not yet started are cancelled and no new one is submitted; a running
+  read aborts between chunks and is awaited.
+- What is committed stays exactly as after a crash: no journal compensation,
+  no missing transition, no finalization, no scan success and no error or
+  Problem (a shutdown is not a failure). The next start rescans as before; it
+  hashes only the rows without a fingerprint, so published digests survive.
+- Scheduled maintenance (`scan_all_vaults`, audits, cloud recovery scans)
+  starts no further Vault once shutdown is requested; the paired scans of the
+  watchers are awaited by the worker drain like maintenance work. The drain
+  budget is unchanged.
+- No traversal checkpoint and no schema change: a stopped traversal is walked
+  again from the start at the next scan.

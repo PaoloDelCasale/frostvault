@@ -788,12 +788,24 @@ def _scan_tree(
             )
             if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
                 flush()
+            if shutdown_state.requested:
+                _stop_walk_for_shutdown()
         walk.validate()
         flush()
         walk.validate()
         fingerprinted.clear()
         if verification_follows:
             report_traversal(force=True)
+
+    def _stop_walk_for_shutdown() -> None:
+        # Process shutdown (#696, ADR-0045): commit the batch in progress when
+        # its folder identity still holds, then stop. What is committed stays
+        # as after a crash: no compensation, no missing transition.
+        try:
+            flush()
+        except Exception:
+            _scan_logger.info("Vault %s: batch in progress discarded at shutdown", vault_id)
+        raise WorkerStopping("Local scan stopped for process shutdown")
 
     unsettled: list[str] = []
     with PinnedTree(root, subtree=subtree) as tree:
@@ -1202,6 +1214,7 @@ def scan_cloud(
     markers = 0
     invalid_keys = False
     for page in paginator.paginate(**kwargs):
+        shutdown_state.checkpoint()
         for item in page.get("Versions", []):
             object_key = str(item["Key"])
             if object_key_to_path(object_key, prefix) is None:
@@ -1225,6 +1238,7 @@ def scan_cloud(
 
     count = 0
     for offset in range(0, len(listed), CLOUD_SCAN_WRITE_BATCH_SIZE):
+        shutdown_state.checkpoint()
         if not _cloud_scan_still_current(vault, scan_id):
             return count
         batch = listed[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
@@ -1615,7 +1629,11 @@ def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, An
         local_path = safe_local_path(str(root), row["path"])
         if not local_path.is_file():
             return "absent", None
-        digest, stat_result = hash_stable_regular_file(local_path)
+        digest, stat_result = hash_stable_regular_file(
+            local_path, should_stop=lambda: shutdown_state.requested,
+        )
+    except WorkerStopping:
+        raise
     except FileNotFoundError:
         # Gone since the listing: the watcher, a Local Copy cleanup claim or
         # the next scan observes it (ADR-0043), it is not unreadable.
@@ -1690,7 +1708,8 @@ def _iter_local_fingerprints(
     )
     try:
         while True:
-            for row in remaining:
+            # No new read starts once the process is stopping (#696).
+            for row in (() if shutdown_state.requested else remaining):
                 pending[pool.submit(_hash_local_copy, root, row)] = row
                 if len(pending) >= window:
                     break
@@ -1752,17 +1771,29 @@ def _fingerprint_scanned_local_copies(
 
     hashed = 0
     batch: list[dict[str, Any]] = []
+    stopping = False
+    # At process shutdown (#696) the reads not started are cancelled and the
+    # running ones abort; closing the iterator waits for them. The digests
+    # already hashed are published like any batch, then the scan stops.
     with closing(_iter_local_fingerprints(
         vault, root, rows, scan_journal=scan_journal, on_result=advance,
     )) as results:
-        for update in results:
-            hashed += 1
-            batch.append(update)
-            if len(batch) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
-                _apply_local_fingerprint_updates(vault, scan_id, batch)
-                batch = []
+        try:
+            for update in results:
+                hashed += 1
+                batch.append(update)
+                if len(batch) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+                    _apply_local_fingerprint_updates(vault, scan_id, batch)
+                    batch = []
+                if shutdown_state.requested:
+                    stopping = True
+                    break
+        except WorkerStopping:
+            stopping = True
     if batch:
         _apply_local_fingerprint_updates(vault, scan_id, batch)
+    if stopping or shutdown_state.requested:
+        raise WorkerStopping("Local scan stopped for process shutdown")
     return hashed
 
 
@@ -1998,6 +2029,8 @@ def _verified_local_scan(
         finally:
             if scan_lock is not None:
                 scan_lock.acquire()
+        # A shutdown during hashing stops before the finalization (#696).
+        shutdown_state.checkpoint()
         # The walk skipped the readability probe of the files just hashed
         # (#696). One the hashing could not read is not observed by this scan,
         # as when the probe failed: its observation is undone (compare-and-swap,
@@ -2290,6 +2323,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 with db() as connection:
                     _current_verified_scan_row(connection, vault)
                     vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
+            except WorkerStopping:
+                return {"stopped": 1}
             except Exception as exc:
                 status["last_error"] = "Cloud reconciliation failed; reconnect remains suspended"
                 _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"],
@@ -2309,6 +2344,12 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 result.update(
                     {f"rename_{key}": value for key, value in rename_summary.items()}
                 )
+            except WorkerStopping:
+                # Process shutdown (#696, ADR-0045): not a failure. The batches
+                # already committed stay as after a crash, with no journal
+                # compensation, no health or Problem; the next start rescans.
+                _active_scan_journals.pop((int(vault["id"]), scan_id), None)
+                return {"stopped": 1}
             except (_ScanRootMismatch, TreeIdentityChanged) as exc:
                 journal = _active_scan_journals.pop(
                     (int(vault["id"]), scan_id), None
@@ -2357,10 +2398,16 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 vault_id, "source", ok=False,
                 error="Protection blocked: Source Volume unavailable",
             )
+        if shutdown_state.requested:
+            # The local scan completed; the cloud and policy phases wait for
+            # the scan of the next start (#696).
+            return {**result, "stopped": 1}
         if local_scan_identity_valid:
             try:
                 if not reconnect:
                     result["cloud"] = scan_cloud(vault, scan_id, report=cloud_report)
+            except WorkerStopping:
+                return {**result, "stopped": 1}
             except Exception as exc:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
@@ -5528,6 +5575,7 @@ def stop_background_executors() -> None:
 
 def _detach_background_executors() -> list[Future[Any]]:
     global _operation_executor, _maintenance_executor, _aggregate_executor, _aggregate_future
+    futures_from_watchers = _detach_watcher_scan_futures()
     with _operation_lock:
         executor = _operation_executor
         _operation_executor = None
@@ -5548,7 +5596,7 @@ def _detach_background_executors() -> list[Future[Any]]:
             _aggregate_future = None
         if aggregates is not None:
             aggregates.shutdown(wait=False, cancel_futures=True)
-    return futures
+    return futures + futures_from_watchers
 
 
 def shutdown_background_executors() -> None:
@@ -5972,7 +6020,7 @@ def request_full_scan(vault: dict[str, Any]) -> None:
         _full_scan_requests.add(vault_id)
 
     def run() -> None:
-        while True:
+        while not shutdown_state.requested:
             with status_lock:
                 # A request made after this point needs a scan of its own.
                 _full_scan_requests.discard(vault_id)
@@ -5998,6 +6046,8 @@ def scan_all_vaults() -> None:
             f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
         ).fetchall()
     for vault in vaults:
+        if shutdown_state.requested:
+            return
         scan_vault(vault)
 
 
@@ -6101,11 +6151,15 @@ def scan_vaults_with_cloud_error() -> None:
             """
         ).fetchall()
     for vault in vaults:
+        if shutdown_state.requested:
+            return
         scan_vault(vault)
 
 
 def recover_vaults_after_cloud_ready() -> None:
     scan_vaults_with_cloud_error()
+    if shutdown_state.requested:
+        return
     # A failed audit also stays failed until an audit lists S3 again (#620).
     audit_vaults_with_error()
 
@@ -6356,6 +6410,8 @@ class _WatcherScanOutcome(NamedTuple):
 
 _watcher_scan_pools: dict[int, ThreadPoolExecutor] = {}
 _watcher_scan_pool_lock = threading.Lock()
+# Running paired scans, awaited by the shutdown drain like maintenance work.
+_watcher_scan_futures: set[Future[Any]] = set()
 
 
 def _watcher_scan_executor(vault_id: int) -> ThreadPoolExecutor:
@@ -6367,11 +6423,16 @@ def _watcher_scan_executor(vault_id: int) -> ThreadPoolExecutor:
     scans off the default executor, which the watchers and every request share.
     """
     with _watcher_scan_pool_lock:
-        pool = _watcher_scan_pools.get(int(vault_id))
-        if pool is None:
-            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"watcher-scan-{int(vault_id)}")
-            _watcher_scan_pools[int(vault_id)] = pool
-        return pool
+        return _watcher_scan_executor_locked(vault_id)
+
+
+def _watcher_scan_executor_locked(vault_id: int) -> ThreadPoolExecutor:
+    """Return the Vault's paired-scan pool; the caller holds the pool lock."""
+    pool = _watcher_scan_pools.get(int(vault_id))
+    if pool is None:
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"watcher-scan-{int(vault_id)}")
+        _watcher_scan_pools[int(vault_id)] = pool
+    return pool
 
 
 def _shutdown_watcher_scan_executor() -> None:
@@ -6382,21 +6443,45 @@ def _shutdown_watcher_scan_executor() -> None:
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def _detach_watcher_scan_futures() -> list[Future[Any]]:
+    _shutdown_watcher_scan_executor()
+    with _watcher_scan_pool_lock:
+        futures = list(_watcher_scan_futures)
+        _watcher_scan_futures.clear()
+    return futures
+
+
+def _submit_watcher_scan(vault: dict[str, Any]) -> Future[Any]:
+    # Under the pool lock: a drain that detached the pools cannot miss it.
+    with _watcher_scan_pool_lock:
+        shutdown_state.checkpoint()
+        future = _watcher_scan_executor_locked(int(vault["id"])).submit(scan_vault, vault)
+        _watcher_scan_futures.add(future)
+    future.add_done_callback(_forget_watcher_scan_future)
+    return future
+
+
+def _forget_watcher_scan_future(future: Future[Any]) -> None:
+    with _watcher_scan_pool_lock:
+        _watcher_scan_futures.discard(future)
+
+
 async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> _WatcherScanOutcome:
     """Run the full scan that a freshly registered watcher is paired with.
 
     Registration happens first, so anything that arrives during the scan is
     seen by the watcher and anything older is seen by the scan.
     """
-    loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(_watcher_scan_executor(int(vault["id"])), scan_vault, vault)
+        result = await asyncio.wrap_future(_submit_watcher_scan(vault))
     except asyncio.CancelledError:
         raise
+    except WorkerStopping:
+        return _WatcherScanOutcome(float(WATCHER_SCAN_BUSY_SECONDS))
     except Exception as exc:
         worker_error_store.log_worker_error("source_watcher_scan", exc, int(vault["id"]))
         return _WatcherScanOutcome(float(WATCHER_SCAN_RETRY_SECONDS))
-    if result.get("already_running") or result.get("suspended"):
+    if result.get("already_running") or result.get("suspended") or result.get("stopped"):
         return _WatcherScanOutcome(float(WATCHER_SCAN_BUSY_SECONDS))
     if result.get("local_skipped"):
         return _WatcherScanOutcome(float(WATCHER_SCAN_RETRY_SECONDS))
@@ -6910,6 +6995,8 @@ def audit_vaults_with_error() -> None:
 def _audit_vaults(vaults: list[dict[str, Any]]) -> None:
     failed = False
     for vault in vaults:
+        if shutdown_state.requested:
+            return  # Not an outcome: the next start audits again (#696).
         failed = not _audit_vault(vault) or failed
     _note_audit_outcome(failed)
 
