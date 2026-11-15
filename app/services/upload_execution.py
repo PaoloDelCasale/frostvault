@@ -228,6 +228,10 @@ class UploadExecution:
             if not w._close_removed_upload(job):
                 raise w.JobLeaseLost("Upload claim was lost")
             return UploadOutcome(int(job["id"]), "cancelled")
+        if state == w.UPLOAD_OBSERVATION_WITHDRAWN:
+            if not w._close_withdrawn_upload(job):
+                raise w.JobLeaseLost("Upload claim was lost")
+            return UploadOutcome(int(job["id"]), "cancelled")
         if state != w.UPLOAD_READY:
             message = "Automatic upload waits for stable content" if after_hash else "Automatic upload waits for enabled protection and stable content"
             if not w.set_job(job["id"], "queued", message):

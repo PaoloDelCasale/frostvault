@@ -1547,6 +1547,10 @@ def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, An
         if not local_path.is_file():
             return "absent", None
         digest, stat_result = hash_stable_regular_file(local_path)
+    except FileNotFoundError:
+        # Gone since the listing: the watcher, a Local Copy cleanup claim or
+        # the next scan observes it (ADR-0043), it is not unreadable.
+        return "absent", None
     except OSError:
         return "unreadable", None
     except (ValueError, RuntimeError):
@@ -1801,6 +1805,18 @@ def _restore_journal_entries(
                 """,
                 (vault_id, path, _scan_timestamp(scan_id)),
             ).rowcount
+            if not deleted:
+                # Kept because something attached to it, such as an upload
+                # admitted while the scan verified (#689): the withdrawn
+                # observation becomes a new generation, so that Job is
+                # cancelled at its claim and no hash on it can publish.
+                deleted = connection.execute(
+                    """
+                    UPDATE files SET generation=generation + 1
+                    WHERE vault_id=%s AND path=%s AND local_seen_at=%s
+                    """,
+                    (vault_id, path, _scan_timestamp(scan_id)),
+                ).rowcount
             if deleted:
                 mark_path_dirty(connection, vault_id, path)
             continue
@@ -1838,7 +1854,7 @@ def _restore_journal_entries(
 
 
 def _verified_local_scan(
-    vault: dict[str, Any], scan_id: str
+    vault: dict[str, Any], scan_id: str, *, scan_lock: Any | None = None,
 ) -> tuple[int, dict[str, int], str | None, bool]:
     """Walk/hash outside writes, then publish bounded catalog stages.
 
@@ -1889,9 +1905,20 @@ def _verified_local_scan(
 
         # Hashing happens with no write transaction open. Publishing uses
         # compare-and-swap predicates so watcher replacements win safely.
-        hashed = _fingerprint_scanned_local_copies(
-            vault, pinned_root, scan_id, scan_journal=scan_journal,
-        )
+        # The verification runs without the Vault scan lock (#689, ADR-0045):
+        # watcher batches and automatic admission of this Vault go on
+        # meanwhile. Digests publish by compare-and-swap, so their newer
+        # observations win; the finalization below takes the lock again and
+        # re-checks the enrolled root and the scan generation first.
+        if scan_lock is not None:
+            scan_lock.release()
+        try:
+            hashed = _fingerprint_scanned_local_copies(
+                vault, pinned_root, scan_id, scan_journal=scan_journal,
+            )
+        finally:
+            if scan_lock is not None:
+                scan_lock.acquire()
         _scan_progress(int(vault["id"]), scan_id, scan_phase="finalization")
         if not scan_journal.get("unattributed"):
             # Each unreadable path has its own entry: one that this walk and the
@@ -2122,6 +2149,11 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         status = runtime_status.setdefault(
             vault_id, {"scanning": False, "last_scan": None, "last_error": None}
         )
+        # A scan verifying fingerprints runs without the lock (#689).
+        running = bool(status.get("scanning"))
+    if running:
+        lock.release()
+        return {"already_running": 1}
     try:
         # The relocation route holds this same lock while it publishes the
         # recovery state. A direct caller can still observe the short runtime
@@ -2175,7 +2207,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
             try:
                 registered_before_scan = watch_plan.scan_coverage_fence(vault_id)
                 count, rename_summary, _completed_alias, complete = _verified_local_scan(
-                    vault, scan_id
+                    vault, scan_id, scan_lock=lock,
                 )
                 result["local"] = count
                 if not complete:
@@ -3670,6 +3702,9 @@ def _record_verification_failure(reason: str) -> None:
 UPLOAD_READY = "ready"
 UPLOAD_SOURCE_REMOVED = "removed"
 UPLOAD_NOT_READY = "wait"
+# Admitted during a full scan on an observation the scan then compensated
+# (#689, ADR-0045): the Job ends before any read; admission decides again.
+UPLOAD_OBSERVATION_WITHDRAWN = "withdrawn"
 
 
 class UploadSourceRemoved(RuntimeError):
@@ -3705,11 +3740,17 @@ def _automatic_upload_state(job: dict[str, Any]) -> str:
     Returns ``UPLOAD_READY``, ``UPLOAD_SOURCE_REMOVED`` (the enrolled root is
     healthy and the file is gone: the Job can be closed, issues #493/#499) or
     ``UPLOAD_NOT_READY`` (paused, unstable, unreadable or changed: keep waiting).
+    ``UPLOAD_OBSERVATION_WITHDRAWN``: admitted during a full scan on an
+    observation whose generation has changed since (a compensated scan
+    observation, or a newer one): it is no authority for this Job (#689).
     """
     with owned_connection(db()) as connection:
         local = ArchiveCatalog(connection).get_job_target(job["id"])
         if _upload_owes_cloud_work(connection, local, job["id"]):
             return UPLOAD_READY
+        admitted = local.get("job_admitted_generation") if local else None
+        if admitted is not None and int(admitted) != int(local["local_generation"]):
+            return UPLOAD_OBSERVATION_WITHDRAWN
         policy = get_policy(connection, int(job["vault_id"]))
         vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
         if (not vault or vault["lifecycle"] != "active" or vault["paused"]
@@ -3815,6 +3856,16 @@ def _close_removed_upload(job: dict[str, Any]) -> bool:
         job["id"], "cancelled", message_key="job.upload_file_removed",
         remediation_reason="file_removed",
     )
+
+
+def _close_withdrawn_upload(job: dict[str, Any]) -> bool:
+    """Close an upload admitted on an observation that no longer stands (#689).
+
+    Nothing was read or sent. The Job ends ``cancelled`` with its own message;
+    automatic admission queues the file again if its current observation is
+    eligible.
+    """
+    return set_job(job["id"], "cancelled", message_key="job.upload_observation_withdrawn")
 
 
 def _upload_key(job: dict[str, Any]) -> str:
@@ -5850,12 +5901,17 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             _pinned_verified_scan_root(vault)
             if "root_identity" in vault else nullcontext(Path(vault["source_root"]))
         )
+        with status_lock:
+            # Holding the lock, a running full scan is verifying (#689).
+            during_scan = bool((runtime_status.get(int(vault["id"])) or {}).get("scanning"))
         with pinned_root as root:
             # Renames and reappearances are decided first, in their own
-            # transaction: admission then sees the outcome (#621).
-            _identify_new_local_copies(
-                vault, root, now=now or datetime.now(timezone.utc),
-            )
+            # transaction: admission then sees the outcome (#621). During a
+            # full scan the scan hashes them and decides at its finalization.
+            if not during_scan:
+                _identify_new_local_copies(
+                    vault, root, now=now or datetime.now(timezone.utc),
+                )
             with db() as connection:
                 from .services.job_admission import lock_vault
                 try:
@@ -5876,6 +5932,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                 queued += queue_auto_uploads(
                     connection, vault_id=int(vault["id"]), source_root=str(root),
                     now=now, retry_failed_only=retry_failed_only,
+                    during_scan=during_scan,
                 )
                 if "root_identity" in vault:
                     _current_verified_scan_row(connection, vault)

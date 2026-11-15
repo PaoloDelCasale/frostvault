@@ -363,11 +363,17 @@ def queue_auto_uploads(
     source_root: str,
     now: datetime | None = None,
     retry_failed_only: bool = False,
+    during_scan: bool = False,
 ) -> int:
     """Queue stable eligible uploads, optionally only latest failed attempts.
 
     Explicit retry does not edit history or revive cancelled work. The caller
     holds the Vault admission lock; the same catalog admission dedupes inserts.
+
+    ``during_scan``: a full scan of the Vault is verifying fingerprints
+    (#689, ADR-0045). Only Local Copies whose fingerprint was published in a
+    committed batch are admitted, and each new Job records the generation it
+    was admitted on, so a compensated observation never reaches the upload.
     """
     from ..catalog import ArchiveCatalog, awaiting_rename_analysis_sql
     from .vault_paths import safe_local_path
@@ -386,7 +392,7 @@ def queue_auto_uploads(
     # A purge in progress is an active Job of the File, so it is excluded too.
     rows = connection.execute(
         f"""
-        SELECT f.id AS file_id, f.path, f.local_size AS size, f.local_mtime_ns AS mtime_ns,
+        SELECT f.id AS file_id, f.path, f.generation, f.local_size AS size, f.local_mtime_ns AS mtime_ns,
                COALESCE(f.local_content_observed_at, f.local_observed_at) AS content_observed_at,
                f.local_sha256 AS plaintext_sha256, f.matched_version_id AS matched_archive_version_id,
                av.integrity AS matched_integrity,
@@ -398,6 +404,7 @@ def queue_auto_uploads(
           AND f.local_presence='present'
           AND f.local_file_type='regular'
           AND f.held_version_id IS NULL
+          AND (NOT %s OR f.local_sha256 IS NOT NULL)
           -- A possible rename is not a new file until its digest decides (#621).
           AND NOT {awaiting_rename_analysis_sql("f")}
           AND NOT (
@@ -422,7 +429,7 @@ def queue_auto_uploads(
           )
         ORDER BY lower(f.path)
         """,
-        (vault_id, retry_failed_only, retry_failed_only),
+        (vault_id, during_scan, retry_failed_only, retry_failed_only),
     ).fetchall()
     queued = 0
     timestamp = current.isoformat()
@@ -469,6 +476,14 @@ def queue_auto_uploads(
             is_directory=False,
             origin="automatic",
         )
+        if during_scan and job_ids:
+            connection.execute(
+                """
+                UPDATE jobs SET admitted_generation=%s
+                WHERE id = ANY(%s) AND file_id=%s AND action='upload' AND origin='automatic'
+                """,
+                (int(row["generation"]), [int(job_id) for job_id in job_ids], row["file_id"]),
+            )
         queued += len(job_ids)
     return queued
 

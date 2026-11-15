@@ -170,6 +170,7 @@
   "job.source_changed_stalled": "Il file locale continuava a cambiare; interrotto dopo {attempts} tentativi",
   "job.upload_stopped": "Caricamento interrotto",
   "job.upload_file_removed": "File rimosso prima del caricamento; niente da proteggere",
+  "job.upload_observation_withdrawn": "Il file è cambiato durante la scansione dopo l'ammissione; verrà rimesso in coda se ancora da proteggere",
   "job.recovery_stopped": "Recupero interrotto",
   "job.recovery_stopped_waiting": "Smesso di attendere: il recupero dal cloud continua su AWS",
   "job.recovery_approval_expired": "Recupero annullato: approvazione non data entro la scadenza. Nessun recupero dal cloud è stato avviato da questa richiesta.",

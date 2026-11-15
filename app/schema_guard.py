@@ -26,7 +26,7 @@ from psycopg.rows import tuple_row
 
 
 # Oldest first; every revision's down_revision is the one before it.
-SCHEMA_REVISIONS = ("0001_baseline", "0002_file_ownership")
+SCHEMA_REVISIONS = ("0001_baseline", "0002_file_ownership", "0003_job_admitted_generation")
 SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

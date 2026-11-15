@@ -1629,6 +1629,7 @@ class ArchiveCatalog:
             SELECT
                 j.id AS job_id,
                 j.origin AS job_origin,
+                j.admitted_generation AS job_admitted_generation,
                 j.vault_id,
                 j.file_id,
                 j.file_id AS vault_file_id,

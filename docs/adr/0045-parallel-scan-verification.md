@@ -1,6 +1,8 @@
 # Parallel verification of a full scan
 
-Status: accepted by the Owner on 2026-11-15 (issue #691).
+Status: accepted by the Owner on 2026-11-15 (issues #691 and #689). Amends the
+scan lock of [ADR-0043](0043-replaced-folder-invalidates-its-subtree.md),
+whose uploads still waited for the scan to finish.
 
 ## Context
 
@@ -47,10 +49,39 @@ reports when the error was recorded (`runtime.last_error_source_at`, from
 shows it as "last scan failed" with that time, next to "new scan in progress".
 The error and the Problem close when a scan succeeds, as before.
 
+**Verification without the Vault scan lock (#689).** The traversal holds the
+Vault scan lock; the verification releases it; the finalization (missing
+transitions, renames, relocation, Problems) takes it again. Meanwhile watcher
+batches, Local Copy cleanup and Recovery publication of that Vault run, and
+automatic upload admission too. A second full scan of the Vault is refused
+while one is verifying (the runtime status still says `scanning`). The
+finalization re-checks the enrolled root, the lifecycle and the scan
+generation before writing, as before: a scan superseded or whose root changed
+in between rolls back its journal as today. A file gone since the listing
+(a cleanup claim, a watcher deletion) is skipped, not reported unreadable.
+
+**Admission during the verification.** While a full scan of the Vault
+verifies, automatic admission takes only Local Copies whose fingerprint was
+published in a committed batch (by this scan or earlier) and that are stable
+per the policy; it does not hash new files itself, the scan does. Each Job
+admitted then records the generation of its File (`jobs.admitted_generation`,
+migration 0003; NULL outside a running scan). A compensated observation is
+never authority for an upload: the journal restore makes it a new generation,
+including a file the scan created and could not delete because the Job is
+attached to it, and a Job whose File no longer has its admitted generation is
+cancelled when it is claimed (`job.upload_observation_withdrawn`), before any
+read or send. Automatic admission then decides again on the current
+observation. A newer watcher observation fences the Job the same way. The
+upload keeps its own Upload Snapshot and fences as before.
+
 ## Consequences
 
 - A full scan holds up to `SCAN_HASH_CONCURRENCY` file descriptors and reads of
   the source at once; on an SSD the gain is small, on a single slow disk the
   queued reads compete with uploads reading the same disk.
-- The scan still holds the Vault scan lock during the verification, so
-  watcher batches and automatic upload admission of that Vault wait for it.
+- During a large adoption uploads start while the scan verifies, up to
+  `OPERATION_CONCURRENCY`; they read the same disk as the verification.
+- A Job admitted during a scan is cancelled, not rescheduled, when its
+  observation changes; its file is queued again by the next admission pass.
+- Changes made while the scan verifies are applied by the watcher at once
+  instead of after the scan.
