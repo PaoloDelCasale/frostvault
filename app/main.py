@@ -1644,11 +1644,14 @@ def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = Non
         # where to look, instead of the generic incomplete-scan error.
         from .services.operation_policies import PATH_SCOPED_SOURCE_ERRORS
         runtime["unreadable_paths"] = len(unconfirmed.paths or ())
+        scoped = translate(
+            "vault.health.unreadable_paths", locale=_request_locale(request),
+            count=runtime["unreadable_paths"],
+        )
         if not runtime.get("last_error") or runtime["last_error"] in PATH_SCOPED_SOURCE_ERRORS:
-            runtime["last_error"] = translate(
-                "vault.health.unreadable_paths", locale=_request_locale(request),
-                count=runtime["unreadable_paths"],
-            )
+            runtime["last_error"] = scoped
+        if runtime.get("last_error_source") in PATH_SCOPED_SOURCE_ERRORS:
+            runtime["last_error_source"] = scoped
     return {
         **summary,
         "manual_upload": manual_upload,

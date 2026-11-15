@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { fetchGeneralVaults } from "@/api";
 import { useVaultStats } from "@/api/useVaultStats";
+type Params = Record<string, string | number>;
+import { ScanStatus } from "@/components/ScanStatus";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
@@ -10,7 +12,7 @@ import { vaultFilesUrl, vaultSettingsUrl } from "@/router";
 
 /** Vault title, aggregate state, the pause action and the Files | Settings tabs. */
 export function VaultHeader({ vaultId, vaultName, active, t }: {
-  vaultId: number; vaultName: string; active: "files" | "settings"; t: (key: string) => string;
+  vaultId: number; vaultName: string; active: "files" | "settings"; t: (key: string, params?: Params) => string;
 }) {
   const stats = useVaultStats(vaultId);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false, enabled: active === "files" });
@@ -26,6 +28,7 @@ export function VaultHeader({ vaultId, vaultName, active, t }: {
       {stats.data && <VaultStateBadge state={vaultState(stats.data)} manual={stats.data.manual_upload} t={t} />}
       {pause && <div className="ml-auto"><VaultPauseControl vaultId={vaultId} paused={vault.paused} /></div>}
     </div>
+    <ScanStatus runtime={stats.data?.runtime} t={t} />
     <nav aria-label={t("files.tabs_label")} className="-mb-px flex gap-5">
       {tab("files", vaultFilesUrl(vaultId))}{tab("settings", vaultSettingsUrl(vaultId))}
     </nav>

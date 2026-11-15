@@ -793,6 +793,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
+| Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time) |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through

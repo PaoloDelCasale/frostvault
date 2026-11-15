@@ -2842,6 +2842,51 @@
                   "string",
                   "null"
                 ]
+              },
+              "last_error_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_error_source_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scan_phase": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scanning": {
+                "type": "boolean"
+              },
+              "verify_bytes_done": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "verify_bytes_total": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "verify_files_done": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "verify_files_total": {
+                "type": [
+                  "number",
+                  "null"
+                ]
               }
             },
             "type": "object"

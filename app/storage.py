@@ -15,8 +15,9 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_for_futures
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -1534,18 +1535,56 @@ def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
     return [row for row in rows if not excluded.contains_path(row["path"])] if excluded else rows
 
 
-def _collect_local_fingerprint_updates(
-    vault: dict[str, Any], root: Path, *, scan_journal: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Hash Local Copies without holding a database write transaction."""
-    updates: list[dict[str, Any]] = []
-    for row in _unfingerprinted_local_rows(int(vault["id"])):
-        try:
-            local_path = safe_local_path(str(root), row["path"])
-            if not local_path.is_file():
-                continue
-            digest, stat_result = hash_stable_regular_file(local_path)
-        except OSError:
+def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """Fingerprint one Local Copy; runs on a hashing thread, writes nothing.
+
+    The outcome is applied by the scan thread: ``hashed`` with its update,
+    ``absent`` (no longer a regular file), ``unreadable`` (an OSError, named by
+    its path) or ``unattributed`` (changed while read, or not a regular file).
+    """
+    try:
+        local_path = safe_local_path(str(root), row["path"])
+        if not local_path.is_file():
+            return "absent", None
+        digest, stat_result = hash_stable_regular_file(local_path)
+    except OSError:
+        return "unreadable", None
+    except (ValueError, RuntimeError):
+        return "unattributed", None
+    return "hashed", {
+        "vault_file_id": row["vault_file_id"],
+        "path": row["path"],
+        "generation": row["generation"],
+        "old_size": row["size"],
+        "old_mtime_ns": row["mtime_ns"],
+        "size": stat_result.st_size,
+        "mtime_ns": stat_result.st_mtime_ns,
+        "digest": digest,
+        "observed_at": now_iso(),
+    }
+
+
+def _iter_local_fingerprints(
+    vault: dict[str, Any],
+    root: Path,
+    rows: list[dict[str, Any]],
+    *,
+    scan_journal: dict[str, Any] | None = None,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Hash Local Copies ``SCAN_HASH_CONCURRENCY`` at a time (#691).
+
+    Results are yielded as they complete, so the caller publishes them in
+    batches while the rest is still being read. Journal and Problem updates
+    stay on the calling thread. Closing the iterator (a superseded scan)
+    cancels the reads not yet started and waits for the running ones.
+    """
+    concurrency = max(1, int(_runtime_settings().scan_hash_concurrency))
+
+    def outcome(row: dict[str, Any], kind: str, update: dict[str, Any] | None):
+        if on_result is not None:
+            on_result(row)
+        if kind == "unreadable":
             if scan_journal is not None:
                 scan_journal["incomplete"] = True
                 scan_journal.setdefault("unreadable_paths", set()).add(display_path(row["path"]))
@@ -1554,27 +1593,103 @@ def _collect_local_fingerprint_updates(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
                     path=row["path"],
                 )
-            continue
-        except (ValueError, RuntimeError):
-            if scan_journal is not None:
-                scan_journal["incomplete"] = True
-                # Not attributable to a path: no problem may be closed on this walk.
-                scan_journal["unattributed"] = True
-            continue
-        updates.append(
-            {
-                "vault_file_id": row["vault_file_id"],
-                "path": row["path"],
-                "generation": row["generation"],
-                "old_size": row["size"],
-                "old_mtime_ns": row["mtime_ns"],
-                "size": stat_result.st_size,
-                "mtime_ns": stat_result.st_mtime_ns,
-                "digest": digest,
-                "observed_at": now_iso(),
-            }
+        elif kind == "unattributed" and scan_journal is not None:
+            scan_journal["incomplete"] = True
+            # Not attributable to a path: no problem may be closed on this walk.
+            scan_journal["unattributed"] = True
+        return update
+
+    if concurrency == 1 or len(rows) <= 1:
+        for row in rows:
+            update = outcome(row, *_hash_local_copy(root, row))
+            if update is not None:
+                yield update
+        return
+
+    # A bounded window, not one future per row: a 139,000-file adoption keeps
+    # only a few reads queued, and cancelling it leaves nothing behind.
+    window = concurrency * 2
+    pending: dict[Future, dict[str, Any]] = {}
+    remaining = iter(rows)
+    pool = ThreadPoolExecutor(
+        max_workers=concurrency, thread_name_prefix=f"scan-hash-{int(vault['id'])}",
+    )
+    try:
+        while True:
+            for row in remaining:
+                pending[pool.submit(_hash_local_copy, root, row)] = row
+                if len(pending) >= window:
+                    break
+            if not pending:
+                return
+            done, _ = wait_for_futures(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                row = pending.pop(future)
+                update = outcome(row, *future.result())
+                if update is not None:
+                    yield update
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _collect_local_fingerprint_updates(
+    vault: dict[str, Any], root: Path, *, scan_journal: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Hash Local Copies without holding a database write transaction."""
+    rows = _unfingerprinted_local_rows(int(vault["id"]))
+    return list(_iter_local_fingerprints(vault, root, rows, scan_journal=scan_journal))
+
+
+def _scan_progress(vault_id: int, scan_id: str, **fields: Any) -> None:
+    """Record the running scan's phase/progress in the runtime status only."""
+    with status_lock:
+        status = runtime_status.get(int(vault_id))
+        if status is not None and status.get("scan_id") == scan_id:
+            status.update(fields)
+
+
+def _fingerprint_scanned_local_copies(
+    vault: dict[str, Any], root: Path, scan_id: str, *, scan_journal: dict[str, Any],
+) -> int:
+    """Verify the scan's unfingerprinted Local Copies, publishing as it goes.
+
+    Each committed batch is durable progress: a digest is published by
+    compare-and-swap on the generation read before hashing, so a watcher
+    replacement or a compensated subtree in the meantime still wins.
+    Returns how many digests were computed.
+    """
+    vault_id = int(vault["id"])
+    rows = _unfingerprinted_local_rows(vault_id)
+    done = {"files": 0, "bytes": 0}
+    _scan_progress(
+        vault_id, scan_id, scan_phase="verification",
+        verify_files_total=len(rows), verify_files_done=0,
+        verify_bytes_total=sum(int(row.get("size") or 0) for row in rows),
+        verify_bytes_done=0,
+    )
+
+    def advance(row: dict[str, Any]) -> None:
+        done["files"] += 1
+        done["bytes"] += int(row.get("size") or 0)
+        _scan_progress(
+            vault_id, scan_id,
+            verify_files_done=done["files"], verify_bytes_done=done["bytes"],
         )
-    return updates
+
+    hashed = 0
+    batch: list[dict[str, Any]] = []
+    with closing(_iter_local_fingerprints(
+        vault, root, rows, scan_journal=scan_journal, on_result=advance,
+    )) as results:
+        for update in results:
+            hashed += 1
+            batch.append(update)
+            if len(batch) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
+                _apply_local_fingerprint_updates(vault, scan_id, batch)
+                batch = []
+    if batch:
+        _apply_local_fingerprint_updates(vault, scan_id, batch)
+    return hashed
 
 
 def _apply_local_fingerprint_updates(
@@ -1774,8 +1889,10 @@ def _verified_local_scan(
 
         # Hashing happens with no write transaction open. Publishing uses
         # compare-and-swap predicates so watcher replacements win safely.
-        updates = _collect_local_fingerprint_updates(vault, pinned_root, scan_journal=scan_journal)
-        _apply_local_fingerprint_updates(vault, scan_id, updates)
+        hashed = _fingerprint_scanned_local_copies(
+            vault, pinned_root, scan_id, scan_journal=scan_journal,
+        )
+        _scan_progress(int(vault["id"]), scan_id, scan_phase="finalization")
         if not scan_journal.get("unattributed"):
             # Each unreadable path has its own entry: one that this walk and the
             # hashing no longer found unreadable is closed by itself, whatever
@@ -1803,7 +1920,7 @@ def _verified_local_scan(
                 connection, vault, root=pinned_root, hash_missing=False,
                 recognize_renames=complete and vault.get("lifecycle") != "reconnect_required",
             )
-            rename_summary["hashed"] = len(updates)
+            rename_summary["hashed"] = hashed
             _current_verified_scan_row(connection, vault)
             final_access = source_layout.vault_local_access(vault["source_root"])
             safe_scan_result = (
@@ -1979,12 +2096,20 @@ def _record_scan_component_health(
             {"scanning": False, "last_scan": None, "last_error": None},
         )
         status[f"last_error_{component}"] = None if ok else error
+        status[f"last_error_{component}_at"] = None if ok else stamp
         if ok:
             status[f"last_success_{component}"] = stamp
             if verified:
                 status["last_verified_at"] = stamp
         if component == "audit" and extra is not None and "healthy" in extra:
             status["last_audit_healthy"] = bool(extra.get("healthy"))
+
+
+# Verification progress of the running scan (#691), runtime status only.
+_NO_VERIFICATION_PROGRESS = {
+    "verify_files_total": None, "verify_files_done": None,
+    "verify_bytes_total": None, "verify_bytes_done": None,
+}
 
 
 def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
@@ -2024,7 +2149,10 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
 
         scan_id = now_iso()
         with status_lock:
-            status.update(scanning=True, last_error=None, scan_id=scan_id)
+            status.update(
+                scanning=True, last_error=None, scan_id=scan_id,
+                scan_phase="traversal", **_NO_VERIFICATION_PROGRESS,
+            )
         result: dict[str, int] = {}
         reconnect = vault.get("lifecycle") == "reconnect_required"
         cloud_report: dict[str, int] = {}
@@ -2188,7 +2316,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         return result
     finally:
         with status_lock:
-            status["scanning"] = False
+            status.update(scanning=False, scan_phase=None, **_NO_VERIFICATION_PROGRESS)
         lock.release()
 
 
