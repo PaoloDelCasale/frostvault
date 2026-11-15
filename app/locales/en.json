@@ -170,6 +170,7 @@
   "job.source_changed_stalled": "Local file kept changing; stopped after {attempts} attempts",
   "job.upload_stopped": "Upload stopped",
   "job.upload_file_removed": "File removed before upload; nothing to protect",
+  "job.upload_observation_withdrawn": "The file changed during the scan after it was queued; it is queued again if it still needs protection",
   "job.recovery_stopped": "Recovery stopped",
   "job.recovery_stopped_waiting": "Stopped waiting: the cloud recovery goes on at AWS",
   "job.recovery_approval_expired": "Recovery cancelled: approval was not given before the deadline. No cloud recovery was started by this request.",
