@@ -61,10 +61,24 @@ reuses it.
 file the owner of its destination folder; the mode is unchanged. Without
 `CAP_CHOWN` it keeps the process identity, never failing the Recovery.
 
+## Displayed state
+
+Amended on 2026-11-15 (issue #684). The protection state shown in browse, file
+detail, folder badges, Vault statistics and the weekly summary follows the same
+rule as the release gate, from one shared function
+(`operation_policies.observation_blocking_paths`, wrapped by `UnconfirmedScope`):
+a file at, below or above a blocking path is shown unconfirmed, with its last
+known state; every other file shows its real state. A folder at, below or above
+a blocking path is shown unconfirmed as a whole, like the gate refuses to release
+it as a whole; the Vault itself, the root above every path, is too, while its
+counters show each file's own state. The global causes above keep the whole
+Vault unconfirmed. The scoping is a SQL predicate on the path, so counting and
+filtering stay in SQL on large Vaults. The Vault health (`runtime.last_error` of
+the stats) says how many paths are unreadable and points to their Problems
+instead of the generic incomplete-scan error.
+
 ## Consequences
 
-The protection state shown in browse and stats is unchanged: the Vault is still
-shown unconfirmed while a path is unreadable. Only the local release gate is
-scoped. A Problem that is resolved while the scan still reports the source
-incomplete leaves no path to scope by, and the Vault is blocked as a whole until
-the next scan.
+A Problem that is resolved while the scan still reports the source incomplete
+leaves no path to scope by, and the Vault is blocked, and shown unconfirmed, as
+a whole until the next scan.

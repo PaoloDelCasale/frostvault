@@ -494,9 +494,9 @@ def local_release_blocking_paths(connection: Any, vault_id: int) -> tuple[str, .
 
     This is additional to, never a substitute for, the worker's exact-version
     HEAD and local digest checks. Disabling a Vault is not consent to deletion.
-    Cloud-side deletion keeps requiring the whole Vault confirmed.
+    Cloud-side deletion keeps requiring the whole Vault confirmed. The
+    displayed state applies the same rule (:func:`unconfirmed_scope`, #684).
     """
-    from .component_health import load_vault_health
     from .source_layout import vault_local_access
 
     vault = connection.execute(
@@ -508,6 +508,19 @@ def local_release_blocking_paths(connection: Any, vault_id: int) -> tuple[str, .
         return None
     if not vault_local_access(vault["source_root"]).local_operations_allowed:
         return None
+    return observation_blocking_paths(connection, vault_id)
+
+
+def observation_blocking_paths(connection: Any, vault_id: int) -> tuple[str, ...] | None:
+    """The part of :func:`local_release_blocking_paths` that the observation decides.
+
+    Shared by the release gate and the displayed state (#684), whose callers
+    check the Vault's lifecycle and Source Volume first: ``None`` for lost
+    cloud or audit observability or a source error without a named path,
+    otherwise the paths of the open path Problems.
+    """
+    from .component_health import load_vault_health
+
     health = load_vault_health(connection, vault_id)
     if any((health.get(component) or {}).get("last_error") for component in ("cloud", "audit")):
         return None
@@ -533,6 +546,65 @@ def blocking_path_for(path: str, blocking: Sequence[str]) -> str | None:
                 or candidate.startswith(path + "/")):
             return candidate
     return None
+
+
+def blocked_path_sql(column: str) -> str:
+    """SQL form of :func:`blocking_path_for`; binds one ``text[]`` parameter.
+
+    True when ``column`` is the root, equal to a blocking path, below it or
+    above it. ``starts_with`` treats SQL wildcards literally.
+    """
+    return (f"({column} = '' OR EXISTS (SELECT 1 FROM unnest(%s::text[]) AS blocked(blocked_path) "
+            f"WHERE {column} = blocked.blocked_path "
+            f"OR starts_with({column}, blocked.blocked_path || '/') "
+            f"OR starts_with(blocked.blocked_path, {column} || '/')))")
+
+
+@dataclass(frozen=True)
+class UnconfirmedScope:
+    """Where a Vault's protection is not confirmed (ADR-0042).
+
+    One rule for the local release gate and for the displayed state (#684):
+    ``paths`` None is the whole Vault; otherwise the blocking paths, whose
+    contents and ancestor folders are unconfirmed too (empty: nowhere).
+    """
+
+    paths: tuple[str, ...] | None = ()
+
+    @property
+    def whole_vault(self) -> bool:
+        return self.paths is None
+
+    @property
+    def by_path(self) -> bool:
+        """Some paths, not the whole Vault, are unconfirmed."""
+        return bool(self.paths)
+
+    def covers(self, path: str) -> bool:
+        if self.paths is None:
+            return True
+        return bool(self.paths) and blocking_path_for(path, self.paths) is not None
+
+    def sql(self, column: str) -> tuple[str, list[Any]]:
+        """``(predicate, params)``: whether the path in ``column`` is unconfirmed."""
+        if self.paths is None:
+            return "TRUE", []
+        if not self.paths:
+            return "FALSE", []
+        return blocked_path_sql(column), [list(self.paths)]
+
+
+def unconfirmed_scope(
+    connection: Any, vault_id: int, *, lifecycle: str, local_operations_allowed: bool,
+) -> UnconfirmedScope:
+    """Where the Vault is shown unconfirmed: the release gate's rule (#684).
+
+    The caller passes the lifecycle and Source Volume access it already
+    observed; the rest is :func:`observation_blocking_paths`, as for the gate.
+    """
+    if lifecycle != "active" or not local_operations_allowed:
+        return UnconfirmedScope(None)
+    return UnconfirmedScope(observation_blocking_paths(connection, vault_id))
 
 
 def local_release_is_confirmed(

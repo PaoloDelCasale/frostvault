@@ -331,6 +331,8 @@
   "api.free_space_started": "Liberazione spazio locale avviata",
   "api.local_release_unconfirmed": "Rilascio locale bloccato: la protezione di questo Vault non è confermata (vedi i suoi Problemi)",
   "api.local_release_blocked_path": "Rilascio locale bloccato: FrostVault non può leggere {path}, quindi lì, al suo interno e nelle cartelle che lo contengono la protezione non è confermata. Vedi il Problema di questo percorso; le altre Copie locali del Vault si possono rilasciare.",
+  "vault.health.unreadable_paths_one": "{count} percorso non leggibile: la protezione non è confermata solo lì, al suo interno e nelle cartelle che lo contengono (vedi il suo Problema)",
+  "vault.health.unreadable_paths_other": "{count} percorsi non leggibili: la protezione non è confermata solo lì, al loro interno e nelle cartelle che li contengono (vedi i loro Problemi)",
   "api.reconnect_volume_not_writable": "Il Source Volume di destinazione non è scrivibile dall’utente di FrostVault ({identity}, gruppi {groups}): la sua radice {path} è di proprietà di {owner} con mode {mode}. Vedi docs/filesystem-permissions.md.",
   "api.reconnect_destination_not_writable": "La cartella di destinazione {path} non è scrivibile dall’utente di FrostVault ({identity}, gruppi {groups}): è di proprietà di {owner} con mode {mode}. Vedi docs/filesystem-permissions.md.",
   "api.assignment_updated": "Assegnazione aggiornata",
