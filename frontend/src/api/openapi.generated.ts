@@ -2367,6 +2367,8 @@ export interface components {
             /** @description Explicit Current Snapshot reference; null when the file has none. */
             current_version_id?: string | null;
             id?: string;
+            /** @description The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed. */
+            in_excluded_folder?: boolean;
             integrity?: string | null;
             last_known_at?: string | null;
             last_known_state?: string;

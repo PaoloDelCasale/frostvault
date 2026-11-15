@@ -88,6 +88,10 @@ Browsing and statistics use these **protection states**, not copy-presence label
   not expected to be in the cloud (an older verified copy is still indicated).
   A Problem, an unconfirmed observation or a verified cloud copy of the same
   bytes (Protected) take precedence. Manual upload requests stay explicit.
+  An exclude glob that covers a whole folder (`dir/**`, `**/dir/**`) makes it an
+  **Excluded Folder**: scans and the watcher no longer look inside it, files
+  already known there keep their last known state and are marked "not
+  observed", and removing the rule starts a full scan (ADR-0044).
 - **Stopped by you** (`stopped`): a present Local Copy whose upload the Owner
   stopped (single or bulk cancel, manual or automatic upload). Automatic upload
   leaves it alone until its content is observed again; it is not pending work,

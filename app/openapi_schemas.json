@@ -2323,6 +2323,10 @@
         "cloud_only_conflict": {
           "type": "boolean"
         },
+        "in_excluded_folder": {
+          "type": "boolean",
+          "description": "The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed."
+        },
         "id": {
           "type": "string"
         },

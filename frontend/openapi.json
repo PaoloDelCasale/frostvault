@@ -3597,6 +3597,10 @@
           "id": {
             "type": "string"
           },
+          "in_excluded_folder": {
+            "description": "The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed.",
+            "type": "boolean"
+          },
           "integrity": {
             "type": [
               "string",

@@ -239,8 +239,14 @@ class PinnedTree:
     def entries(
         self, *, on_error: Callable[[Path, OSError], None],
         on_unsupported_name: Callable[[Path, bool], None] | None = None,
+        prune: Callable[[tuple[str, ...]], bool] | None = None,
+        on_pruned: Callable[[Path], None] | None = None,
     ) -> Iterator[tuple[Path, Path]]:
         """Yield (logical path, descriptor path) for every storable entry.
+
+        A folder for which ``prune`` is true (an Excluded Folder, ADR-0044) is
+        yielded like any other entry but never opened, listed nor fenced; it is
+        handed to ``on_pruned``. A start folder at or below one yields nothing.
 
         A name that is not valid UTF-8 is handed to ``on_unsupported_name``
         (with whether it is a directory) and skipped together with its subtree:
@@ -272,6 +278,10 @@ class PinnedTree:
                             continue
                         expected = info.st_dev, info.st_ino
                         child_parts = parts + (entry.name,)
+                        if prune is not None and prune(child_parts):
+                            if on_pruned is not None:
+                                on_pruned(path)
+                            continue
                         try:
                             child = os.open(entry.name, _DIRECTORY_FLAGS, dir_fd=fd)
                         except PermissionError as exc:
@@ -327,6 +337,12 @@ class PinnedTree:
                 finally:
                     self.active.pop()
 
+        if prune is not None:
+            for end in range(1, len(self.start) + 1):
+                if prune(self.start[:end]):
+                    if on_pruned is not None:
+                        on_pruned(self.root.joinpath(*self.start[:end]))
+                    return
         yield from start(self.fd, ())
 
 
