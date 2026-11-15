@@ -3785,6 +3785,7 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         max_bandwidth=int(limit) * 1024 if limit else None,
         snapshot=job.get("_upload_snapshot"),
         metadata=job.get("_upload_metadata"),
+        payload=job.get("_upload_payload"),
         on_acknowledged=job.get("_on_upload_acknowledged"),
         on_multipart=job.get("_on_upload_multipart"),
     )

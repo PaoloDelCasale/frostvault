@@ -35,7 +35,7 @@ from s3transfer.utils import OSUtils, ReadFileChunk
 
 from .s3_clients import configure_upload_client
 from .upload_snapshot import (
-    UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD, validated_snapshot_buffer,
+    UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD, payload_matches, validated_snapshot_buffer,
 )
 
 _budget_lock = threading.Lock()
@@ -44,6 +44,8 @@ _budgets: dict[int, BandwidthLimiter] = {}
 # Reserve BEFORE allocating a body or submitting work. Thus both the executor's
 # queue and the live buffers are bounded, even with arbitrarily many callers.
 # At most 32 buffers <8 MiB (<256 MiB total); no source FD survives validation.
+# A payload kept by the hashing pass (#702) is the caller's reserved buffer:
+# the PUT body is a view of it, never another copy or read of the file.
 _SMALL_UPLOAD_SLOTS = 32
 _small_slots = threading.BoundedSemaphore(_SMALL_UPLOAD_SLOTS)
 _small_lock = threading.Lock()
@@ -375,7 +377,7 @@ def _record_failure(failure: BaseException, facade: _UploadClient,
 
 def _small_put(facade: _UploadClient, *, source: Path, bucket: str, key: str,
                snapshot: UploadSnapshot, metadata: dict[str, str] | None,
-               on_progress: Callable[[int], None]) -> dict[str, Any]:
+               on_progress: Callable[[int], None], payload: bytes | None = None) -> dict[str, Any]:
     # The caller thread remains free to observe cancellation/lease loss while a
     # pooled worker is inside a blocking SDK socket. Never return until joined.
     while not _small_slots.acquire(timeout=0.1):
@@ -386,7 +388,13 @@ def _small_put(facade: _UploadClient, *, source: Path, bucket: str, key: str,
     coordinator = TransferCoordinator()
     try:
         facade.check_active()
-        buffer = validated_snapshot_buffer(source, snapshot, facade.check_active)
+        if payload is None:
+            buffer = validated_snapshot_buffer(source, snapshot, facade.check_active)
+        else:
+            # The bytes the snapshot hashed (#702): checked in memory, no file I/O.
+            if not payload_matches(payload, snapshot):
+                raise RuntimeError("Upload payload does not match its Upload Snapshot")
+            buffer = io.BytesIO(payload)
         stream = InterruptReader(buffer, coordinator)
         if facade.max_bandwidth:
             stream = _shared_budget(facade.max_bandwidth).get_bandwith_limited_stream(stream, coordinator)
@@ -477,6 +485,7 @@ def upload_file(
     on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
     write_client: Any = None,
     on_multipart: Callable[[str, str], None] | None = None,
+    payload: bytes | None = None,
 ) -> dict[str, Any]:
     """Return the upload response or fail closed, aborting incomplete multipart.
 
@@ -484,10 +493,16 @@ def upload_file(
     socket or a bandwidth-limited stream must not hide a cancelled/lost Job.
     Manager shutdown joins in-flight parts before the explicit abort fallback.
     Completed versions are NEVER deleted here, even after cancellation.
+
+    ``payload`` (single-PUT snapshots only) is the exact bytes the snapshot
+    hashed; the PUT sends them after an in-memory digest check instead of
+    reading the file again (#702).
     """
     check_active()
     if max_bandwidth is not None and max_bandwidth <= 0:
         raise ValueError("max_bandwidth must be greater than 0")
+    if payload is not None and (snapshot is None or snapshot.size >= MULTIPART_THRESHOLD):
+        raise ValueError("A kept payload needs a single-PUT Upload Snapshot")
     checksum = None
     if snapshot is None:
         # Shared rename/copy/recovery callers retain the pre-existing CRC32
@@ -513,7 +528,8 @@ def upload_file(
                            write_client=write_client, on_multipart=on_multipart)
     if snapshot is not None and snapshot.size < MULTIPART_THRESHOLD:
         return _small_put(facade, source=source, bucket=bucket, key=key,
-                          snapshot=snapshot, metadata=metadata, on_progress=on_progress)
+                          snapshot=snapshot, metadata=metadata, on_progress=on_progress,
+                          payload=payload)
     config = TransferConfig(max_bandwidth=max_bandwidth, preferred_transfer_client="classic")
     if snapshot is not None:
         config.multipart_threshold = MULTIPART_THRESHOLD

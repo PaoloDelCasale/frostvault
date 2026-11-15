@@ -159,6 +159,51 @@ class UploadCapacityTests(unittest.TestCase):
         for gate in (coordinator.network, coordinator._buffers, coordinator._large_buffers):
             self.assertEqual((gate._count, gate._bytes), (0, 0))
 
+    def test_single_put_payload_is_reserved_before_the_read_then_takes_only_the_send_count(self):
+        """#702: the buffer lane first (before the read), the count around the PUT."""
+        tiny = self.snapshot()
+        coordinator = pipeline._Pipeline(4)
+        weight = tiny.size + 2 * CHUNK_SIZE
+        with coordinator.small_payload(tiny.size, lambda: None):
+            self.assertEqual((coordinator._buffers._count, coordinator._buffers._bytes), (1, weight))
+            self.assertEqual(coordinator.network._count, 0)
+            with coordinator.sending(tiny, lambda: None, payload_reserved=True):
+                self.assertEqual((coordinator._buffers._count, coordinator._buffers._bytes), (1, weight))
+                self.assertEqual(coordinator.network._count, 1)
+            self.assertEqual(coordinator.network._count, 0)
+        for gate in (coordinator.network, coordinator._buffers, coordinator._large_buffers):
+            self.assertEqual((gate._count, gate._bytes, len(gate._waiting)), (0, 0, 0))
+        with self.assertRaises(ValueError):
+            with coordinator.small_payload(pipeline.MULTIPART_THRESHOLD, lambda: None):
+                pass
+        with self.assertRaises(ValueError):
+            with coordinator.sending(replace(tiny, size=pipeline.MULTIPART_THRESHOLD), lambda: None,
+                                     payload_reserved=True):
+                pass
+        self.assertEqual((coordinator.network._count, coordinator._buffers._count), (0, 0))
+
+    def test_reserved_payload_still_waits_for_send_admission_and_byte_budget(self):
+        tiny = self.snapshot()
+        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_bytes=tiny.size + 2 * CHUNK_SIZE))
+        waiting, entered = threading.Event(), threading.Event()
+        def second_payload():
+            with coordinator.small_payload(tiny.size, waiting.set):
+                entered.set()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with coordinator.small_payload(tiny.size, lambda: None):
+                work = pool.submit(second_payload)
+                self.assertTrue(waiting.wait(2))
+                self.assertFalse(entered.is_set(), "a payload waits for its bytes before reading")
+                coordinator.journal_failed("intent", "lost-fact")
+                with self.assertRaises(pipeline.UploadJournalHeld):
+                    with coordinator.sending(tiny, lambda: None, payload_reserved=True):
+                        self.fail("A failed journal must stop new sends")
+                coordinator.journal_safe("intent")
+            work.result(timeout=2)
+        self.assertTrue(entered.is_set())
+        for gate in (coordinator.network, coordinator._buffers):
+            self.assertEqual((gate._count, gate._bytes, len(gate._waiting)), (0, 0, 0))
+
     def test_wait_and_post_acquisition_faults_release_tickets_and_all_permits(self):
         for failure in (OperationCancelled("cancel"), WorkerStopping("shutdown"), BaseException("crash")):
             with self.subTest(failure=type(failure).__name__):

@@ -1,6 +1,7 @@
 """Small Upload Snapshot transport seam: no manager, real bounded stream semantics."""
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 import threading
 import unittest
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.services.s3_upload import upload_file
-from app.services.upload_snapshot import prepare_upload_snapshot
+from app.services.upload_snapshot import MULTIPART_THRESHOLD, prepare_upload_snapshot
 from app.storage import OperationCancelled
 
 
@@ -45,6 +46,40 @@ class SmallUploadTests(unittest.TestCase):
         self.assertEqual(sum(progress), len(b"snapshot A"))
         self.assertIn(-4, progress)
         self.assertEqual(acknowledgments, [response])
+
+    def test_kept_payload_is_sent_without_reopening_or_rereading_the_file(self):
+        """#702: the PUT sends the hashed bytes, even if the path now holds B."""
+        payload = self.source.read_bytes()
+        self.source.write_bytes(b"snapshot B")
+        bodies = []
+        def put(**kwargs):
+            self.assertEqual(kwargs["ChecksumSHA256"], self.snapshot.checksum_sha256)
+            bodies.append(kwargs["Body"].read())
+            return {"VersionId": "exact"}
+        with patch("app.services.s3_upload.validated_snapshot_buffer", side_effect=AssertionError("reread")), \
+                patch("os.open", side_effect=AssertionError("reopened")), \
+                patch("builtins.open", side_effect=AssertionError("reopened")):
+            response = self.upload(SimpleNamespace(put_object=put), payload=payload)
+        self.assertEqual(response["VersionId"], "exact")
+        self.assertEqual(bodies, [b"snapshot A"])
+        self.assertEqual(payload, b"snapshot A", "the caller's bytes are only read")
+
+    def test_payload_that_is_not_the_snapshot_is_never_sent(self):
+        for wrong in (b"snapshot B", b"snapshot", b""):
+            with self.subTest(payload=wrong):
+                put = Mock(side_effect=AssertionError("sent"))
+                with self.assertRaisesRegex(RuntimeError, "does not match its Upload Snapshot"):
+                    self.upload(SimpleNamespace(put_object=put), payload=wrong)
+                put.assert_not_called()
+
+    def test_payload_needs_a_single_put_snapshot(self):
+        put = Mock(side_effect=AssertionError("sent"))
+        for snapshot in (None, replace(self.snapshot, size=MULTIPART_THRESHOLD)):
+            with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
+                upload_file(SimpleNamespace(put_object=put), source=self.source, bucket="bucket", key="key",
+                            snapshot=snapshot, payload=b"snapshot A", check_active=lambda: None,
+                            on_progress=lambda _: None)
+        put.assert_not_called()
 
     def test_blocked_socket_does_not_hide_cancel_and_late_receipt_is_joined(self):
         entered, noticed, release, finished = (threading.Event() for _ in range(4))
