@@ -160,7 +160,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         self.assertEqual(payload["runtime"]["last_error"],
                          translate("vault.health.unreadable_paths", locale=DEFAULT_LOCALE, count=1))
         self.assertEqual(translate("vault.health.unreadable_paths", locale="it", count=2)[:30],
-                         "2 percorsi non leggibili: la p")
+                         "2 percorsi non osservati (non ")
 
     def test_weekly_summary_counts_by_path(self) -> None:
         from app.services import protection_notifications as monitor

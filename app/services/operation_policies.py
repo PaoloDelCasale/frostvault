@@ -474,13 +474,14 @@ def queue_auto_uploads(
 
 
 # Source health errors whose cause is a named path (#681, ADR-0042): an
-# unreadable file or folder, or a name that is not UTF-8. Each has its own
+# unreadable file or folder, a name that is not UTF-8, or a folder that kept
+# changing during the scan (#686). Each has its own
 # Problem with the path, and it blocks local release only on that path, below
 # it and in the folders above it. Every other source error blocks the Vault.
 SOURCE_SCAN_INCOMPLETE = "Source scan incomplete: unreadable paths or unsupported names"
 SOURCE_WATCHER_DENIED = "Source watcher stopped on a folder it may not read"
 PATH_SCOPED_SOURCE_ERRORS = frozenset({SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED})
-PATH_PROBLEM_EVENTS = ("file_unreadable", "file_name_unsupported")
+PATH_PROBLEM_EVENTS = ("file_unreadable", "file_name_unsupported", "folder_changed_during_scan")
 
 
 def local_release_blocking_paths(connection: Any, vault_id: int) -> tuple[str, ...] | None:

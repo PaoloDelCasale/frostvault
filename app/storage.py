@@ -165,6 +165,10 @@ _maintenance_lock = threading.Lock()
 # This is small enough to give other PostgreSQL writers frequent admission while
 # avoiding one transaction per catalogued entry.
 LOCAL_SCAN_WRITE_BATCH_SIZE = 250
+# How many times one scan walks again a folder replaced during it (#686)
+# before reporting it as changing, with its protection not confirmed.
+SCAN_REPLACED_FOLDER_REWALKS = 3
+_scan_logger = logging.getLogger(__name__)
 
 # Cloud scans keep provider I/O outside write transactions and commit catalog
 # merges in bounded batches so other writers (lease renewal,
@@ -642,6 +646,7 @@ def _scan_tree(
             connection.commit()
 
     unreadable = False
+    tree: PinnedTree | None = None
 
     def failed(entry: Path, error: OSError) -> None:
         nonlocal unreadable
@@ -676,10 +681,10 @@ def _scan_tree(
         if is_directory:
             unsupported_directories.add(relative)
 
-    with PinnedTree(root, subtree=subtree) as tree:
-        if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
-            raise _ScanRootMismatch("Vault root changed before traversal")
-        for entry, pinned_entry in tree.entries(on_error=failed_directory, on_unsupported_name=unsupported):
+    def observe(walk: PinnedTree) -> None:
+        nonlocal tree
+        tree = walk
+        for entry, pinned_entry in walk.entries(on_error=failed_directory, on_unsupported_name=unsupported):
             if is_restore_temporary_name(entry.name):
                 continue
             try:
@@ -706,9 +711,63 @@ def _scan_tree(
             )
             if len(pending) >= LOCAL_SCAN_WRITE_BATCH_SIZE:
                 flush()
-        tree.validate()
+        walk.validate()
         flush()
-        tree.validate()
+        walk.validate()
+
+    unsettled: list[str] = []
+    with PinnedTree(root, subtree=subtree) as tree:
+        if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
+            raise _ScanRootMismatch("Vault root changed before traversal")
+        observe(tree)
+        # A folder replaced or removed during the walk invalidates only its own
+        # subtree (#686): its observations are compensated and it is walked
+        # again, a bounded number of times. The rest of the walk stands.
+        replaced = tree.replaced_paths()
+        rewalks = 0
+        while replaced:
+            if scan_journal is None:
+                raise TreeIdentityChanged(
+                    f"Visited directory changed during traversal: {display_path(replaced[0])}"
+                )
+            for relative in replaced:
+                _scan_logger.warning(
+                    "Vault %s: folder %s was replaced or removed during the scan; "
+                    "its observations are discarded and it is walked again",
+                    vault_id, display_path(relative),
+                )
+                count -= _compensate_scan_subtree(connection, vault_id, scan_id, scan_journal, relative)
+            if allow_chunk_commits:
+                connection.commit()
+            if rewalks >= SCAN_REPLACED_FOLDER_REWALKS:
+                unsettled = replaced
+                break
+            rewalks += 1
+            again: list[str] = []
+            for relative in replaced:
+                try:
+                    with PinnedTree(root, subtree=root / relative, missing_ok=True) as walk:
+                        observe(walk)
+                        again.extend(walk.replaced_paths())
+                except TreeIdentityChanged:
+                    # The folder itself changed again: this walk is discarded
+                    # (and compensated) as a whole, never half committed.
+                    pending.clear()
+                    invalidate_paths.clear()
+                    again.append(relative)
+            replaced = again
+        for relative in unsettled:
+            _scan_logger.warning(
+                "Vault %s: folder %s kept changing during the scan; its protection "
+                "is not confirmed until a later scan observes it",
+                vault_id, display_path(relative),
+            )
+            report_problem(connection, event="folder_changed_during_scan", vault_id=vault_id, path=relative)
+        if unsettled:
+            if scan_journal is not None:
+                scan_journal["incomplete"] = True
+            if allow_chunk_commits:
+                connection.commit()
         found = watch_plan.UnobservedPaths(
             unreadable=frozenset(unreadable_all),
             unsupported=frozenset(unsupported_all),
@@ -733,6 +792,14 @@ def _scan_tree(
                 connection, event="file_name_unsupported", vault_id=vault_id,
                 keep_paths=reported_unsupported,
             )
+        if subtree is None:
+            # A folder that kept changing is closed by the next whole walk that
+            # observed it; one below a folder this walk could not enter is unknown.
+            resolve_stale_path_problems(
+                connection, event="folder_changed_during_scan", vault_id=vault_id,
+                keep_paths={display_path(path) for path in unsettled},
+                keep_prefixes={display_path(path) for path in unreadable_directories},
+            )
     if unreadable:
         # Keep the per-path problems durable even if a later identity check
         # rejects the scan. Healthy observations may still be protected, but an
@@ -744,7 +811,7 @@ def _scan_tree(
     access = source_layout.vault_local_access(vault["source_root"])
     alias = access.volume_alias
     safe_scan_result = access.local_operations_allowed or access.volume_health == "scan_required"
-    incomplete = unreadable or unsupported_seen
+    incomplete = unreadable or unsupported_seen or bool(unsettled)
     if finalize_missing and not incomplete and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
@@ -1526,60 +1593,86 @@ def _rollback_local_scan_journal(
         return
     try:
         with db() as connection:
-            for path, snapshot in entries.items():
-                if snapshot is None:
-                    # A file this scan created: removed only while nothing
-                    # attached to it (no cloud content, no Job, no history).
-                    deleted = connection.execute(
-                        """
-                        DELETE FROM files f
-                        WHERE f.vault_id=%s AND f.path=%s AND f.local_seen_at=%s
-                          AND f.cloud_since IS NULL
-                          AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id)
-                          AND NOT EXISTS (
-                              SELECT 1 FROM file_path_history h WHERE h.file_id=f.id
-                          )
-                        """,
-                        (vault_id, path, _scan_timestamp(scan_id)),
-                    ).rowcount
-                    if deleted:
-                        mark_path_dirty(connection, vault_id, path)
-                    continue
-                # Restore the previous observation unless a newer one won; the
-                # restore is itself a new observation (generation + 1), so a
-                # hash taken on the compensated one can never publish.
-                connection.execute(
-                    """
-                    UPDATE files
-                    SET generation=generation + 1,
-                        local_presence=%s, local_file_type=%s, local_size=%s,
-                        local_mtime_ns=%s, local_sha256=%s, matched_version_id=%s,
-                        held_version_id=%s, local_seen_at=%s, local_observed_at=%s,
-                        local_content_observed_at=%s, local_recovered_at=%s
-                    WHERE id=%s AND vault_id=%s AND local_seen_at=%s
-                    """,
-                    (
-                        snapshot["local_presence"],
-                        snapshot["local_file_type"],
-                        snapshot["local_size"],
-                        snapshot["local_mtime_ns"],
-                        snapshot["local_sha256"],
-                        snapshot["matched_version_id"],
-                        snapshot["held_version_id"],
-                        snapshot["local_seen_at"],
-                        snapshot["local_observed_at"],
-                        snapshot["local_content_observed_at"],
-                        snapshot["local_recovered_at"],
-                        snapshot["id"],
-                        vault_id,
-                        _scan_timestamp(scan_id),
-                    ),
-                )
-                mark_path_dirty(connection, vault_id, path)
+            _restore_journal_entries(connection, vault_id, scan_id, entries)
     except Exception:
         # Compensation is best effort. The scan is still reported as blocked,
         # and no missing transition or relocation completion can commit.
         return
+
+
+def _compensate_scan_subtree(
+    connection: Any, vault_id: int, scan_id: str, journal: dict[str, Any], relative: str,
+) -> int:
+    """Undo this scan's observations at and below one replaced folder (#686).
+
+    The entries leave the journal, so a later walk of the folder records its
+    snapshot again and a later whole rollback does not repeat the restore.
+    Returns how many observations were undone.
+    """
+    entries = journal.get("entries") or {}
+    prefix = relative + "/"
+    taken = {
+        path: entries.pop(path)
+        for path in [path for path in entries if path == relative or path.startswith(prefix)]
+    }
+    _restore_journal_entries(connection, vault_id, scan_id, taken)
+    return len(taken)
+
+
+def _restore_journal_entries(
+    connection: Any, vault_id: int, scan_id: str, entries: Mapping[str, Any],
+) -> None:
+    """Restore the saved Local Copy columns of the given journal entries."""
+    for path, snapshot in entries.items():
+        if snapshot is None:
+            # A file this scan created: removed only while nothing
+            # attached to it (no cloud content, no Job, no history).
+            deleted = connection.execute(
+                """
+                DELETE FROM files f
+                WHERE f.vault_id=%s AND f.path=%s AND f.local_seen_at=%s
+                  AND f.cloud_since IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM file_path_history h WHERE h.file_id=f.id
+                  )
+                """,
+                (vault_id, path, _scan_timestamp(scan_id)),
+            ).rowcount
+            if deleted:
+                mark_path_dirty(connection, vault_id, path)
+            continue
+        # Restore the previous observation unless a newer one won; the
+        # restore is itself a new observation (generation + 1), so a
+        # hash taken on the compensated one can never publish.
+        connection.execute(
+            """
+            UPDATE files
+            SET generation=generation + 1,
+                local_presence=%s, local_file_type=%s, local_size=%s,
+                local_mtime_ns=%s, local_sha256=%s, matched_version_id=%s,
+                held_version_id=%s, local_seen_at=%s, local_observed_at=%s,
+                local_content_observed_at=%s, local_recovered_at=%s
+            WHERE id=%s AND vault_id=%s AND local_seen_at=%s
+            """,
+            (
+                snapshot["local_presence"],
+                snapshot["local_file_type"],
+                snapshot["local_size"],
+                snapshot["local_mtime_ns"],
+                snapshot["local_sha256"],
+                snapshot["matched_version_id"],
+                snapshot["held_version_id"],
+                snapshot["local_seen_at"],
+                snapshot["local_observed_at"],
+                snapshot["local_content_observed_at"],
+                snapshot["local_recovered_at"],
+                snapshot["id"],
+                vault_id,
+                _scan_timestamp(scan_id),
+            ),
+        )
+        mark_path_dirty(connection, vault_id, path)
 
 
 def _verified_local_scan(
