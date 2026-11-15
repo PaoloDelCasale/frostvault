@@ -2882,6 +2882,18 @@
                   "null"
                 ]
               },
+              "traversal_lock_wait_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "traversal_write_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "verify_bytes_done": {
                 "type": [
                   "number",

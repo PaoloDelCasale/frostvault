@@ -495,14 +495,22 @@ def record_catalog_revision(
     scope: str | None = None,
     extra_payload: Mapping[str, Any] | None = None,
     created_at: str | None = None,
+    flush_aggregates: bool = True,
 ) -> dict[str, Any]:
-    """Append one broad catalog invalidation event in the caller's transaction."""
+    """Append one broad catalog invalidation event in the caller's transaction.
+
+    ``flush_aggregates=False`` is for the aggregate maintenance that has just
+    flushed: a second flush would compute the rollups of marks committed in
+    the meantime with the Vault row already held (#707). Those marks stay
+    durable for the next pass.
+    """
     from .catalog_event_hub import DEFAULT_INVALIDATE_DOMAINS, normalize_invalidate_domains
     from .directory_aggregates import flush_directory_aggregates
 
     # Keep durable directory aggregates inside the same transaction as the
     # catalog mutation + revision so a rolled-back burst never leaves rollups.
-    flush_directory_aggregates(connection, vault_id=int(vault_id))
+    if flush_aggregates:
+        flush_directory_aggregates(connection, vault_id=int(vault_id))
 
     domains = normalize_invalidate_domains(
         invalidate if invalidate is not None else DEFAULT_INVALIDATE_DOMAINS

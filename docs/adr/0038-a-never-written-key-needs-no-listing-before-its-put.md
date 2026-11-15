@@ -70,6 +70,14 @@ files per second.
   refilled: uploads moved in waves every ~5 s. A write committed after a rollup
   was read leaves its own unclaimed dirty mark, so the next fold corrects it.
   The full Vault rebuild still locks first: it is rare.
+- Amended for #707: the revision the fold publishes does not flush again. That
+  second flush ran in the same transaction with the Vault row already held, so
+  it read the rollups of every mark committed meanwhile under the lock
+  (transactions up to 4.1 s with ~400 pending marks while uploads ran at
+  2 GB/min). Those marks now wait for the next fold. The fold's rollups also run
+  with serial plans (`max_parallel_workers_per_gather = 0`): parallel workers
+  each map a dynamic shared memory segment, and a 64 MB `/dev/shm` in Docker
+  ran out (`could not resize shared memory segment`).
 
 ## Consequences
 

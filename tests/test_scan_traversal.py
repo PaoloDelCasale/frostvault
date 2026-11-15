@@ -8,11 +8,14 @@ Seams under test:
    Problem, makes the scan incomplete and is a gap the watcher re-checks.
 4. The runtime status reports files seen, their rate and, after a previous
    scan, how many to expect.
+5. The traversal times its wait for the Vault row apart from its batch writes
+   and its walk, in the runtime status and in the log (#707).
 """
 from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -253,6 +256,9 @@ class TraversalScanTests(_AdoptionFixture):
         # Each file is counted before it is inspected.
         self.assertEqual([entry["traversal_files_seen"] for entry in first], list(range(1, 14)))
         self.assertTrue(all(entry["traversal_files_per_minute"] > 0 for entry in first))
+        # No batch was written before the walk's end: no wait, no write yet.
+        self.assertEqual({entry["traversal_lock_wait_seconds"] for entry in first}, {0.0})
+        self.assertEqual({entry["traversal_write_seconds"] for entry in first}, {0.0})
 
         second = phases()
         self.assertEqual({entry["traversal_files_expected"] for entry in second}, {13})
@@ -265,3 +271,32 @@ class TraversalScanTests(_AdoptionFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_the_wait_for_a_held_vault_row_is_timed_apart_from_the_walk(self) -> None:
+        import app.storage as storage
+        vault = self._vault()
+        vault_id = int(vault["id"])
+        real_inspect = storage.inspect_entry
+        holder = PostgresConnection(str(self.database_path))
+        self.addCleanup(holder.close)
+        held = threading.Event()
+
+        def observe(path, **kwargs):
+            # An upload unit takes the Vault row while the walk runs and keeps
+            # it for a moment after the walk's last batch is ready to write.
+            if not held.is_set():
+                holder.execute("SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,))
+                held.set()
+                timer = threading.Timer(0.5, holder.commit)
+                timer.start()
+                self.addCleanup(timer.join)
+            return real_inspect(path, **kwargs)
+
+        with self.assertLogs("uvicorn.error", "INFO") as logs:
+            self._scan(vault, patch("app.storage.inspect_entry", side_effect=observe))
+        [record] = [r for r in logs.records if "traversal saw" in r.getMessage()]
+        _vault, seen, elapsed, _rate, batches, lock_wait, write, walk = record.args
+        self.assertEqual((_vault, seen, batches), (vault_id, 13, 1))
+        self.assertGreaterEqual(lock_wait, 0.3)
+        self.assertLess(write, lock_wait)
+        self.assertAlmostEqual(walk + lock_wait + write, elapsed, delta=0.05)

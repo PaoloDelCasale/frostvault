@@ -110,7 +110,14 @@ reports the files seen so far and their rate per minute
 (`runtime.traversal_files_seen`, `runtime.traversal_files_per_minute`), and
 the Vault header shows them. When the catalog already holds Local Copies
 from a previous scan, their count (`runtime.traversal_files_expected`) gives
-an estimate of the time left; a first adoption shows none.
+an estimate of the time left; a first adoption shows none. Since #707 it also
+reports the seconds spent waiting for the Vault row before each batch write and
+writing the batches (`runtime.traversal_lock_wait_seconds`,
+`runtime.traversal_write_seconds`); the rest of the elapsed time is the walk.
+At the end of the walk the same split is logged once, with the files seen and
+their rate. The production entrypoint sets the GIL switch interval to 1 ms
+(default 5 ms): the walk releases the GIL at every filesystem call and,
+behind the upload workers' Python work, waited up to 5 ms for each one.
 
 ## Consequences
 
