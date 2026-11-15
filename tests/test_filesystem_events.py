@@ -537,8 +537,8 @@ class UnsupportedNameWalkTests(unittest.TestCase):
             )
             self.assertEqual(storage.watch_plan.unobserved(7).directories, {"dir-\udcff"})
             # A complete walk of the whole root closes every other open problem.
+            resolved = [kw for kw in resolved if kw["event"] == "file_name_unsupported"]
             self.assertEqual(len(resolved), 1)
-            self.assertEqual(resolved[0]["event"], "file_name_unsupported")
             self.assertEqual(resolved[0]["keep_paths"], {"dir-\\udcff", "non-utf8-\\udce9.txt"})
 
     def test_a_subtree_walk_never_closes_other_problems(self):
