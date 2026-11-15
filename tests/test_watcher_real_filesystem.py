@@ -10,6 +10,7 @@ small stand-ins that report what a real scan would record.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -203,7 +204,7 @@ class Harness(RealTreeCase):
         self.report = self.stack.enter_context(patch("app.storage._report_worker_error"))
         self.health = self.stack.enter_context(patch("app.storage._record_scan_component_health"))
         self.log_error = self.stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
-        self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=lambda vault, changes: self.applied.append(set(changes)) or 1))
+        self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=lambda vault, changes, **_kw: self.applied.append(set(changes)) or 1))
         real_awatch = awatch
 
         def counting_awatch(*paths, **kwargs):
@@ -707,7 +708,7 @@ class FolderCreatedUnreadableDuringTheWatchTests(Harness):
 
     def subtree_scanning_apply(self, root: Path):
         """Stand-in batch that records a new folder as a real subtree walk does."""
-        def apply(vault, changes):
+        def apply(vault, changes, **_kw):
             self.applied.append(set(changes))
             for change, value in changes:
                 path = Path(value)
@@ -913,10 +914,13 @@ class MergedWatchTests(RealTreeCase):
         )
 
 
-class WatcherScanSerialisationTests(unittest.IsolatedAsyncioTestCase):
-    """Review bug 7: watcher-paired scans of several Vaults take turns."""
+class PairedScanPoolTests(unittest.IsolatedAsyncioTestCase):
+    """#690: the paired scans of one Vault take turns; other Vaults never wait."""
 
-    async def test_scans_started_together_never_run_together(self):
+    def setUp(self):
+        self.addCleanup(storage._shutdown_watcher_scan_executor)
+
+    async def test_scans_of_one_vault_started_together_never_run_together(self):
         running = 0
         peak = 0
         guard = threading.Lock()
@@ -933,10 +937,213 @@ class WatcherScanSerialisationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.storage.scan_vault", side_effect=scan):
             outcomes = await asyncio.gather(*[
-                storage._reconcile_vault_after_watcher({"id": number}) for number in range(1, 6)
+                storage._reconcile_vault_after_watcher({"id": 1}) for _ in range(5)
             ])
         self.assertEqual(peak, 1)
         self.assertTrue(all(o.retry_after is None and not o.recheck for o in outcomes))
+
+    async def test_another_vaults_long_scan_does_not_delay_this_one(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        started = threading.Event()
+
+        def scan(vault):
+            if vault["id"] == 1:
+                started.set()
+                release.wait(10)
+            return {"local": 1, "cloud": 1}
+
+        with patch("app.storage.scan_vault", side_effect=scan):
+            long_scan = asyncio.create_task(storage._reconcile_vault_after_watcher({"id": 1}))
+            await asyncio.to_thread(started.wait, 5)
+            outcome = await asyncio.wait_for(storage._reconcile_vault_after_watcher({"id": 2}), 3)
+            self.assertIsNone(outcome.retry_after)
+            self.assertFalse(long_scan.done(), "Vault 2 did not wait for Vault 1's scan")
+            release.set()
+            await long_scan
+
+
+class VanishedDirectoryParsingTests(unittest.TestCase):
+    def test_paths_named_by_notify_inside_the_vault(self):
+        root = Path("/sources/vault")
+        exc = FileNotFoundError(
+            'No such file or directory (os error 2) about '
+            '["/sources/vault/upload/a/b", "/elsewhere/x", "/sources/vault"]'
+        )
+        self.assertEqual(storage._watcher_vanished_directories(exc, root), {"upload/a/b"})
+
+    def test_other_errors_are_not_vanished_folders(self):
+        root = Path("/sources/vault")
+        denied = PermissionError('Permission denied (os error 13) about ["/sources/vault/x"]')
+        self.assertEqual(storage._watcher_vanished_directories(denied, root), set())
+        self.assertEqual(storage._watcher_vanished_directories(RuntimeError("x"), root), set())
+
+
+class PairedScanBesideTheObserverTests(Harness):
+    """#690: the observer goes on consuming events while its paired scan runs."""
+
+    async def test_events_are_applied_while_the_paired_scan_runs(self):
+        root = self.make_root()
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def scan(vault):
+            started.set()
+            release.wait(15)
+            return {"local": 1, "cloud": 1}
+
+        self.stack.enter_context(patch("app.storage.scan_vault", side_effect=scan))
+        task = self.start(root)
+        try:
+            await asyncio.to_thread(started.wait, 8)
+            (root / "during.txt").write_text("written while the Vault is scanned")
+            await self.settle(lambda: str(root / "during.txt") in self.applied_paths())
+        finally:
+            release.set()
+            await self.stop(task)
+
+    async def test_a_busy_vault_keeps_the_batch_and_applies_it_once_free(self):
+        root = self.make_root()
+        scan = self.scanning(root)
+        busy = threading.Event()
+
+        def apply(vault, changes, *, wait=True):
+            if busy.is_set() and not wait:
+                return None
+            self.applied.append(set(changes))
+            return 1
+
+        self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=apply))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scan.call_count == 1)
+            busy.set()
+            (root / "first.txt").write_text("x")
+            await asyncio.sleep(1.5)
+            self.assertNotIn(str(root / "first.txt"), self.applied_paths())
+            (root / "second.txt").write_text("x")
+            await asyncio.sleep(1.5)
+            busy.clear()
+            await self.settle(lambda: {str(root / "first.txt"), str(root / "second.txt")}
+                              <= self.applied_paths())
+        finally:
+            await self.stop(task)
+
+
+class VanishedFolderRegistrationTests(Harness):
+    """#690: a folder that vanishes while it is registered is churn, not a failure."""
+
+    def setUp(self):
+        super().setUp()
+        self.stack.enter_context(patch("app.storage.WATCHER_VANISHED_RESTART_SECONDS", 0.01))
+
+    @staticmethod
+    def vanished(path: Path) -> FileNotFoundError:
+        return FileNotFoundError(
+            f"No such file or directory (os error 2) about {json.dumps([str(path)])}"
+        )
+
+    def failures(self):
+        return [c for c in self.health.call_args_list if c.kwargs.get("ok") is False]
+
+    async def test_successor_registration_keeps_the_old_observer(self):
+        root = self.make_root()
+        scan = self.scanning(root)
+        fresh = root / "fresh"
+        begin = asyncio.Event()
+        registrations: list[int] = []
+        closed: list[int] = []
+
+        def observer(*paths, **options):
+            async def generate():
+                index = len(registrations)
+                registrations.append(index)
+                try:
+                    if index == 1:
+                        raise self.vanished(fresh / "gone")
+                    yield set()
+                    if index == 0:
+                        await begin.wait()
+                        fresh.mkdir()
+                        yield {(Change.added, str(fresh))}
+                    while True:
+                        await asyncio.sleep(0.01)
+                        yield set()
+                finally:
+                    closed.append(index)
+            return generate()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=observer))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scan.call_count == 1)
+            begin.set()
+            await self.settle(lambda: len(registrations) >= 3)
+            await self.settle(lambda: str(fresh / "gone") in self.applied_paths())
+            self.assertIn(0, closed, "the old observer is closed only once a successor registered")
+            self.assertLess(closed.index(1), closed.index(0))
+            self.assertEqual(scan.call_count, 1, "no event was lost: no gap scan")
+            self.assertEqual(self.failures(), [])
+            self.report.assert_not_called()
+            self.assertIsNone((storage.runtime_status.get(VAULT_ID) or {}).get("last_error"))
+        finally:
+            await self.stop(task)
+
+    async def test_a_stopped_observer_on_a_vanished_folder_restarts_quietly(self):
+        root = self.make_root()
+        self.scanning(root)
+        # A real failure would wait this long before the next registration.
+        self.stack.enter_context(patch("app.storage.WATCHER_RESTART_BASE_SECONDS", 60))
+        gone = root / "upload" / "ab"
+        registrations: list[int] = []
+
+        def observer(*paths, **options):
+            async def generate():
+                index = len(registrations)
+                registrations.append(index)
+                yield set()
+                if index == 0:
+                    await asyncio.sleep(0.05)
+                    raise self.vanished(gone)
+                while True:
+                    await asyncio.sleep(0.01)
+                    yield set()
+            return generate()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=observer))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: len(registrations) >= 2, timeout=4)
+            await self.settle(lambda: str(gone) in self.applied_paths())
+            self.assertEqual(self.failures(), [])
+            self.report.assert_not_called()
+            self.assertIsNone((storage.runtime_status.get(VAULT_ID) or {}).get("last_error"))
+        finally:
+            await self.stop(task)
+
+    async def test_a_folder_that_keeps_vanishing_is_reported(self):
+        root = self.make_root()
+        self.scanning(root)
+        registrations: list[int] = []
+
+        def observer(*paths, **options):
+            async def generate():
+                index = len(registrations)
+                registrations.append(index)
+                yield set()
+                await asyncio.sleep(0.02)
+                raise self.vanished(root / "hot")
+            return generate()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=observer))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: self.failures(), timeout=8)
+            self.assertGreaterEqual(len(registrations), storage.WATCHER_VANISHED_MAX_RETRIES)
+            self.assertIn("Source watcher", storage.runtime_status[VAULT_ID]["last_error"])
+        finally:
+            await self.stop(task)
 
 
 class WatcherFailureBookkeepingTests(Harness):
@@ -947,7 +1154,7 @@ class WatcherFailureBookkeepingTests(Harness):
         scan = self.scanning(root)
         attempts = []
 
-        def broken(vault, changes):
+        def broken(vault, changes, **_kw):
             attempts.append(set(changes))
             if len(attempts) <= 3:
                 raise RuntimeError("Subtree component could not be pinned")

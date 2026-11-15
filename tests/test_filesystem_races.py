@@ -416,7 +416,7 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                     ready.set()
                     yield changes
 
-        def apply(vault, changes):
+        def apply(vault, changes, **_kw):
             if force_polling and not injected and (Change.added, str(directory)) in changes:
                 # Polling retains its original snapshot at this same topology
                 # boundary, and must detect mutations on the following cycle.

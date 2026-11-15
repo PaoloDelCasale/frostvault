@@ -243,7 +243,7 @@ class WatcherRecoveryTests(DatabaseCase):
     def test_apply_changes_retries_a_deadlock_victim_and_replays_the_same_batch(self):
         calls = []
 
-        def apply(vault, changes):
+        def apply(vault, changes, **_kw):
             calls.append(set(changes))
             if len(calls) < 3:
                 raise psycopg.errors.DeadlockDetected("deadlock detected")
@@ -345,7 +345,7 @@ class WatcherRecoveryTests(DatabaseCase):
 
             attempted = asyncio.Event()
 
-            def failing_apply(vault, changes):
+            def failing_apply(vault, changes, **_kw):
                 attempted.set()
                 raise RuntimeError("catalog write failed")
 

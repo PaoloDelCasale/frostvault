@@ -879,13 +879,19 @@ def scan_tree(
 
 
 def apply_filesystem_changes(
-    vault: dict[str, Any], changes: set[tuple[Change, str]]
-) -> int:
-    """Serialize watcher updates with full scans for the same vault."""
+    vault: dict[str, Any], changes: set[tuple[Change, str]], *, wait: bool = True,
+) -> int | None:
+    """Serialize watcher updates with full scans for the same vault.
+
+    With ``wait=False`` a busy Vault returns None at once and nothing is
+    applied: the watcher keeps the batch and keeps consuming events (#690).
+    """
     vault_id = int(vault["id"])
     with status_lock:
         lock = scan_locks.setdefault(vault_id, threading.Lock())
-    with lock:
+    if not lock.acquire(blocking=wait):
+        return None
+    try:
         journal: dict[str, Any] = {}
         event_id = now_iso()
         try:
@@ -893,6 +899,8 @@ def apply_filesystem_changes(
         except Exception:
             _rollback_local_scan_journal(vault_id, event_id, journal)
             raise
+    finally:
+        lock.release()
 
 
 def _apply_filesystem_changes(
@@ -1855,11 +1863,16 @@ def _note_worker_ok(component: str, vault_id: int | None = None) -> None:
 WATCHER_APPLY_MAX_ATTEMPTS = 5
 
 
-def _apply_watcher_changes(vault: dict[str, Any], changes: set[tuple[Change, str]]) -> int:
-    """Apply one watcher batch, replaying it when PostgreSQL chose it as victim."""
+def _apply_watcher_changes(
+    vault: dict[str, Any], changes: set[tuple[Change, str]], *, wait: bool = True,
+) -> int | None:
+    """Apply one watcher batch, replaying it when PostgreSQL chose it as victim.
+
+    None means the Vault was busy (``wait=False``) and nothing was applied.
+    """
     for attempt in range(WATCHER_APPLY_MAX_ATTEMPTS):
         try:
-            return apply_filesystem_changes(vault, changes)
+            return apply_filesystem_changes(vault, changes, wait=wait)
         except Exception as error:
             if (not is_retryable_transaction_error(error)
                     or attempt + 1 == WATCHER_APPLY_MAX_ATTEMPTS):
@@ -5824,8 +5837,8 @@ def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> se
 
 
 # A watcher that stopped is restarted after a growing pause. A run counts as
-# healthy again, and resets the pause, once it stayed up this long NOT counting
-# the time it spent in scans: a long scan must not hide a watcher that dies at
+# healthy again, and resets the pause, once it stayed up this long. Its paired
+# scan runs beside it (#690), so a long scan cannot hide a watcher that dies at
 # once.
 WATCHER_RESTART_BASE_SECONDS = 5
 WATCHER_RESTART_MAX_SECONDS = 300
@@ -5845,6 +5858,13 @@ WATCHER_SCAN_BUSY_SECONDS = 10
 # follows every restart covers what it contained, and a batch that can never be
 # applied must not keep the whole Vault from being observed.
 WATCHER_BATCH_MAX_FAILURES = 3
+# A folder that vanishes while the observer registers it (Immich empties and
+# recreates its upload/ folders) is not a failure: the watcher registers again
+# at once and walks that path. Only this many failures in a row on the same
+# path are reported as a stopped watcher (#690).
+WATCHER_VANISHED_MAX_RETRIES = 5
+# A vanished-folder restart waits this long instead of the growing pause.
+WATCHER_VANISHED_RESTART_SECONDS = 0.5
 
 
 def _flattened_exceptions(exc: BaseException) -> Iterator[BaseException]:
@@ -5899,6 +5919,35 @@ def _watcher_denied_directories(exc: BaseException, root: Path) -> set[str]:
     return found
 
 
+def _watcher_vanished_directories(exc: BaseException, root: Path) -> set[str]:
+    """Vault-relative paths that vanished while the observer registered them.
+
+    watchfiles 1.3 raises FileNotFoundError with neither errno nor filename;
+    notify appends `about ["/path"]` to its message instead.
+    """
+    found: set[str] = set()
+    for inner in _flattened_exceptions(exc):
+        if not isinstance(inner, FileNotFoundError):
+            continue
+        paths = [inner.filename] if isinstance(inner.filename, str) else []
+        _message, separator, encoded = str(inner).partition(" about ")
+        if separator:
+            try:
+                native_paths = json.loads(encoded)
+            except (ValueError, TypeError):
+                native_paths = []
+            if isinstance(native_paths, list):
+                paths.extend(value for value in native_paths if isinstance(value, str))
+        for value in paths:
+            try:
+                relative = Path(value).relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative != ".":
+                found.add(relative)
+    return found
+
+
 def _watcher_restart_delay(streak: int) -> float:
     return float(min(WATCHER_RESTART_MAX_SECONDS, WATCHER_RESTART_BASE_SECONDS * 2 ** max(0, streak - 1)))
 
@@ -5910,28 +5959,31 @@ class _WatcherScanOutcome(NamedTuple):
     recheck: bool = False
 
 
-_watcher_scan_pool: ThreadPoolExecutor | None = None
+_watcher_scan_pools: dict[int, ThreadPoolExecutor] = {}
 _watcher_scan_pool_lock = threading.Lock()
 
 
-def _watcher_scan_executor() -> ThreadPoolExecutor:
-    """One thread for every paired scan: Vaults take turns, as in scan_all_vaults.
+def _watcher_scan_executor(vault_id: int) -> ThreadPoolExecutor:
+    """One thread per Vault for its paired scans (#690).
 
-    A dedicated pool keeps the long scans off the default executor, which the
-    watchers themselves and every request share.
+    The paired scans of one Vault take turns; another Vault's full scan, which
+    can last hours on a large adoption, never delays them. Manual scans of
+    different Vaults already ran side by side. Dedicated threads keep the long
+    scans off the default executor, which the watchers and every request share.
     """
-    global _watcher_scan_pool
     with _watcher_scan_pool_lock:
-        if _watcher_scan_pool is None:
-            _watcher_scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="watcher-scan")
-        return _watcher_scan_pool
+        pool = _watcher_scan_pools.get(int(vault_id))
+        if pool is None:
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"watcher-scan-{int(vault_id)}")
+            _watcher_scan_pools[int(vault_id)] = pool
+        return pool
 
 
 def _shutdown_watcher_scan_executor() -> None:
-    global _watcher_scan_pool
     with _watcher_scan_pool_lock:
-        pool, _watcher_scan_pool = _watcher_scan_pool, None
-    if pool is not None:
+        pools = list(_watcher_scan_pools.values())
+        _watcher_scan_pools.clear()
+    for pool in pools:
         pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -5943,7 +5995,7 @@ async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> _WatcherScanO
     """
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(_watcher_scan_executor(), scan_vault, vault)
+        result = await loop.run_in_executor(_watcher_scan_executor(int(vault["id"])), scan_vault, vault)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -5992,20 +6044,55 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
     registered_gaps = watch_plan.UnobservedPaths()
     registered_debt: dict[str, int] = {}
 
-    def schedule_gap_scan() -> None:
-        nonlocal next_scan_at
-        next_scan_at = max(loop.time(), last_scan_end + WATCHER_GAP_RESCAN_MIN_SECONDS)
+    # The paired scan runs beside the observer, never inside its loop (#690):
+    # while it waits for its turn or walks the tree, events are still consumed
+    # and applied whenever the Vault is free.
+    scan_task: asyncio.Task[_WatcherScanOutcome] | None = None
+    # Bumped each time a scan becomes due. A scan that was already running when
+    # it was bumped may have walked past the gap that made it due.
+    scan_due_mark = 0
+    scan_started_mark = 0
+    # Consecutive registrations that failed on the same vanished folder.
+    vanished_streak: dict[str, int] = {}
 
-    async def reconcile() -> None:
-        nonlocal next_scan_at, recheck_at, last_scan_end, scan_seconds
-        began = loop.time()
-        outcome = await _reconcile_vault_after_watcher(vault)
+    def request_scan(at: float) -> None:
+        nonlocal next_scan_at, scan_due_mark
+        next_scan_at = at
+        scan_due_mark += 1
+
+    def schedule_gap_scan() -> None:
+        request_scan(max(loop.time(), last_scan_end + WATCHER_GAP_RESCAN_MIN_SECONDS))
+
+    def start_reconcile() -> None:
+        nonlocal scan_task, scan_started_mark
+        if scan_task is None:
+            scan_started_mark = scan_due_mark
+            scan_task = asyncio.create_task(_reconcile_vault_after_watcher(vault))
+
+    def collect_reconcile() -> None:
+        nonlocal scan_task, next_scan_at, recheck_at, last_scan_end
+        if scan_task is None or not scan_task.done():
+            return
+        finished, scan_task = scan_task, None
+        outcome = finished.result()
         last_scan_end = loop.time()
-        scan_seconds += last_scan_end - began
-        next_scan_at = None if outcome.retry_after is None else last_scan_end + outcome.retry_after
+        retry_at = None if outcome.retry_after is None else last_scan_end + outcome.retry_after
+        if scan_due_mark != scan_started_mark and next_scan_at is not None:
+            # A gap opened while this scan ran: it stays due, at the usual pace.
+            gap_at = max(next_scan_at, last_scan_end + WATCHER_GAP_RESCAN_MIN_SECONDS)
+            next_scan_at = gap_at if retry_at is None else min(gap_at, retry_at)
+        else:
+            next_scan_at = retry_at
         recheck_at = last_scan_end + WATCHER_RECHECK_SECONDS if outcome.recheck else None
 
-    scan_seconds = 0.0
+    def cancel_scan(_task: asyncio.Future[Any]) -> None:
+        # A stopped watcher leaves no paired scan behind in the event loop.
+        if scan_task is not None:
+            scan_task.cancel()
+
+    current = asyncio.current_task()
+    if current is not None:
+        current.add_done_callback(cancel_scan)
     while True:
         if vault_relocation.local_work_suspended(vault):
             await asyncio.sleep(1)
@@ -6049,7 +6136,6 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
         recovered = False
         applying = False
         started_at = loop.time()
-        scan_seconds = 0.0
         try:
             runtime = await asyncio.to_thread(_runtime_settings)
 
@@ -6089,6 +6175,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
             try:
                 while True:
                     native_changes = set() if rearm_required else await anext(watcher)
+                    collect_reconcile()
                     if not rearm_required:
                         watch_plan.record_registration(
                             vault_id, registered_gaps, owner=asyncio.current_task(), debt=registered_debt,
@@ -6105,11 +6192,35 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         (new_directories and not settings.filesystem_watch_force_polling)
                         or rearm_required
                     ):
-                        old_gaps = registered_gaps
+                        old_gaps, old_debt = registered_gaps, registered_debt
                         successor = new_observer()
                         # Old observer is still live while the successor takes
                         # its recursive snapshot / registers native watches.
-                        first = await anext(successor)
+                        try:
+                            first = await anext(successor)
+                        except Exception as exc:
+                            vanished = await asyncio.to_thread(
+                                _watcher_vanished_directories, exc, root,
+                            )
+                            if not vanished or any(
+                                vanished_streak.get(path, 0) + 1 >= WATCHER_VANISHED_MAX_RETRIES
+                                for path in vanished
+                            ):
+                                raise
+                            # A folder vanished while the successor registered
+                            # it (#690). The old observer never stopped, so no
+                            # event was lost: keep it, walk that path, and
+                            # register again. Not a failure of the watcher.
+                            for path in vanished:
+                                vanished_streak[path] = vanished_streak.get(path, 0) + 1
+                            failed, successor = successor, None
+                            await failed.aclose()
+                            registered_gaps, registered_debt = old_gaps, old_debt
+                            pending_reconcile |= {(Change.added, str(root / path)) for path in vanished}
+                            rearm_required = True
+                            await asyncio.sleep(WATCHER_VANISHED_RESTART_SECONDS)
+                            continue
+                        vanished_streak.clear()
                         settled = watch_plan.record_registration(
                             vault_id, registered_gaps, owner=asyncio.current_task(), debt=registered_debt,
                         )
@@ -6117,7 +6228,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                             # Coverage expanded: files may predate the successor's
                             # snapshot. Pair this handoff with a scan, just like
                             # a healthy watcher start (ADR 0027), before success.
-                            next_scan_at = loop.time()
+                            request_scan(loop.time())
                         pending_reconcile |= first
                         tail = await anext(watcher)
                         pending_reconcile |= tail
@@ -6139,11 +6250,17 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         # Reconcile only once every added subtree is covered by
                         # a registered successor, including additions made in
                         # the preceding handoff itself.
+                        # A busy Vault (its scan walking, a Job holding it)
+                        # keeps the batch: events go on being consumed and
+                        # the batch is applied once the Vault is free (#690).
                         applying = True
-                        await asyncio.to_thread(_apply_watcher_changes, vault, pending_reconcile)
+                        applied = await asyncio.to_thread(
+                            _apply_watcher_changes, vault, pending_reconcile, wait=False,
+                        )
                         applying = False
-                        batch_failures = 0
-                        pending_reconcile = set()
+                        if applied is not None:
+                            batch_failures = 0
+                            pending_reconcile = set()
                     if not recovered and not pending_reconcile and not rearm_required:
                         # First fully healthy cycle of this run: registration
                         # barrier passed and every pending change applied.
@@ -6157,12 +6274,14 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         recheck_at = loop.time() + WATCHER_RECHECK_SECONDS
                     if (
                         recovered and not pending_reconcile and not rearm_required
+                        and scan_task is None
                         and next_scan_at is not None and loop.time() >= next_scan_at
                     ):
                         recheck_at = None
-                        await reconcile()
+                        start_reconcile()
                     elif (
                         recovered and not pending_reconcile and not rearm_required
+                        and scan_task is None
                         and recheck_at is not None and loop.time() >= recheck_at
                     ):
                         known = watch_plan.unobserved(vault_id)
@@ -6170,7 +6289,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                             watch_plan.still_unobserved, root, known,
                         )
                         if repaired:
-                            await reconcile()
+                            start_reconcile()
                         else:
                             recheck_at = loop.time() + WATCHER_RECHECK_SECONDS
                     if (
@@ -6189,10 +6308,27 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
             raise
         except Exception as exc:
             now = loop.time()
-            # Quick repeated failures grow the pause. Time spent scanning is not
-            # time the watcher stayed up.
-            uptime = now - started_at - scan_seconds
-            failure_streak = 1 if uptime >= WATCHER_STABLE_SECONDS else failure_streak + 1
+            collect_reconcile()
+            # A folder that vanished while the observer registered it is the
+            # churn of a live source, not a broken watcher (#690): register
+            # again soon, quietly, and walk that path. The events around the
+            # stopped observer are lost all the same: the gap scan stays.
+            vanished = await asyncio.to_thread(_watcher_vanished_directories, exc, root)
+            if now - started_at >= WATCHER_STABLE_SECONDS:
+                # The observer stayed up: whatever vanished before is history.
+                vanished_streak.clear()
+            quiet_vanish = bool(vanished) and all(
+                vanished_streak.get(path, 0) + 1 < WATCHER_VANISHED_MAX_RETRIES for path in vanished
+            )
+            for path in vanished:
+                vanished_streak[path] = vanished_streak.get(path, 0) + 1
+            if quiet_vanish:
+                pending_reconcile |= {(Change.added, str(root / path)) for path in vanished}
+            else:
+                # Quick repeated failures grow the pause. The paired scan runs
+                # beside the observer, so its time is not counted either way.
+                uptime = now - started_at
+                failure_streak = 1 if uptime >= WATCHER_STABLE_SECONDS else failure_streak + 1
             schedule_gap_scan()
             if applying and pending_reconcile:
                 batch_failures += 1
@@ -6211,7 +6347,12 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         report_problem(
                             connection, event="file_unreadable", vault_id=vault_id, path=relative,
                         )
-            if _is_undecodable_path_error(exc):
+            if quiet_vanish:
+                logging.getLogger(__name__).info(
+                    "Source watcher of Vault %s registers again: %s vanished while it was "
+                    "being registered", vault_id, ", ".join(sorted(vanished)),
+                )
+            elif _is_undecodable_path_error(exc):
                 # A filename that is not UTF-8 stopped the native observer and the
                 # events around it are lost: not an internal error. The Vault is
                 # not confirmed until a scan has looked again; that scan names the
@@ -6253,14 +6394,21 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                     )
                 else:
                     await asyncio.to_thread(_report_worker_error, "source_watcher", exc, vault_id)
-            if not recovered and not denied and next_scan_at is not None and loop.time() >= next_scan_at:
+            if (
+                not recovered and not denied and not quiet_vanish
+                and next_scan_at is not None and loop.time() >= next_scan_at
+            ):
                 # Unknown registration failures still need a scan to name the
                 # gap. A named permission gap already has a problem and plan:
                 # wait for registration around it before scanning. Otherwise a
                 # repair before this walk could clear source health without any
                 # registered observer, and consume the start's paired scan.
-                await reconcile()
-            await asyncio.sleep(_watcher_restart_delay(failure_streak))
+                start_reconcile()
+            await asyncio.sleep(
+                WATCHER_VANISHED_RESTART_SECONDS if quiet_vanish
+                else _watcher_restart_delay(failure_streak)
+            )
+
 
 
 def _enabled_vaults() -> list[dict[str, Any]]:
