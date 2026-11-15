@@ -2905,6 +2905,9 @@
         "runs_as_root": {
           "type": "boolean"
         },
+        "dac_override": {
+          "type": "boolean"
+        },
         "cloud_preflight": {
           "type": "object",
           "properties": {

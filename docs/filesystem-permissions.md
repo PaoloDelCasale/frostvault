@@ -93,12 +93,23 @@ to bypass the rejection.
 |---|---|---|
 | Who it is | `nobody:users`, the usual owner of SMB shares | root **without** root privileges |
 | Upload and scan | files readable by `99:100` (others' `644` included) | the same, plus files readable only by root |
-| Recovery in place | only in directories writable by `99:100`; the file belongs to `99:100` | also in root's `755` directories; the file gets its original owner and mode |
+| Recovery in place | only in directories writable by `99:100`; the file belongs to `99:100` | only in directories writable by root: root's `755` ones, not `99:100 0755`; the file gets its original owner and mode |
 | Suited to | shares written over SMB or by containers running as `99:100` | shares written by containers running as root (Immich, Frigate) |
 
 Upload and scan work in both modes on the typical Unraid shares. Recovery in
 place does not work with `99:100` on shares that containers running as root
 wrote (`root:root`, directories `755`): no directory there is writable.
+
+Root without the capabilities that bypass permissions is subject to the same
+checks as any user: it **cannot create, rename or remove entries in folders of
+other owners** (for example `99:100 0755`). Recovery in place, freeing local
+space and Reconnect Folder fail there. So use root only for trees owned by root;
+for a share of one other owner set `PUID`/`PGID` to that owner. For shares with
+several owners see [Shares with several owners](#shares-with-several-owners-frostvault_allow_dac_override1).
+FrostVault checks the folder before it writes (a Recovery before it asks S3 for
+a restore) and says which folder, its owner and mode, and FrostVault's identity:
+«FrostVault's user (0:0, groups 100) may not write the folder …: it belongs to
+99:100 with mode 0755».
 
 ### Running as root (PUID=0)
 
@@ -110,6 +121,8 @@ container so uid 0 is only an ordinary owner of root's files:
       PUID: 0
       PGID: 0
     user: "0:0"
+    # Root reads the 0640 files of the users group (Unraid's PGID 100).
+    group_add: ["100"]
     cap_drop: [ALL]
     cap_add: [CHOWN, KILL]
     security_opt: ["no-new-privileges:true"]
@@ -119,7 +132,11 @@ container so uid 0 is only an ordinary owner of root's files:
 ```
 
 With the supplied manifests, `PUID=0` and `PGID=0` in `.env` already render
-`user: "0:0"` and the tmpfs owners; add `cap_add: [CHOWN, KILL]` in an override.
+`user: "0:0"` and the tmpfs owners; add `group_add` and
+`cap_add: [CHOWN, KILL]` in an override. `user: "0:0"` drops the supplementary
+groups: without `group_add` (use your share's group, often `100` on Unraid)
+root cannot read files that other owners made readable only to their group,
+and the startup log warns about it.
 
 Before anything starts as root, the entrypoint reads `CapEff` and `CapBnd` from
 `/proc/self/status` and **refuses to start** (exit code 64, with the reason) if
@@ -127,7 +144,8 @@ the process holds, or could regain, any capability that bypasses file
 permissions:
 
 - `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` (read, write and traverse
-  anything);
+  anything), unless explicitly allowed for
+  [shares with several owners](#shares-with-several-owners-frostvault_allow_dac_override1);
 - `CAP_FOWNER` (change modes and timestamps of others' files);
 - `CAP_SYS_ADMIN`;
 
@@ -143,6 +161,37 @@ Capabilities added back in root mode:
 |---|---|
 | `CHOWN` | gives a recovered file its original owner; without it the file stays `0:0` and the Job outcome says so |
 | `KILL` | optional: FrostVault signals only processes of its own uid, which needs no capability; it bypasses no file permission |
+
+### Shares with several owners (FROSTVAULT_ALLOW_DAC_OVERRIDE=1)
+
+When one share holds folders of several owners (for example `root` from Immich
+and `99:100` from SMB) neither identity can recover everywhere. Only then, set
+`FROSTVAULT_ALLOW_DAC_OVERRIDE=1` with `PUID=0 PGID=0` and add the two
+capabilities back:
+
+```yaml
+    environment:
+      PUID: 0
+      PGID: 0
+      FROSTVAULT_ALLOW_DAC_OVERRIDE: "1"
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, KILL, DAC_OVERRIDE, DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+```
+
+The one variable allows both `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`; the
+entrypoint refuses them without it, and refuses the variable with any other
+`PUID`/`PGID`. `CAP_FOWNER`, `CAP_SYS_ADMIN` and a missing `no-new-privileges`
+stay refused. The startup log and the **System** page say that FrostVault
+bypasses file permissions.
+
+Risks: FrostVault then reads, writes and deletes **every** file mounted into
+the container, whatever its owner and mode, like a full root process on the
+host for those mounts. A compromised FrostVault, or a bug in a write path, is
+no longer limited by any permission under `/sources`. Mount only the shares
+FrostVault protects, read-only where it never recovers or frees space, and
+prefer a `PUID` per share when the owners are separate trees.
 
 Risks: a compromised FrostVault running as root can modify every file owned by
 root that is mounted into the container, in addition to everything writable by
@@ -176,8 +225,15 @@ the published inode, sets the original mode and then the original owner:
 
 The kernel clears the set-user-ID and set-group-ID bits when the owner changes;
 without `CAP_FSETID` FrostVault cannot set them again on a file of another
-owner. Files uploaded before v0.8.0 have no recorded owner: their Recovery is
-unchanged. Directory owners and modes created by a Recovery are not restored.
+owner. Files uploaded before v0.8.0 have no recorded owner: with `CHOWN` they
+get the owner (uid and gid) of the folder they are recovered into, so a share of
+`99:100` folders does not fill with `0:0` files; their mode is the default one.
+Without `CHOWN` they keep the runtime identity, and the Recovery does not fail.
+Directory owners and modes created by a Recovery are not restored.
+
+A Recovery that fails after its S3 restore completed (for example because the
+folder became unwritable) says until when the restored copy stays at AWS:
+fix the cause and press Recover again, which reuses it without a new restore.
 
 ## Linux (native bind mounts)
 
@@ -259,9 +315,15 @@ repair the desired plan, but cannot erase this registration debt.
 An unreadable directory is not watched, but the watcher of the rest of the
 Vault resumes, whichever folders sit next to it:
 the readable part of the tree is registered around the gap, and registered as a
-whole again once the folder is repaired. The Vault stays `unconfirmed` while a path
-is unreadable: the other files are still uploaded, but no local space is freed
-and nothing is deleted from the cloud. Because fixing permissions raises no
+whole again once the folder is repaired; the log says so in one line, without a
+traceback. The Vault stays `unconfirmed` while a path
+is unreadable: the other files are still uploaded, nothing is deleted from the
+cloud, and no local space is freed on that path, below it or in the folders
+above it. Local Copies elsewhere in the Vault can still be released
+([ADR-0042](adr/0042-local-release-blocked-by-path.md)); the refusal names the
+path. When it can be stat'ed, the problem shows the path's owner and mode and
+FrostVault's identity («owned by uid 99 with mode 0700, not readable by
+FrostVault's user 0:0, groups 100»). Because fixing permissions raises no
 event, FrostVault looks at the reported paths once a minute and scans as soon as
 one is readable; the problem then closes by itself, path by path. (With
 `FILESYSTEM_WATCH_FORCE_POLLING=true` the same plan is used, so the poller never
@@ -292,8 +354,8 @@ reported as an unsupported name with the path shown in escaped form
 everything beneath it, which is not watched in real time either. Because such a
 name may be the new name of something that was catalogued under a different
 text, the Vault stays `unconfirmed` while it exists and no file is marked missing:
-the other files are still uploaded, but no local space is freed and nothing is
-deleted from the cloud. A file the watcher sees disappear next to such a name is
+the other files are still uploaded, nothing is deleted from the cloud, and no
+local space is freed on that path, below it or in the folders above it. A file the watcher sees disappear next to such a name is
 not marked missing either: it may only have been renamed. Rename it (from a
 client that shows the real name); the problem closes at the first scan that no
 longer finds it.

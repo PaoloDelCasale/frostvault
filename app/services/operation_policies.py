@@ -473,16 +473,30 @@ def queue_auto_uploads(
     return queued
 
 
-def local_release_is_confirmed(
-    connection: Any, vault_id: int
-) -> bool:
-    """Fail closed on absent/untrusted sources or lost cloud observability.
+# Source health errors whose cause is a named path (#681, ADR-0042): an
+# unreadable file or folder, or a name that is not UTF-8. Each has its own
+# Problem with the path, and it blocks local release only on that path, below
+# it and in the folders above it. Every other source error blocks the Vault.
+SOURCE_SCAN_INCOMPLETE = "Source scan incomplete: unreadable paths or unsupported names"
+SOURCE_WATCHER_DENIED = "Source watcher stopped on a folder it may not read"
+PATH_SCOPED_SOURCE_ERRORS = frozenset({SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED})
+PATH_PROBLEM_EVENTS = ("file_unreadable", "file_name_unsupported")
+
+
+def local_release_blocking_paths(connection: Any, vault_id: int) -> tuple[str, ...] | None:
+    """What keeps Local Copies of this Vault from being released.
+
+    ``None``: the whole Vault (absent or untrusted source, lost cloud or audit
+    observability, a scan or watcher failure without a named path, a
+    non-active lifecycle). Otherwise the paths of the open unreadable-path and
+    unsupported-name Problems; empty when nothing blocks. An incomplete source
+    observation without any such Problem fails closed on the whole Vault.
 
     This is additional to, never a substitute for, the worker's exact-version
     HEAD and local digest checks. Disabling a Vault is not consent to deletion.
+    Cloud-side deletion keeps requiring the whole Vault confirmed.
     """
     from .component_health import load_vault_health
-    from .protection_states import observation_is_unconfirmed
     from .source_layout import vault_local_access
 
     vault = connection.execute(
@@ -491,9 +505,49 @@ def local_release_is_confirmed(
     # Only an active Vault: reconnect_required, stopping and tombstone never
     # release a Local Copy (#607).
     if not vault or vault["lifecycle"] != "active":
+        return None
+    if not vault_local_access(vault["source_root"]).local_operations_allowed:
+        return None
+    health = load_vault_health(connection, vault_id)
+    if any((health.get(component) or {}).get("last_error") for component in ("cloud", "audit")):
+        return None
+    source_error = (health.get("source") or {}).get("last_error")
+    if not source_error:
+        return ()
+    if source_error not in PATH_SCOPED_SOURCE_ERRORS:
+        return None
+    rows = connection.execute(
+        "SELECT DISTINCT message_params->>'path' AS path FROM notifications "
+        "WHERE vault_id=%s AND problem_status='open' AND event=ANY(%s) "
+        "AND coalesce(message_params->>'path', '') <> ''",
+        (vault_id, list(PATH_PROBLEM_EVENTS)),
+    ).fetchall()
+    paths = tuple(sorted(str(row["path"]) for row in rows))
+    return paths or None
+
+
+def blocking_path_for(path: str, blocking: Sequence[str]) -> str | None:
+    """The first blocking path equal to ``path``, above it or below it."""
+    for candidate in blocking:
+        if (not path or path == candidate or path.startswith(candidate + "/")
+                or candidate.startswith(path + "/")):
+            return candidate
+    return None
+
+
+def local_release_is_confirmed(
+    connection: Any, vault_id: int, path: str | None = None,
+) -> bool:
+    """Whether a Local Copy at ``path`` (any, when None) may be released.
+
+    With ``path`` None only nothing blocking at all counts as confirmed.
+    """
+    blocking = local_release_blocking_paths(connection, vault_id)
+    if blocking is None:
         return False
-    return (vault_local_access(vault["source_root"]).local_operations_allowed
-            and not observation_is_unconfirmed(load_vault_health(connection, vault_id)))
+    if path is None:
+        return not blocking
+    return blocking_path_for(path, blocking) is None
 
 
 def queue_auto_local_cleanups(
@@ -511,7 +565,8 @@ def queue_auto_local_cleanups(
     if policy.local_release_after_days is None:
         return 0
     validate_policy(policy)
-    if not local_release_is_confirmed(connection, vault_id):
+    blocking = local_release_blocking_paths(connection, vault_id)
+    if blocking is None:
         return 0
     current = now or datetime.now(timezone.utc)
     # The present Local Copy is matched to its verified, available Current:
@@ -535,6 +590,8 @@ def queue_auto_local_cleanups(
     timestamp = current.isoformat()
     queued = 0
     for row in rows:
+        if blocking and blocking_path_for(row["path"], blocking) is not None:
+            continue
         if not local_cleanup_is_due(
             verified_at=row["verified_at"],
             retention_days=policy.local_release_after_days,

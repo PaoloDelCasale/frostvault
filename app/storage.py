@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import email.utils
 import hashlib
 import json
 import logging
@@ -41,6 +42,7 @@ from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services import watch_plan
+from .services import write_access
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
 from .i18n import DEFAULT_LOCALE, format_message_params, parse_message_params, translate
@@ -130,6 +132,8 @@ from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
     local_cleanup_is_due,
+    SOURCE_SCAN_INCOMPLETE,
+    SOURCE_WATCHER_DENIED,
     local_release_is_confirmed,
     queue_auto_uploads,
     auto_upload_path_is_included,
@@ -1939,7 +1943,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                     vault_id, "source", ok=confirmed, verified=confirmed,
                     error=(None if confirmed else
                            "Source watcher registration pending" if complete else
-                           "Source scan incomplete: unreadable paths or unsupported names"),
+                           SOURCE_SCAN_INCOMPLETE),
                     notify_problem=confirmed,
                 )
         else:
@@ -3768,7 +3772,7 @@ def _checked_local_release_target(
             return _checked_local_release_target(job, connection=connection)
     target = ArchiveCatalog(connection).get_job_target(job["id"])
     if not local_release_is_confirmed(
-        connection, int(job["vault_id"])
+        connection, int(job["vault_id"]), job["path"]
     ):
         raise RuntimeError("Cleanup blocked: local or cloud protection is not confirmed")
     if target and target["job_origin"] == "automatic":
@@ -3890,6 +3894,8 @@ def _process_free_space(job: dict[str, Any]) -> None:
         raise RuntimeError("Cleanup blocked: exact S3 version or size no longer matches")
     ensure_job_active(job["id"], "Freeing local space stopped")
     local_path = safe_local_entry_path(job["source_root"], job["path"])
+    # The claim renames the Local Copy inside its folder (#681).
+    write_access.require_writable_directory(local_path.parent)
     claimed_path = local_path.with_name(
         f".{local_path.name}.cleanup-{uuid.uuid4().hex}.tmp"
     )
@@ -4163,6 +4169,45 @@ def _apply_original_ownership(fd: int, ownership: Any) -> bool:
     return True
 
 
+def _inherit_folder_owner(fd: int, folder: Path) -> None:
+    """A version archived without owner evidence gets its folder's owner (#681).
+
+    Before v0.8 no owner was recorded. Running as root, keeping the process
+    identity would leave a ``0:0`` file that the share's other containers may
+    no longer change. The mode stays the default one; a refused ``chown``
+    (no CAP_CHOWN) keeps the process identity and never fails the Recovery.
+    """
+    try:
+        folder_stat = os.stat(folder)
+        current = os.fstat(fd)
+        if (current.st_uid, current.st_gid) != (folder_stat.st_uid, folder_stat.st_gid):
+            os.fchown(fd, folder_stat.st_uid, folder_stat.st_gid)
+    except OSError:
+        pass
+
+
+def _restore_expiry_date(expiry: str | None) -> str | None:
+    """The day an S3 restore expires (``expiry-date`` of the Restore header)."""
+    if not expiry:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(expiry).date().isoformat()
+    except (TypeError, ValueError, IndexError):
+        try:
+            return datetime.fromisoformat(str(expiry)).date().isoformat()
+        except ValueError:
+            return None
+
+
+def _local_failure_message(
+    job: dict[str, Any], error: write_access.DestinationNotWritable,
+) -> tuple[str, dict[str, Any]]:
+    until = job.get("_restore_kept_until") if job["action"] == "recover" else None
+    if until:
+        return "job.destination_not_writable_restore_kept", {**error.message_params, "until": until}
+    return error.message_key, dict(error.message_params)
+
+
 def process_recover(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Recovery stopped")
     validate_cloud_vault(job)
@@ -4208,6 +4253,10 @@ def process_recover(job: dict[str, Any]) -> None:
             days=days,
         )
         if job["status"] != "restoring" and restore_state == "not_requested":
+            # A restore costs money and hours: never ask for one that the
+            # final step could not publish (#681).
+            write_access.require_writable_parent(
+                job["source_root"], safe_local_entry_path(job["source_root"], job["path"]))
             s3_client().restore_object(
                 Bucket=job["s3_bucket"],
                 Key=object_key,
@@ -4241,7 +4290,12 @@ def process_recover(job: dict[str, Any]) -> None:
         )
         return
 
+    if needs_restore:
+        # From here a failure leaves the restored copy at AWS: the Job says
+        # until when Recover can reuse it without a new restore (#681).
+        job["_restore_kept_until"] = _restore_expiry_date(restore_expiry)
     destination = safe_local_entry_path(job["source_root"], job["path"])
+    write_access.require_writable_parent(job["source_root"], destination)
     temporary = destination.with_name(
         f".{destination.name}.restore-{uuid.uuid4().hex}.tmp"
     )
@@ -4293,6 +4347,8 @@ def process_recover(job: dict[str, Any]) -> None:
                 _publish_without_replacing(temporary, destination)
                 if original_ownership is not None:
                     ownership_applied = _apply_original_ownership(published_fd, original_ownership)
+                else:
+                    _inherit_folder_owner(published_fd, destination.parent)
                 published_stat = os.fstat(published_fd)
             finally:
                 os.close(published_fd)
@@ -4810,6 +4866,21 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 removed = False
             if removed and _close_removed_upload(job):
                 return True
+        if job["action"] in {"recover", "free-space"}:
+            # A folder FrostVault may not write: say which, whose and with
+            # which mode, instead of a raw Errno 13 (#681). A rename Job
+            # writes nothing locally (the Owner already renamed the file; the
+            # Job copies its cloud key), so its EACCES is a read and keeps
+            # its own message.
+            not_writable = write_access.from_permission_error(exc)
+            if not_writable is not None:
+                key, params = _local_failure_message(job, not_writable)
+                failed = set_job(job["id"], "failed", message_key=key, message_params=params)
+                if failed and job["action"] == "free-space":
+                    record_automatic_cleanup_outcome(
+                        job, event="local_cleanup.failed", outcome="failure",
+                    )
+                return True
         message = str(exc)
         failure_kind = (
             classify_upload_failure(exc) if job["action"] == "upload" else ""
@@ -4857,6 +4928,9 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                     job["id"], message_key="job.retrying_transient",
                     message_params={"error": message}, retry_count=next_attempt,
                 )
+        if job["action"] == "recover" and job.get("_restore_kept_until"):
+            return set_job(job["id"], "failed", message_key="job.recovery_failed_restore_kept",
+                           message_params={"error": message, "until": job["_restore_kept_until"]})
         failed = set_job(job["id"], "failed", message)
         if failed and job["action"] == "free-space":
             record_automatic_cleanup_outcome(
@@ -6060,11 +6134,17 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                 # Native registration or the polling backend could not enter
                 # a folder: a path problem, not an internal error. The restart
                 # registers around it and the cheap retry repairs coverage.
-                worker_error_store.log_worker_error("source_watcher", exc, vault_id)
+                # One line, no traceback: the file_unreadable Problem names
+                # the path and real-time detection goes on elsewhere (#681).
+                logging.getLogger(__name__).warning(
+                    "Source watcher of Vault %s cannot enter %s; the rest of the Vault stays "
+                    "watched in real time (see the unreadable-path Problem)",
+                    vault_id, ", ".join(sorted(denied)),
+                )
                 await asyncio.to_thread(
                     _record_scan_component_health, vault_id, "source",
                     ok=False, notify_problem=False,
-                    error="Source watcher stopped on a folder it may not read",
+                    error=SOURCE_WATCHER_DENIED,
                 )
             else:
                 with status_lock:

@@ -85,6 +85,14 @@ def path_is_writable(path: Path | str) -> bool:
     return os.access(Path(path), os.W_OK)
 
 
+def path_is_read_only_mount(path: Path | str) -> bool:
+    """Whether the filesystem at ``path`` is mounted read-only (ST_RDONLY)."""
+    try:
+        return bool(os.statvfs(Path(path)).f_flag & os.ST_RDONLY)
+    except OSError:
+        return False
+
+
 def path_is_accessible(path: Path | str) -> bool:
     """A Source Volume needs directory read and search access."""
     return os.access(Path(path), os.R_OK | os.X_OK)

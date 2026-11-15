@@ -65,6 +65,11 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     key = localized.get("remediation_key")
     if isinstance(key, str) and has_message(key, "en"):
         localized["remediation"] = translate(key, locale=locale)
+    # An unreadable path says whose it is, when it could be stat'ed (#681).
+    localized["access"] = (
+        translate("notification.file_unreadable.access", locale=locale, **localized)
+        if "owner_uid" in localized else ""
+    )
     return localized
 
 
@@ -220,7 +225,8 @@ def enqueue_notification(
     if title_key and not title:
         title = translate(title_key, **params)
     if body_key and not body:
-        rendered_params = _recovery_approval_params(params) if event == "recovery_approval" else params
+        rendered_params = (_recovery_approval_params(params) if event == "recovery_approval"
+                           else _localized_params(params, None))
         body = translate(body_key, **rendered_params)
     effective_in_app = (
         bool(in_app_enabled)
@@ -685,7 +691,7 @@ def set_problem(
         "UPDATE notifications SET problem_status='open', resolved_at=NULL, "
         "message_params=%s, body=%s, read_at=CASE WHEN %s THEN NULL ELSE read_at END, "
         "created_at=CASE WHEN %s THEN %s ELSE created_at END WHERE id=%s",
-        (_params_json(context), translate(f"notification.{event}.body", **context),
+        (_params_json(context), translate(f"notification.{event}.body", **_localized_params(context, None)),
          bool(reopen), bool(reopen), stamp, item["id"]),
     )
     if reopen:

@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -283,6 +284,22 @@ class EntrypointHardeningTests(unittest.TestCase):
         self.assertIn("exec gosu \"${RUNTIME_IDENTITY}\" \"$0\" \"$@\"", entrypoint)
         self.assertIn("python -m app.runtime_privileges || exit 64", entrypoint)
         self.assertNotRegex(entrypoint, r"(?m)^\s*(?:groupadd|useradd)\b")
+
+    def test_dac_override_opt_in_is_only_for_root_and_only_the_value_1(self) -> None:
+        # #681: refused before any identity switch or capability check.
+        bin_dir = Path(sys.executable).parent
+        for puid, value, message in (("99", "1", "applies only to root"),
+                                     ("0", "yes", "must be 1"), ("99", "true", "must be 1")):
+            with self.subTest(puid=puid, value=value):
+                completed = subprocess.run(
+                    ["sh", str(ENTRYPOINT_PATH), "true"], check=False, text=True, capture_output=True,
+                    env={"PATH": f"{bin_dir}:/usr/bin:/bin", "PUID": puid, "PGID": puid,
+                         "FROSTVAULT_ALLOW_DAC_OVERRIDE": value},
+                    timeout=30,
+                )
+                self.assertEqual(completed.returncode, 64, completed.stderr)
+                self.assertIn(message, completed.stderr)
+                self.assertIn("FROSTVAULT_ALLOW_DAC_OVERRIDE", completed.stderr)
 
     def test_entrypoint_only_prepares_runtime_mounts_not_sources(self) -> None:
         entrypoint = ENTRYPOINT_PATH.read_text(encoding="utf-8")

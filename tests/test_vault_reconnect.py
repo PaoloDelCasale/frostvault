@@ -198,6 +198,24 @@ class VaultReconnectTests(unittest.TestCase):
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "overlap")
 
+    def test_unwritable_volume_or_destination_says_whose_it_is(self):
+        # #681: root without DAC_OVERRIDE on a 99:100 0755 volume root.
+        from app.services import write_access
+        volume = self.volume
+        with patch.object(source_layout, "path_is_writable", side_effect=lambda p: Path(p) != volume):
+            with self.assertRaises(vault_relocation.VaultRelocationError) as error:
+                self.reconnect()
+        self.assertEqual(error.exception.reason, "volume_not_writable")
+        self.assertEqual(error.exception.params["path"], str(self.volume))
+        self.assertEqual(error.exception.params["identity"], write_access.runtime_identity()["identity"])
+        new = self.new
+        with patch.object(write_access, "_writable", side_effect=lambda p: Path(p) != new):
+            with self.assertRaises(vault_relocation.VaultRelocationError) as error:
+                self.reconnect()
+        self.assertEqual(error.exception.reason, "destination_not_writable")
+        self.assertIn("mode", error.exception.params)
+        self.assertEqual(self.row()["source_root"], str(self.old))
+
     def test_active_job_and_stopped_protection_block_reconnect(self):
         with PostgresConnection(str(self.db_path)) as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")

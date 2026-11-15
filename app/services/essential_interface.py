@@ -8,6 +8,7 @@ from typing import Any
 
 from .cost_estimates import estimate_storage_month, list_prices
 from . import notifications, cloud_preflight_gate, metadata_backups
+from ..runtime_privileges import holds_dac_override, read_status
 
 
 def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
@@ -61,6 +62,8 @@ def overview(connection: Any, *, locale: str | None = None) -> dict[str, Any]:
         "email_configured": notifications.email_configured(),
         # #679: PUID=0 is an explicit choice; the System page says so.
         "runs_as_root": os.geteuid() == 0,
+        # #681: root that bypasses file permissions by explicit opt-in.
+        "dac_override": os.geteuid() == 0 and holds_dac_override(read_status()),
         "cloud_preflight": cloud_preflight_gate.localized_snapshot(
             cloud_preflight_gate.snapshot(connection), locale),
         "last_verified_backup": backup["verified_at"] if backup else None,
