@@ -5,6 +5,9 @@ owns their ordering on the rebuilt model (#590, ADR-0035/0036):
 
 1. the pre-hash observation: the Local Copy generation read (or recorded)
    before hashing is the only one any later publication compares against;
+   below 8 MiB the hashing pass is the only read of the file: its bytes are
+   kept in a buffer reserved before the read and are exactly what the PUT
+   sends (#702);
 2. the Upload Snapshot and its target, written once by ``prepare``; each send
    is an Upload Attempt with its own token, committed as send-started before
    the first provider request;
@@ -28,6 +31,7 @@ There is deliberately no import of storage, executor, queue or heartbeat here.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -41,7 +45,10 @@ import psycopg
 from . import upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
 from .snapshot_cleanup import RESUME_NEEDED_SQL
-from .upload_snapshot import CHUNK_SIZE, UploadSnapshot, UploadProofMismatch, unsupported_checksum_api
+from .upload_snapshot import (
+    CHUNK_SIZE, MULTIPART_THRESHOLD, SnapshotPayload, UploadSnapshot, UploadProofMismatch,
+    unsupported_checksum_api,
+)
 
 
 @dataclass(frozen=True)
@@ -124,6 +131,17 @@ class _Run:
     verification_started: bool = False
     failure_reason: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    # #702: the bytes a single-PUT hashing pass read, and the buffer
+    # reservation taken before that read. Both die with this run.
+    payload: SnapshotPayload | None = None
+    payload_hold: ExitStack | None = None
+
+    def release_payload(self) -> None:
+        """Drop the kept bytes and return their buffer reservation; idempotent."""
+        self.payload = None
+        hold, self.payload_hold = self.payload_hold, None
+        if hold is not None:
+            hold.close()
 
 
 class UploadExecution:
@@ -211,6 +229,10 @@ class UploadExecution:
             if run.verification_started:
                 w._record_verification_failure(run.failure_reason or "stream")
             raise
+        finally:
+            # Match with Current, automatic gate, cancellation, error or any
+            # BaseException: the kept payload and its reservation end here.
+            run.release_payload()
 
     def _db(self, job: dict[str, Any], mutation: Any, *, shared: bool = False) -> Any:
         result = self.worker._upload_catalog_unit(job, mutation, shared=shared)
@@ -428,14 +450,31 @@ class UploadExecution:
     def _hash(self, run: _Run) -> UploadOutcome | None:
         w, job = self.worker, run.job
         w.set_job(job["id"], "uploading", message_key="job.hashing_local_file")
-        # Admission precedes the very first read/buffer allocation.
-        with run.pipeline.prepare.take(run.check_active, 2 * CHUNK_SIZE):
-            snapshot, hashed = w.prepare_upload_snapshot(run.source, run.check_active)
         observed = run.observed
         assert observed is not None
+        payload = None
+        if run.version is None and observed.st_size < MULTIPART_THRESHOLD:
+            # #702: a single PUT sends the bytes this pass hashes. Their buffer
+            # is reserved first, sized by the stat already observed; the
+            # reader permit follows and the send count waits for the PUT.
+            run.payload_hold = ExitStack()
+            run.payload_hold.enter_context(
+                run.pipeline.small_payload(observed.st_size, run.check_active))
+            payload = SnapshotPayload(observed.st_size)
+        # Admission precedes the very first read/buffer allocation.
+        with run.pipeline.prepare.take(run.check_active, 2 * CHUNK_SIZE):
+            if payload is None:
+                snapshot, hashed = w.prepare_upload_snapshot(run.source, run.check_active)
+            else:
+                snapshot, hashed = w.prepare_upload_snapshot(run.source, run.check_active,
+                                                             payload=payload)
         if (hashed.st_size, hashed.st_mtime_ns) != (observed.st_size, observed.st_mtime_ns):
             raise RuntimeError("Local file changed since fingerprinting")
         run.snapshot = snapshot
+        if payload is not None:
+            if payload.data is None:
+                raise RuntimeError("Single-PUT hashing kept no payload")
+            run.payload = payload
         # The next DB unit (match or send) is claim-fenced; the hashing loop
         # itself checked the lease at least once a second.
         if run.version is None:
@@ -514,10 +553,15 @@ class UploadExecution:
         # The "uploading" message is written by the send-started unit itself.
         self._refresh_journal_gate(run.pipeline)
         # Capacity exists BEFORE arming send-started and BEFORE the transport
-        # materializes its validated buffers.
+        # materializes its validated buffers. A single-PUT payload already
+        # holds its buffer (reserved before the read): only the send count is
+        # taken here, around the send as for every other transfer.
         assert run.snapshot is not None
-        with run.pipeline.sending(run.snapshot, run.check_active):
+        with run.pipeline.sending(run.snapshot, run.check_active,
+                                  payload_reserved=run.payload is not None):
             attempt, response = self._send_bytes(run, provider)
+        # The PUT and its immediate journal are done: the bytes are not needed.
+        run.release_payload()
         run.response = response
         self._materialize(run, attempt, response)
 
@@ -584,6 +628,10 @@ class UploadExecution:
             # filesystem against that row right before the PUT.
             "_upload_source_vault": vault, "_upload_check_active": run.check_active,
             "_upload_progress_in_catalog": True}
+        if run.payload is not None:
+            # Exactly the bytes the snapshot hashed; the transport checks their
+            # digest in memory and does not reopen the file (#702).
+            transfer_job["_upload_payload"] = run.payload.data
         # A journal elsewhere may have failed while this DB commit waited.
         run.check_active()
         pipeline.require_send_admission()

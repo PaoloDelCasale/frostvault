@@ -377,8 +377,8 @@ class UploadWorkerTests(unittest.TestCase):
         job_id = self.queue()
         prepare = storage.prepare_upload_snapshot
 
-        def touched(source, check):
-            snapshot, stat = prepare(source, check)
+        def touched(source, check, **kwargs):
+            snapshot, stat = prepare(source, check, **kwargs)
             os.utime(self.file, ns=(stat.st_mtime_ns + 10**9,) * 2)
             return snapshot, self.file.stat()
         with patch.object(storage, "prepare_upload_snapshot", side_effect=touched):

@@ -1,8 +1,11 @@
 """Independent Upload Snapshot evidence, not provider observations or Local Copies.
 
 A bounded stable hashing pass defines plaintext and multipart boundaries together.
-The transport validates each bounded buffer against this baseline BEFORE sending
-it, so reopening a changed path cannot silently upload B under A's evidence.
+Below MULTIPART_THRESHOLD that same pass can also keep the bytes it hashed in a
+``SnapshotPayload`` whose budget the caller reserved before the read (#702): the
+single PUT sends exactly those bytes, so a later change of the path cannot
+upload B under A's evidence. Multipart transfers still reopen the file and
+validate each bounded part buffer against this baseline BEFORE sending it.
 """
 from __future__ import annotations
 
@@ -238,11 +241,48 @@ def composite_checksum(parts: tuple[str, ...]) -> str:
     return base64.b64encode(digest.digest()).decode("ascii") + f"-{len(parts)}"
 
 
-def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> tuple[UploadSnapshot, os.stat_result]:
+class SnapshotPayload:
+    """The bytes one single-PUT hashing pass read, kept for that PUT (#702).
+
+    Sized from the stat already observed, so the caller reserves its send
+    buffer BEFORE any byte is read; a file of another size is refused before
+    the read. ``data`` exists only after a complete, stable pass. It lives in
+    the caller's run, never in the catalog or anything shared between Jobs.
+    """
+
+    def __init__(self, size: int):
+        if type(size) is not int or not 0 <= size < MULTIPART_THRESHOLD:
+            raise ValueError("Only single-PUT snapshots keep their payload")
+        self.size = size
+        self.data: bytes | None = None
+
+    def matches(self, snapshot: UploadSnapshot) -> bool:
+        """In-memory check that these bytes are the snapshot's, without I/O."""
+        return payload_matches(self.data, snapshot)
+
+
+def payload_matches(payload: bytes | None, snapshot: UploadSnapshot) -> bool:
+    return (payload is not None and snapshot.size < MULTIPART_THRESHOLD
+            and len(payload) == snapshot.size and sha256_b64(payload) == snapshot.checksum_sha256)
+
+
+def prepare_upload_snapshot(source: Path, check_active: Callable[[], None], *,
+                            payload: SnapshotPayload | None = None) -> tuple[UploadSnapshot, os.stat_result]:
+    """Hash a stable regular file into its Upload Snapshot.
+
+    With ``payload`` (single-PUT sizes only) the same pass also keeps the
+    bytes it hashed: they are published in ``payload.data`` only after every
+    stability check passed, and a file whose size is not ``payload.size`` is
+    refused before it is opened.
+    """
     check_active()
     before = source.stat(follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise RuntimeError("Upload Snapshot requires a regular file")
+    if payload is not None:
+        payload.data = None
+        if before.st_size != payload.size:
+            raise RuntimeError("Local file changed since fingerprinting")
     if before.st_size > MAX_OBJECT_SIZE:
         raise RuntimeError("Upload Snapshot exceeds S3 object size limit")
     part_size = ChunksizeAdjuster().adjust_chunksize(DEFAULT_PART_SIZE, before.st_size)
@@ -253,6 +293,7 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
     plaintext = hashlib.sha256()
     parts: list[str] = []
     size = 0
+    captured = io.BytesIO() if payload is not None else None
     with os.fdopen(os.open(source, flags), "rb") as stream:
         if fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
             raise RuntimeError("Local file changed since fingerprinting")
@@ -266,6 +307,8 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
                     raise RuntimeError("Local file changed since fingerprinting")
                 part.update(chunk)
                 plaintext.update(chunk)
+                if captured is not None:
+                    captured.write(chunk)
                 size += len(chunk)
                 left -= len(chunk)
             parts.append(base64.b64encode(part.digest()).decode("ascii"))
@@ -278,6 +321,10 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None]) -> t
     snapshot = UploadSnapshot(size, plaintext.hexdigest(), "COMPOSITE" if multipart else "FULL_OBJECT",
                               composite_checksum(tuple(parts)) if multipart else base64.b64encode(plaintext.digest()).decode("ascii"),
                               part_size, tuple(parts), before.st_mtime_ns, FileOwnership.of(before))
+    if payload is not None and captured is not None:
+        # getvalue() hands over the exact-size buffer without a second copy.
+        payload.data = captured.getvalue()
+        captured.close()
     return snapshot, before
 
 
@@ -285,9 +332,11 @@ def validated_snapshot_buffer(source: Path, snapshot: UploadSnapshot,
                               check_active: Callable[[], None]) -> io.BytesIO:
     """Re-read a small snapshot into a bounded buffer, validated BEFORE any send.
 
-    This is deliberately a second read, not a capture carried in durable evidence.
-    Caller owns/closes the buffer and must reserve its process-wide count/byte
-    budget before calling. No source FD remains open while the socket is blocked.
+    Only for single-PUT callers that did not keep the hashed bytes in a
+    ``SnapshotPayload`` (the upload execution does, #702). Never a capture
+    carried in durable evidence. Caller owns/closes the buffer and must reserve
+    its process-wide count/byte budget before calling. No source FD remains
+    open while the socket is blocked.
     """
     if snapshot.size >= MULTIPART_THRESHOLD:
         raise ValueError("Only single-PUT snapshots can be buffered")

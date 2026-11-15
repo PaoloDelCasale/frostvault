@@ -228,8 +228,8 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         self.assertEqual(self.queue(), 1)
         real_hash = storage.prepare_upload_snapshot
 
-        def edit_after_hash(source, check_active):
-            snapshot = real_hash(source, check_active)
+        def edit_after_hash(source, check_active, **kwargs):
+            snapshot = real_hash(source, check_active, **kwargs)
             self.advance(1)
             self.write(content=b"newer")
             return snapshot

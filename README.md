@@ -481,7 +481,9 @@ the plaintext digest. Bounded validated part buffers prevent a changed Local Cop
 from being sent under an earlier digest; no verification artifacts are written
 inside the Vault or as an unbounded whole-file temporary copy. Normal buffers are
 8 MiB, adjusted up to 1 GiB for large objects (5 TiB maximum), at most two per Job;
-hashing reads 1 MiB chunks. Completed snapshot A never protects later Local Copy B.
+hashing reads 1 MiB chunks. Below 8 MiB the hashing pass is the only read of the
+file: the single PUT sends exactly the bytes it hashed, from a send buffer
+reserved before the read. Completed snapshot A never protects later Local Copy B.
 
 The upload response supplies the exact VersionId and is registered before later
 HEAD/proof checks. Valid S3 cryptographic proof grants Integrity verified and the

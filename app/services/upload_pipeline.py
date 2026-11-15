@@ -17,7 +17,11 @@ immutable layout, bounded by two MAX_PART_SIZE parts plus read chunks. It shares
 the SAME send-count permits, but cannot block small transfers behind an oversized
 weight or occupy their 64 MiB budget for hours. Total transport payload capacity
 is therefore 64 MiB + that one bounded large layout, NOT a 64 MiB RSS limit.
-No tiny payload is captured or kept between stages. Snapshot metadata remains
+A single-PUT payload (<8 MiB) is reserved on the ordinary buffer lane BEFORE the
+hashing pass reads it, kept by its own claimed run until its PUT and immediate
+journal, and released on every exit (#702); it is never kept in a shared
+structure or carried to another stage or Job. Larger layouts keep no payload
+between stages. Snapshot metadata remains
 bounded by 32 claimed Jobs x 10,000 checksums and dies with the attempt.
 
 Receipt appends never acquire a catalog permit. A failed append closes *new*
@@ -236,12 +240,35 @@ class _Pipeline:
                 raise UploadJournalHeld("Upload receipt journal unavailable; new sends held")
 
     @contextmanager
-    def sending(self, snapshot: UploadSnapshot, check: Callable[[], None]) -> Iterator[None]:
+    def small_payload(self, size: int, check: Callable[[], None]) -> Iterator[None]:
+        """Reserve one single-PUT payload buffer BEFORE its bytes are read (#702).
+
+        Same weight as an unreserved small send. The holder takes the reader
+        permit after this one and the send count only around its PUT
+        (``sending(..., payload_reserved=True)``): buffer lane first, as for
+        every send, so a payload waiting for a buffer never holds a reader or
+        a network slot. Send admission is still enforced at the send count.
+        """
+        if not 0 <= size < MULTIPART_THRESHOLD:
+            raise ValueError("Only single-PUT payloads are reserved before the read")
+        with self._buffers.take(check, size + 2 * CHUNK_SIZE):
+            yield
+
+    @contextmanager
+    def sending(self, snapshot: UploadSnapshot, check: Callable[[], None], *,
+                payload_reserved: bool = False) -> Iterator[None]:
         weight = (snapshot.size + 2 * CHUNK_SIZE if snapshot.size < MULTIPART_THRESHOLD
                   else 2 * (snapshot.part_size + CHUNK_SIZE))
         def active() -> None:
             check()
             self.require_send_admission()
+        if payload_reserved:
+            if snapshot.size >= MULTIPART_THRESHOLD:
+                raise ValueError("Only single-PUT payloads are reserved before the read")
+            # Its buffer was admitted by small_payload before the read.
+            with self.network.take(active):
+                yield
+            return
         buffers = self._large_buffers if weight > self._buffers.byte_limit else self._buffers
         # Wait on the appropriate buffer lane BEFORE taking send count. Thus
         # a large-layout backlog cannot occupy all network slots while queued.

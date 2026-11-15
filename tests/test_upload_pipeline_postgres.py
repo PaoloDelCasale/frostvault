@@ -88,11 +88,13 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.fail(message)
 
     def hashed_and_waiting(self, job_id):
-        """The Job hashed its snapshot and waits for send capacity.
+        """The Job is at its hashing stage and waits for send capacity.
 
-        The snapshot is admitted with its send-started attempt in one unit
-        (ADR-0030), so a hashed Job waiting for capacity has no durable send
-        fact yet: the waiting ticket is the observable stage.
+        A single-PUT payload reserves its send buffer before the read (#702);
+        a larger snapshot waits after hashing. The snapshot is admitted with
+        its send-started attempt in one unit (ADR-0030), so a Job waiting for
+        capacity has no durable send fact yet: the waiting ticket is the
+        observable stage.
         """
         lanes = (self.pipeline.network, self.pipeline._buffers, self.pipeline._large_buffers)
         return (any(lane._waiting for lane in lanes)

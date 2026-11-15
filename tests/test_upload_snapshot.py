@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import io
+import os
 import tempfile
 import threading
 import unittest
@@ -16,7 +17,7 @@ from s3transfer.utils import ReadFileChunk
 
 from app.services.s3_upload import upload_file, _UploadClient, _shared_budget
 from app.services.upload_snapshot import (
-    CHUNK_SIZE, MULTIPART_THRESHOLD, prepare_upload_snapshot, UploadSnapshot,
+    CHUNK_SIZE, MULTIPART_THRESHOLD, prepare_upload_snapshot, SnapshotPayload, UploadSnapshot,
     composite_checksum, sha256_b64, check_s3_proof, UploadProofMismatch,
     unsupported_checksum_api, validated_s3_proof,
 )
@@ -82,6 +83,57 @@ class UploadSnapshotTests(unittest.TestCase):
     def test_cancellation_interrupts_hash(self):
         with self.assertRaises(OperationCancelled):
             prepare_upload_snapshot(self.path, Mock(side_effect=OperationCancelled("stop")))
+
+    def test_single_put_pass_keeps_exactly_the_bytes_it_hashed_in_one_open(self):
+        """#702: the hashing pass is the only read of a file below 8 MiB."""
+        real_open, opened = os.open, []
+        def counted(path, *args, **kwargs):
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+        payload = SnapshotPayload(len(b"snapshot A"))
+        with patch("app.services.upload_snapshot.os.open", side_effect=counted):
+            snapshot, observed = prepare_upload_snapshot(self.path, lambda: None, payload=payload)
+        self.assertEqual(opened, [self.path])
+        self.assertEqual(payload.data, b"snapshot A")
+        self.assertTrue(payload.matches(snapshot))
+        # The same evidence as a pass that keeps nothing.
+        self.assertEqual(snapshot, prepare_upload_snapshot(self.path, lambda: None)[0])
+        self.assertEqual((snapshot.checksum_type, snapshot.part_checksums),
+                         ("FULL_OBJECT", (snapshot.checksum_sha256,)))
+        self.assertEqual(snapshot.mtime_ns, observed.st_mtime_ns)
+        self.assertFalse(payload.matches(UploadSnapshot(
+            snapshot.size, hashlib.sha256(b"snapshot B").hexdigest(), "FULL_OBJECT",
+            sha256_b64(b"snapshot B"), snapshot.part_size, (sha256_b64(b"snapshot B"),))))
+
+    def test_single_put_pass_keeps_no_bytes_of_a_file_changing_while_read(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                self.path.write_bytes(b"x" * (2 * CHUNK_SIZE))
+                payload = SnapshotPayload(2 * CHUNK_SIZE)
+                calls = 0
+                def active():
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        if replace:
+                            other = self.path.with_name("replacement")
+                            other.write_bytes(b"y" * (2 * CHUNK_SIZE))
+                            other.replace(self.path)
+                        else:
+                            self.path.write_bytes(b"changed-and-longer" * CHUNK_SIZE)
+                with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                    prepare_upload_snapshot(self.path, active, payload=payload)
+                self.assertIsNone(payload.data)
+
+    def test_single_put_pass_refuses_another_size_before_reading(self):
+        payload = SnapshotPayload(3)
+        with patch("app.services.upload_snapshot.os.open", side_effect=AssertionError("opened")):
+            with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
+                prepare_upload_snapshot(self.path, lambda: None, payload=payload)
+        self.assertIsNone(payload.data)
+        for size in (MULTIPART_THRESHOLD, -1):
+            with self.assertRaises(ValueError):
+                SnapshotPayload(size)
 
     def test_proof_absence_is_distinct_from_wrong_checksum_type_identity_and_size(self):
         snapshot = self.snapshot()
