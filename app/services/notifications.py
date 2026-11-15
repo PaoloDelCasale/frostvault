@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from psycopg.types.json import Jsonb
 
 from ..config import settings
-from ..i18n import format_bytes, format_money, has_message, parse_message_params, translate
+from ..i18n import format_bytes, format_datetime, format_money, has_message, parse_message_params, translate
 
 
 # Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
@@ -114,9 +114,9 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
     verification = summary.get("metadata_backup_verification") or {}
     verified = verification.get("last_verified")
     backup = (translate("notification.weekly_summary.backup_run", locale=locale,
-                        id=verified["id"], created=verified["created_at"],
-                        verified=verified["verified_at"])
-              if verified else summary.get("last_verified_backup") or "—")
+                        id=verified["id"], created=format_datetime(verified["created_at"], locale),
+                        verified=format_datetime(verified["verified_at"], locale))
+              if verified else format_datetime(summary.get("last_verified_backup"), locale))
     lines = [counts, translate("notification.weekly_summary.metrics", locale=locale,
              backup=backup, problems=summary.get("open_problems", 0),
              files=summary.get("freed_files", 0), size=format_bytes(int(summary.get("freed_bytes", 0)), locale),
@@ -126,15 +126,15 @@ def render_weekly_summary(summary: Mapping[str, Any], *, locale: str | None = No
     if latest and (not verified or latest["id"] != verified["id"]):
         # A newer backup than the verified one says when its turn comes (#648).
         expected = (translate("notification.weekly_summary.verification_expected", locale=locale,
-                              at=verification["next_verification_at"])
+                              at=format_datetime(verification["next_verification_at"], locale))
                     if verification.get("next_verification_at")
                     else translate("notification.weekly_summary.verification_disabled", locale=locale))
         lines.append(translate("notification.weekly_summary.latest_backup", locale=locale,
-                               id=latest["id"], created=latest["created_at"], expected=expected))
+                               id=latest["id"], created=format_datetime(latest["created_at"], locale), expected=expected))
     for vault in summary.get("vaults") or []:
         lines.append(translate("notification.weekly_summary.vault", locale=locale,
-                     vault=vault["vault_id"], scan=vault.get("last_scan") or "—",
-                     audit=vault.get("last_audit") or "—", manual_upload=vault.get("manual_upload", vault.get("suspended"))))
+                     vault=vault["vault_id"], scan=format_datetime(vault.get("last_scan"), locale),
+                     audit=format_datetime(vault.get("last_audit"), locale), manual_upload=vault.get("manual_upload", vault.get("suspended"))))
     for problem in summary.get("problems") or []:
         lines.append(translate(problem["body_key"], locale=locale,
                                **_localized_params(_message_params(problem), locale))

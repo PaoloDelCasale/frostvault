@@ -785,7 +785,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `FORWARDED_ALLOW_IPS` (Uvicorn) |
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Diagnostics | `API_DOCS_ENABLED` (default false; isolated development only), `METRICS_TOKEN` (default empty; independent Bearer scraper secret) |
-| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below) |
+| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below); `TZ` (IANA zone such as `Europe/Rome` for notification dates; missing or invalid means UTC, labelled "UTC") |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
@@ -856,7 +856,8 @@ startup, then at most once every seven days). It includes all six protection
 state counts, per-Vault last successful scan/audit and suspension, the last
 verified metadata backup (or an explicit unknown date), open problems, files and
 space freed and blocked cleanups over the last seven days, and the estimated
-monthly storage cost from bundled AWS list prices, not an AWS bill. No automatic
+monthly storage cost from bundled AWS list prices, not an AWS bill. Its dates
+are local date and time in the `TZ` zone (UTC, labelled, without a valid `TZ`). No automatic
 restore or external heartbeat is introduced: a missing weekly email can mean
 that the application/server or SMTP is down.
 

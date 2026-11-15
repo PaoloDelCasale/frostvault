@@ -7,10 +7,13 @@ rendering responses or UI chrome. See docs/adr/0006-english-default-i18n.md.
 from __future__ import annotations
 
 import json
+import os
+from datetime import date, datetime, timezone, tzinfo
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULT_LOCALE = "en"
 SUPPORTED_LOCALES = ("en", "it")
@@ -263,6 +266,54 @@ def format_money(value: Any, locale: str | None = None, currency: str = "EUR") -
     else:
         money = f"{sign}{symbol}{digits}" if symbol else f"{sign}{digits} {currency}"
     return f"< {money}" if subcent else money
+
+
+_MONTHS = {
+    "en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+    "it": ("gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"),
+}
+
+
+def owner_timezone() -> tuple[tzinfo, bool]:
+    """The container ``TZ`` zone, or ``(UTC, True)`` when it is missing or invalid."""
+    name = (os.getenv("TZ") or "").strip().lstrip(":")
+    if name:
+        try:
+            return ZoneInfo(name), False
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return timezone.utc, True
+
+
+def format_datetime(value: Any, locale: str | None = None) -> str:
+    """An ISO date-time as local date and time, like the SPA's ``formatDateTime``.
+
+    ``15 nov 2026, 14:30`` / ``15 Nov 2026, 14:30`` in the ``TZ`` zone; without a
+    valid ``TZ`` the time is UTC and says so. Date-only values keep their calendar
+    day; empty values read ``—``; unparseable text is returned unchanged.
+    """
+    if not value:
+        return "—"
+    months = _MONTHS[normalize_locale(locale)]
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, date):
+        return f"{value.day} {months[value.month - 1]} {value.year}"
+    else:
+        text = str(value)
+        try:
+            if len(text) == 10:
+                day = date.fromisoformat(text)
+                return f"{day.day} {months[day.month - 1]} {day.year}"
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    zone, fallback = owner_timezone()
+    local = moment.astimezone(zone)
+    shown = f"{local.day} {months[local.month - 1]} {local.year}, {local:%H:%M}"
+    return f"{shown} UTC" if fallback else shown
 
 
 def locale_key_parity() -> dict[str, frozenset[str]]:

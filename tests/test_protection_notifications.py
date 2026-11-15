@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,41 @@ from tests.owner_fixtures import insert_job
 NOW = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
 ONLINE = VaultLocalAccess(True, True, None, 'ok')
+
+
+class WeeklySummaryDateTests(unittest.TestCase):
+    """#676: email dates are local date and time in the notification language."""
+    SUMMARY = {'metadata_backup_verification': {
+        'last_verified': {'id': 4, 'created_at': '2026-11-15T13:00:00+00:00',
+                          'verified_at': '2026-11-15T13:30:00+00:00'},
+        'latest': {'id': 5, 'created_at': '2026-11-15T15:05:00+00:00'},
+        'next_verification_at': '2026-11-16T13:30:00+00:00'},
+        'vaults': [{'vault_id': 9, 'last_scan': '2026-11-15T13:30:00Z', 'last_audit': None,
+                    'manual_upload': False}]}
+
+    def render(self, tz, locale):
+        env = {key: value for key, value in os.environ.items() if key != 'TZ'}
+        if tz is not None:
+            env['TZ'] = tz
+        with patch.dict(os.environ, env, clear=True):
+            return inbox.render_weekly_summary(self.SUMMARY, locale=locale)
+
+    def test_dates_use_the_tz_zone_in_each_language(self):
+        it = self.render('Europe/Rome', 'it')
+        en = self.render('Europe/Rome', 'en')
+        self.assertIn('n. 4 del 15 nov 2026, 14:00, verificato il 15 nov 2026, 14:30', it)
+        self.assertIn('n. 5 del 15 nov 2026, 16:05, verifica prevista 16 nov 2026, 14:30', it)
+        self.assertIn('ultima scansione riuscita: 15 nov 2026, 14:30; audit: —', it)
+        self.assertIn('no. 4 from 15 Nov 2026, 14:00, verified 15 Nov 2026, 14:30', en)
+        self.assertIn('last successful scan: 15 Nov 2026, 14:30; audit: —', en)
+        self.assertNotIn('2026-11-15T', it + en)
+
+    def test_missing_or_invalid_tz_falls_back_to_labelled_utc(self):
+        for tz in (None, '', 'Not/AZone', '../etc/passwd'):
+            with self.subTest(tz=tz):
+                it = self.render(tz, 'it')
+                self.assertIn('n. 4 del 15 nov 2026, 13:00 UTC, verificato il 15 nov 2026, 13:30 UTC', it)
+                self.assertIn('Nov 2026, 13:30 UTC', self.render(tz, 'en'))
 
 
 class DelayRuleTests(unittest.TestCase):
@@ -57,8 +93,10 @@ class DelayRuleTests(unittest.TestCase):
         en = inbox.render_weekly_summary(data, locale='en')
         it = inbox.render_weekly_summary(data, locale='it')
         for text in (en, it):
-            for value in ('2026-11-02', 'scan-date', 'audit-date'):
+            for value in ('scan-date', 'audit-date'):
                 self.assertIn(value, text)
+        self.assertIn('Last verified backup: 2 Nov 2026', en)
+        self.assertIn('Ultimo backup verificato: 2 nov 2026', it)
         # #654: the same binary units and currency format as the SPA.
         self.assertIn('6 file, 2,0 GiB', it)
         self.assertIn('1,23 €', it)
@@ -275,7 +313,8 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         it = inbox.render_weekly_summary(summary,locale='it')
         self.assertIn(f'Ultimo backup verificato: n. {verified} del ',it)
         self.assertIn(f'Backup dei metadati più recente: n. {manual} del ',it)
-        self.assertIn(f'verifica prevista {expected.isoformat()}',it)
+        from app.i18n import format_datetime
+        self.assertIn(f'verifica prevista {format_datetime(expected.isoformat(), "it")}',it)
         en = inbox.render_weekly_summary(summary,locale='en')
         self.assertIn(f'Last verified backup: no. {verified} from ',en)
 
