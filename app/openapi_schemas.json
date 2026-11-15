@@ -2073,6 +2073,18 @@
                 "null"
               ]
             },
+            "traversal_lock_wait_seconds": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "traversal_write_seconds": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
             "last_error_source": {
               "type": [
                 "string",

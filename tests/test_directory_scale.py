@@ -1783,7 +1783,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 self.assertTrue(release.wait(timeout=5))
             return original_flush(connection, vault_id=vault_id)
 
-        def record_revision(connection, *, vault_id, reason, invalidate):
+        def record_revision(connection, *, vault_id, reason, invalidate, flush_aggregates=True):
             with rev_lock:
                 revisions.append(int(vault_id))
             return {
@@ -1827,3 +1827,51 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DirectoryAggregateMaintenanceLockTests(unittest.TestCase):
+    """The maintenance pass computes no rollup with the Vault row held (#707)."""
+
+    setUp = DirectoryAggregateMaintenanceSingleFlightTests.setUp
+    tearDown = DirectoryAggregateMaintenanceSingleFlightTests.tearDown
+    _seed_dirty_vault = DirectoryAggregateMaintenanceSingleFlightTests._seed_dirty_vault
+    _open_db = DirectoryAggregateMaintenanceSingleFlightTests._open_db
+
+    def test_rollups_run_serial_and_before_the_vault_row_is_taken(self) -> None:
+        self._seed_dirty_vault(2, "early/a.bin")
+        original_lock = aggregates.lock_vaults_in_order
+        original_rollup = aggregates._compute_directory_rollup
+        state = {"locked": False}
+        rollups: list[tuple[str, bool, str]] = []
+
+        def lock(connection, vault_ids):
+            if not state["locked"]:
+                # An upload unit commits a new mark while this pass waits for
+                # the Vault row: it must wait for the next pass, not be rolled
+                # up under the lock by the revision of this one.
+                with self._open_db() as other:
+                    ArchiveCatalog(other).observe_local_copy(
+                        vault_id=2, path="late/b.bin", file_type="regular",
+                        size=1, mtime_ns=1, observed_at="2026-07-21T10:00:01+00:00",
+                    )
+            original_lock(connection, vault_ids)
+            state["locked"] = True
+
+        def rollup(connection, vault_id, directory):
+            parallel = connection.execute("SHOW max_parallel_workers_per_gather").fetchone()
+            rollups.append((directory, state["locked"], next(iter(parallel.values()))))
+            return original_rollup(connection, vault_id, directory)
+
+        with patch("app.database.settings", self._db_settings), \
+                patch.object(aggregates, "lock_vaults_in_order", side_effect=lock), \
+                patch.object(aggregates, "_compute_directory_rollup", side_effect=rollup):
+            result = aggregates.process_directory_aggregate_maintenance(vault_id=2, publish=True)
+
+        self.assertEqual(result["vaults"], 1)
+        self.assertEqual(rollups, [("early", False, "0")])
+        dirty = {row["path"] for row in self.connection.execute(
+            "SELECT path FROM directory_aggregate_dirty WHERE vault_id=2").fetchall()}
+        self.assertEqual(dirty, {"late"})
+        revisions = self.connection.execute(
+            "SELECT COUNT(*) AS n FROM catalog_events WHERE vault_id=2").fetchone()
+        self.assertEqual(revisions["n"], 1)

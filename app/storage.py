@@ -53,6 +53,7 @@ from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
     invalidate_for_vault_file,
+    lock_vaults_in_order,
     mark_path_dirty,
     process_directory_aggregate_maintenance,
     unit_dirty_marks,
@@ -177,6 +178,9 @@ _TRAVERSAL_PROGRESS_SECONDS = 1.0
 # before reporting it as changing, with its protection not confirmed.
 SCAN_REPLACED_FOLDER_REWALKS = 3
 _scan_logger = logging.getLogger(__name__)
+# uvicorn's handler prints INFO in production; the traversal's time split goes
+# there so its cost can be read from the container log (#707).
+_traversal_logger = logging.getLogger("uvicorn.error")
 
 # Cloud scans keep provider I/O outside write transactions and commit catalog
 # merges in bounded batches so other writers (lease renewal,
@@ -646,6 +650,13 @@ def _scan_tree(
         for relative in unsupported_names:
             report_problem(connection, event="file_name_unsupported", vault_id=vault_id, path=relative)
         unsupported_names.clear()
+        # The Vault row the batch upsert takes anyway, taken here in the same
+        # mode and at the same point of the lock order so its wait is timed
+        # apart from the write (#707). The touch inside the upsert is then free.
+        waited = time.monotonic()
+        if pending:
+            lock_vaults_in_order(connection, [vault_id])
+        written = time.monotonic()
         catalog = ArchiveCatalog(connection)
         # Issue #242: one Vault row-lock touch, one bulk identity lookup, and
         # one bulk upsert replace the per-file round-trips that pinned Postgres
@@ -668,6 +679,10 @@ def _scan_tree(
             _current_verified_scan_row(connection, vault)
         if allow_chunk_commits:
             connection.commit()
+        finished = time.monotonic()
+        traversal["batches"] += 1
+        traversal["lock_wait"] += written - waited
+        traversal["write"] += finished - written
 
     unreadable = False
     tree: PinnedTree | None = None
@@ -728,7 +743,12 @@ def _scan_tree(
             ).fetchall():
                 fingerprinted[row["path"]] = (row["local_size"], row["local_mtime_ns"])
 
-    traversal = {"seen": 0, "started": time.monotonic(), "reported": 0.0}
+    # Seconds spent waiting for the Vault row and writing batches (#707); the
+    # rest of the elapsed time is the walk itself.
+    traversal = {
+        "seen": 0, "started": time.monotonic(), "reported": 0.0,
+        "batches": 0, "lock_wait": 0.0, "write": 0.0,
+    }
 
     def report_traversal(*, force: bool = False) -> None:
         now = time.monotonic()
@@ -743,6 +763,8 @@ def _scan_tree(
                 round(traversal["seen"] * 60 / elapsed, 1) if elapsed > 0 else None
             ),
             traversal_files_expected=expected_files,
+            traversal_lock_wait_seconds=round(traversal["lock_wait"], 1),
+            traversal_write_seconds=round(traversal["write"], 1),
         )
 
     def observe(walk: PinnedTree) -> None:
@@ -796,6 +818,15 @@ def _scan_tree(
         fingerprinted.clear()
         if verification_follows:
             report_traversal(force=True)
+            elapsed = time.monotonic() - traversal["started"]
+            _traversal_logger.info(
+                "Vault %s: traversal saw %d files in %.1f s (%.0f files/min); "
+                "%d batches, Vault row wait %.1f s, batch writes %.1f s, walk %.1f s",
+                vault_id, traversal["seen"], elapsed,
+                traversal["seen"] * 60 / elapsed if elapsed > 0 else 0.0,
+                traversal["batches"], traversal["lock_wait"], traversal["write"],
+                max(0.0, elapsed - traversal["lock_wait"] - traversal["write"]),
+            )
 
     def _stop_walk_for_shutdown() -> None:
         # Process shutdown (#696, ADR-0045): commit the batch in progress when
@@ -2272,6 +2303,7 @@ _NO_VERIFICATION_PROGRESS = {
     # Traversal progress of the running scan (#696).
     "traversal_files_seen": None, "traversal_files_per_minute": None,
     "traversal_files_expected": None,
+    "traversal_lock_wait_seconds": None, "traversal_write_seconds": None,
 }
 
 

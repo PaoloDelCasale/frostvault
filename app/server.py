@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import socket
+import sys
 import threading
 from collections.abc import Iterator
 from types import FrameType
@@ -23,6 +24,13 @@ from .services.shutdown import HTTP_DRAIN_SECONDS, PROCESS_SHUTDOWN_SECONDS, shu
 
 
 logger = logging.getLogger("uvicorn.error")
+
+# How long a thread runs before CPython asks it to hand over the GIL (default
+# 5 ms). The scan traversal releases the GIL at every filesystem call and then
+# waits for it behind the upload workers' Python work; at 5 ms per wait the
+# walk collapsed to ~2,500 files/min while uploads ran (#707). 1 ms cut that
+# wait without a measurable cost to CPU-bound threads.
+GIL_SWITCH_INTERVAL_SECONDS = 0.001
 
 
 class FrostVaultServer(uvicorn.Server):
@@ -84,6 +92,7 @@ def main() -> None:
     parser.add_argument("--forwarded-allow-ips", default=None)
     parser.add_argument("--timeout-graceful-shutdown", type=int, default=HTTP_DRAIN_SECONDS)
     args = parser.parse_args()
+    sys.setswitchinterval(GIL_SWITCH_INTERVAL_SECONDS)
     if not 0 < args.timeout_graceful_shutdown <= HTTP_DRAIN_SECONDS:
         parser.error(f"--timeout-graceful-shutdown must be between 1 and {HTTP_DRAIN_SECONDS}")
     server = FrostVaultServer(uvicorn.Config(

@@ -237,5 +237,21 @@ class DeploymentShutdownBudgetTests(unittest.TestCase):
                 self.assertEqual(result.returncode, expected, result.stderr)
 
 
+class GilSwitchIntervalTests(unittest.TestCase):
+    def test_the_entrypoint_shortens_the_gil_switch_interval(self) -> None:
+        # The scan traversal waits for the GIL after every filesystem call;
+        # the production entrypoint shortens that wait (#707).
+        from app import server
+        previous = sys.getswitchinterval()
+        self.addCleanup(sys.setswitchinterval, previous)
+        sys.setswitchinterval(0.005)
+        with patch.object(sys, "argv", ["app.server"]), \
+                patch.object(server.FrostVaultServer, "run", return_value=None), \
+                self.assertRaises(SystemExit):
+            server.main()  # Never started: exits 3 after run returns.
+        self.assertAlmostEqual(sys.getswitchinterval(), server.GIL_SWITCH_INTERVAL_SECONDS)
+        self.assertAlmostEqual(server.GIL_SWITCH_INTERVAL_SECONDS, 0.001)
+
+
 if __name__ == "__main__":
     unittest.main()
