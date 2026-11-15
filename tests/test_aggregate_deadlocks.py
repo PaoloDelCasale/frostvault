@@ -1049,6 +1049,63 @@ class AggregateDeadlockTests(unittest.TestCase):
                     root = reader.execute("SELECT local_size FROM directory_aggregates WHERE vault_id=2 AND path='0'").fetchone()
                     self.assertEqual(root["local_size"], len(PAYLOAD) + increment)
 
+    def test_folder_rollups_are_read_before_the_vault_row_is_locked(self):
+        """#696: a large folder's rollup takes seconds; uploads must not wait on it."""
+        self.seed()
+        with PostgresConnection(self.path) as marker:
+            aggregates.mark_path_dirty(marker, 2, "0/a.bin")
+        original = aggregates._compute_directory_rollup
+        computed = []
+
+        def compute(connection, vault_id, directory):
+            # Another unit of the Vault (a scan batch, an upload) takes the
+            # Vault row while the rollup is being read: it does not wait.
+            with PostgresConnection(self.path) as other:
+                other.execute("SET LOCAL lock_timeout='250ms'")
+                other.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
+            computed.append(directory)
+            return original(connection, vault_id, directory)
+
+        with PostgresConnection(self.path) as reader, patch.object(
+            aggregates, "_compute_directory_rollup", side_effect=compute
+        ):
+            result = aggregates.flush_directory_aggregates(reader, vault_id=2)
+        self.assertEqual(computed, ["0"])
+        self.assertEqual(result["rebuilt_directories"], 1)
+        with PostgresConnection(self.path) as reader:
+            self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [])
+            row = reader.execute(
+                "SELECT item_count FROM directory_aggregates WHERE vault_id=2 AND path='0'"
+            ).fetchone()
+            self.assertEqual(row["item_count"], 1)
+
+    def test_a_write_committed_while_a_rollup_is_read_refreshes_it_next_flush(self):
+        self.seed()
+        with PostgresConnection(self.path) as marker:
+            aggregates.mark_path_dirty(marker, 2, "0/a.bin")
+        original = aggregates._compute_directory_rollup
+
+        def compute(connection, vault_id, directory):
+            rollup = original(connection, vault_id, directory)
+            # Committed after the read, before the flush writes and locks.
+            with PostgresConnection(self.path) as writer:
+                aggregates.lock_vaults_in_order(writer, [2])
+                writer.execute("UPDATE files SET local_size=local_size+1")
+                aggregates.mark_path_dirty(writer, 2, "0/a.bin")
+            return rollup
+
+        with PostgresConnection(self.path) as reader, patch.object(
+            aggregates, "_compute_directory_rollup", side_effect=compute
+        ):
+            aggregates.flush_directory_aggregates(reader, vault_id=2)
+        with PostgresConnection(self.path) as reader:
+            self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
+            aggregates.flush_directory_aggregates(reader, vault_id=2)
+            row = reader.execute(
+                "SELECT local_size FROM directory_aggregates WHERE vault_id=2 AND path='0'"
+            ).fetchone()
+            self.assertEqual(row["local_size"], len(PAYLOAD) + 1)
+
     def test_writer_does_not_wait_for_consumer_deleting_same_path(self):
         self.seed()
         with PostgresConnection(self.path) as marker:

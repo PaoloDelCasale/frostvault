@@ -846,11 +846,30 @@ def flush_directory_aggregates(
         dirty = {(vid, path) for vid, path in dirty if vid == int(vault_id)}
     file_marks = int(tracker.dirty_file_marks)
 
+    # A Vault rebuilt in full needs no per-directory rollups.
+    dirty = {(vid, path) for vid, path in dirty if vid not in rebuild_vaults}
+    by_vault: dict[int, list[str]] = defaultdict(list)
+    for vid, path in dirty:
+        by_vault[vid].append(path)
+    # Compute the dirty rollups BEFORE taking the Vault row (#696): on a large
+    # Vault one folder's rollup reads every descendant, seconds that would hold
+    # every scan batch and upload unit of that Vault behind this lock. A write
+    # committed after a rollup was read leaves its own, unclaimed dirty mark,
+    # which survives this flush and refreshes the folder in the next one.
+    rollups: dict[int, list[tuple[str, _DirectoryRollup | None]]] = {}
+    for vid, directories in by_vault.items():
+        unique_dirs = sorted(set(directories), key=lambda item: (item.count("/"), item))
+        rollups[vid] = [
+            (directory, _compute_directory_rollup(connection, vid, directory.strip().strip("/"))
+             if directory.strip().strip("/") else None)
+            for directory in unique_dirs
+        ]
+
     # Vault row BEFORE the first aggregate/status write (#485). Claims above
     # are reads and remain valid by design: only claimed mark identities are
     # deleted, so marks committed while we wait for the lock survive.
     lock_vaults_in_order(
-        connection, rebuild_vaults | {vid for vid, _path in dirty},
+        connection, rebuild_vaults | set(by_vault),
     )
 
     rebuilt_dirs = 0
@@ -863,15 +882,12 @@ def flush_directory_aggregates(
             dirty_claims=claimed_dirty,
         )
         full_rebuilds += 1
-        dirty = {(d_vid, path) for d_vid, path in dirty if d_vid != vid}
 
-    by_vault: dict[int, list[str]] = defaultdict(list)
-    for vid, path in dirty:
-        by_vault[vid].append(path)
-    for vid, directories in by_vault.items():
-        unique_dirs = sorted(set(directories), key=lambda item: (item.count("/"), item))
-        for directory in unique_dirs:
-            _rebuild_directory(connection, vid, directory)
+    for vid in by_vault:
+        for directory, rollup in rollups[vid]:
+            directory = directory.strip().strip("/")
+            if directory:  # The Vault root has no rollup row.
+                _write_directory_rollup(connection, vid, directory, rollup)
             rebuilt_dirs += 1
         _delete_claimed_dirty_rows(
             connection,
@@ -1149,6 +1165,36 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     directory = (directory or "").strip().strip("/")
     if not directory:
         return
+    _write_directory_rollup(
+        connection, vault_id, directory,
+        _compute_directory_rollup(connection, vault_id, directory),
+    )
+
+
+def _write_directory_rollup(
+    connection: Any, vault_id: int, directory: str, rollup: "_DirectoryRollup | None",
+) -> None:
+    """Store a computed rollup; ``None`` (no visible descendants) drops the row."""
+    if rollup is None:
+        connection.execute(
+            """
+            DELETE FROM directory_aggregates
+            WHERE vault_id=%s AND path=%s
+            """,
+            (int(vault_id), directory),
+        )
+        return
+    _upsert_rollup(connection, vault_id, directory, rollup)
+
+
+def _compute_directory_rollup(
+    connection: Any, vault_id: int, directory: str,
+) -> "_DirectoryRollup | None":
+    """Read one directory's rollup; it writes nothing and takes no row lock.
+
+    On a large folder this reads every descendant (seconds for ~140,000 files
+    on Unraid, #696), so a flush computes it before taking the Vault row.
+    """
     # Use the same SQL classification as files and statistics. The result is
     # bounded to the seven states, regardless of descendant count.
     select_sql, extra_params = _visible_file_select_sql(
@@ -1188,14 +1234,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
     )}
     item_count = summary['item_count']
     if item_count <= 0:
-        connection.execute(
-            """
-            DELETE FROM directory_aggregates
-            WHERE vault_id=%s AND path=%s
-            """,
-            (int(vault_id), directory),
-        )
-        return
+        return None
 
     # Storage classes of Current only: superseded versions awaiting exact
     # cleanup and a replacement in progress are not the file's content.
@@ -1231,7 +1270,7 @@ def _rebuild_directory(connection: Any, vault_id: int, directory: str) -> None:
         },
         storage_classes=storage_classes,
     )
-    _upsert_rollup(connection, vault_id, directory, rollup)
+    return rollup
 
 
 def _upsert_rollup(

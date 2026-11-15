@@ -60,6 +60,16 @@ files per second.
   immediately. Without a reader, the projection converges within one batch
   interval plus the rebuild time, and the rebuild publishes a catalog revision
   so that open browsers refresh.
+- Amended for #696: the fold runs on its own single thread, never on the
+  scheduler loop nor on the maintenance pool that a full scan occupies. A dirty
+  folder's rollup is read **before** the Vault row is locked, and the lock is
+  taken only to write the rollups and delete the claimed marks. On a Vault of
+  138,822 files on Unraid one rollup of `library` read ~137,000 rows in 2.2 s;
+  with the lock held across two such folders, every scan batch and upload unit
+  of the Vault waited ~4.4 s, and with the loop waiting too, no freed slot was
+  refilled: uploads moved in waves every ~5 s. A write committed after a rollup
+  was read leaves its own unclaimed dirty mark, so the next fold corrects it.
+  The full Vault rebuild still locks first: it is rare.
 
 ## Consequences
 
