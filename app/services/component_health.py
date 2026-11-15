@@ -137,6 +137,9 @@ def runtime_fields_from_health(
         row = health.get(component) or {}
         overlay[f"last_error_{component}"] = row.get("last_error")
         overlay[f"last_success_{component}"] = row.get("last_success_at")
+        overlay[f"last_error_{component}_at"] = (
+            row.get("updated_at") if row.get("last_error") else None
+        )
     cloud = health.get("cloud") or {}
     audit = health.get("audit") or {}
     overlay["last_verified_at"] = (

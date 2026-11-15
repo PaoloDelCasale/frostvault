@@ -76,6 +76,12 @@ class Settings:
             ),
         ),
     )
+    # Local Copies a full scan fingerprints at once (#691). Several reads in
+    # flight let an HDD array or a FUSE union (Unraid shfs) order them; one
+    # read at a time leaves a large adoption at the speed of a single stream.
+    scan_hash_concurrency: int = max(
+        1, min(32, int(os.getenv("SCAN_HASH_CONCURRENCY", "4")))
+    )
     restore_poll_interval: int = int(os.getenv("JOB_POLL_SECONDS", "900"))
     restore_days: int = int(os.getenv("RESTORE_DAYS", "3"))
     restore_tier: str = os.getenv("RESTORE_TIER", "Bulk")

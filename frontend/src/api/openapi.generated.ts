@@ -2163,6 +2163,14 @@ export interface components {
             protection_state?: string | null;
             runtime: {
                 last_error?: string | null;
+                last_error_source?: string | null;
+                last_error_source_at?: string | null;
+                scan_phase?: string | null;
+                scanning?: boolean;
+                verify_bytes_done?: number | null;
+                verify_bytes_total?: number | null;
+                verify_files_done?: number | null;
+                verify_files_total?: number | null;
             } & {
                 [key: string]: unknown;
             };

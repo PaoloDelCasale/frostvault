@@ -11,8 +11,14 @@ status_lock = threading.Lock()
 _SCALAR_KEYS = (
     "scanning", "last_scan", "last_error", "scan_id", "last_audit",
     "last_audit_healthy", "last_verified_at",
+    # The running scan's phase and verification progress (#691).
+    "scan_phase", "verify_files_total", "verify_files_done",
+    "verify_bytes_total", "verify_bytes_done",
     *(f"last_{kind}_{component}" for kind in ("error", "success")
       for component in ("source", "cloud", "policy", "audit")),
+    # When each component's error was recorded, so a running scan shows an
+    # older failure as the last scan's outcome (#691).
+    *(f"last_error_{component}_at" for component in ("source", "cloud", "policy", "audit")),
 )
 _AUDIT_COUNTERS = (
     "catalog_versions", "cloud_versions", "missing_in_cloud", "missing_in_catalog",
