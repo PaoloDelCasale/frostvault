@@ -1405,13 +1405,21 @@ def directory_row_to_item(
     }
 
 
+def _covers(unconfirmed: Any, path: str) -> bool:
+    """``unconfirmed`` is a bool (the whole level) or an ``UnconfirmedScope``."""
+    return unconfirmed.covers(path) if hasattr(unconfirmed, "covers") else bool(unconfirmed)
+
+
 def _child_directory_clauses(
     vault_id: int, *, parent_path: str, state_filter: str, stopped: Mapping[str, int] | None,
+    unconfirmed: Any = False,
 ) -> tuple[list[str] | None, list[Any]]:
     """Child-directory filter; ``stopped`` is the live overlay of the level.
 
     None means no directory can match. Pending and stopped read the overlay:
-    a directory whose pending files are all stopped is not pending.
+    a directory whose pending files are all stopped is not pending. With an
+    ``UnconfirmedScope`` by path, a directory in, below or above a blocking
+    path is shown unconfirmed (ADR-0042, #684) and matches only that filter.
     """
     clauses = ["vault_id=%s", "parent_path=%s"]
     params: list[Any] = [int(vault_id), parent_path or ""]
@@ -1429,6 +1437,13 @@ def _child_directory_clauses(
         if column is None:
             return None, params
         clauses.append(f"{column} > 0")
+    if state_filter and getattr(unconfirmed, "by_path", False):
+        blocked, blocked_params = unconfirmed.sql("path")
+        if state_filter == "unconfirmed":
+            clauses[-1] = f"({clauses[-1]} OR {blocked})"
+        else:
+            clauses.append(f"NOT {blocked}")
+        params.extend(blocked_params)
     return clauses, params
 
 
@@ -1440,11 +1455,12 @@ def list_child_directory_rows(
     state_filter: str = "",
     limit: int,
     offset: int,
-    unconfirmed: bool = False,
+    unconfirmed: Any = False,
     stopped: Mapping[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     clauses, params = _child_directory_clauses(
-        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped)
+        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped,
+        unconfirmed=unconfirmed)
     if clauses is None:
         return []
     if limit < 0:
@@ -1462,7 +1478,8 @@ def list_child_directory_rows(
         [*params, int(limit), int(offset)],
     ).fetchall()
     stopped = stopped or {}
-    return [directory_row_to_item(row, unconfirmed=unconfirmed, stopped=stopped.get(row["path"], 0))
+    return [directory_row_to_item(row, unconfirmed=_covers(unconfirmed, row["path"]),
+                                  stopped=stopped.get(row["path"], 0))
             for row in rows]
 
 
@@ -1473,9 +1490,11 @@ def count_child_directories(
     parent_path: str,
     state_filter: str = "",
     stopped: Mapping[str, int] | None = None,
+    unconfirmed: Any = False,
 ) -> int:
     clauses, params = _child_directory_clauses(
-        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped)
+        vault_id, parent_path=parent_path, state_filter=state_filter, stopped=stopped,
+        unconfirmed=unconfirmed)
     if clauses is None:
         return 0
     row = connection.execute(

@@ -1486,16 +1486,18 @@ def select_vault(
     return {**_api_message(request, "api.vault_selected")}
 
 
-def _protection_observation(connection: Any, vault: dict[str, Any], access: Any) -> tuple[bool, bool]:
-    from .services.component_health import load_vault_health
-    from .services.protection_states import observation_is_unconfirmed
-    from .services.operation_policies import get_policy
+def _protection_observation(connection: Any, vault: dict[str, Any], access: Any) -> tuple[Any, bool]:
+    """Where the Vault is shown unconfirmed, and whether upload is manual.
 
-    health = load_vault_health(connection, int(vault["id"]))
-    unconfirmed = (
-        not access.local_operations_allowed
-        or vault.get("lifecycle", "active") != "active"
-        or observation_is_unconfirmed(health)
+    The same rule as the local release gate (ADR-0042, #684): global causes
+    leave the whole Vault unconfirmed, a named unreadable path only itself,
+    its contents and the folders above it.
+    """
+    from .services.operation_policies import get_policy, unconfirmed_scope
+
+    unconfirmed = unconfirmed_scope(
+        connection, int(vault["id"]), lifecycle=vault.get("lifecycle", "active"),
+        local_operations_allowed=access.local_operations_allowed,
     )
     manual_upload = not get_policy(connection, int(vault["id"])).auto_upload
     return unconfirmed, manual_upload
@@ -1603,7 +1605,7 @@ def open_problems(request: Request, page: int = Query(1, ge=1),
 
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
-def stats(vault: dict[str, Any] = Depends(current_vault)):
+def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = None):  # type: ignore[assignment]
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
     # configured Vault tree. Catalog summaries remain available when local work
@@ -1634,6 +1636,16 @@ def stats(vault: dict[str, Any] = Depends(current_vault)):
             if error:
                 runtime["last_error"] = error
                 break
+    if unconfirmed.by_path:
+        # Only named paths are unconfirmed (ADR-0042, #684): say how many and
+        # where to look, instead of the generic incomplete-scan error.
+        from .services.operation_policies import PATH_SCOPED_SOURCE_ERRORS
+        runtime["unreadable_paths"] = len(unconfirmed.paths or ())
+        if not runtime.get("last_error") or runtime["last_error"] in PATH_SCOPED_SOURCE_ERRORS:
+            runtime["last_error"] = translate(
+                "vault.health.unreadable_paths", locale=_request_locale(request),
+                count=runtime["unreadable_paths"],
+            )
     return {
         **summary,
         "manual_upload": manual_upload,

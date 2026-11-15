@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from . import notifications as inbox
 from .operation_policies import (
     auto_upload_path_is_included, file_is_stable, get_policy, stopped_upload_sql,
+    unconfirmed_scope,
 )
 from .protection_states import (
     CURRENT_JOIN_SQL, FAILED_UPLOAD_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql,
@@ -114,22 +115,26 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     """Dates are persisted successful evidence; missing dates remain explicit."""
     from .component_health import load_vault_health
     from .cost_estimates import estimate_storage_month, list_prices
-    from .protection_states import observation_is_unconfirmed
     from .source_layout import vault_local_access
     totals = dict.fromkeys(STATES, 0)
     vaults = []
     for vault in connection.execute("SELECT * FROM vaults WHERE lifecycle<>'tombstone' ORDER BY id").fetchall():
         health = load_vault_health(connection, vault["id"])
-        unknown = (not vault_local_access(vault["source_root"]).local_operations_allowed
-                   or observation_is_unconfirmed(health))
+        # The same per-path rule as browse, stats and the release gate (#684).
+        scope = unconfirmed_scope(
+            connection, int(vault["id"]), lifecycle=vault["lifecycle"],
+            local_operations_allowed=vault_local_access(vault["source_root"]).local_operations_allowed,
+        )
+        blocked, blocked_params = scope.sql("f.path")
         counts = dict.fromkeys(STATES, 0)
         state_expression = state_sql(get_policy(connection, vault["id"]))
         for row in connection.execute(f"""
-            SELECT {state_expression} AS state, count(*) AS total FROM files f
+            SELECT CASE WHEN {blocked} THEN 'unconfirmed' ELSE {state_expression} END AS state,
+                   count(*) AS total FROM files f
             {CURRENT_JOIN_SQL}
             WHERE f.vault_id=%s AND {VISIBLE_SQL} GROUP BY 1
-        """, (vault["id"],)).fetchall():
-            counts["unconfirmed" if unknown else row["state"]] += int(row["total"])
+        """, [*blocked_params, vault["id"]]).fetchall():
+            counts[row["state"]] += int(row["total"])
         for state in STATES:
             totals[state] += counts[state]
         vaults.append({"vault_id": vault["id"], "states": counts,

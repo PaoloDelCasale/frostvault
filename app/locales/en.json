@@ -331,6 +331,8 @@
   "api.free_space_started": "Freeing local space started",
   "api.local_release_unconfirmed": "Local release blocked: the protection of this Vault is not confirmed (see its Problems)",
   "api.local_release_blocked_path": "Local release blocked: FrostVault cannot read {path}, so its protection is not confirmed there, below it and in the folders above it. See the Problem for this path; the other Local Copies of the Vault can be released.",
+  "vault.health.unreadable_paths_one": "{count} unreadable path: protection is not confirmed only there, below it and in the folders above it (see its Problem)",
+  "vault.health.unreadable_paths_other": "{count} unreadable paths: protection is not confirmed only there, below them and in the folders above them (see their Problems)",
   "api.reconnect_volume_not_writable": "The destination Source Volume is not writable by FrostVault's user ({identity}, groups {groups}): its root {path} belongs to {owner} with mode {mode}. See docs/filesystem-permissions.md.",
   "api.reconnect_destination_not_writable": "The destination folder {path} is not writable by FrostVault's user ({identity}, groups {groups}): it belongs to {owner} with mode {mode}. See docs/filesystem-permissions.md.",
   "api.assignment_updated": "Assignment updated",

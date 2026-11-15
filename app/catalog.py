@@ -294,9 +294,17 @@ class ArchiveCatalog:
     and storage-class copies (#595).
     """
 
-    def __init__(self, connection: Any, *, protection_unconfirmed: bool = False):
+    def __init__(self, connection: Any, *, protection_unconfirmed: Any = False):
+        """``protection_unconfirmed``: a bool (the whole Vault or nothing) or
+        an :class:`UnconfirmedScope`, the per-path rule of ADR-0042 (#684)."""
+        from .services.operation_policies import UnconfirmedScope
+
         self.connection = connection
-        self.protection_unconfirmed = protection_unconfirmed
+        if not isinstance(protection_unconfirmed, UnconfirmedScope):
+            protection_unconfirmed = UnconfirmedScope(None if protection_unconfirmed else ())
+        self.unconfirmed = protection_unconfirmed
+        # The whole Vault is unconfirmed: no per-path work is needed.
+        self.protection_unconfirmed = protection_unconfirmed.whole_vault
         self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
 
@@ -1910,6 +1918,7 @@ class ArchiveCatalog:
             parent_path=parent_path,
             state_filter=folder_state,
             stopped=stopped,
+            unconfirmed=self.unconfirmed,
         )
         file_total = self._count_direct_child_files(
             vault_id,
@@ -1927,7 +1936,7 @@ class ArchiveCatalog:
                 state_filter=folder_state,
                 limit=page_size,
                 offset=offset,
-                unconfirmed=self.protection_unconfirmed,
+                unconfirmed=self.unconfirmed,
                 stopped=stopped,
             )
             items.extend(folders)
@@ -1980,6 +1989,12 @@ class ArchiveCatalog:
         if state:
             if self.protection_unconfirmed:
                 clauses.append("1=1" if state == "unconfirmed" else "1=0")
+            elif self.unconfirmed.by_path:
+                # Only the blocked paths are unconfirmed (ADR-0042, #684).
+                blocked, blocked_params = self.unconfirmed.sql("f.path")
+                clauses.append(
+                    f"(CASE WHEN {blocked} THEN 'unconfirmed' ELSE ({self._state_sql(vault_id)}) END) = %s")
+                params.extend([*blocked_params, state])
             else:
                 clauses.append(f"({self._state_sql(vault_id)}) = %s")
                 params.append(state)
@@ -2064,7 +2079,8 @@ class ArchiveCatalog:
             local_exists = row["local_presence"] in {"present", "unsupported"}
             current_id = row["current_version_id"]
             cloud_exists = current_id is not None and row["availability"] != "missing"
-            protection = project_file(row, unconfirmed=self.protection_unconfirmed)
+            unconfirmed = self.unconfirmed.covers(row["path"])
+            protection = project_file(row, unconfirmed=unconfirmed)
             upload_eligible = local_copy_is_upload_eligible(row)
             recoverable = current_is_recoverable(row)
             recovery = project_recovery(row, local_exists=local_exists, now=now)
@@ -2101,7 +2117,7 @@ class ArchiveCatalog:
                     "cloud_only_conflict": row["held_version_id"] is not None,
                     "reconciliation_block": row["reconciliation_block"],
                     "cleanup": _cleanup_state(row),
-                    "upload_eligible": upload_eligible and not self.protection_unconfirmed,
+                    "upload_eligible": upload_eligible and not unconfirmed,
                     "recovery": recovery,
                     # A Recovery in progress is resumed, never requested again.
                     "recover_eligible": (
@@ -3149,14 +3165,21 @@ class ArchiveCatalog:
         return int(row["total"] or 0) if row is not None else 0
 
     def summary(self, vault_id: int) -> dict[str, Any]:
-        """Bounded SQL rollup of the same observations used by file browsing."""
+        """Bounded SQL rollup of the same observations used by file browsing.
+
+        Files in a blocked path count as unconfirmed, the others keep their
+        state (ADR-0042, #684); ``last_known_states`` never overlays.
+        """
+        blocked, blocked_params = (self.unconfirmed.sql("f.path") if self.unconfirmed.by_path
+                                   else ("FALSE", []))
         rows = self.connection.execute(
             f"""
-            SELECT classified.state, COUNT(*) AS total,
+            SELECT classified.state, classified.blocked, COUNT(*) AS total,
                    coalesce(SUM(classified.local_bytes), 0) AS local_bytes,
                    coalesce(SUM(classified.cloud_bytes), 0) AS cloud_bytes
             FROM (
                 SELECT {self._state_sql(vault_id)} AS state,
+                    {blocked} AS blocked,
                     CASE WHEN f.local_presence IN ('present', 'unsupported')
                          THEN coalesce(f.local_size, 0) ELSE 0 END AS local_bytes,
                     CASE WHEN cur.availability <> 'missing'
@@ -3164,17 +3187,21 @@ class ArchiveCatalog:
                 FROM files f
                 {CURRENT_JOIN_SQL}
                 WHERE f.vault_id=%s AND {VISIBLE_SQL}
-            ) classified GROUP BY classified.state
-            """, (vault_id,),
+            ) classified GROUP BY classified.state, classified.blocked
+            """, [*blocked_params, vault_id],
         ).fetchall()
         states: dict[str, int] = {}
+        last_known_counts: dict[str, int] = {}
         local_bytes = 0
         cloud_bytes = 0
         for row in rows:
             state = row["state"]
             if not state:
                 continue
-            states[str(state)] = int(row["total"] or 0)
+            total = int(row["total"] or 0)
+            last_known_counts[str(state)] = last_known_counts.get(str(state), 0) + total
+            shown = "unconfirmed" if row["blocked"] else str(state)
+            states[shown] = states.get(shown, 0) + total
             local_bytes += int(row["local_bytes"] or 0)
             cloud_bytes += int(row["cloud_bytes"] or 0)
         active_jobs = self.connection.execute(
@@ -3185,12 +3212,16 @@ class ArchiveCatalog:
             """,
             (vault_id,),
         ).fetchone()["total"]
-        last_known_counts = dict(states)
         if self.protection_unconfirmed and states:
             states = {"unconfirmed": sum(states.values())}
+        protection_state = aggregate_state(states)
+        if self.unconfirmed.by_path and protection_state != "problem":
+            # The Vault root contains every blocked path, like a folder above
+            # one, even when no catalogued file lies in it.
+            protection_state = "unconfirmed"
         return {
             "states": states,
-            "protection_state": aggregate_state(states),
+            "protection_state": protection_state,
             "last_known_states": last_known_counts,
             "storage": {
                 "local_bytes": local_bytes,
