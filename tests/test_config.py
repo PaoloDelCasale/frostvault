@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -121,6 +124,30 @@ class ProductionHardeningConfigTests(unittest.TestCase):
     def test_development_defaults_need_no_hardening_env(self) -> None:
         # Without a secure cookie the app may run locally with no proxy in front.
         self._validate(_base_settings(cookie_secure=False))
+
+
+class OperationConcurrencyBoundsTests(unittest.TestCase):
+    """The cap rises from 16 to 32 (#701); the value is read at import."""
+
+    def _imported(self, **env: str) -> int:
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"OPERATION_CONCURRENCY", "UPLOAD_CONCURRENCY"}}
+        environment.update(env)
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from app.config import settings; print(settings.operation_concurrency)"],
+            env=environment, capture_output=True, text=True, check=True, timeout=60,
+        )
+        return int(result.stdout.strip())
+
+    def test_operation_concurrency_is_clamped_to_1_through_32(self) -> None:
+        for value, expected in (("0", 1), ("1", 1), ("16", 16), ("24", 24),
+                                ("32", 32), ("64", 32)):
+            with self.subTest(value=value):
+                self.assertEqual(self._imported(OPERATION_CONCURRENCY=value), expected)
+
+    def test_upload_concurrency_fallback_shares_the_cap(self) -> None:
+        self.assertEqual(self._imported(UPLOAD_CONCURRENCY="40"), 32)
 
 
 if __name__ == "__main__":

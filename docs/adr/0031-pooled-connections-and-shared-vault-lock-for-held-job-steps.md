@@ -157,7 +157,8 @@ history (migration 0072).
   connections. The floor guards severe slowdowns, while the connection bound
   deterministically catches per-use connection churn; timing alone cannot
   distinguish pool/lock regressions on differently sized CI runners.
-- A process keeps at most `2 × OPERATION_CONCURRENCY + 8` idle connections open.
+- A process keeps at most `2 × OPERATION_CONCURRENCY + 8` idle connections open
+  (72 at the cap of 32, #701, under PostgreSQL's default `max_connections=100`).
   `max_connections` must allow that, plus direct overflow connections under
   saturation.
 - No migration and no functional change. The S3 round trips per object are not

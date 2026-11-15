@@ -27,7 +27,7 @@ Search remains global across every file in the selected vault.
 - Queued or active uploads, recoveries, and local cleanup operations can be
   stopped with the **Stop** button shown next to their progress.
 - Operations run in parallel. `OPERATION_CONCURRENCY` controls the number of
-  simultaneous processes (default: `4`, maximum: `16`). The previous
+  simultaneous processes (default: `4`, maximum: `32`). The previous
   `UPLOAD_CONCURRENCY` variable remains supported as a fallback.
 - Local cleanup runs in the background and reports progress for each file or
   folder.

@@ -4,6 +4,11 @@
 > (#622): a key the catalog never wrote pins a presumed-empty inventory without
 > listing; permit waits are woken by releases instead of polling.
 >
+> **Amended in part by [#701](https://github.com/PaoloDelCasale/frostvault/issues/701)**
+> (#700): stage limits derive from `operation_concurrency`, whose cap rises
+> from 16 to 32, instead of fixed 2/4/4/2 defaults; the payload budgets and the
+> large multipart lane are unchanged.
+>
 > **Superseded in part by [ADR-0040](0040-ci-keeps-gates-not-descriptive-benchmarks.md)**
 > (#636): CI no longer measures against v0.5.3, and the full stress sizes shrink
 > to 256/512 with unchanged thresholds and publication gates.
@@ -20,9 +25,9 @@ An initial stable namespace observation may supply both the upload intent and re
 
 ## Implemented resource ownership
 
-`UploadExecution.run(claimed_job)` borrows synchronous stage permits from the existing foreground Job threads, with no stage executor, payload/receipt queue or extra preclaims. Process-local defaults are two preparation readers (4 MiB read-chunk budget), four sends, and four nonurgent catalog units with at most two per Vault; counts are capped by the deployment's immutable `operation_concurrency`. Per-Vault admission precedes global catalog admission, both before connection checkout or Vault locks. DB retry sleeps retain no permit. Completion-driven refill still uses the ordinary fair scheduler and claim boundary.
+`UploadExecution.run(claimed_job)` borrows synchronous stage permits from the existing foreground Job threads, with no stage executor, payload/receipt queue or extra preclaims. Process-local stage limits derive from the deployment's immutable `operation_concurrency` c (1..32): `min(c, 8)` preparation readers (2 MiB read-chunk budget per reader), c sends, and c nonurgent catalog units with at most `max(2, ceil(c / 2))` per Vault; every count is capped by c, so no stage has more permits than claimed Jobs. c=16 gives 8/16/16/8, c=4 gives 4/4/4/2. Per-Vault admission precedes global catalog admission, both before connection checkout or Vault locks. DB retry sleeps retain no permit. Completion-driven refill still uses the ordinary fair scheduler and claim boundary.
 
-Send buffers are admitted **before** intent/send-started and materialization. Ordinary payload capacity is 64 MiB. One separate oversized multipart allocation uses the same send-count permits and is bounded by `2 * (MAX_PART_SIZE + CHUNK_SIZE)` (currently 2 GiB + 2 MiB), without blocking small buffers behind an impossible weight. This is a payload budget, **not an RSS limit**; Python/SDK/TLS overhead and bounded snapshot metadata are additional. Send permits last through joined I/O and the immediate journal, then are released before publication/cleanup. LIST/HEAD/Read-back/recovery retain their existing claimed-Job/streaming bounds, not a new global four-request limit.
+Send buffers are admitted **before** intent/send-started and materialization. Ordinary payload capacity is 64 MiB. One separate oversized multipart allocation uses the same send-count permits and is bounded by `2 * (MAX_PART_SIZE + CHUNK_SIZE)` (currently 2 GiB + 2 MiB), without blocking small buffers behind an impossible weight. This is a payload budget, **not an RSS limit**; Python/SDK/TLS overhead and bounded snapshot metadata are additional. Send permits last through joined I/O and the immediate journal, then are released before publication/cleanup. LIST/HEAD/Read-back/recovery retain their existing claimed-Job/streaming bounds, not the global send-count limit.
 
 Autonomous receipt appends bypass catalog admission. A bounded process-local latch of failed receipt identities initially closes new sends; it retains no response payload and does not replace durable restart reconciliation. **#569 refines this gate:** a committed, empty INSERT into the receipt journal proves that its write path is reachable again and releases only the failure identities observed before the probe. It does not confirm any lost receipt, clear `send_started`, change the token/snapshot, or grant a second send to that intent. Durable ambiguous intents remain reconcile-only, even in disabled, paused or unavailable Vaults; they no longer block unrelated uploads. A failed probe/commit keeps new sends held. Jobs waiting for this gate release their claims with a timed retry and unchanged transfer retry count, and health reports the hold without turning it into a failed transfer.
 

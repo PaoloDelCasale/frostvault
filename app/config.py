@@ -64,10 +64,11 @@ class Settings:
         100, int(os.getenv("FILESYSTEM_WATCH_POLL_MS", "2000"))
     )
     queue_poll_interval: int = int(os.getenv("QUEUE_POLL_SECONDS", "5"))
+    # Jobs admitted at once, 1..32; upload stage limits derive from it (#701).
     operation_concurrency: int = max(
         1,
         min(
-            16,
+            32,
             int(
                 os.getenv(
                     "OPERATION_CONCURRENCY",
