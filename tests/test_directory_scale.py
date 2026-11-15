@@ -605,10 +605,10 @@ class DirectoryScaleTests(unittest.TestCase):
             """
         )
 
-        original_rebuild = aggregates._rebuild_directory
+        original_compute = aggregates._compute_directory_rollup
 
         def rebuild_and_concurrent_mark(connection, vault_id, directory):
-            original_rebuild(connection, vault_id, directory)
+            rollup = original_compute(connection, vault_id, directory)
             if directory == "alpha":
                 # Concurrent transaction committed a newer dirty mark mid-flush.
                 connection.execute(
@@ -624,10 +624,11 @@ class DirectoryScaleTests(unittest.TestCase):
                     VALUES (2, 'alpha', '2026-07-21T10:00:09+00:00', 'concurrent-alpha')
                     """
                 )
+            return rollup
 
         with patch.object(aggregates, "_now", return_value="2026-07-21T10:00:05+00:00"):
             with patch.object(
-                aggregates, "_rebuild_directory", side_effect=rebuild_and_concurrent_mark
+                aggregates, "_compute_directory_rollup", side_effect=rebuild_and_concurrent_mark
             ):
                 aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 

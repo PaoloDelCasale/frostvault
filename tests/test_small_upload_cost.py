@@ -32,6 +32,8 @@ import asyncio
 import json
 import os
 import re
+import threading
+import time
 import unittest
 import uuid
 from contextlib import ExitStack, contextmanager
@@ -599,7 +601,7 @@ class BacklogObservationTests(unittest.TestCase):
             with ExitStack() as stack:
                 for owner, name in (
                     (storage.source_layout, "verify_mounts_once"), (storage, "process_jobs_once"),
-                    (storage, "_deliver_notifications_once"), (storage, "process_directory_aggregate_maintenance"),
+                    (storage, "_deliver_notifications_once"), (storage, "_submit_directory_aggregates"),
                     (storage.protection_stop_service, "reconcile_all"), (storage, "_submit_maintenance"),
                 ):
                     stack.enter_context(patch.object(owner, name))
@@ -612,7 +614,7 @@ class BacklogObservationTests(unittest.TestCase):
                 stall = stack.enter_context(patch.object(storage, "observe_queue_stall"))
                 with self.assertRaises(asyncio.CancelledError):
                     await storage._background_loop(asyncio.get_running_loop(), asyncio.Event())
-                self.aggregate_flushes = storage.process_directory_aggregate_maintenance.call_count
+                self.aggregate_flushes = storage._submit_directory_aggregates.call_count
                 return depth_reads.call_count, stall.call_count
 
         return asyncio.run(run())
@@ -636,3 +638,52 @@ class BacklogObservationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DirectoryAggregateFoldTests(unittest.TestCase):
+    """#696: a fold of a large Vault takes seconds; the scheduler never waits on it."""
+
+    def test_a_running_fold_returns_at_once_and_is_not_started_twice(self):
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def slow_fold():
+            calls.append(1)
+            started.set()
+            release.wait(10)
+
+        self.addCleanup(storage.shutdown_background_executors)
+        self.addCleanup(release.set)
+        with patch.object(storage, "process_directory_aggregate_maintenance", side_effect=slow_fold):
+            began = time.monotonic()
+            storage._submit_directory_aggregates()
+            self.assertTrue(started.wait(5))
+            storage._submit_directory_aggregates()
+            self.assertLess(time.monotonic() - began, 1.0)
+            self.assertEqual(calls, [1])
+            release.set()
+            storage._aggregate_future.result(5)
+            storage._submit_directory_aggregates()
+            storage._aggregate_future.result(5)
+        self.assertEqual(calls, [1, 1])
+
+    def test_a_failed_fold_is_recorded_not_raised(self):
+        self.addCleanup(storage.shutdown_background_executors)
+        with patch.object(storage, "process_directory_aggregate_maintenance",
+                          side_effect=RuntimeError("boom")), \
+                patch.object(storage, "_record_background_loop_error") as record:
+            storage._submit_directory_aggregates()
+            storage._aggregate_future.result(5)
+        record.assert_called_once()
+
+    def test_a_fold_is_drained_at_shutdown(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        with patch.object(storage, "process_directory_aggregate_maintenance",
+                          side_effect=lambda: release.wait(10)):
+            storage._submit_directory_aggregates()
+            futures = storage._detach_background_executors()
+            self.assertEqual(len(futures), 1)
+            release.set()
+            futures[0].result(5)
+        self.assertIsNone(storage._aggregate_future)

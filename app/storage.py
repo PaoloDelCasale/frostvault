@@ -161,6 +161,8 @@ _operation_lock = threading.Lock()
 _operation_completion_notify: Callable[[], None] | None = None
 _maintenance_executor: ThreadPoolExecutor | None = None
 _maintenance_futures: dict[str, Future[Any]] = {}
+_aggregate_executor: ThreadPoolExecutor | None = None
+_aggregate_future: Future[Any] | None = None
 _maintenance_lock = threading.Lock()
 
 # Local scans deliberately keep filesystem work outside write transactions.
@@ -5393,6 +5395,34 @@ def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None
         _maintenance_futures[name] = _maintenance_pool_locked().submit(func, *args)
 
 
+def _run_directory_aggregates() -> None:
+    try:
+        process_directory_aggregate_maintenance()
+    except Exception as exc:
+        _record_background_loop_error(exc)
+
+
+def _submit_directory_aggregates() -> None:
+    """Fold directory aggregates on their own single thread, one fold at a time.
+
+    Not on the scheduler loop: one fold of a folder with ~140,000 descendants
+    took ~2 s each on Unraid, and with the loop waiting for it no freed
+    operation slot was refilled (#696). Not on the maintenance pool either: a
+    full scan holds its only worker for hours.
+    """
+    global _aggregate_executor, _aggregate_future
+    with _maintenance_lock:
+        if shutdown_state.requested:
+            return
+        if _aggregate_future is not None and not _aggregate_future.done():
+            return
+        if _aggregate_executor is None:
+            _aggregate_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="directory-aggregates",
+            )
+        _aggregate_future = _aggregate_executor.submit(_run_directory_aggregates)
+
+
 def stop_background_executors() -> None:
     """Cancel queued work immediately, retaining running futures for draining."""
     _shutdown_watcher_scan_executor()
@@ -5405,7 +5435,7 @@ def stop_background_executors() -> None:
 
 
 def _detach_background_executors() -> list[Future[Any]]:
-    global _operation_executor, _maintenance_executor
+    global _operation_executor, _maintenance_executor, _aggregate_executor, _aggregate_future
     with _operation_lock:
         executor = _operation_executor
         _operation_executor = None
@@ -5420,6 +5450,12 @@ def _detach_background_executors() -> list[Future[Any]]:
         _maintenance_futures.clear()
         if maintenance is not None:
             maintenance.shutdown(wait=False, cancel_futures=True)
+        aggregates, _aggregate_executor = _aggregate_executor, None
+        if _aggregate_future is not None:
+            futures.append(_aggregate_future)
+            _aggregate_future = None
+        if aggregates is not None:
+            aggregates.shutdown(wait=False, cancel_futures=True)
     return futures
 
 
@@ -7127,11 +7163,13 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 await asyncio.to_thread(_deliver_notifications_once)
                 # Converge durable directory aggregate dirty/rebuild work off the
                 # /api/files request path (issue #229), one batch per interval
-                # rather than one per cycle (#622).
+                # rather than one per cycle (#622), on its own thread: a large
+                # Vault's fold takes seconds, and this loop must keep refilling
+                # the operation slots meanwhile (#696).
                 if (last_aggregates is None
                         or loop.time() - last_aggregates >= DIRECTORY_AGGREGATE_BATCH_SECONDS):
                     last_aggregates = loop.time()
-                    await asyncio.to_thread(process_directory_aggregate_maintenance)
+                    _submit_directory_aggregates()
                 await asyncio.to_thread(protection_stop_service.reconcile_all)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
