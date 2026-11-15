@@ -613,7 +613,7 @@ class PermissionRecoveryBoundaryTests(Harness):
         before_registration = repaired / "deep" / "before-registration.txt"
         target = repaired / "deep" / "first-at-confirmation.txt"
 
-        def local_scan(_vault, _scan_id):
+        def local_scan(_vault, _scan_id, *, scan_lock=None):
             found = survey(root)
             watch_plan.record_full_scan(VAULT_ID, found)
             scans.append(found)
