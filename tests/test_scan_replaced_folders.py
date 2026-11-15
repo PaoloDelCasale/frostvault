@@ -153,8 +153,8 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
         real_inspect = storage.inspect_entry
         remaining = [replace_times]
 
-        def inspect(pinned):
-            result = real_inspect(pinned)
+        def inspect(pinned, **kwargs):
+            result = real_inspect(pinned, **kwargs)
             if pinned.name == "new.jpg" and remaining[0] > 0:
                 remaining[0] -= 1
                 _replace(folder)
@@ -216,8 +216,8 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
             )))
             real_inspect = storage.inspect_entry
 
-            def inspect(pinned):
-                result = real_inspect(pinned)
+            def inspect(pinned, **kwargs):
+                result = real_inspect(pinned, **kwargs)
                 if pinned.name == "new.jpg":
                     _replace(root / "upload/aa/07")
                 return result

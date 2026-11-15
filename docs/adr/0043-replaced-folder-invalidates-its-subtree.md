@@ -44,6 +44,11 @@ Each replaced folder writes one warning line to the log, with the Vault and
 the path. A walk without a scan journal to compensate (no production caller)
 still refuses as a whole, naming the folder.
 
+Since #696 the walk checks the folders on its current path at folder
+boundaries (before a folder is listed and when its entries are done), not
+before every entry; see the amendment to
+[ADR-0045](0045-parallel-scan-verification.md).
+
 ## Consequences
 
 A replacement after a folder was re-walked but before the scan finished is not

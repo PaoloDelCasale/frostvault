@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ScanStatus } from "@/components/ScanStatus";
+import { formatNumber } from "@/pages/archive/format";
 
 // Echo the key and its params, so the test reads what the component asked for.
 const t = (key: string, params?: Record<string, string | number>) =>
@@ -46,5 +47,46 @@ describe("ScanStatus (#691)", () => {
     }} />);
     expect(screen.getByTestId("scan-last-failed")).toBeInTheDocument();
     expect(screen.queryByTestId("scan-in-progress")).toBeNull();
+  });
+
+  it("shows files seen and their rate during the traversal of a first adoption (#696)", () => {
+    render(<ScanStatus t={t} runtime={{
+      scanning: true, scan_phase: "traversal",
+      traversal_files_seen: 96500, traversal_files_per_minute: 2144.4, traversal_files_expected: null,
+    }} />);
+    const line = screen.getByTestId("scan-traversal").textContent ?? "";
+    expect(line).toContain("vault.scan.traversal ");
+    expect(line).toContain(`"files":"${formatNumber(96500)}","rate":"${formatNumber(2144)}"`);
+    expect(line).not.toContain("traversal_estimate");
+    expect(line).not.toContain("remaining");
+  });
+
+  it("estimates the time left when a previous scan counted the Local Copies (#696)", () => {
+    render(<ScanStatus t={t} runtime={{
+      scanning: true, scan_phase: "traversal",
+      traversal_files_seen: 96000, traversal_files_per_minute: 2000, traversal_files_expected: 138000,
+    }} />);
+    const line = screen.getByTestId("scan-traversal").textContent ?? "";
+    expect(line).toContain("vault.scan.traversal_estimate");
+    // 42,000 files left at 2,000 per minute: 21 minutes.
+    expect(line).toContain('vault.scan.remaining_minutes {\\"count\\":21}');
+  });
+
+  it("states the time left in hours beyond an hour (#696)", () => {
+    render(<ScanStatus t={t} runtime={{
+      scanning: true, scan_phase: "traversal",
+      traversal_files_seen: 1000, traversal_files_per_minute: 1000, traversal_files_expected: 91000,
+    }} />);
+    expect(screen.getByTestId("scan-traversal").textContent).toContain('vault.scan.remaining_hours {\\"count\\":1.5}');
+  });
+
+  it("drops the traversal line once the scan verifies (#696)", () => {
+    render(<ScanStatus t={t} runtime={{
+      scanning: true, scan_phase: "verification",
+      traversal_files_seen: 138000, traversal_files_per_minute: 2000, traversal_files_expected: 138000,
+      verify_files_total: 10, verify_files_done: 1, verify_bytes_total: 10, verify_bytes_done: 1,
+    }} />);
+    expect(screen.queryByTestId("scan-traversal")).toBeNull();
+    expect(screen.getByTestId("scan-in-progress").textContent).toContain("vault.scan.verifying");
   });
 });

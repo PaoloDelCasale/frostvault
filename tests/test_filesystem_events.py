@@ -356,9 +356,9 @@ class SubtreeContainmentTests(unittest.TestCase):
                     swap()  # After is_symlink(), immediately before real traversal.
                 return real_scan(*args, **kwargs)
 
-            def inspect(path):
+            def inspect(path, **kwargs):
                 nonlocal inspections
-                result = real_inspect(path)
+                result = real_inspect(path, **kwargs)
                 if result and result[0] == "regular":
                     inspections += 1
                     if during_walk and inspections == 2:

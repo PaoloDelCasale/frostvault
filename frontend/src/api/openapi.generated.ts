@@ -2167,6 +2167,9 @@ export interface components {
                 last_error_source_at?: string | null;
                 scan_phase?: string | null;
                 scanning?: boolean;
+                traversal_files_expected?: number | null;
+                traversal_files_per_minute?: number | null;
+                traversal_files_seen?: number | null;
                 verify_bytes_done?: number | null;
                 verify_bytes_total?: number | null;
                 verify_files_done?: number | null;

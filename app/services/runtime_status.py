@@ -14,6 +14,9 @@ _SCALAR_KEYS = (
     # The running scan's phase and verification progress (#691).
     "scan_phase", "verify_files_total", "verify_files_done",
     "verify_bytes_total", "verify_bytes_done",
+    # Traversal progress (#696): files seen, their rate, and the Local Copies a
+    # previous scan found (None on a first adoption) for a time estimate.
+    "traversal_files_seen", "traversal_files_per_minute", "traversal_files_expected",
     *(f"last_{kind}_{component}" for kind in ("error", "success")
       for component in ("source", "cloud", "policy", "audit")),
     # When each component's error was recorded, so a running scan shows an

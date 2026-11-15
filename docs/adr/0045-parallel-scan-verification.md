@@ -74,6 +74,44 @@ read or send. Automatic admission then decides again on the current
 observation. A newer watcher observation fences the Job the same way. The
 upload keeps its own Upload Snapshot and fences as before.
 
+## Amendment: a faster traversal (#696, 2026-11-15)
+
+On the same `shfs` Vault the traversal saw ~2,200 files per minute (96,500 in
+45 minutes) while `find` listed the share, size and mtime included, in 14.5
+seconds. Reads were 1–7 MB/s: the time went to metadata round trips through
+FUSE. Per file the walk made one `stat` per active ancestor folder (4–5 for
+`library/<user>/<year>/<date>/file`), an `lstat`, and an `open` + `fstat` +
+`read(1)` + `close` readability probe, before the verification read the same
+file again in full.
+
+**The ancestor fence runs once per folder.** The walk checks the identity of
+the folders on its current path before it lists a folder and once that
+folder's entries are done, not before every entry. A folder replaced while
+its entries are yielded is still left and named at the end of that folder,
+and its observations are compensated and walked again (ADR-0043). The check
+before each catalog batch (`validate_active`) and the whole fence at the end
+of the walk (`validate`) are unchanged.
+
+**The readability probe is left to the verification.** The walk reuses the
+listing's `lstat` and skips the probe for a file the verification will hash:
+no fingerprint in the catalog, or a size or mtime that differ from it. The
+catalog state is looked up in bulk, once per listed folder. A fingerprinted
+file whose size and mtime did not change is still probed, so a file made
+unreadable after it was protected is still found by a rescan. A file the
+verification cannot read is reported by its path as before
+(`file_unreadable`, the scan is incomplete), and the scan then undoes its
+observation by the same compare-and-swap restore as a replaced folder: like a
+file whose probe failed, it is not observed by that scan, so it is not
+catalogued or admitted for upload, and it joins the gaps the watcher
+re-checks. Watcher batches keep the probe.
+
+**Traversal progress.** During `scan_phase: traversal` the runtime status
+reports the files seen so far and their rate per minute
+(`runtime.traversal_files_seen`, `runtime.traversal_files_per_minute`), and
+the Vault header shows them. When the catalog already holds Local Copies
+from a previous scan, their count (`runtime.traversal_files_expected`) gives
+an estimate of the time left; a first adoption shows none.
+
 ## Consequences
 
 - A full scan holds up to `SCAN_HASH_CONCURRENCY` file descriptors and reads of

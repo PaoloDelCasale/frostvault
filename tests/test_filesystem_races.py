@@ -113,9 +113,9 @@ class FilesystemCatalogTests(unittest.TestCase):
         original_inspect = storage.inspect_entry
         inspected_files = 0
 
-        def replace_root_after_first_batch(entry):
+        def replace_root_after_first_batch(entry, **kwargs):
             nonlocal inspected_files
-            result = original_inspect(entry)
+            result = original_inspect(entry, **kwargs)
             if result and result[0] == "regular":
                 inspected_files += 1
                 if inspected_files == 2:
@@ -139,9 +139,9 @@ class FilesystemCatalogTests(unittest.TestCase):
         real_inspect = storage.inspect_entry
         inspected = 0
 
-        def swap_after_batch(entry):
+        def swap_after_batch(entry, **kwargs):
             nonlocal inspected
-            result = real_inspect(entry)
+            result = real_inspect(entry, **kwargs)
             if result and result[0] == "regular":
                 inspected += 1
                 if inspected == 2:
