@@ -18,8 +18,9 @@ _SCALAR_KEYS = (
     # previous scan found (None on a first adoption) for a time estimate.
     "traversal_files_seen", "traversal_files_per_minute", "traversal_files_expected",
     # Seconds of the traversal spent waiting for the Vault row and writing its
-    # batches (#707); the rest is the walk.
-    "traversal_lock_wait_seconds", "traversal_write_seconds",
+    # batches (#707); the rest is the walk, including the per-entry file checks
+    # (#709).
+    "traversal_lock_wait_seconds", "traversal_write_seconds", "traversal_probe_seconds",
     *(f"last_{kind}_{component}" for kind in ("error", "success")
       for component in ("source", "cloud", "policy", "audit")),
     # When each component's error was recorded, so a running scan shows an

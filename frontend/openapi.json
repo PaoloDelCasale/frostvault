@@ -2888,6 +2888,12 @@
                   "null"
                 ]
               },
+              "traversal_probe_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "traversal_write_seconds": {
                 "type": [
                   "number",
