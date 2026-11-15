@@ -1,14 +1,16 @@
 """Bounded stage ownership for already-claimed uploads, not another work queue.
 
-The scheduler alone owns Job admission (1..16). Its foreground threads lend
+The scheduler alone owns Job admission (1..32). Its foreground threads lend
 capacity to hashing, transport buffers and DB-only commits here. There are no
 payloads, receipts, Futures or unclaimed Jobs in this Module. A permit belongs to
 one synchronous scope and is returned on *every* exit, including BaseException.
 
-Defaults deliberately do not raise worker concurrency: two hash readers (4 MiB
-of live read chunks), four sends (64 MiB nominal live payload), four catalog
-units, at most two of those per Vault. All counts are capped by the installation's
-operation_concurrency. The byte accounting is payload, not a promise about RSS
+Stage limits derive from c = operation_concurrency and never raise worker
+concurrency (#700, #701): min(c, 8) hash readers (2 MiB of live read chunks
+each), c sends (64 MiB nominal live payload), c catalog units, at most
+max(2, ceil(c / 2)) of those per Vault. Every count is capped by c, so a stage
+never has more permits than claimed Jobs. c=16 gives 8/16/16/8, c=4 gives 4/4/4/2.
+The byte accounting is payload, not a promise about RSS
 (Python/SDK/TLS allocations are additional). Classic multipart may require more
 than 64 MiB for two parts: one separate oversized-buffer lane preserves that
 immutable layout, bounded by two MAX_PART_SIZE parts plus read chunks. It shares
@@ -16,7 +18,7 @@ the SAME send-count permits, but cannot block small transfers behind an oversize
 weight or occupy their 64 MiB budget for hours. Total transport payload capacity
 is therefore 64 MiB + that one bounded large layout, NOT a 64 MiB RSS limit.
 No tiny payload is captured or kept between stages. Snapshot metadata remains
-bounded by 16 claimed Jobs x 10,000 checksums and dies with the attempt.
+bounded by 32 claimed Jobs x 10,000 checksums and dies with the attempt.
 
 Receipt appends never acquire a catalog permit. A failed append closes *new*
 send admission, without waiting behind catalog writers or occupying all workers
@@ -30,6 +32,7 @@ from collections import deque
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
+import math
 import os
 import threading
 from typing import Any, Callable, Iterator
@@ -44,14 +47,44 @@ class UploadJournalHeld(psycopg.OperationalError):
     """Send admission is waiting, not a transfer failure or spent retry."""
 
 
+# Highest admitted OPERATION_CONCURRENCY (config clamps to the same value).
+MAX_CONCURRENCY = 32
+# Hash readers stop growing here: more parallel reads of the same disks only
+# compete with each other and with scan verification (#700).
+MAX_PREPARE_READERS = 8
+# Live read chunks one preparation reader holds; preparation_capacity weight.
+PREPARE_READER_BYTES = 2 * CHUNK_SIZE
+
+
 @dataclass(frozen=True)
 class _Limits:
-    prepare_count: int = 2
-    prepare_bytes: int = 4 * CHUNK_SIZE
-    network_count: int = 4
+    """Stage limits; a field left ``None`` derives from operation_concurrency."""
+
+    prepare_count: int | None = None
+    prepare_bytes: int | None = None
+    network_count: int | None = None
     network_bytes: int = 64 * CHUNK_SIZE
-    catalog_count: int = 4
-    catalog_per_vault: int = 2
+    catalog_count: int | None = None
+    catalog_per_vault: int | None = None
+
+    def resolve(self, concurrency: int) -> _Limits:
+        """Fill unset limits from ``concurrency`` (#701); explicit values win."""
+        c = _clamp_concurrency(concurrency)
+        prepare_count = self.prepare_count if self.prepare_count is not None else min(c, MAX_PREPARE_READERS)
+        return _Limits(
+            prepare_count=prepare_count,
+            prepare_bytes=(self.prepare_bytes if self.prepare_bytes is not None
+                           else prepare_count * PREPARE_READER_BYTES),
+            network_count=self.network_count if self.network_count is not None else c,
+            network_bytes=self.network_bytes,
+            catalog_count=self.catalog_count if self.catalog_count is not None else c,
+            catalog_per_vault=(self.catalog_per_vault if self.catalog_per_vault is not None
+                               else max(2, math.ceil(c / 2))),
+        )
+
+
+def _clamp_concurrency(concurrency: int) -> int:
+    return max(1, min(MAX_CONCURRENCY, int(concurrency)))
 
 
 # A queued waiter is woken by the release that makes room for it; without a
@@ -128,13 +161,15 @@ class _Capacity:
 
 class _Pipeline:
     def __init__(self, concurrency: int, limits: _Limits = _Limits()):
-        concurrency = max(1, min(16, int(concurrency)))
+        concurrency = _clamp_concurrency(concurrency)
+        limits = limits.resolve(concurrency)
         self.prepare = _Capacity(min(concurrency, limits.prepare_count), limits.prepare_bytes)
         network_count = min(concurrency, limits.network_count)
         self.network = _Capacity(network_count, network_count)
         self._buffers = _Capacity(network_count, limits.network_bytes)
         self._large_buffers = _Capacity(1, 2 * (MAX_PART_SIZE + CHUNK_SIZE))
-        self.catalog = _Capacity(min(concurrency, limits.catalog_count), limits.catalog_count)
+        catalog_count = min(concurrency, limits.catalog_count)
+        self.catalog = _Capacity(catalog_count, catalog_count)
         self._vault_count = min(concurrency, limits.catalog_per_vault)
         self._lock = threading.Lock()
         self._vaults: dict[int, tuple[_Capacity, int]] = {}
@@ -150,7 +185,8 @@ class _Pipeline:
             self._vaults[vault] = capacity, users + 1
         try:
             # Contention of one Vault cannot fill the global waiting queue or
-            # occupy all four global slots. FIFO admission also bounds bypass
+            # occupy all global slots from c=4 up (per Vault: about half).
+            # FIFO admission also bounds bypass
             # by later shared units; PostgreSQL retains its own writer fairness.
             # No connection/row lock exists until BOTH permits have been taken.
             with capacity.take(check), self.catalog.take(check):
@@ -289,7 +325,7 @@ def preparation_capacity(job: dict[str, Any]):
     if current is None or current[1]["id"] != job["id"]:
         return nullcontext()
     pipeline, _, check = current
-    return pipeline.prepare.take(check, 2 * CHUNK_SIZE)
+    return pipeline.prepare.take(check, PREPARE_READER_BYTES)
 
 
 def catalog_capacity(job: dict[str, Any]):

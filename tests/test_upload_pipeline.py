@@ -27,14 +27,56 @@ class UploadCapacityTests(unittest.TestCase):
             path.write_bytes(b"bounded")
             return prepare_upload_snapshot(path, lambda: None)[0]
 
-    def test_counts_are_capped_not_an_increment_of_claimed_workers(self):
-        for concurrency in (1, 2, 4, 16):
+    def test_stage_limits_derive_from_concurrency(self):
+        """#701: prepare/send/catalog/per-Vault follow c, never above it."""
+        expected = {  # c: (prepare, network, catalog, per Vault)
+            1: (1, 1, 1, 1),
+            2: (2, 2, 2, 2),
+            4: (4, 4, 4, 2),
+            16: (8, 16, 16, 8),
+            32: (8, 32, 32, 16),
+        }
+        for concurrency, (prepare, network, catalog, per_vault) in expected.items():
             with self.subTest(concurrency=concurrency):
                 coordinator = pipeline._Pipeline(concurrency)
-                self.assertEqual(coordinator.prepare.count, min(concurrency, 2))
-                self.assertEqual(coordinator.network.count, min(concurrency, 4))
-                self.assertEqual(coordinator.catalog.count, min(concurrency, 4))
-                self.assertEqual(coordinator._vault_count, min(concurrency, 2))
+                self.assertEqual(coordinator.prepare.count, prepare)
+                # Two read chunks per reader: exactly ``prepare`` readers fit.
+                self.assertEqual(coordinator.prepare.byte_limit, prepare * 2 * CHUNK_SIZE)
+                self.assertEqual(coordinator.network.count, network)
+                self.assertEqual(coordinator._buffers.count, network)
+                self.assertEqual(coordinator.catalog.count, catalog)
+                self.assertEqual(coordinator._vault_count, per_vault)
+                # Payload budgets do not grow with c.
+                self.assertEqual(coordinator._buffers.byte_limit, 64 * CHUNK_SIZE)
+                self.assertEqual(coordinator._large_buffers.count, 1)
+                self.assertEqual(coordinator._large_buffers.byte_limit,
+                                 2 * (pipeline.MAX_PART_SIZE + CHUNK_SIZE))
+
+    def test_concurrency_above_32_is_clamped_to_32(self):
+        for concurrency in (33, 64, 1000):
+            with self.subTest(concurrency=concurrency):
+                coordinator = pipeline._Pipeline(concurrency)
+                self.assertEqual(
+                    (coordinator.prepare.count, coordinator.network.count,
+                     coordinator.catalog.count, coordinator._vault_count),
+                    (8, 32, 32, 16))
+        coordinator = pipeline._Pipeline(0)
+        self.assertEqual((coordinator.prepare.count, coordinator.network.count), (1, 1))
+
+    def test_explicit_limits_win_but_stay_capped_by_concurrency(self):
+        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_count=1, catalog_per_vault=9))
+        self.assertEqual(coordinator.network.count, 1)
+        self.assertEqual(coordinator._vault_count, 4)
+        self.assertEqual(coordinator.prepare.count, 4)
+
+    def test_eight_readers_hash_at_once_with_sixteen_claimed_jobs(self):
+        coordinator = pipeline._Pipeline(16)
+        with ExitStack() as stack:
+            for _ in range(8):
+                stack.enter_context(coordinator.prepare.take(lambda: None, 2 * CHUNK_SIZE))
+            self.assertEqual(coordinator.prepare._count, 8)
+            self.assertFalse(coordinator.prepare._fits(2 * CHUNK_SIZE))
+        self.assertEqual(coordinator.prepare._count, 0)
 
     def test_a_queued_waiter_is_woken_by_the_release_not_by_polling(self):
         """No 0.1 s poll (#622): the release wakes the head waiter at once."""
