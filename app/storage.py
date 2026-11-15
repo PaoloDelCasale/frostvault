@@ -29,8 +29,8 @@ from boto3.s3.transfer import TransferConfig
 from .services.s3_clients import s3_client as _cached_s3_client
 from .services.s3_upload import upload_file
 from .services.upload_snapshot import (
-    UploadSnapshot, prepare_upload_snapshot, validated_s3_proof, UploadProofMismatch,
-    unsupported_checksum_api,
+    PartDigests, UploadSnapshot, prepare_upload_snapshot, validated_s3_proof,
+    UploadProofMismatch, unsupported_checksum_api,
 )
 from watchfiles import Change, awatch
 
@@ -1629,8 +1629,11 @@ def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, An
         local_path = safe_local_path(str(root), row["path"])
         if not local_path.is_file():
             return "absent", None
+        # The same read records the multipart part digests of a file of at
+        # least 8 MiB, so its upload needs no reading pass of its own (#703).
+        parts = PartDigests()
         digest, stat_result = hash_stable_regular_file(
-            local_path, should_stop=lambda: shutdown_state.requested,
+            local_path, should_stop=lambda: shutdown_state.requested, parts=parts,
         )
     except WorkerStopping:
         raise
@@ -1651,6 +1654,7 @@ def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, An
         "size": stat_result.st_size,
         "mtime_ns": stat_result.st_mtime_ns,
         "digest": digest,
+        "parts": parts.record(stat_result.st_size),
         "observed_at": now_iso(),
     }
 
@@ -1827,6 +1831,7 @@ def _apply_local_fingerprint_updates(
                     plaintext_sha256=update["digest"],
                     size=update["size"],
                     mtime_ns=update["mtime_ns"],
+                    parts=update.get("parts"),
                 )
             if persisted:
                 _current_verified_scan_row(connection, vault)
@@ -1836,7 +1841,8 @@ def _apply_local_fingerprint_updates(
 # scan that loses its proof can restore them (#593).
 _JOURNAL_COLUMNS_SQL = """
     id, local_presence, local_file_type, local_size, local_mtime_ns,
-    local_sha256, matched_version_id, held_version_id, local_seen_at,
+    local_sha256, local_part_size, local_part_sha256, matched_version_id,
+    held_version_id, local_seen_at,
     local_observed_at, local_content_observed_at, local_recovered_at
 """
 
@@ -1929,7 +1935,8 @@ def _restore_journal_entries(
             UPDATE files
             SET generation=generation + 1,
                 local_presence=%s, local_file_type=%s, local_size=%s,
-                local_mtime_ns=%s, local_sha256=%s, matched_version_id=%s,
+                local_mtime_ns=%s, local_sha256=%s, local_part_size=%s,
+                local_part_sha256=%s, matched_version_id=%s,
                 held_version_id=%s, local_seen_at=%s, local_observed_at=%s,
                 local_content_observed_at=%s, local_recovered_at=%s
             WHERE id=%s AND vault_id=%s AND local_seen_at=%s
@@ -1940,6 +1947,8 @@ def _restore_journal_entries(
                 snapshot["local_size"],
                 snapshot["local_mtime_ns"],
                 snapshot["local_sha256"],
+                snapshot.get("local_part_size"),
+                snapshot.get("local_part_sha256"),
                 snapshot["matched_version_id"],
                 snapshot["held_version_id"],
                 snapshot["local_seen_at"],

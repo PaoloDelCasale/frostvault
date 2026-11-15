@@ -15,6 +15,12 @@
 > exactly what the PUT sends; multipart transfers keep the second validated
 > read (see "Single-PUT payloads" below).
 >
+> **Amended in part by [#703](https://github.com/PaoloDelCasale/frostvault/issues/703)**
+> (#700): from 8 MiB, a fresh upload whose Local Copy fingerprint carries the
+> part digests the scan recorded builds its snapshot from the catalog; the
+> validated send is then its only source read (see "Multipart snapshots from
+> the scan's part digests" below).
+>
 > **Superseded in part by [ADR-0040](0040-ci-keeps-gates-not-descriptive-benchmarks.md)**
 > (#636): CI no longer measures against v0.5.3, and the full stress sizes shrink
 > to 256/512 with unchanged thresholds and publication gates.
@@ -39,7 +45,7 @@ Autonomous receipt appends bypass catalog admission. A bounded process-local lat
 
 Cancellation still forbids ordinary resume and never grants PUT, multipart-abort, publication, cleanup or Job-completion authority. The former facts-only repair of cancelled intents is no longer part of unrelated send admission: it existed to reopen the global latch, and its S3 reads could themselves hold other Vaults behind an unavailable namespace. The probe performs no provider I/O and invents no replacement receipt; cancelled uncertainty remains durable without reactivating that Job. A generation-fenced snapshot preserves concurrent late failures, including the same fact failing again, until the next successful committed probe. Hashing and permit waits inspect local cancel/shutdown/loss every iteration and amortize remote renewal to one second; durable checks still fence effects. No new cancellation-latency guarantee is made for the existing final Local Copy rehash.
 
-Snapshots of 8 MiB and more keep a **second validated source read**: the transport reopens the file and validates each bounded part buffer against the immutable snapshot before sending it, rather than capturing payload between stages. Small SHA256 PUTs use a shared bounded transport executor; legacy multipart/read-back behavior remains. Process/configuration/retry-policy-scoped clients have distinct normal-read/part and one-shot mutator policies, fork reset and shutdown hooks. No new UI tuning, durable format, migration, packing or Lifecycle behavior is introduced.
+Snapshots of 8 MiB and more keep a **second validated source read** (the only one when the snapshot comes from the scan's part digests, #703): the transport reopens the file and validates each bounded part buffer against the immutable snapshot before sending it, rather than capturing payload between stages. Small SHA256 PUTs use a shared bounded transport executor; legacy multipart/read-back behavior remains. Process/configuration/retry-policy-scoped clients have distinct normal-read/part and one-shot mutator policies, fork reset and shutdown hooks. No new UI tuning, durable format, migration, packing or Lifecycle behavior is introduced.
 
 ### Single-PUT payloads (#702)
 
@@ -53,6 +59,14 @@ A snapshot below `MULTIPART_THRESHOLD` (8 MiB) is read **once** per upload; this
 - **Memory.** The ordinary payload budget stays 64 MiB. A small payload now occupies it from before the read rather than only around the send, so at most six payloads near 8 MiB (about 10 MiB of weight each) are hashed or sent at once; smaller files share the budget up to the buffer lane count. This remains a payload budget, not an RSS limit.
 
 Files of 8 MiB and more, and the transport callers without a snapshot (rename, copy, recovery), are unchanged.
+
+### Multipart snapshots from the scan's part digests (#703)
+
+The scan verification records, with the digest of a Local Copy of 8 MiB or more, the SHA-256 of each of its multipart parts, cut with the snapshot's part size (ADR-0045, migration 0004).
+
+- **No preparation read.** An upload Job with no linked version and no bound snapshot, whose observation (generation, size, mtime) carries that digest and its parts and whose digest is not Current's, takes the Upload Snapshot from them, with mtime and ownership from the stat it observed. It takes no preparation reader permit and opens nothing; the send-count permit and the large multipart buffer are admitted as before.
+- **The validated send is the only read.** The transport checks each part buffer against the snapshot before sending it, unchanged: the bytes sent are still exactly the snapshot's bytes, so a stale fingerprint can never upload B under A's evidence.
+- **A contradiction retires the fingerprint.** A part that does not match fails the send as a source change after its send-start; the fingerprint of that observation is retired by compare-and-swap, and the retry reconciles the started send, rehashes the whole file and follows ADR-0030 (see ADR-0045). A Job bound to a snapshot, a fingerprint without parts and files below 8 MiB hash as before.
 
 ## Consequences
 

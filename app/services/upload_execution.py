@@ -7,7 +7,9 @@ owns their ordering on the rebuilt model (#590, ADR-0035/0036):
    before hashing is the only one any later publication compares against;
    below 8 MiB the hashing pass is the only read of the file: its bytes are
    kept in a buffer reserved before the read and are exactly what the PUT
-   sends (#702);
+   sends (#702); from 8 MiB a fresh Job whose observation still carries the
+   scan's digest and part digests builds its snapshot from them without
+   reading, and the send checks every part it reads against them (#703);
 2. the Upload Snapshot and its target, written once by ``prepare``; each send
    is an Upload Attempt with its own token, committed as send-started before
    the first provider request;
@@ -35,6 +37,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+import logging
 import os
 import stat
 import threading
@@ -45,10 +48,17 @@ import psycopg
 from . import upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
 from .snapshot_cleanup import RESUME_NEEDED_SQL
+from .upload_retry import classify_upload_failure
 from .upload_snapshot import (
-    CHUNK_SIZE, MULTIPART_THRESHOLD, SnapshotPayload, UploadSnapshot, UploadProofMismatch,
-    unsupported_checksum_api,
+    CHUNK_SIZE, MULTIPART_THRESHOLD, FileOwnership, SnapshotPayload, UploadSnapshot,
+    UploadProofMismatch, unsupported_checksum_api,
 )
+
+# The Local Copy fingerprint read with the pre-hash observation (#703): its
+# digest, its part digests and whether that digest is already Current's.
+_FINGERPRINT_SQL = """f.local_sha256, f.local_part_size, f.local_part_sha256,
+    COALESCE((SELECT cur.plaintext_sha256 = f.local_sha256 FROM archive_versions cur
+              WHERE cur.id = f.current_version_id), false) AS fingerprint_is_current"""
 
 
 @dataclass(frozen=True)
@@ -284,8 +294,8 @@ class UploadExecution:
             if vault.get("source_root") != job["source_root"]:
                 raise provenance.UploadBlocked("identity_changed")
             detail = connection.execute(
-                "SELECT verification_mode, reconcile_only FROM job_uploads WHERE job_id=%s",
-                (job["id"],)).fetchone()
+                "SELECT verification_mode, reconcile_only, snapshot_id FROM job_uploads "
+                "WHERE job_id=%s", (job["id"],)).fetchone()
             attempt = provenance.load_for_job(connection, job["id"])
             if attempt is None:
                 attempt = provenance.outstanding(connection, job["file_id"])
@@ -298,7 +308,8 @@ class UploadExecution:
             key = w._upload_key(job)
             observation = connection.execute(
                 f"""SELECT f.generation, f.local_presence, f.local_file_type, f.local_size,
-                           f.local_mtime_ns, COALESCE(j.archive_version_id, f.replacing_version_id)
+                           f.local_mtime_ns, {_FINGERPRINT_SQL},
+                           COALESCE(j.archive_version_id, f.replacing_version_id)
                            AS linked_version_id, {RESUME_NEEDED_SQL} AS cleanup_pending,
                            {provenance.KEY_WRITTEN_SQL} AS key_written
                     FROM files f JOIN jobs j ON j.id=%s WHERE f.id=%s""",
@@ -306,12 +317,17 @@ class UploadExecution:
             version = _linked_version(connection, job, attempt, observation)
             if version is not None:
                 catalog.link_job_version(job["id"], version.id)
+            # A Job bound to a snapshot (an earlier attempt of it) never takes
+            # its snapshot from the catalog fingerprint again (#703).
+            bound = attempt is not None or bool(detail and detail["snapshot_id"] is not None)
             return (detail, attempt, version, vault, provenance.validated_pin(connection, job),
                     observation, w._source_volume_problem_open(connection, job),
-                    version is None and bool(observation and observation["cleanup_pending"]))
+                    version is None and bool(observation and observation["cleanup_pending"]),
+                    bound)
 
         (detail, run.attempt, run.version, vault, run.extra["pin"], run.extra["observation"],
-         problem, run.extra["cleanup_pending"]) = self._db(job, load, shared=True)
+         problem, run.extra["cleanup_pending"], run.extra["bound"]) = self._db(
+            job, load, shared=True)
         observation = run.extra["observation"]
         run.extra["key_never_written"] = bool(observation is not None and not observation["key_written"])
         w._upload_source_root_check(job, vault)
@@ -445,13 +461,24 @@ class UploadExecution:
                 return current(catalog.connection)
             row = self._db(job, observe)
         run.generation, run.observed = int(row["generation"]), observed
+        run.extra["fingerprint"] = row
         return True
 
     def _hash(self, run: _Run) -> UploadOutcome | None:
         w, job = self.worker, run.job
-        w.set_job(job["id"], "uploading", message_key="job.hashing_local_file")
         observed = run.observed
         assert observed is not None
+        snapshot = self._catalog_snapshot(run)
+        if snapshot is not None:
+            # #703: the scan's digest and part digests of this very
+            # observation are the snapshot: no reading pass and no reader
+            # permit. The file is read once, by the send, which checks each
+            # part against them before sending it.
+            w.set_job(job["id"], "uploading", message_key="job.plain_upload")
+            run.snapshot = snapshot
+            run.extra["catalog_snapshot"] = True
+            return self._automatic_gate(job, after_hash=True)
+        w.set_job(job["id"], "uploading", message_key="job.hashing_local_file")
         payload = None
         if run.version is None and observed.st_size < MULTIPART_THRESHOLD:
             # #702: a single PUT sends the bytes this pass hashes. Their buffer
@@ -471,6 +498,7 @@ class UploadExecution:
         if (hashed.st_size, hashed.st_mtime_ns) != (observed.st_size, observed.st_mtime_ns):
             raise RuntimeError("Local file changed since fingerprinting")
         run.snapshot = snapshot
+        self._retire_contradicted_fingerprint(run)
         if payload is not None:
             if payload.data is None:
                 raise RuntimeError("Single-PUT hashing kept no payload")
@@ -481,6 +509,59 @@ class UploadExecution:
             return self._automatic_gate(job, after_hash=True)
         return None
 
+    def _catalog_snapshot(self, run: _Run) -> UploadSnapshot | None:
+        """The Upload Snapshot recorded by the scan for this observation (#703).
+
+        Only for a file of at least 8 MiB, with nothing linked or bound to the
+        Job (a retry after a send rehashes), when the fingerprint carries its
+        part digests, belongs to the run's generation, size and mtime, and is
+        not Current's digest: a match with Current is proven by reading, never
+        by the scan's fingerprint alone. mtime and ownership come from the
+        stat of the run, as with a hashed snapshot. Otherwise None: hash.
+        """
+        observed, row = run.observed, run.extra.get("fingerprint")
+        if (observed is None or row is None or run.version is not None
+                or run.extra.get("bound") or observed.st_size < MULTIPART_THRESHOLD
+                or row["local_sha256"] is None or row["local_part_sha256"] is None
+                or row["fingerprint_is_current"] or int(row["generation"]) != run.generation
+                or (row["local_size"], row["local_mtime_ns"])
+                != (observed.st_size, observed.st_mtime_ns)):
+            return None
+        try:
+            ownership = FileOwnership.of(observed)
+            snapshot = UploadSnapshot.from_record(
+                size=observed.st_size, plaintext_sha256=row["local_sha256"],
+                part_size=row["local_part_size"], part_sha256=list(row["local_part_sha256"]),
+                mtime_ns=observed.st_mtime_ns, owner_uid=ownership.uid,
+                owner_gid=ownership.gid, file_mode=ownership.mode)
+        except ValueError:
+            return None
+        return snapshot if snapshot.local_parts() is not None else None
+
+    def _retire_contradicted_fingerprint(self, run: _Run) -> None:
+        """A whole read of the same observation contradicts its recorded parts.
+
+        The content changed without changing size or mtime: the fingerprint
+        whose parts could be offered to an upload is retired (#703), even if
+        the retirement after the failed send did not commit.
+        """
+        row, snapshot, observed = run.extra.get("fingerprint"), run.snapshot, run.observed
+        if (row is None or snapshot is None or observed is None
+                or row["local_sha256"] is None or row["local_part_sha256"] is None
+                or int(row["generation"]) != run.generation
+                or (row["local_size"], row["local_mtime_ns"])
+                != (observed.st_size, observed.st_mtime_ns)
+                or bytes(row["local_sha256"]).hex() == snapshot.plaintext_sha256):
+            return
+        self._retire_fingerprint(run, bytes(row["local_sha256"]))
+
+    def _retire_fingerprint(self, run: _Run, digest: bytes) -> None:
+        observed = run.observed
+        assert observed is not None and run.generation is not None
+        self._db(run.job, lambda catalog: catalog.retire_local_fingerprint(
+            run.job["file_id"], generation=run.generation, plaintext_sha256=digest,
+            size=observed.st_size, mtime_ns=observed.st_mtime_ns))
+
     def _unchanged(self, run: _Run) -> bool:
         """The hashed content is already Current: publish the match, send nothing.
 
@@ -488,6 +569,11 @@ class UploadExecution:
         """
         w, job, snapshot, observed = self.worker, run.job, run.snapshot, run.observed
         assert snapshot is not None and observed is not None
+        if run.extra.get("catalog_snapshot"):
+            # Taken from the catalog only when its digest was not Current's
+            # (#703). Should Current have changed since, the send still checks
+            # every part: a match is never published from a fingerprint alone.
+            return False
         digest = bytes.fromhex(snapshot.plaintext_sha256)
         current_sql = """SELECT 1 FROM files f JOIN archive_versions cur ON cur.id=f.current_version_id
                    WHERE f.id=%s AND f.replacing_version_id IS NULL AND f.held_version_id IS NULL
@@ -511,7 +597,8 @@ class UploadExecution:
                 return False
             if not catalog.publish_local_fingerprint(
                     job["file_id"], generation=run.generation, plaintext_sha256=digest,
-                    size=observed.st_size, mtime_ns=observed.st_mtime_ns, match_current=True):
+                    size=observed.st_size, mtime_ns=observed.st_mtime_ns, match_current=True,
+                    parts=_local_parts(snapshot, observed)):
                 raise RuntimeError("Local file changed since fingerprinting")
             catalog.clear_reconciliation_block(job["file_id"])
             if not w._set_job_in_transaction(connection, job["id"], "completed",
@@ -645,6 +732,17 @@ class UploadExecution:
             if raw is None and no_write and w.cloud_preflight_gate.is_readiness_error(exc):
                 self._db(job, lambda catalog: provenance.record_no_write(
                     catalog.connection, job, attempt, no_write, w.now_iso()))
+            if (raw is None and run.extra.get("catalog_snapshot")
+                    and classify_upload_failure(exc) == "source_changed"):
+                # A part read for the send is not the scan's: the content
+                # changed under the same size and mtime (#703). The started
+                # send is reconciled by the retry (ADR-0030/0036); the
+                # fingerprint is retired so the retry hashes the whole file.
+                try:
+                    self._retire_fingerprint(run, bytes.fromhex(run.snapshot.plaintext_sha256))
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Contradicted Local Copy fingerprint not retired; the retry rehashes the file")
             raise
         acknowledge(response)
         return attempt, response
@@ -800,7 +898,8 @@ class UploadExecution:
                 catalog.publish_local_fingerprint(
                     job["file_id"], generation=run.generation,
                     plaintext_sha256=run.snapshot.plaintext_sha256, size=run.observed.st_size,
-                    mtime_ns=run.observed.st_mtime_ns, match_current=True)
+                    mtime_ns=run.observed.st_mtime_ns, match_current=True,
+                    parts=_local_parts(run.snapshot, run.observed))
             if str(row["replacing_version_id"]) == version.id:
                 catalog.promote_replacement(
                     job["file_id"], archive_version_id=version.id,
@@ -886,6 +985,11 @@ def _rearm(catalog: Any, job: dict[str, Any], attempt: provenance.UploadAttempt,
     catalog.clear_reconciliation_block(job["file_id"])
 
 
+def _local_parts(snapshot: UploadSnapshot, observed: os.stat_result) -> tuple[int, list[bytes]] | None:
+    """The snapshot's part digests, recorded with the fingerprint it publishes (#703)."""
+    return snapshot.local_parts() if snapshot.size == observed.st_size else None
+
+
 def _regular_stat(source: Path) -> os.stat_result | None:
     """The Local Copy's stat, or None when it is not a regular file there."""
     try:
@@ -897,5 +1001,6 @@ def _regular_stat(source: Path) -> os.stat_result | None:
 
 def _observation(connection: Any, job: dict[str, Any]) -> Any:
     return connection.execute(
-        "SELECT generation, local_presence, local_file_type, local_size, local_mtime_ns "
-        "FROM files WHERE id=%s", (job["file_id"],)).fetchone()
+        "SELECT f.generation, f.local_presence, f.local_file_type, f.local_size, "
+        f"f.local_mtime_ns, {_FINGERPRINT_SQL} FROM files f WHERE f.id=%s",
+        (job["file_id"],)).fetchone()

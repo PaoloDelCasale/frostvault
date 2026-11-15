@@ -146,3 +146,56 @@ worker drain ("Background workers exceeded the shutdown drain budget", exit 1).
   budget is unchanged.
 - No traversal checkpoint and no schema change: a stopped traversal is walked
   again from the start at the next scan.
+
+## Amendment: part digests for multipart uploads (#703, 2026-11-15)
+
+Accepted by the Owner (#700, proposal 3). The verification had just hashed a
+Local Copy when its upload, on the same generation, size and mtime, read the
+whole file again to build its Upload Snapshot, then a third time to send it.
+
+- **The same read records the parts.** When the verification hashes a Local
+  Copy of at least `MULTIPART_THRESHOLD` (8 MiB), it also records the SHA-256
+  of each multipart part, cut with the Upload Snapshot's part size for that
+  size (`upload_part_size`, the `ChunksizeAdjuster` rule on
+  `DEFAULT_PART_SIZE`). They are stored next to the digest
+  (`files.local_part_size`, `files.local_part_sha256`, migration 0004) and
+  published in the same compare-and-swap on generation, size and mtime.
+  Smaller files record none. NULL means not recorded, including every file
+  verified before this revision; nothing is backfilled.
+- **Never parts of other content.** Every path that clears or replaces the
+  digest clears the parts in the same statement: a new stat or a content
+  event, a replaced or released Local Copy, a Reconnect, a recovery, the
+  journal restore (which restores both). A digest published without parts
+  keeps the recorded ones only when it is the same digest (the same bytes),
+  otherwise clears them. A database trigger drops the parts of any digest
+  that changes without new parts, and a check keeps them next to a digest,
+  for 8 MiB or more, one per part of the recorded size.
+- **The upload builds its snapshot from them.** An upload Job of a file of
+  8 MiB or more, with no Archive Version linked and no snapshot bound (so not
+  a retry after a send), whose observation carries the digest and its parts
+  for the run's generation, size and mtime, builds its Upload Snapshot from
+  the catalog: digest, parts and part size, with mtime and ownership from
+  the stat the run observed. It reads nothing and takes no preparation
+  reader permit. The file is then read once, by the send, which checks each
+  part against the snapshot before sending it, as before (ADR-0034). A
+  fingerprint equal to Current's is not used: a match with Current is still
+  proven by reading the file. Missing parts mean the upload hashes as before.
+- **A stale fingerprint is retired, without cycles.** If the content changed
+  without changing size or mtime, a part read by the send does not match:
+  the send fails as a source change after its send-start. The run then
+  retires that fingerprint by compare-and-swap on the generation, size,
+  mtime and digest (digest, parts and match cleared, generation unchanged),
+  so the Local Copy is verified again. The retry handles the started send as
+  ADR-0030/0036 describe: it reconciles it (the multipart upload is aborted,
+  absence proven, the attempt settled as a no-write), and since the Job is
+  bound to snapshot A it hashes the whole file and fails as a source change,
+  which closes A; the next attempt hashes again and sends the new content. A
+  whole read that contradicts recorded parts of the same observation also
+  retires them, so a retirement that did not commit cannot bring A back. A
+  retry never takes its snapshot from the catalog.
+
+Consequences: a stale fingerprint now costs at most the two stability
+windows of a change during a transfer (ADR-0030), and its retirement takes
+the Local Copy out of "verified" until the next scan or upload hashes it.
+The per-part digests add CPU to the verification read (one more SHA-256 of
+the same bytes), not I/O.
