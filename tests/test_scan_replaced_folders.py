@@ -29,10 +29,17 @@ def _tree(directory: str) -> Path:
 
 
 def _replace(folder: Path) -> None:
-    """What Immich does: remove an emptied folder and create it again."""
+    """What Immich does: an emptied folder goes away and is created again.
+
+    The old folder is moved out of the Vault rather than removed, so its inode
+    stays in use and the new folder cannot reuse it: a filesystem that reuses
+    the inode makes the replacement undetectable, and so untestable.
+    """
     for child in folder.iterdir():
         child.unlink()
-    folder.rmdir()
+    graveyard = next(parent for parent in folder.parents if parent.name == "vault").parent
+    holding = Path(tempfile.mkdtemp(dir=graveyard, prefix="replaced-"))
+    folder.rename(holding / folder.name)
     folder.mkdir()
 
 
@@ -84,7 +91,7 @@ class PinnedTreeScopeTests(unittest.TestCase):
             with PinnedTree(root) as tree:
                 list(tree.entries(on_error=lambda *_: None))
                 (root / "upload/bb/other.jpg").unlink()
-                (root / "upload/bb").rmdir()
+                (root / "upload/bb").rename(Path(directory) / "gone-bb")
                 tree.validate()
                 self.assertEqual(tree.replaced_paths(), ["upload/bb"])
 
