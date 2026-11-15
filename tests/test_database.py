@@ -183,6 +183,39 @@ class StartupGuardTests(_GuardFixture):
         self.assertLessEqual({"owner_uid", "owner_gid", "file_mode"}, columns)
         self.assertEqual(owner["display_name"], "Kept")
 
+    def _assert_local_part_digests(self) -> None:
+        """#703: nullable part digests on files, cleared by a digest change."""
+        with PostgresConnection(str(self.path)) as connection:
+            columns = {row["column_name"]: row for row in connection.execute(
+                "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_name = 'files' AND column_name LIKE 'local_part_%'"
+            ).fetchall()}
+            trigger = connection.execute(
+                "SELECT 1 FROM pg_trigger WHERE tgname = 'files_local_parts_follow_digest' "
+                "AND NOT tgisinternal"
+            ).fetchone()
+        self.assertEqual(set(columns), {"local_part_size", "local_part_sha256"})
+        for column in columns.values():
+            self.assertEqual((column["is_nullable"], column["column_default"]), ("YES", None))
+        self.assertIsNotNone(trigger)
+
+    def test_empty_database_gets_the_local_part_digests(self) -> None:
+        initialize_database()
+        self._assert_local_part_digests()
+
+    def test_catalog_of_the_previous_revision_is_upgraded_to_part_digests(self) -> None:
+        _migrate_to(self.dsn, "0003_job_admitted_generation")
+        self.execute(
+            "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')"
+        )
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        self._assert_local_part_digests()
+        with PostgresConnection(str(self.path)) as connection:
+            self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
+            owner = connection.execute("SELECT display_name FROM owner").fetchone()
+        self.assertEqual(owner["display_name"], "Kept")
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade

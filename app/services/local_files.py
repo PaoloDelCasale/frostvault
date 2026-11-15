@@ -9,17 +9,31 @@ from pathlib import Path
 from typing import Any
 
 from .shutdown import WorkerStopping
+from .upload_snapshot import PartDigests
+
+_CHUNK_SIZE = 1024 * 1024
 
 
 def hash_stable_regular_file(
     path: Path, *, should_stop: Callable[[], bool] | None = None,
+    parts: PartDigests | None = None,
 ) -> tuple[str, os.stat_result]:
-    """``should_stop`` aborts a long read between chunks (process shutdown, #696)."""
+    """``should_stop`` aborts a long read between chunks (process shutdown, #696).
+
+    With ``parts``, the same read also records the SHA-256 of each multipart
+    part of a file of at least 8 MiB (#703), cut with the part size of the
+    Upload Snapshot; they describe exactly the bytes of the returned digest.
+    """
     before = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise RuntimeError("Local file is not a regular file")
     expected = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     digest = hashlib.sha256()
+    if parts is not None:
+        parts.start(before.st_size)
+    part_size = parts.part_size if parts is not None else None
+    part = hashlib.sha256()
+    part_left = part_size or 0
     # The final component can change after stat, even with a pinned parent.
     # Reject symlinks and never block opening a substituted FIFO/device before
     # its descriptor can be checked. O_NONBLOCK does not affect regular files.
@@ -34,10 +48,23 @@ def hash_stable_regular_file(
         ) != expected:
             raise RuntimeError("Local file changed since fingerprinting")
         with os.fdopen(descriptor, "rb", closefd=False) as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            for chunk in iter(lambda: source.read(_CHUNK_SIZE), b""):
                 if should_stop is not None and should_stop():
                     raise WorkerStopping("Process shutdown requested")
                 digest.update(chunk)
+                if part_size is None:
+                    continue
+                view = memoryview(chunk)
+                while view:
+                    taken = view[:part_left]
+                    part.update(taken)
+                    part_left -= len(taken)
+                    view = view[len(taken):]
+                    if not part_left:
+                        parts.digests.append(part.digest())
+                        part, part_left = hashlib.sha256(), part_size
+            if part_size is not None and part_left != part_size:
+                parts.digests.append(part.digest())
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)

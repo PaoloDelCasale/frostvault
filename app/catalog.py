@@ -183,6 +183,25 @@ def _hex(value: Any) -> str | None:
     return None if value is None else bytes(value).hex()
 
 
+def _local_parts(
+    parts: tuple[int, Sequence[bytes]] | None, size: int | None,
+) -> tuple[int | None, list[bytes] | None]:
+    """Validated part digests of a Local Copy fingerprint (#703), or none.
+
+    Only for files of at least 8 MiB, cut with the Upload Snapshot's part
+    size for that size: they are offered to the upload as its snapshot parts.
+    """
+    if parts is None:
+        return None, None
+    from .services.upload_snapshot import MULTIPART_THRESHOLD, part_count, upload_part_size
+    part_size, digests = int(parts[0]), [bytes(value) for value in parts[1]]
+    if (size is None or size < MULTIPART_THRESHOLD or part_size != upload_part_size(size)
+            or len(digests) != part_count(size, part_size)
+            or any(len(value) != 32 for value in digests)):
+        raise ValueError("Local part digests do not describe this Local Copy")
+    return part_size, digests
+
+
 def _id(value: Any) -> str | None:
     return None if value is None else str(value)
 
@@ -494,6 +513,8 @@ class ArchiveCatalog:
                 local_size = EXCLUDED.local_size,
                 local_mtime_ns = EXCLUDED.local_mtime_ns,
                 local_sha256 = CASE WHEN {same_stat} THEN f.local_sha256 END,
+                local_part_size = CASE WHEN {same_stat} THEN f.local_part_size END,
+                local_part_sha256 = CASE WHEN {same_stat} THEN f.local_part_sha256 END,
                 matched_version_id = CASE WHEN {same_stat} THEN f.matched_version_id END,
                 held_version_id = CASE
                     WHEN EXCLUDED.local_presence = 'present'
@@ -529,7 +550,8 @@ class ArchiveCatalog:
             self.connection.execute(
                 """
                 UPDATE files
-                SET local_sha256=NULL, matched_version_id=NULL
+                SET local_sha256=NULL, local_part_size=NULL, local_part_sha256=NULL,
+                    matched_version_id=NULL
                 WHERE vault_id=%s AND path = ANY(%s::text[])
                   AND local_presence IS NOT NULL
                 """,
@@ -579,7 +601,8 @@ class ArchiveCatalog:
             UPDATE files f
             SET generation=f.generation + 1,
                 local_presence=%s, local_file_type=%s, local_size=%s,
-                local_mtime_ns=%s, local_sha256=NULL, matched_version_id=NULL,
+                local_mtime_ns=%s, local_sha256=NULL, local_part_size=NULL,
+                local_part_sha256=NULL, matched_version_id=NULL,
                 held_version_id=CASE
                     WHEN CAST(%s AS text)='present' THEN {_only_cloud_copy_sql("f")}
                 END,
@@ -668,6 +691,7 @@ class ArchiveCatalog:
         size: int | None,
         mtime_ns: int | None,
         match_current: bool = False,
+        parts: tuple[int, Sequence[bytes]] | None = None,
     ) -> bool:
         """Publish a digest for the observation it was computed from.
 
@@ -679,8 +703,15 @@ class ArchiveCatalog:
         ``match_current`` (the upload worker, which proved the digest itself)
         also matches a Local Copy whose digest equals the verified, available
         Current; only Current, never an older version.
+
+        ``parts`` (#703) are the part size and part digests the same read
+        computed for a file of at least 8 MiB; they are published in the same
+        compare-and-swap. Without them the recorded parts stay only when the
+        digest is the one already recorded (the same bytes, so the same
+        parts), and are cleared otherwise: never parts of other content.
         """
         digest = _digest(plaintext_sha256)
+        part_size, part_digests = _local_parts(parts, size)
         current = """WHEN %(match_current)s THEN (
                 SELECT cur.id FROM archive_versions cur
                 WHERE cur.id = f.current_version_id
@@ -704,6 +735,14 @@ class ArchiveCatalog:
             f"""
             UPDATE files f
             SET local_sha256 = %(digest)s,
+                local_part_size = CASE
+                    WHEN %(has_parts)s THEN %(part_size)s::bigint
+                    WHEN f.local_sha256 = %(digest)s THEN f.local_part_size
+                END,
+                local_part_sha256 = CASE
+                    WHEN %(has_parts)s THEN %(part_sha256)s::bytea[]
+                    WHEN f.local_sha256 = %(digest)s THEN f.local_part_sha256
+                END,
                 matched_version_id = {settled},
                 held_version_id = CASE
                     WHEN ({settled}) IS NOT NULL THEN NULL ELSE f.held_version_id
@@ -726,6 +765,52 @@ class ArchiveCatalog:
                 "size": size,
                 "mtime_ns": mtime_ns,
                 "match_current": bool(match_current),
+                "has_parts": part_digests is not None,
+                "part_size": part_size,
+                "part_sha256": part_digests,
+            },
+        ).fetchone()
+        if row is None:
+            return False
+        self._mark_path_aggregates_dirty(int(row["vault_id"]), row["path"])
+        return True
+
+    def retire_local_fingerprint(
+        self,
+        vault_file_id: str,
+        *,
+        generation: int,
+        plaintext_sha256: str | bytes,
+        size: int,
+        mtime_ns: int,
+    ) -> bool:
+        """Forget a fingerprint the Local Copy's bytes contradicted (#703).
+
+        An upload that sent from the parts recorded with the fingerprint read
+        other bytes: the content changed without changing size or mtime.
+        Compare-and-swap on that observation and that digest: the digest, its
+        parts and the match are cleared, so the Local Copy is verified again
+        and the next upload hashes the whole file. A newer observation or
+        digest is left alone (False).
+        """
+        row = self.connection.execute(
+            """
+            UPDATE files f
+            SET local_sha256 = NULL, local_part_size = NULL, local_part_sha256 = NULL,
+                matched_version_id = NULL
+            WHERE f.id = %(id)s
+              AND f.generation = %(generation)s
+              AND f.local_presence = 'present'
+              AND f.local_file_type = 'regular'
+              AND f.local_size = %(size)s
+              AND f.local_mtime_ns = %(mtime_ns)s
+              AND f.local_sha256 = %(digest)s
+            RETURNING f.vault_id, f.path
+            """,
+            {
+                "id": vault_file_id, "generation": int(generation),
+                "size": int(size), "mtime_ns": int(mtime_ns),
+                "digest": _digest(plaintext_sha256),
             },
         ).fetchone()
         if row is None:
@@ -770,7 +855,7 @@ class ArchiveCatalog:
             SET generation = f.generation + 1,
                 local_presence = 'present', local_file_type = 'regular',
                 local_size = %(size)s, local_mtime_ns = %(mtime_ns)s,
-                local_sha256 = %(digest)s,
+                local_sha256 = %(digest)s, local_part_size = NULL, local_part_sha256 = NULL,
                 matched_version_id = {matched},
                 held_version_id = CASE
                     WHEN {matched} IS NULL THEN {_only_cloud_copy_sql("f")}
@@ -1538,8 +1623,8 @@ class ArchiveCatalog:
               AND local_presence='present' AND cloud_since IS NULL
               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = files.id)
             RETURNING local_presence, local_file_type, local_size, local_mtime_ns,
-                      local_sha256, local_seen_at, local_observed_at,
-                      local_content_observed_at
+                      local_sha256, local_part_size, local_part_sha256, local_seen_at,
+                      local_observed_at, local_content_observed_at
             """,
             (pair["provisional_id"], vault_id, pair["provisional_generation"]),
         )
@@ -1563,7 +1648,8 @@ class ArchiveCatalog:
             UPDATE files
             SET path=%s, path_since=%s, generation=generation + 1,
                 local_presence=%s, local_file_type=%s, local_size=%s,
-                local_mtime_ns=%s, local_sha256=%s, local_seen_at=%s,
+                local_mtime_ns=%s, local_sha256=%s, local_part_size=%s,
+                local_part_sha256=%s, local_seen_at=%s,
                 local_observed_at=%s, local_content_observed_at=%s,
                 matched_version_id=NULL, held_version_id=NULL
             WHERE id=%s AND vault_id=%s AND generation=%s
@@ -1571,7 +1657,8 @@ class ArchiveCatalog:
             (
                 new_path, stamp,
                 local["local_presence"], local["local_file_type"], local["local_size"],
-                local["local_mtime_ns"], local["local_sha256"], local["local_seen_at"],
+                local["local_mtime_ns"], local["local_sha256"], local["local_part_size"],
+                local["local_part_sha256"], local["local_seen_at"],
                 local["local_observed_at"], local["local_content_observed_at"],
                 vault_file_id, vault_id, pair["missing_generation"],
             ),

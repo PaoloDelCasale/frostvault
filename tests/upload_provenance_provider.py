@@ -22,6 +22,8 @@ class VersionedProvider:
         self.classes = {}
         self.restores = {}
         self.copies = 0
+        # COMPOSITE proofs of multipart uploads, by (key, VersionId) (#703).
+        self.checksums = {}
         self.hook = lambda stage, **kwargs: None
 
     def add(self, key, payload, metadata=None, *, version=None):
@@ -36,6 +38,8 @@ class VersionedProvider:
         self.hook("before_put", key=key, snapshot=snapshot, metadata=metadata)
         self.puts += 1
         version = self.add(key, source.read_bytes(), metadata)
+        if snapshot is not None and snapshot.checksum_type == "COMPOSITE":
+            self.checksums[key, version] = ("COMPOSITE", snapshot.checksum_sha256)
         response = self.head_object(Bucket=bucket, Key=key, VersionId=version)
         self.hook("accepted", version=version)
         if on_acknowledged:
@@ -58,9 +62,10 @@ class VersionedProvider:
             raise AssertionError("Integrity/provenance must never HEAD latest")
         self.hook("head", key=Key, version=VersionId)
         data, metadata = self.objects[Key, VersionId]
+        kind, checksum = self.checksums.get(
+            (Key, VersionId), ("FULL_OBJECT", base64.b64encode(hashlib.sha256(data).digest()).decode()))
         return {"VersionId": VersionId, "ContentLength": len(data), "Metadata": dict(metadata),
-                "ChecksumSHA256": base64.b64encode(hashlib.sha256(data).digest()).decode(),
-                "ChecksumType": "FULL_OBJECT", "ETag": '"not-proof"',
+                "ChecksumSHA256": checksum, "ChecksumType": kind, "ETag": '"not-proof"',
                 "StorageClass": self.classes.get((Key, VersionId), "STANDARD"),
                 **({"Restore": self.restores[Key, VersionId]} if (Key, VersionId) in self.restores else {})}
 

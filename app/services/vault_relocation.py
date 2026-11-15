@@ -412,6 +412,7 @@ def prepare_reconnect_local_scan(connection: Any, vault_id: int) -> None:
     connection.execute(
         """
         UPDATE files SET local_presence='missing', local_sha256=NULL,
+            local_part_size=NULL, local_part_sha256=NULL,
             matched_version_id=NULL, held_version_id=NULL, generation=generation + 1
         WHERE vault_id=%s AND local_presence IS NOT NULL
         """, (vault_id,),

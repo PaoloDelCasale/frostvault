@@ -11,6 +11,12 @@ the remediation each kept another copy of the snapshot or of its digest. A
 proven absence cleared `send_started` and the same intent and token sent again;
 the no-write outcome was written into the receipt journal as a fact.
 
+> **Amended in part by [#703](https://github.com/PaoloDelCasale/frostvault/issues/703)**:
+> a fresh Job may take its snapshot's digest and part digests from the Local
+> Copy fingerprint the scan recorded instead of hashing; a send that reads
+> other bytes retires that fingerprint, and a retry of a Job bound to a
+> snapshot always hashes the file (ADR-0045).
+
 ## Decision
 
 - The **Upload Snapshot** and its target (Vault, path epoch, Source Volume root,

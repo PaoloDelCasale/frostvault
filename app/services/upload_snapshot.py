@@ -5,7 +5,10 @@ Below MULTIPART_THRESHOLD that same pass can also keep the bytes it hashed in a
 ``SnapshotPayload`` whose budget the caller reserved before the read (#702): the
 single PUT sends exactly those bytes, so a later change of the path cannot
 upload B under A's evidence. Multipart transfers still reopen the file and
-validate each bounded part buffer against this baseline BEFORE sending it.
+validate each bounded part buffer against this baseline BEFORE sending it;
+from 8 MiB the baseline may come from the digest and part digests the scan
+recorded in the same read as the Local Copy fingerprint (#703), cut with the
+same ``upload_part_size``, and then that validated send is the only read.
 """
 from __future__ import annotations
 
@@ -91,6 +94,45 @@ class FileOwnership:
         if ownership.metadata() != dict(zip((UID_METADATA_KEY, GID_METADATA_KEY, MODE_METADATA_KEY), raw)):
             raise ValueError("Invalid original file ownership")
         return ownership
+
+
+def upload_part_size(size: int) -> int:
+    """The multipart part size of an object of ``size`` bytes.
+
+    One rule for the Upload Snapshot and for the part digests a scan records
+    with a Local Copy fingerprint (#703), so both describe the same parts.
+    """
+    return ChunksizeAdjuster().adjust_chunksize(DEFAULT_PART_SIZE, size)
+
+
+def part_count(size: int, part_size: int) -> int:
+    return max(1, (size + part_size - 1) // part_size)
+
+
+class PartDigests:
+    """SHA-256 of each multipart part, computed by the read that hashes the file.
+
+    Filled by ``hash_stable_regular_file`` for a file of at least
+    ``MULTIPART_THRESHOLD`` bytes, with ``upload_part_size`` of the size it
+    observed (#703). Below the threshold it stays empty: a single PUT needs
+    no parts.
+    """
+
+    def __init__(self) -> None:
+        self.part_size: int | None = None
+        self.digests: list[bytes] = []
+
+    def start(self, size: int) -> None:
+        self.part_size = upload_part_size(size) if size >= MULTIPART_THRESHOLD else None
+        self.digests = []
+
+    def record(self, size: int) -> tuple[int, list[bytes]] | None:
+        """The parts of exactly ``size`` bytes, or None when there are none."""
+        if (self.part_size is None or size < MULTIPART_THRESHOLD
+                or self.part_size != upload_part_size(size)
+                or len(self.digests) != part_count(size, self.part_size)):
+            return None
+        return self.part_size, list(self.digests)
 
 
 def fingerprint(value: os.stat_result) -> tuple[int, ...]:
@@ -199,6 +241,16 @@ class UploadSnapshot:
             raise RuntimeError("Upload Snapshot part number mismatch")
         return min(self.part_size, self.size - (number - 1) * self.part_size)
 
+    def local_parts(self) -> tuple[int, list[bytes]] | None:
+        """Its part digests in the shape a Local Copy fingerprint records (#703).
+
+        None below ``MULTIPART_THRESHOLD`` and for a part size the current
+        rule would not choose: those parts are never offered for reuse.
+        """
+        if self.size < MULTIPART_THRESHOLD or self.part_size != upload_part_size(self.size):
+            return None
+        return self.part_size, [base64.b64decode(part, validate=True) for part in self.part_checksums]
+
 
 def recovery_mtime_ns(snapshot_json: str | None, metadata: dict[str, str]) -> int | None:
     """Use immutable catalog evidence, or metadata from the exact S3 version.
@@ -285,7 +337,7 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None], *,
             raise RuntimeError("Local file changed since fingerprinting")
     if before.st_size > MAX_OBJECT_SIZE:
         raise RuntimeError("Upload Snapshot exceeds S3 object size limit")
-    part_size = ChunksizeAdjuster().adjust_chunksize(DEFAULT_PART_SIZE, before.st_size)
+    part_size = upload_part_size(before.st_size)
     if part_size > MAX_PART_SIZE:
         raise RuntimeError("Upload Snapshot exceeds bounded part size")
     # O_NONBLOCK prevents a regular-file -> FIFO race from blocking open().
