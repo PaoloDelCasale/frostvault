@@ -40,7 +40,10 @@ class ScanFingerprintTests(_AdoptionFixture):
         self.assertEqual(Settings().scan_hash_concurrency, 4)
 
     def _vault(self) -> dict:
+        from app.storage import runtime_status
         created = self._adopt()
+        # The runtime status is process-wide; Vault ids repeat across tests.
+        self.addCleanup(runtime_status.pop, int(created["id"]), None)
         with PostgresConnection(str(self.database_path)) as connection:
             return dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],),
@@ -219,6 +222,7 @@ class PreviousSourceErrorTests(_AdoptionFixture):
         from app.services.runtime_status import snapshot_runtime_status_for_stats
         created = self._adopt()
         vault_id = int(created["id"])
+        self.addCleanup(storage.runtime_status.pop, vault_id, None)
         storage._record_scan_component_health(
             vault_id, "source", ok=False, error="Source scan blocked: replaced",
         )
