@@ -714,10 +714,12 @@ class AutoUploadEligibilityTests(unittest.TestCase):
                 "SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id ORDER BY f.path").fetchall()]
             # The Problem closes while the scan still reports the source
             # incomplete: nothing names the gap, so the whole Vault waits.
-            connection.execute("UPDATE notifications SET problem_status='resolved' WHERE event='file_unreadable'")
+            connection.execute("UPDATE notifications SET problem_status='resolved', resolved_at=now() "
+                               "WHERE event='file_unreadable'")
             self.assertIsNone(local_release_blocking_paths(connection, 2))
             # A global cause blocks every path even with a named Problem.
-            connection.execute("UPDATE notifications SET problem_status='open' WHERE event='file_unreadable'")
+            connection.execute("UPDATE notifications SET problem_status='open', resolved_at=NULL "
+                               "WHERE event='file_unreadable'")
             record_component_health(connection, vault_id=2, component="source", ok=False,
                                     error="Source watcher registration pending")
             self.assertIsNone(local_release_blocking_paths(connection, 2))
