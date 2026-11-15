@@ -747,7 +747,7 @@ def _scan_tree(
     # rest of the elapsed time is the walk itself.
     traversal = {
         "seen": 0, "started": time.monotonic(), "reported": 0.0,
-        "batches": 0, "lock_wait": 0.0, "write": 0.0,
+        "batches": 0, "lock_wait": 0.0, "write": 0.0, "probe": 0.0,
     }
 
     def report_traversal(*, force: bool = False) -> None:
@@ -765,6 +765,7 @@ def _scan_tree(
             traversal_files_expected=expected_files,
             traversal_lock_wait_seconds=round(traversal["lock_wait"], 1),
             traversal_write_seconds=round(traversal["write"], 1),
+            traversal_probe_seconds=round(traversal["probe"], 1),
         )
 
     def observe(walk: PinnedTree) -> None:
@@ -783,11 +784,19 @@ def _scan_tree(
                 traversal["seen"] += 1
                 if verification_follows:
                     report_traversal()
+            # An already fingerprinted file whose size and mtime did not
+            # change is only opened, never read (#709): the open still refuses
+            # a file made unreadable after it was protected, and the walk does
+            # not wait for a data seek on a disk the uploads keep busy.
+            unchanged = listed_stat is not None and known == (
+                listed_stat.st_size, listed_stat.st_mtime_ns,
+            )
+            probe_started = time.monotonic()
             try:
                 inspected = inspect_entry(
                     pinned_entry, info=listed_stat,
-                    probe=not verification_follows or listed_stat is None
-                    or known == (listed_stat.st_size, listed_stat.st_mtime_ns),
+                    probe=not verification_follows or listed_stat is None or unchanged,
+                    read=not (verification_follows and unchanged),
                 )
                 if inspected is None:
                     continue
@@ -795,6 +804,8 @@ def _scan_tree(
             except OSError as exc:
                 failed(entry, exc)
                 continue
+            finally:
+                traversal["probe"] += time.monotonic() - probe_started
             if invalidate_content and not local_observation.consume(vault_id, relative, pinned_entry):
                 # Use the pinned parent while it is open. Independent hashing
                 # must precede journal/catalog/problem writes for this batch.
@@ -821,11 +832,13 @@ def _scan_tree(
             elapsed = time.monotonic() - traversal["started"]
             _traversal_logger.info(
                 "Vault %s: traversal saw %d files in %.1f s (%.0f files/min); "
-                "%d batches, Vault row wait %.1f s, batch writes %.1f s, walk %.1f s",
+                "%d batches, Vault row wait %.1f s, batch writes %.1f s, walk %.1f s "
+                "(file checks %.1f s)",
                 vault_id, traversal["seen"], elapsed,
                 traversal["seen"] * 60 / elapsed if elapsed > 0 else 0.0,
                 traversal["batches"], traversal["lock_wait"], traversal["write"],
                 max(0.0, elapsed - traversal["lock_wait"] - traversal["write"]),
+                traversal["probe"],
             )
 
     def _stop_walk_for_shutdown() -> None:
@@ -2304,6 +2317,7 @@ _NO_VERIFICATION_PROGRESS = {
     "traversal_files_seen": None, "traversal_files_per_minute": None,
     "traversal_files_expected": None,
     "traversal_lock_wait_seconds": None, "traversal_write_seconds": None,
+    "traversal_probe_seconds": None,
 }
 
 

@@ -2,14 +2,17 @@
 
 Seams under test:
 1. The ancestor identity fence runs once per folder, not once per entry.
-2. The readability probe (open + read) is skipped for a file the verification
-   hashes, and kept for a fingerprinted file whose size and mtime are unchanged.
+2. The readability probe is skipped for a file the verification hashes, and
+   kept (open only, #709) for a fingerprinted file whose size and mtime are
+   unchanged.
 3. An unreadable file that skipped the probe is still a ``file_unreadable``
    Problem, makes the scan incomplete and is a gap the watcher re-checks.
 4. The runtime status reports files seen, their rate and, after a previous
    scan, how many to expect.
 5. The traversal times its wait for the Vault row apart from its batch writes
    and its walk, in the runtime status and in the log (#707).
+6. A fingerprinted, unchanged file is only opened, never read, and the time
+   the walk spends checking files is reported (#709).
 """
 from __future__ import annotations
 
@@ -98,6 +101,17 @@ class InspectEntryProbeTests(unittest.TestCase):
                   patch.object(Path, "lstat", side_effect=AssertionError("stat again"))):
                 self.assertEqual(inspect_entry(target, info=info, probe=False), ("regular", info))
 
+    def test_an_open_only_probe_never_reads_but_still_refuses_a_denied_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "file.bin"
+            target.write_bytes(b"x")
+            info = target.lstat()
+            with patch("app.services.fs_preflight.os.read", side_effect=AssertionError("read")):
+                self.assertEqual(inspect_entry(target, info=info, read=False), ("regular", info))
+            with (patch("app.services.fs_preflight.os.open", side_effect=PermissionError("denied")),
+                  self.assertRaises(PermissionError)):
+                inspect_entry(target, info=info, read=False)
+
     def test_the_probe_checks_the_given_stat_against_the_opened_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "file.bin"
@@ -131,15 +145,17 @@ class TraversalScanTests(_AdoptionFixture):
             return scan_vault(dict(vault))
 
     def _probes(self):
-        """Record, per file name, whether the walk asked for the open/read probe."""
+        """Record, per file name, the walk's (probe, read) arguments."""
         import app.storage as storage
         real_inspect = storage.inspect_entry
-        probes: dict[str, list[bool]] = {}
+        probes: dict[str, list[tuple[bool, bool]]] = {}
 
         def recording(path, **kwargs):
             result = real_inspect(path, **kwargs)
             if result and result[0] == "regular":
-                probes.setdefault(path.name, []).append(kwargs.get("probe", True))
+                probes.setdefault(path.name, []).append(
+                    (kwargs.get("probe", True), kwargs.get("read", True)),
+                )
             return result
 
         return probes, patch("app.storage.inspect_entry", side_effect=recording)
@@ -177,16 +193,27 @@ class TraversalScanTests(_AdoptionFixture):
         result = self._scan(vault, recording)
         self.assertEqual(result["local"], 13)
         self.assertEqual(len(probes), 13)
-        self.assertTrue(all(calls == [False] for calls in probes.values()), probes)
+        self.assertTrue(all(calls == [(False, True)] for calls in probes.values()), probes)
 
-        # Fingerprinted and unchanged: probed, so a chmod is still detected.
-        # A changed file is hashed again, so its probe is skipped.
+        # Fingerprinted and unchanged: opened, so a chmod is still detected,
+        # but never read (#709). A changed file is hashed again, so its probe
+        # is skipped.
         (self.albums / "img05.heic").write_bytes(b"changed and longer")
         probes, recording = self._probes()
         self._scan(vault, recording)
-        self.assertEqual(probes.pop("img05.heic"), [False])
+        self.assertEqual(probes.pop("img05.heic"), [(False, True)])
         self.assertEqual(len(probes), 12)
-        self.assertTrue(all(calls == [True] for calls in probes.values()), probes)
+        self.assertTrue(all(calls == [(True, False)] for calls in probes.values()), probes)
+
+    def test_a_rescan_never_reads_an_unchanged_fingerprinted_file(self) -> None:
+        import app.services.fs_preflight as fs_preflight
+        vault = self._vault()
+        self._scan(vault)
+        with patch.object(fs_preflight.os, "read", side_effect=AssertionError("read")) as read:
+            result = self._scan(vault)
+        read.assert_not_called()
+        self.assertEqual(result["local"], 13)
+        self.assertEqual(result.get("local_incomplete", 0), 0)
 
     def test_an_unreadable_new_file_is_reported_by_the_verification(self) -> None:
         from app.services import watch_plan
@@ -259,6 +286,7 @@ class TraversalScanTests(_AdoptionFixture):
         # No batch was written before the walk's end: no wait, no write yet.
         self.assertEqual({entry["traversal_lock_wait_seconds"] for entry in first}, {0.0})
         self.assertEqual({entry["traversal_write_seconds"] for entry in first}, {0.0})
+        self.assertTrue(all(entry["traversal_probe_seconds"] >= 0.0 for entry in first))
 
         second = phases()
         self.assertEqual({entry["traversal_files_expected"] for entry in second}, {13})
@@ -267,10 +295,7 @@ class TraversalScanTests(_AdoptionFixture):
         self.assertFalse(after["scanning"])
         self.assertIsNone(after.get("traversal_files_seen"))
         self.assertIsNone(after.get("traversal_files_expected"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIsNone(after.get("traversal_probe_seconds"))
 
     def test_the_wait_for_a_held_vault_row_is_timed_apart_from_the_walk(self) -> None:
         import app.storage as storage
@@ -295,8 +320,14 @@ if __name__ == "__main__":
         with self.assertLogs("uvicorn.error", "INFO") as logs:
             self._scan(vault, patch("app.storage.inspect_entry", side_effect=observe))
         [record] = [r for r in logs.records if "traversal saw" in r.getMessage()]
-        _vault, seen, elapsed, _rate, batches, lock_wait, write, walk = record.args
+        _vault, seen, elapsed, _rate, batches, lock_wait, write, walk, probe = record.args
         self.assertEqual((_vault, seen, batches), (vault_id, 13, 1))
         self.assertGreaterEqual(lock_wait, 0.3)
         self.assertLess(write, lock_wait)
         self.assertAlmostEqual(walk + lock_wait + write, elapsed, delta=0.05)
+        # The per-entry file checks are part of the walk (#709).
+        self.assertLessEqual(probe, walk + 0.05)
+
+
+if __name__ == "__main__":
+    unittest.main()

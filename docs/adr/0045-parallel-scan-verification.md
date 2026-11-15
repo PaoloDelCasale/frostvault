@@ -97,7 +97,8 @@ listing's `lstat` and skips the probe for a file the verification will hash:
 no fingerprint in the catalog, or a size or mtime that differ from it. The
 catalog state is looked up in bulk, once per listed folder. A fingerprinted
 file whose size and mtime did not change is still probed, so a file made
-unreadable after it was protected is still found by a rescan. A file the
+unreadable after it was protected is still found by a rescan (since #709 that
+probe opens the file and reads nothing, see below). A file the
 verification cannot read is reported by its path as before
 (`file_unreadable`, the scan is incomplete), and the scan then undoes its
 observation by the same compare-and-swap restore as a replaced folder: like a
@@ -118,6 +119,21 @@ At the end of the walk the same split is logged once, with the files seen and
 their rate. The production entrypoint sets the GIL switch interval to 1 ms
 (default 5 ms): the walk releases the GIL at every filesystem call and,
 behind the upload workers' Python work, waited up to 5 ms for each one.
+
+**An unchanged fingerprinted file is opened, not read (#709, 2026-11-16).**
+Accepted by the Owner. With #707 fixed, the same Vault walked ~2,000 files per
+minute while uploads kept both array disks at 88–98% utilisation: ~116,000 of
+its 139,000 files were fingerprinted and unchanged, and the `read(1)` of each
+probe waited for a data seek (median 191 ms, p90 551 ms, measured during the
+uploads), one file at a time. That probe now opens the file (`O_NOFOLLOW`),
+compares the opened identity with the listing's `lstat` and closes it: a
+permission change is still refused by the open and reported as before, but no
+data block is fetched. A data read error is left to the next read of the file
+(upload, verification, audit). Watcher batches and the other callers keep the
+full probe. No scan priority over uploads: the walk no longer reads data. The
+runtime status and the end-of-walk log line also report the seconds the walk
+spent classifying and opening entries (`runtime.traversal_probe_seconds`, part
+of the walk time).
 
 ## Consequences
 

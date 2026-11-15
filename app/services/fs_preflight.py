@@ -49,6 +49,7 @@ def removal_is_unproven(root: Path, path: Path) -> bool:
 
 def inspect_entry(
     path: Path, *, info: os.stat_result | None = None, probe: bool = True,
+    read: bool = True,
 ) -> tuple[str, os.stat_result] | None:
     """Classify without following symlinks; prove regular files can be opened.
 
@@ -59,6 +60,9 @@ def inspect_entry(
     ``DirEntry.stat``), so the entry is not stat'ed again. ``probe=False``
     classifies only: a full scan skips the open/read for a file it is about to
     hash, since the hashing reports an unreadable file by its path (#696).
+    ``read=False`` opens without reading: a permission change is still refused
+    by the open, but no data block is fetched from the disk. A full scan probes
+    an already fingerprinted, unchanged file this way (#709).
     """
     if info is None:
         info = path.lstat()
@@ -77,7 +81,8 @@ def inspect_entry(
                 opened.st_dev, opened.st_ino
             ) != (info.st_dev, info.st_ino):
                 raise OSError("Local file changed during readability check")
-            os.read(descriptor, 1)
+            if read:
+                os.read(descriptor, 1)
         finally:
             os.close(descriptor)
         return "regular", info

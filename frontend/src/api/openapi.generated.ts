@@ -2171,6 +2171,7 @@ export interface components {
                 traversal_files_per_minute?: number | null;
                 traversal_files_seen?: number | null;
                 traversal_lock_wait_seconds?: number | null;
+                traversal_probe_seconds?: number | null;
                 traversal_write_seconds?: number | null;
                 verify_bytes_done?: number | null;
                 verify_bytes_total?: number | null;
