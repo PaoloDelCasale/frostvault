@@ -78,11 +78,11 @@ class ScanShutdownTests(_AdoptionFixture):
         real_inspect = storage.inspect_entry
         seen = []
 
-        def inspect(entry):
+        def inspect(entry, **kwargs):
             seen.append(entry)
             if len(seen) == 7:
                 shutdown_state.request()
-            return real_inspect(entry)
+            return real_inspect(entry, **kwargs)
 
         with (
             patch("app.storage._rollback_local_scan_journal") as rollback,
