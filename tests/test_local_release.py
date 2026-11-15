@@ -17,7 +17,8 @@ from unittest.mock import MagicMock, patch
 from app import storage
 from app.config import Settings
 from app.services.operation_policies import (
-    LOCAL_RELEASE_PERIODS, OperationPolicy, local_cleanup_is_due,
+    LOCAL_RELEASE_PERIODS, SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED, OperationPolicy,
+    blocking_path_for, local_cleanup_is_due, local_release_blocking_paths,
     local_release_is_confirmed, queue_auto_local_cleanups, validate_policy,
 )
 
@@ -129,6 +130,73 @@ class LocalReleasePolicyTests(unittest.TestCase):
                 self.assertEqual(local_release_is_confirmed(connection, 1), allowed and not health)
 
 
+class PathScopedLocalReleaseTests(unittest.TestCase):
+    """#681 (ADR-0042): an unreadable path blocks release only around itself."""
+
+    def gate(self, health, problem_paths=()):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {"source_root": "/test", "lifecycle": "active"}
+        connection.execute.return_value.fetchall.return_value = [{"path": path} for path in problem_paths]
+        with (patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)),
+              patch("app.services.component_health.load_vault_health", return_value=health)):
+            return local_release_blocking_paths(connection, 1), connection
+
+    def test_named_paths_block_themselves_below_and_above_only(self):
+        for error in (SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED):
+            with self.subTest(error=error):
+                blocking, _ = self.gate({"source": {"last_error": error}}, ["photos/perf2", "o99/priv.bin"])
+                self.assertEqual(blocking, ("o99/priv.bin", "photos/perf2"))
+        for path, blocked_by in (("c080/multipart-400m.bin", None), ("photos/perf2", "photos/perf2"),
+                                 ("photos/perf2/a.jpg", "photos/perf2"), ("photos", "photos/perf2"),
+                                 ("", "o99/priv.bin"), ("photos/perf20.jpg", None), ("o99/other.bin", None)):
+            with self.subTest(path=path):
+                self.assertEqual(blocking_path_for(path, blocking), blocked_by)
+
+    def test_global_causes_and_unnamed_gaps_block_the_whole_vault(self):
+        for health in ({"source": {"last_error": "Source watcher registration pending"}},
+                       {"source": {"last_error": "Protection blocked: Source Volume unavailable"}},
+                       {"source": {"last_error": "Source scan blocked: root identity changed"}},
+                       {"source": {"last_error": "Source watcher stopped on a file name that is not valid UTF-8"}},
+                       {"source": {"last_error": SOURCE_SCAN_INCOMPLETE}, "cloud": {"last_error": "listing failed"}},
+                       {"audit": {"last_error": "unavailable"}}):
+            with self.subTest(health=health):
+                self.assertIsNone(self.gate(health, ["photos/perf2"])[0])
+        # Incomplete without any open path Problem: fail closed.
+        self.assertIsNone(self.gate({"source": {"last_error": SOURCE_SCAN_INCOMPLETE}})[0])
+
+    def test_confirmed_source_blocks_nothing(self):
+        blocking, connection = self.gate({})
+        self.assertEqual(blocking, ())
+        self.assertEqual(connection.execute.call_count, 1)  # No Problem lookup.
+
+    def test_inactive_vault_or_unavailable_volume_blocks_everything(self):
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {"source_root": "/test", "lifecycle": "stopping"}
+        self.assertIsNone(local_release_blocking_paths(connection, 1))
+
+    def test_api_refusal_names_the_blocking_path(self):
+        from app import main
+        with patch.object(main, "local_release_blocking_paths", return_value=("photos/perf2",)):
+            main._require_local_release(MagicMock(), 1, "c080/file.bin")
+            with self.assertRaises(main.LocalizedHTTPError) as raised:
+                main._require_local_release(MagicMock(), 1, "photos")
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.message_key, "api.local_release_blocked_path")
+        self.assertEqual(raised.exception.message_params, {"path": "photos/perf2"})
+        self.assertIn("photos/perf2", raised.exception.detail)
+        with patch.object(main, "local_release_blocking_paths", return_value=None):
+            with self.assertRaises(main.LocalizedHTTPError) as raised:
+                main._require_local_release(MagicMock(), 1, "c080/file.bin")
+        self.assertEqual(raised.exception.message_key, "api.local_release_unconfirmed")
+
+    def test_worker_recheck_is_scoped_to_the_job_path(self):
+        connection = MagicMock()
+        with patch("app.services.operation_policies.local_release_blocking_paths", return_value=("photos/perf2",)):
+            self.assertTrue(local_release_is_confirmed(connection, 1, "c080/file.bin"))
+            self.assertFalse(local_release_is_confirmed(connection, 1, "photos/perf2/a.jpg"))
+            self.assertFalse(local_release_is_confirmed(connection, 1))
+
+
 class LocalReleaseWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -181,6 +249,16 @@ class LocalReleaseWorkerTests(unittest.TestCase):
             storage.process_free_space(self.job)
         self.assertEqual(self.path.read_bytes(), b"photo")
         self.head.assert_not_called()
+
+    def test_unwritable_folder_is_refused_before_the_claim_rename(self):
+        from app.services import write_access
+        with patch.object(write_access, "_writable", return_value=False):
+            with self.assertRaises(write_access.DestinationNotWritable) as raised:
+                storage.process_free_space(self.job)
+        self.assertEqual(raised.exception.message_params["path"], self.tmp.name)
+        self.assertEqual(self.path.read_bytes(), b"photo")
+        self.assertEqual(sorted(p.name for p in Path(self.tmp.name).iterdir()), ["old-photo.jpg"])
+        self.assertEqual(self.confirmed.call_args.args[2], "old-photo.jpg")
 
     def test_mismatch_unavailable_conflict_and_stale_snapshot_preserve_local_content(self):
         for key, value in (("integrity", "mismatch"), ("integrity", "unverified"), ("availability", "unknown"),

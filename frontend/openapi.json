@@ -920,6 +920,9 @@
           "currency": {
             "type": "string"
           },
+          "dac_override": {
+            "type": "boolean"
+          },
           "email_configured": {
             "type": "boolean"
           },

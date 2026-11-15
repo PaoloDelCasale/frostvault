@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
+import posixpath
 import secrets
 import uuid
 from collections.abc import Iterable, Mapping
@@ -96,7 +97,8 @@ from .services.restore_estimates import (
 from .services.operation_policies import (
     OperationPolicy,
     get_policy,
-    local_release_is_confirmed,
+    blocking_path_for,
+    local_release_blocking_paths,
     preview_glob_rules,
     set_policy,
 )
@@ -120,6 +122,7 @@ from .services.lifecycle_profiles import (
 )
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
+from .services import write_access
 from .services.vaults import (
     VAULT_ROW_SQL,
     InvalidVaultName,
@@ -201,9 +204,12 @@ async def lifespan(_: FastAPI):
     validate_settings()
     if os.geteuid() == 0:
         # #679: PUID=0 is an explicit choice; the entrypoint already checked
-        # that root holds no capability that bypasses file permissions.
-        from .runtime_privileges import ROOT_WARNING
-        print(ROOT_WARNING, flush=True)
+        # that root holds no capability that bypasses file permissions, or
+        # only DAC_OVERRIDE/DAC_READ_SEARCH by explicit opt-in (#681).
+        from .runtime_privileges import read_status, startup_warnings
+        for warning in startup_warnings(read_status(), euid=os.geteuid(), gid=os.getegid(),
+                                        groups=os.getgroups()):
+            print(warning, flush=True)
     prepare_sources_layout()
     # Schema guard (ADR-0035, ADR-0041): initialize an empty database, upgrade
     # one of an earlier revision, refuse any other, before any write.
@@ -481,6 +487,25 @@ class ReauthRequired(HTTPException):
 async def _reauth_required_handler(_: Request, __: ReauthRequired) -> JSONResponse:
     # Stable marker the frontend keys on to trigger a step-up.
     return JSONResponse({"error": "reauth_required"}, status_code=403)
+
+
+class LocalizedHTTPError(HTTPException):
+    """An error whose text is a catalog message, localized for the request."""
+
+    def __init__(self, status_code: int, message_key: str, **params: Any) -> None:
+        super().__init__(status_code=status_code, detail=translate(message_key, locale=DEFAULT_LOCALE, **params))
+        self.message_key = message_key
+        self.message_params = params
+
+
+@app.exception_handler(LocalizedHTTPError)
+async def _localized_http_error_handler(request: Request, error: LocalizedHTTPError) -> JSONResponse:
+    message = translate(error.message_key, locale=_request_locale(request), **error.message_params)
+    return JSONResponse(
+        {"detail": message, "message": message, "message_key": error.message_key,
+         "message_params": error.message_params},
+        status_code=error.status_code,
+    )
 
 
 @app.exception_handler(InvalidLogicalPath)
@@ -2236,6 +2261,38 @@ def _hold_high_impact_recovery(
     return impact
 
 
+def _require_local_release(connection: Any, vault_id: int, path: str) -> None:
+    """Refuse a local release the gate does not confirm, naming the path (#681)."""
+    blocking = local_release_blocking_paths(connection, vault_id)
+    if blocking is None:
+        raise LocalizedHTTPError(409, "api.local_release_unconfirmed")
+    blocked_by = blocking_path_for(path, blocking)
+    if blocked_by is not None:
+        raise LocalizedHTTPError(409, "api.local_release_blocked_path", path=blocked_by)
+
+
+def _require_writable_destinations(connection: Any, source_root: str, job_ids: list[int]) -> None:
+    """Refuse local work in a folder FrostVault may not write (#681).
+
+    Checked when the request is queued, so a Recovery never asks S3 for a
+    restore that its final step could not publish; the worker checks again.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT f.path FROM jobs j JOIN files f ON f.id=j.file_id WHERE j.id=ANY(%s)",
+        (job_ids,),
+    ).fetchall()
+    root = Path(source_root)
+    folders = {
+        write_access.nearest_existing_directory(root / parent / "entry", root)
+        for parent in {posixpath.dirname(str(row["path"])) for row in rows}
+    }
+    for folder in sorted(folders):
+        try:
+            write_access.require_writable_directory(folder)
+        except write_access.DestinationNotWritable as exc:
+            raise LocalizedHTTPError(409, exc.message_key, **exc.message_params) from exc
+
+
 def queue_jobs(
     path: str,
     action: str,
@@ -2306,8 +2363,8 @@ def queue_jobs(
             restore_tier, restore_days
         )
     with db() as connection:
-        if action == "free-space" and not local_release_is_confirmed(connection, vault_id):
-            raise HTTPException(409, "Local release blocked: protection is not confirmed")
+        if action == "free-space":
+            _require_local_release(connection, vault_id, logical_path)
         catalog = ArchiveCatalog(connection)
         if action in {"recover", "storage-class"} and not is_directory and not whole_vault and not recovery_selection:
             versions = catalog.list_versions(vault_id, logical_path)
@@ -2413,6 +2470,8 @@ def queue_jobs(
             whole_vault=whole_vault,
             recovery_selection=recovery_selection,
         )
+        if action in {"recover", "free-space"} and job_ids:
+            _require_writable_destinations(connection, vault_row["source_root"], job_ids)
         skipped_same_class = int(getattr(catalog, "last_skipped_same_class", 0) or 0)
         if directory_recover and not (
             job_ids
@@ -3185,6 +3244,9 @@ def reconnect_vault_root(
                     runtime_busy=busy,
                 )
         except vault_relocation_service.VaultRelocationError as exc:
+            if exc.reason in {"volume_not_writable", "destination_not_writable"}:
+                # Say whose folder it is and which user may not write it (#681).
+                raise LocalizedHTTPError(409, f"api.reconnect_{exc.reason}", **exc.params) from exc
             status_code, message = _VAULT_RECONNECT_ERROR_STATUS.get(
                 exc.reason, (400, "Vault reconnect could not be completed")
             )

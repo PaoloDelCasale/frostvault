@@ -680,6 +680,50 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         )
         self.assertEqual(notifications, [])  # Cleanup activity belongs only in the summary.
 
+    def test_auto_cleanup_skips_only_paths_around_an_unreadable_one(self) -> None:
+        # #681 (ADR-0042): one unreadable folder no longer blocks the Vault.
+        from app.services.component_health import record_component_health
+        from app.services.operation_policies import (
+            SOURCE_SCAN_INCOMPLETE, local_release_blocking_paths, queue_auto_local_cleanups,
+        )
+        from app.services.problems import report_problem
+
+        now = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
+        verified_at = "2026-01-01T12:00:00+00:00"
+        names = ("a.txt", "priv/b.txt", "priv/secret/c.txt")
+        with PostgresConnection(str(self.path)) as connection:
+            catalog = ArchiveCatalog(connection)
+            for name in names:
+                target = self.source / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(name.encode())
+                stamp = datetime.fromisoformat(verified_at).timestamp()
+                os.utime(target, (stamp, stamp))
+                catalog.observe_local_copy(
+                    vault_id=2, path=name, file_type="regular", size=len(name.encode()),
+                    mtime_ns=target.stat().st_mtime_ns, observed_at=verified_at,
+                )
+                _protect(catalog, name, hashlib.sha256(name.encode()).hexdigest(), f"s3-{name}", verified_at)
+            set_policy(connection, 2, OperationPolicy(local_release_after_days=90))
+            record_component_health(connection, vault_id=2, component="source", ok=False,
+                                    error=SOURCE_SCAN_INCOMPLETE)
+            report_problem(connection, event="file_unreadable", vault_id=2, path="priv/secret")
+            self.assertEqual(local_release_blocking_paths(connection, 2), ("priv/secret",))
+            queued = queue_auto_local_cleanups(connection, vault_id=2, now=now)
+            paths = [row["path"] for row in connection.execute(
+                "SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id ORDER BY f.path").fetchall()]
+            # The Problem closes while the scan still reports the source
+            # incomplete: nothing names the gap, so the whole Vault waits.
+            connection.execute("UPDATE notifications SET problem_status='resolved' WHERE event='file_unreadable'")
+            self.assertIsNone(local_release_blocking_paths(connection, 2))
+            # A global cause blocks every path even with a named Problem.
+            connection.execute("UPDATE notifications SET problem_status='open' WHERE event='file_unreadable'")
+            record_component_health(connection, vault_id=2, component="source", ok=False,
+                                    error="Source watcher registration pending")
+            self.assertIsNone(local_release_blocking_paths(connection, 2))
+        self.assertEqual(queued, 2)
+        self.assertEqual(paths, ["a.txt", "priv/b.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()

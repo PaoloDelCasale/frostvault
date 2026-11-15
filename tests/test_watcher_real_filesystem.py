@@ -202,7 +202,7 @@ class Harness(RealTreeCase):
         self.resolve = self.stack.enter_context(patch("app.storage._resolve_worker_error"))
         self.report = self.stack.enter_context(patch("app.storage._report_worker_error"))
         self.health = self.stack.enter_context(patch("app.storage._record_scan_component_health"))
-        self.stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
+        self.log_error = self.stack.enter_context(patch("app.storage.worker_error_store.log_worker_error"))
         self.stack.enter_context(patch("app.storage._apply_watcher_changes", side_effect=lambda vault, changes: self.applied.append(set(changes)) or 1))
         real_awatch = awatch
 
@@ -769,6 +769,8 @@ class FolderCreatedUnreadableDuringTheWatchTests(Harness):
         self.report.assert_not_called()
         errors = [c.kwargs.get("error", "") for c in self.health.call_args_list if not c.kwargs.get("ok", True)]
         self.assertIn("Source watcher stopped on a folder it may not read", errors)
+        # #681: one warning line, no traceback of the denied folder.
+        self.log_error.assert_not_called()
 
 
 class RemovalOnlyWhenProvenTests(RealTreeCase):

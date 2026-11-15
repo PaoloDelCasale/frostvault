@@ -27,7 +27,7 @@ export function GeneralPage({ overview }: { overview?: Overview }) {
       <p className="text-sm text-muted">{t("system.subtitle")}</p>
     </div>
     {overview?.runs_as_root
-      ? <p role="status" data-testid="runs-as-root" className="rounded-card border border-[var(--health-warn-border)] bg-amber-soft p-4">{t("system.runs_as_root")}</p>
+      ? <p role="status" data-testid="runs-as-root" className="rounded-card border border-[var(--health-warn-border)] bg-amber-soft p-4">{t(overview.dac_override ? "system.runs_as_root_dac" : "system.runs_as_root")}</p>
       : null}
     <RecoveryKitSection />
     <MetadataBackupsSection />

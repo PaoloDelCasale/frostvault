@@ -13,7 +13,7 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
-from . import source_directories, source_layout, source_identity
+from . import source_directories, source_layout, source_identity, write_access
 from .directory_aggregates import request_vault_rebuild
 from .audit_events import record_audit_event
 
@@ -25,9 +25,17 @@ _runtime_suspended_vaults: set[int] = set()
 
 
 class VaultRelocationError(Exception):
-    def __init__(self, reason: str, message: str | None = None) -> None:
+    def __init__(self, reason: str, message: str | None = None,
+                 params: dict[str, Any] | None = None) -> None:
         super().__init__(message or reason)
         self.reason = reason
+        self.params = dict(params or {})
+
+
+def _not_writable(reason: str, directory: Path) -> VaultRelocationError:
+    """Say that FrostVault's own user may not write there, and whose it is (#681)."""
+    error = write_access.DestinationNotWritable(directory)
+    return VaultRelocationError(reason, str(error), params=error.message_params)
 
 
 def _identity_from_stat(info: os.stat_result) -> str:
@@ -222,6 +230,10 @@ def _source_volume_destination(
     """Validate a directory on a custom Source Volume and its mount identity."""
     volumes = {item.alias: item for item in source_layout.discover_source_volumes()}
     volume = volumes.get(volume_alias)
+    if (volume is not None and volume.health == "read_only"
+            and not source_layout.path_is_read_only_mount(volume.path)):
+        # Mounted read-write, but its root denies FrostVault's identity.
+        raise _not_writable("volume_not_writable", Path(volume.path))
     if volume is None or volume.health != "ok" or volume.access != "rw":
         raise VaultRelocationError("volume_unavailable", "Destination Source Volume is unavailable")
     # This is the ONLY explicit acceptance seam. Ambiguous/unsupported mount
@@ -231,6 +243,10 @@ def _source_volume_destination(
     except source_identity.MountIdentityError as exc:
         raise VaultRelocationError("identity_ambiguous", "Source Volume identity is unavailable") from exc
     _, destination = _candidate(volume, relative_path)
+    try:
+        write_access.require_writable_directory(destination)
+    except write_access.DestinationNotWritable:
+        raise _not_writable("destination_not_writable", destination) from None
     _reject_overlap(connection, vault_id=vault_id, destination=destination)
     identity = root_identity(destination)
     try:

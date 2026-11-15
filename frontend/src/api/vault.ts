@@ -36,6 +36,8 @@ export type Overview = {
   open_problem_count: number; month: string; monthly_estimate: number; previous_month_delta: number | null;
   currency: string; pricing_effective_at: string; email_configured: boolean; last_verified_backup: string | null;
   runs_as_root?: boolean;
+  /** Root with CAP_DAC_OVERRIDE/DAC_READ_SEARCH by explicit opt-in (#681). */
+  dac_override?: boolean;
   cloud_preflight?: { status: "unknown" | "ready" | "blocked"; remediation: string | null; next_probe_at: string | null };
 };
 export const fetchOverview = () => apiRequest<Overview>("/api/general");

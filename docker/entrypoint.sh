@@ -5,6 +5,8 @@
 # gosu with numeric IDs, never runtime account creation. PUID=0 PGID=0 is an
 # explicit opt-in (#679): root, but without the capabilities that bypass file
 # permissions and with no-new-privileges, checked before anything starts.
+# FROSTVAULT_ALLOW_DAC_OVERRIDE=1 lets root keep CAP_DAC_OVERRIDE and
+# CAP_DAC_READ_SEARCH for shares with several owners (#681).
 # Do not chown vault sources.
 set -eu
 
@@ -55,6 +57,21 @@ if [ "${PUID}" = 0 ] || [ "${PGID}" = 0 ]; then
   fi
 fi
 RUNTIME_IDENTITY="${PUID}:${PGID}"
+
+# #681: CAP_DAC_OVERRIDE and CAP_DAC_READ_SEARCH only by explicit opt-in, and
+# only for root. Any other value than unset, empty, 0 or 1 is a typo.
+ALLOW_DAC_OVERRIDE="${FROSTVAULT_ALLOW_DAC_OVERRIDE:-0}"
+case "${ALLOW_DAC_OVERRIDE}" in
+  0|'') ;;
+  1)
+    if [ "${RUNTIME_IDENTITY}" != "0:0" ]; then
+      fail "FROSTVAULT_ALLOW_DAC_OVERRIDE=1 applies only to root (PUID=0 PGID=0); remove it for PUID:PGID ${RUNTIME_IDENTITY}."
+    fi
+    ;;
+  *)
+    fail "FROSTVAULT_ALLOW_DAC_OVERRIDE must be 1 (allow CAP_DAC_OVERRIDE and CAP_DAC_READ_SEARCH to root) or unset."
+    ;;
+esac
 
 is_web_command() {
   [ "${1:-}" = "uvicorn" ] || {

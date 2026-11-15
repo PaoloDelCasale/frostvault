@@ -1615,6 +1615,7 @@ export interface components {
                 status: "unknown" | "ready" | "blocked";
             };
             currency?: string;
+            dac_override?: boolean;
             email_configured?: boolean;
             last_verified_backup?: string | null;
             metadata_backup_verification?: components["schemas"]["MetadataBackupVerification"];

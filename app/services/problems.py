@@ -7,8 +7,11 @@ messages are deliberately excluded (they may contain credentials or URLs).
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from collections.abc import Collection
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .notifications import set_problem
@@ -25,12 +28,33 @@ def report_problem(
     # Render them as escapes rather than letting a DB encoding error hide the
     # problem. The identity above still distinguishes the original paths.
     shown = display_path(path)
+    params: dict[str, Any] = {"path": shown, "component": component}
+    if event == "file_unreadable" and active and vault_id is not None and path:
+        params.update(_unreadable_access(connection, int(vault_id), path))
     return set_problem(
         connection, vault_id=vault_id, event=event, active=active,
         key=f"{event}:{vault_id}:{identity}",
-        params={"path": shown, "component": component},
+        params=params,
         email=event == "protection_blocked",
     )
+
+
+def _unreadable_access(connection: Any, vault_id: int, path: str) -> dict[str, Any]:
+    """Whose the unreadable path is, and who FrostVault is (#681).
+
+    Only when the entry itself can be stat'ed (without following a symlink):
+    a folder above it that may not be searched hides it, and then nothing is
+    added.
+    """
+    from .write_access import runtime_identity
+
+    try:
+        row = connection.execute("SELECT source_root FROM vaults WHERE id=%s", (vault_id,)).fetchone()
+        info = os.lstat(Path(str(row["source_root"])) / path)
+    except Exception:
+        return {}
+    return {"owner_uid": info.st_uid, "owner_gid": info.st_gid,
+            "mode": f"{stat.S_IMODE(info.st_mode):04o}", **runtime_identity()}
 
 
 def display_path(path: str) -> str:
