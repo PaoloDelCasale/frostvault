@@ -208,7 +208,7 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     active_observers -= 1
 
-            def apply(vault, changes):
+            def apply(vault, changes, **_kw):
                 events.extend(changes)
                 if expected <= set(events):
                     siblings_seen.set()

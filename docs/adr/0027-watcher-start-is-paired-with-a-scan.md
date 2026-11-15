@@ -91,6 +91,21 @@ Vault `unconfirmed` and its notifications open until a scan happens to run.
    corrected key, bucket or permission) the Vaults whose last cloud observation
    failed are scanned, without waiting for the periodic scan or a restart.
 
+   _Amended by #690:_ the paired scans of one Vault take turns on that Vault's
+   own thread; another Vault's scan never delays them. On one shared thread, a
+   watcher restart behind a large adoption (hours of hashing) left its Vault
+   without real-time detection for the whole time while it looked healthy.
+   The paired scan also runs beside the observer, not inside its loop: events
+   go on being consumed while it waits or walks, and a batch that finds the
+   Vault busy (its scan walking, a Job holding it) is kept and applied once the
+   Vault is free. A scan that becomes due while one is running is due again
+   when it ends. A folder that vanishes while it is being registered (live
+   sources that empty and recreate folders) is churn, not a failure: during a
+   handoff the old observer stays and the registration is retried, after a
+   stopped observer the watcher registers again at once, quietly, and keeps the
+   gap scan; that path is walked in both cases. Only a path that fails this way
+   `WATCHER_VANISHED_MAX_RETRIES` (5) times in a row stops the watcher as before.
+
 ## Consequences
 
 - Each application start scans every enabled Vault once (local walk, cloud
