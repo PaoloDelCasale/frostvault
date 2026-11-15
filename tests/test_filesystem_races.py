@@ -176,7 +176,7 @@ class FilesystemCatalogTests(unittest.TestCase):
         threads = []
         errors = []
 
-        def watch_during_hash(path):
+        def watch_during_hash(path, **kwargs):
             observed.append(path)
             started = threading.Event()
             def watch():
@@ -192,7 +192,7 @@ class FilesystemCatalogTests(unittest.TestCase):
             if not storage.scan_lock_for_vault(2).locked():
                 thread.join(2)
                 self.assertFalse(thread.is_alive())
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         with (patch("app.storage.validate_cloud_vault"),
               patch("app.storage.local_release_is_confirmed", return_value=True),
@@ -250,11 +250,11 @@ class FilesystemCatalogTests(unittest.TestCase):
         target, version, _ = self.archive()
         job = self.job("free-space")
         real_hash = storage.hash_stable_regular_file
-        def replace_then_fail(path):
+        def replace_then_fail(path, **kwargs):
             if path != target:
                 target.write_bytes(b"other")
                 raise RuntimeError("Injected hash failure")
-            return real_hash(path)
+            return real_hash(path, **kwargs)
         with (patch("app.storage.validate_cloud_vault"),
               patch("app.storage.local_release_is_confirmed", return_value=True),
               patch("app.storage.s3_client") as client,

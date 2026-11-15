@@ -4,12 +4,17 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .shutdown import WorkerStopping
 
-def hash_stable_regular_file(path: Path) -> tuple[str, os.stat_result]:
+
+def hash_stable_regular_file(
+    path: Path, *, should_stop: Callable[[], bool] | None = None,
+) -> tuple[str, os.stat_result]:
+    """``should_stop`` aborts a long read between chunks (process shutdown, #696)."""
     before = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise RuntimeError("Local file is not a regular file")
@@ -30,6 +35,8 @@ def hash_stable_regular_file(path: Path) -> tuple[str, os.stat_result]:
             raise RuntimeError("Local file changed since fingerprinting")
         with os.fdopen(descriptor, "rb", closefd=False) as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                if should_stop is not None and should_stop():
+                    raise WorkerStopping("Process shutdown requested")
                 digest.update(chunk)
         after = os.fstat(descriptor)
     finally:

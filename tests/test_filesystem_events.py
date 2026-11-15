@@ -32,7 +32,7 @@ class ReleaseWatcherRaceTests(unittest.TestCase):
         connection.execute.return_value.fetchone.return_value = None
 
         threads = []
-        def observe_while_hashing(path):
+        def observe_while_hashing(path, **kwargs):
             started = threading.Event()
             def watch():
                 started.set()
@@ -46,7 +46,7 @@ class ReleaseWatcherRaceTests(unittest.TestCase):
             if not storage.scan_lock_for_vault(self.job["vault_id"]).locked():
                 thread.join(2)
                 self.assertFalse(thread.is_alive())
-            return real_hash(path)
+            return real_hash(path, **kwargs)
 
         with (patch("app.storage.hash_stable_regular_file", side_effect=observe_while_hashing),
               patch("app.storage.source_layout.vault_local_access", return_value=access),
@@ -63,11 +63,11 @@ class ReleaseWatcherRaceTests(unittest.TestCase):
 
     def test_failed_release_preserves_salvage_and_observes_external_replacement(self):
         real_hash = storage.hash_stable_regular_file
-        def replace_then_fail(path):
+        def replace_then_fail(path, **kwargs):
             if path != self.path:
                 self.path.write_bytes(b"other")
                 raise RuntimeError("Injected hash failure")
-            return real_hash(path)
+            return real_hash(path, **kwargs)
         with patch("app.storage.hash_stable_regular_file", side_effect=replace_then_fail):
             with self.assertRaisesRegex(RuntimeError, "original content was preserved"):
                 storage.process_free_space(self.job)
