@@ -2055,6 +2055,24 @@
                 "null"
               ]
             },
+            "traversal_files_seen": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "traversal_files_per_minute": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "traversal_files_expected": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
             "last_error_source": {
               "type": [
                 "string",

@@ -47,18 +47,28 @@ def removal_is_unproven(root: Path, path: Path) -> bool:
     return True
 
 
-def inspect_entry(path: Path) -> tuple[str, os.stat_result] | None:
+def inspect_entry(
+    path: Path, *, info: os.stat_result | None = None, probe: bool = True,
+) -> tuple[str, os.stat_result] | None:
     """Classify without following symlinks; prove regular files can be opened.
 
     This is not a content verification (upload still hashes and verifies the
     exact cloud version). A stat alone cannot detect an unreadable file.
+
+    ``info`` is an lstat the caller already holds for ``path`` (the walk's
+    ``DirEntry.stat``), so the entry is not stat'ed again. ``probe=False``
+    classifies only: a full scan skips the open/read for a file it is about to
+    hash, since the hashing reports an unreadable file by its path (#696).
     """
-    info = path.lstat()
+    if info is None:
+        info = path.lstat()
     if stat.S_ISLNK(info.st_mode):
         return "symlink", info
     if stat.S_ISDIR(info.st_mode):
         return None
     if stat.S_ISREG(info.st_mode):
+        if not probe:
+            return "regular", info
         # Never follow a symlink substituted between lstat and open.
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
@@ -195,13 +205,23 @@ class PinnedTree:
         """Fence the current path; only a changed start folder raises.
 
         Used before a batch of observations is staged. A replaced folder below
-        the start is left to the walk, which notices it at its next entry.
+        the start is left to the walk, which notices it at the next folder
+        boundary.
         """
         index = self._changed_active()
         if index is not None and index < len(self.start):
             raise self._start_changed(self.active[index][3])
 
     def _validate_active_in_walk(self) -> None:
+        """Fence the current path at a folder boundary (#696).
+
+        Called before a folder is listed and once its entries (and subfolders)
+        are done, not for every entry: on a FUSE union each ``stat`` of an
+        ancestor costs a round trip, and a 5-deep path paid five per file. A
+        folder replaced while its entries are yielded is still left at the end
+        of that folder and named as replaced; what was yielded from it is
+        compensated by the caller like any replaced subtree (ADR-0043).
+        """
         index = self._changed_active()
         if index is None:
             return
@@ -241,8 +261,16 @@ class PinnedTree:
         on_unsupported_name: Callable[[Path, bool], None] | None = None,
         prune: Callable[[tuple[str, ...]], bool] | None = None,
         on_pruned: Callable[[Path], None] | None = None,
-    ) -> Iterator[tuple[Path, Path]]:
+        on_listing: Callable[[Path, list[str]], None] | None = None,
+        with_stat: bool = False,
+    ) -> Iterator[tuple[Path, Path]] | Iterator[tuple[Path, Path, os.stat_result]]:
         """Yield (logical path, descriptor path) for every storable entry.
+
+        With ``with_stat`` a third item is the entry's lstat, so the caller
+        need not stat it again (None when that stat failed: the caller's own
+        stat then reports the entry). ``on_listing`` receives each folder's logical
+        path and storable entry names once the folder is listed, before its
+        first entry is yielded, for a bulk lookup by the caller (#696).
 
         A folder for which ``prune`` is true (an Excluded Folder, ADR-0044) is
         yielded like any other entry but never opened, listed nor fenced; it is
@@ -256,10 +284,16 @@ class PinnedTree:
         """
         def descend(fd: int, parts: tuple[str, ...]):
             logical = self.root.joinpath(*parts)
+            self._validate_active_in_walk()
             try:
-                with os.scandir(fd) as entries:
+                with os.scandir(fd) as listing:
+                    entries = listing
+                    if on_listing is not None:
+                        entries = list(listing)
+                        on_listing(logical, [
+                            entry.name for entry in entries if is_storable_name(entry.name)
+                        ])
                     for entry in entries:
-                        self._validate_active_in_walk()
                         if not is_storable_name(entry.name):
                             if on_unsupported_name is not None:
                                 on_unsupported_name(
@@ -268,12 +302,20 @@ class PinnedTree:
                                 )
                             continue
                         path = logical / entry.name
+                        # Only this descriptor path is ever passed to inspection.
+                        pinned = Path(f"/proc/self/fd/{fd}") / entry.name
                         try:
                             info = entry.stat(follow_symlinks=False)
                         except (FileNotFoundError, NotADirectoryError):
                             continue
-                        # Only this descriptor path is ever passed to inspection.
-                        yield path, Path(f"/proc/self/fd/{fd}") / entry.name
+                        except OSError:
+                            if not with_stat:
+                                raise
+                            # The caller stats it again and reports that
+                            # entry by its own path; it is not descended into.
+                            yield path, pinned, None
+                            continue
+                        yield (path, pinned, info) if with_stat else (path, pinned)
                         if not stat.S_ISDIR(info.st_mode):
                             continue
                         expected = info.st_dev, info.st_ino
@@ -309,6 +351,8 @@ class PinnedTree:
                             os.close(child)
             except OSError as exc:
                 on_error(logical, exc)
+            # End of the folder: one fence for everything it yielded.
+            self._validate_active_in_walk()
 
         def start(fd: int, parts: tuple[str, ...]):
             if len(parts) == len(self.start):

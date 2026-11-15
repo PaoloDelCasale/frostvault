@@ -201,7 +201,8 @@ class ScanFingerprintTests(_AdoptionFixture):
                             patch("app.storage.hash_stable_regular_file", side_effect=deny))
         self.assertEqual(result["local_incomplete"], 1)
         digests = self._digests(int(vault["id"]))
-        self.assertIsNone(digests["img03.heic"])
+        # Not observed by this scan (#696): its new row is undone.
+        self.assertNotIn("img03.heic", digests)
         self.assertEqual(sum(1 for value in digests.values() if value), 12)
         with PostgresConnection(str(self.database_path)) as connection:
             problems = connection.execute(

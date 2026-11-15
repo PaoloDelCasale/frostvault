@@ -304,8 +304,8 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
         target = self.write(watch=False)
         real_inspect = storage.inspect_entry
 
-        def replace_root(entry):
-            observed = real_inspect(entry)
+        def replace_root(entry, **kwargs):
+            observed = real_inspect(entry, **kwargs)
             self.root.rename(self.base / "original")
             self.root.mkdir()
             return observed

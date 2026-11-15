@@ -126,6 +126,21 @@ def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> No
         _record_found(int(vault_id), old.merged(UnobservedPaths(added, frozenset(), added)))
 
 
+def note_unreadable_files(vault_id: int, paths: Iterable[str]) -> None:
+    """Files the full scan's verification could not read (#696).
+
+    The walk no longer opens a file the verification hashes, so such a file is
+    found unreadable after :func:`record_full_scan`. It joins the gaps the
+    watcher re-checks, as if the walk had found it.
+    """
+    added = frozenset(paths)
+    if not added:
+        return
+    with _lock:
+        old = _state.get(int(vault_id), UnobservedPaths())
+        _record_found(int(vault_id), old.merged(UnobservedPaths(unreadable=added)))
+
+
 def note_excluded_directories(vault_id: int, directories: Iterable[str]) -> None:
     """A batch met a new Excluded Folder: stop watching it before any scan."""
     added = frozenset(directories)

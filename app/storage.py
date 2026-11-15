@@ -167,6 +167,10 @@ _maintenance_lock = threading.Lock()
 # This is small enough to give other PostgreSQL writers frequent admission while
 # avoiding one transaction per catalogued entry.
 LOCAL_SCAN_WRITE_BATCH_SIZE = 250
+# Paths per catalog lookup of a listed folder's fingerprinted files (#696).
+_PROBE_LOOKUP_CHUNK = 1000
+# How often the traversal refreshes its runtime progress (#696).
+_TRAVERSAL_PROGRESS_SECONDS = 1.0
 # How many times one scan walks again a folder replaced during it (#686)
 # before reporting it as changing, with its protection not confirmed.
 SCAN_REPLACED_FOLDER_REWALKS = 3
@@ -576,6 +580,8 @@ def _scan_tree(
     subtree: Path | None = None,
     invalidate_content: bool = False,
     excluded_folders: excluded_folder_rules.ExcludedFolders | None = None,
+    verification_follows: bool = False,
+    expected_files: int | None = None,
 ) -> tuple[int, str | None]:
     """Observe a root with short catalog-write transactions.
 
@@ -584,6 +590,13 @@ def _scan_tree(
     proved that the complete scan still owns the enrolled root. Excluded
     Folders are not entered (ADR-0044); pass the rules the caller's missing
     transition will use.
+
+    ``verification_follows`` is the full scan's promise that every present
+    regular Local Copy left without a fingerprint is hashed after the walk
+    (``_fingerprint_scanned_local_copies``), which reports an unreadable file
+    by its path. The walk then skips the open/read probe for those files and
+    keeps it for an already fingerprinted file whose size and mtime did not
+    change, and it reports its progress in the runtime status (#696).
     """
     vault_id = int(vault["id"])
     if excluded_folders is None:
@@ -693,24 +706,71 @@ def _scan_tree(
     def pruned_folder(entry: Path) -> None:
         pruned.add(entry.relative_to(root).as_posix())
 
+    # The size and mtime of the listed folder's fingerprinted Local Copies,
+    # looked up in bulk when the folder is listed: a file not in it is hashed
+    # by the verification, so its readability probe is skipped (#696).
+    fingerprinted: dict[str, tuple[int | None, int | None]] = {}
+
+    def listed(directory: Path, names: list[str]) -> None:
+        prefix = directory.relative_to(root).as_posix()
+        paths = [name if prefix == "." else f"{prefix}/{name}" for name in names]
+        for start in range(0, len(paths), _PROBE_LOOKUP_CHUNK):
+            for row in connection.execute(
+                """
+                SELECT path, local_size, local_mtime_ns FROM files
+                WHERE vault_id=%s AND path = ANY(%s::text[])
+                  AND local_presence='present' AND local_file_type='regular'
+                  AND local_sha256 IS NOT NULL
+                """,
+                (vault_id, paths[start:start + _PROBE_LOOKUP_CHUNK]),
+            ).fetchall():
+                fingerprinted[row["path"]] = (row["local_size"], row["local_mtime_ns"])
+
+    traversal = {"seen": 0, "started": time.monotonic(), "reported": 0.0}
+
+    def report_traversal(*, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - traversal["reported"] < _TRAVERSAL_PROGRESS_SECONDS:
+            return
+        traversal["reported"] = now
+        elapsed = now - traversal["started"]
+        _scan_progress(
+            vault_id, scan_id,
+            traversal_files_seen=traversal["seen"],
+            traversal_files_per_minute=(
+                round(traversal["seen"] * 60 / elapsed, 1) if elapsed > 0 else None
+            ),
+            traversal_files_expected=expected_files,
+        )
+
     def observe(walk: PinnedTree) -> None:
         nonlocal tree
         tree = walk
-        for entry, pinned_entry in walk.entries(
+        for entry, pinned_entry, listed_stat in walk.entries(
             on_error=failed_directory, on_unsupported_name=unsupported,
             prune=prune, on_pruned=pruned_folder,
+            on_listing=listed if verification_follows else None, with_stat=True,
         ):
             if is_restore_temporary_name(entry.name):
                 continue
+            relative = entry.relative_to(root).as_posix()
+            known = fingerprinted.pop(relative, None)
+            if listed_stat is None or not stat.S_ISDIR(listed_stat.st_mode):
+                traversal["seen"] += 1
+                if verification_follows:
+                    report_traversal()
             try:
-                inspected = inspect_entry(pinned_entry)
+                inspected = inspect_entry(
+                    pinned_entry, info=listed_stat,
+                    probe=not verification_follows or listed_stat is None
+                    or known == (listed_stat.st_size, listed_stat.st_mtime_ns),
+                )
                 if inspected is None:
                     continue
                 file_type, entry_stat = inspected
             except OSError as exc:
                 failed(entry, exc)
                 continue
-            relative = entry.relative_to(root).as_posix()
             if invalidate_content and not local_observation.consume(vault_id, relative, pinned_entry):
                 # Use the pinned parent while it is open. Independent hashing
                 # must precede journal/catalog/problem writes for this batch.
@@ -729,6 +789,9 @@ def _scan_tree(
         walk.validate()
         flush()
         walk.validate()
+        fingerprinted.clear()
+        if verification_follows:
+            report_traversal(force=True)
 
     unsettled: list[str] = []
     with PinnedTree(root, subtree=subtree) as tree:
@@ -863,6 +926,8 @@ def scan_tree(
     _finalize_missing: bool = True,
     _scan_journal: dict[str, Any] | None = None,
     _excluded_folders: excluded_folder_rules.ExcludedFolders | None = None,
+    _verification_follows: bool = False,
+    _expected_files: int | None = None,
 ) -> int:
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -884,6 +949,8 @@ def scan_tree(
             scan_started_at=scan_id,
             scan_journal=_scan_journal,
             excluded_folders=_excluded_folders,
+            verification_follows=_verification_follows,
+            expected_files=_expected_files,
         )
         return count
     with db() as connection:
@@ -1592,6 +1659,7 @@ def _iter_local_fingerprints(
             if scan_journal is not None:
                 scan_journal["incomplete"] = True
                 scan_journal.setdefault("unreadable_paths", set()).add(display_path(row["path"]))
+                scan_journal.setdefault("unreadable_files", set()).add(row["path"])
             with db() as connection:
                 report_problem(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
@@ -1892,6 +1960,13 @@ def _verified_local_scan(
             # The rules the walk prunes with also keep the missing transition
             # out of those folders, even if the policy changes meanwhile.
             excluded_folders = excluded_folder_rules.load(connection, int(vault["id"]))
+            # A time estimate needs the Local Copies a previous scan found;
+            # a first adoption has none (#696).
+            expected = int(connection.execute(
+                "SELECT count(*) AS n FROM files WHERE vault_id=%s"
+                " AND local_presence IN ('present', 'unsupported')",
+                (int(vault["id"]),),
+            ).fetchone()["n"])
             count = scan_tree(
                 vault,
                 scan_id,
@@ -1900,6 +1975,8 @@ def _verified_local_scan(
                 _finalize_missing=False,
                 _scan_journal=scan_journal,
                 _excluded_folders=excluded_folders,
+                _verification_follows=True,
+                _expected_files=expected or None,
             )
             _current_verified_scan_row(connection, vault)
 
@@ -1919,6 +1996,18 @@ def _verified_local_scan(
         finally:
             if scan_lock is not None:
                 scan_lock.acquire()
+        # The walk skipped the readability probe of the files just hashed
+        # (#696). One the hashing could not read is not observed by this scan,
+        # as when the probe failed: its observation is undone (compare-and-swap,
+        # a newer watcher observation wins) and it is a gap the watcher re-checks.
+        unreadable_files = sorted(scan_journal.get("unreadable_files", ()))
+        if unreadable_files:
+            with db() as connection:
+                for relative in unreadable_files:
+                    count -= _compensate_scan_subtree(
+                        connection, int(vault["id"]), scan_id, scan_journal, relative,
+                    )
+            watch_plan.note_unreadable_files(int(vault["id"]), unreadable_files)
         _scan_progress(int(vault["id"]), scan_id, scan_phase="finalization")
         if not scan_journal.get("unattributed"):
             # Each unreadable path has its own entry: one that this walk and the
@@ -2136,6 +2225,9 @@ def _record_scan_component_health(
 _NO_VERIFICATION_PROGRESS = {
     "verify_files_total": None, "verify_files_done": None,
     "verify_bytes_total": None, "verify_bytes_done": None,
+    # Traversal progress of the running scan (#696).
+    "traversal_files_seen": None, "traversal_files_per_minute": None,
+    "traversal_files_expected": None,
 }
 
 

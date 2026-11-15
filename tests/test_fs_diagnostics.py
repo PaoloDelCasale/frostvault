@@ -89,13 +89,44 @@ class FilesystemProblemTests(unittest.TestCase):
 
     def test_stat_failure_is_not_silently_skipped(self):
         (self.root / "stat.bin").write_bytes(b"x")
+        (self.root / "fine.bin").write_bytes(b"y")
+        # The walk reuses the listing's stat (#696): fail that one, and the
+        # fallback stat of the entry.
+        real_scandir = os.scandir
+
+        class DeniedEntry:
+            def __init__(self, entry):
+                self._entry = entry
+                self.name = entry.name
+
+            def stat(self, *args, **kwargs):
+                raise PermissionError("denied")
+
+            def is_dir(self, *args, **kwargs):
+                return self._entry.is_dir(*args, **kwargs)
+
+        class Listing:
+            def __init__(self, fd):
+                self._listing = real_scandir(fd)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._listing.close()
+
+            def __iter__(self):
+                for entry in self._listing:
+                    yield DeniedEntry(entry) if entry.name == "stat.bin" else entry
+
         original = Path.lstat
         def denied(path, *args, **kwargs):
             if path.name == "stat.bin":
                 raise PermissionError("denied")
             return original(path, *args, **kwargs)
-        with patch.object(Path, "lstat", denied):
-            self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 0)
+        with (patch("app.services.fs_preflight.os.scandir", side_effect=Listing),
+              patch.object(Path, "lstat", denied)):
+            self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 1)
         self.assertIn("stat.bin", str(self.problems()))
 
     def test_inaccessible_subtree_is_reported_and_never_marks_copies_missing(self):
