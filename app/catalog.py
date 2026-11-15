@@ -804,16 +804,22 @@ class ArchiveCatalog:
         seen_at: Any,
         observed_at: Any,
         scan_started_at: Any | None = None,
+        excluded_folders: Any = None,
     ) -> None:
         """Mark only rows not changed after this scan generation began.
 
         A watcher or another completed scan may legitimately update a Local
         Copy while the walk is in progress.  Such a newer observation must not
-        be overwritten by the older scan's final missing transition.
+        be overwritten by the older scan's final missing transition. Rows in
+        the ``excluded_folders`` the walk did not enter keep their last known
+        state (ADR-0044).
         """
         started = _timestamp(scan_started_at)
+        outside, outside_params = (
+            excluded_folders.not_inside_sql("path") if excluded_folders else ("TRUE", [])
+        )
         self.connection.execute(
-            """
+            f"""
             UPDATE files
             SET local_presence='missing', local_observed_at=%s,
                 generation=generation + 1
@@ -821,29 +827,37 @@ class ArchiveCatalog:
               AND local_presence IN ('present', 'unsupported')
               AND local_seen_at IS DISTINCT FROM %s
               AND (%s::timestamptz IS NULL OR local_observed_at <= %s::timestamptz)
+              AND {outside}
             """,
             (
                 _required_timestamp(observed_at), vault_id,
-                _required_timestamp(seen_at), started, started,
+                _required_timestamp(seen_at), started, started, *outside_params,
             ),
         )
         self._request_aggregate_rebuild(vault_id)
 
     def mark_local_path_missing(
-        self, *, vault_id: int, path: str, observed_at: Any
+        self, *, vault_id: int, path: str, observed_at: Any, excluded_folders: Any = None,
     ) -> None:
-        """Mark the Local Copy at ``path``, or every one below it, missing."""
+        """Mark the Local Copy at ``path``, or every one below it, missing.
+
+        Rows inside ``excluded_folders`` keep their last known state (ADR-0044).
+        """
         escaped = (
             path.replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
+        outside, outside_params = (
+            excluded_folders.not_inside_sql("path") if excluded_folders else ("TRUE", [])
+        )
         self.connection.execute(
-            """
+            f"""
             UPDATE files
             SET local_presence='missing', local_observed_at=%s,
                 generation=generation + 1
             WHERE local_presence IS NOT NULL
+              AND {outside}
               AND id IN (
                   SELECT id FROM files WHERE vault_id=%s AND path=%s
                   UNION ALL
@@ -852,7 +866,7 @@ class ArchiveCatalog:
               )
             """,
             (
-                _required_timestamp(observed_at),
+                _required_timestamp(observed_at), *outside_params,
                 vault_id, path, vault_id, f"{escaped}/%",
             ),
         )
@@ -2072,9 +2086,13 @@ class ArchiveCatalog:
         name_from_path: bool,
         directory: str = "",
     ) -> list[dict[str, Any]]:
+        from .services import excluded_folders as excluded_folder_rules
+
         prefix = f"{directory}/" if directory else ""
         items: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
+        # Derived from the current policy, like Excluded itself (ADR-0044).
+        excluded = excluded_folder_rules.load(self.connection, vault_id) if rows else None
         for row in rows:
             local_exists = row["local_presence"] in {"present", "unsupported"}
             current_id = row["current_version_id"]
@@ -2115,6 +2133,8 @@ class ArchiveCatalog:
                     "verification_egress_bytes": row["verification_egress_bytes"],
                     **protection,
                     "cloud_only_conflict": row["held_version_id"] is not None,
+                    # Not observed: the Vault does not look inside this folder.
+                    "in_excluded_folder": bool(excluded and excluded.contains_path(row["path"])),
                     "reconciliation_block": row["reconciliation_block"],
                     "cleanup": _cleanup_state(row),
                     "upload_eligible": upload_eligible and not unconfirmed,

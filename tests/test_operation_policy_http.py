@@ -155,6 +155,25 @@ class OperationPolicyHttpTests(unittest.TestCase):
         response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": []})
         self.assertEqual(response.status_code, 200, response.text)
 
+    def test_removing_a_folder_exclusion_looks_inside_again(self) -> None:
+        """#688: a narrowed folder exclusion requests a full scan; adding one does not."""
+        from app.services import watch_plan
+        self._authenticate(self.owner_id)
+        endpoint = "/api/vault/operation-policy"
+        self.addCleanup(watch_plan.forget, self.vault_id)
+        with patch("app.main.request_full_scan") as request:
+            for globs in (["backups/**", "*.tmp"], ["backups/**"], ["backups/**", "**/cache/**"]):
+                response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": globs})
+                self.assertEqual(response.status_code, 200, response.text)
+            request.assert_not_called()
+            watch_plan.note_excluded_directories(self.vault_id, {"backups", "a/cache"})
+            response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["**/cache/**"]})
+            self.assertEqual(response.status_code, 200, response.text)
+            request.assert_called_once()
+            self.assertEqual(request.call_args.args[0]["id"], self.vault_id)
+            # The watcher plan stops excluding the released folder at once.
+            self.assertEqual(watch_plan.unobserved(self.vault_id).excluded, {"a/cache"})
+
     def test_local_release_accepts_only_off_or_the_four_periods(self) -> None:
         self._authenticate(self.owner_id)
         for period in (None, 90, 180, 365, 730):

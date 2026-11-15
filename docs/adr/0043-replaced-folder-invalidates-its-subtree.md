@@ -51,5 +51,6 @@ seen by that scan; it is seen by the watcher or the next scan, like any change
 made after the walk passed a folder.
 
 Out of scope, follow-ups: exclusion globs do not prune the walk (excluded
-files are still catalogued and shown as excluded, ADR-0028), and uploads still
+files are still catalogued and shown as excluded, ADR-0028; since resolved by
+[ADR-0044](0044-excluded-folders-are-not-observed.md)), and uploads still
 wait for the scan to finish.

@@ -65,6 +65,8 @@ from .services.source_layout import (
 from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
+from .services import watch_plan
+from .services.excluded_folders import excluded_folders
 from .oidc import (
     IdentityRejected,
     OidcError,
@@ -167,6 +169,7 @@ from .storage import (
     runtime_status,
     safe_local_path,
     scan_lock_for_vault,
+    request_full_scan,
     snapshot_runtime_status_for_stats,
     status_lock,
     safe_relative_path,
@@ -3290,6 +3293,20 @@ def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
                 "effective_upload_verification": policy.effective_upload_verification()}
 
 
+def _look_inside_released_folders(vault: dict[str, Any], current: Any) -> None:
+    """An exclusion that pruned folders was removed or narrowed (ADR-0044).
+
+    The watcher registers those folders again. When it had registered around
+    one of them, that expansion is paired with a full scan by the watcher
+    itself (ADR-0027); otherwise a full scan is requested here, now or right
+    after the one in progress. Either way the folder's files are catalogued
+    again and those gone from disk become missing.
+    """
+    released = watch_plan.release_excluded(int(vault["id"]), current.covers_directory)
+    if not released:
+        request_full_scan(dict(vault))
+
+
 @app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
@@ -3310,6 +3327,8 @@ def update_vault_operation_policy(
                 # Excluded is derived from these globs (#498); refresh the
                 # durable directory rollups, never the catalog evidence.
                 request_vault_rebuild(connection, vault["id"])
+            # The Vault may look inside folders it did not observe (ADR-0044).
+            narrowed_folders = excluded_folders(before).narrowed_by(excluded_folders(stored))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except LookupError as exc:
@@ -3325,6 +3344,8 @@ def update_vault_operation_policy(
             outcome="updated",
             policy=stored.as_dict(),
         )
+    if narrowed_folders:
+        _look_inside_released_folders(vault, excluded_folders(stored))
     return {**stored.as_dict(), "global_upload_verification": settings.upload_verification,
             "effective_upload_verification": stored.effective_upload_verification()}
 

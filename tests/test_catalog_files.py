@@ -235,6 +235,47 @@ class LocalCopyTests(_Fixture):
             "dir_x/c.txt": "present", "dir": "missing",
         })
 
+    def test_rows_in_an_excluded_folder_never_become_missing(self) -> None:
+        """#688: what the walk did not enter keeps its last known state."""
+        from app.services.excluded_folders import excluded_folders
+        from app.services.operation_policies import OperationPolicy, set_policy
+
+        set_policy(self.connection, 2, OperationPolicy(exclude_globs=("backups/**", "**/cache/**")))
+        folders = excluded_folders(OperationPolicy(exclude_globs=("backups/**", "**/cache/**")))
+        scan = "2026-07-21T10:00:00+00:00"
+        for path in ("backups/a.zip", "backups/old/b.zip", "photos/cache/t.jpg",
+                     "backups", "photos/gone.jpg", "backups_x/c.txt"):
+            self.observe(path, at="2026-07-21T09:00:00+00:00")
+        self.catalog.mark_unseen_local_copies_missing(
+            vault_id=2, seen_at=scan, observed_at=T1, scan_started_at=scan,
+            excluded_folders=folders,
+        )
+        presences = {
+            path: self.file(path)["local_copy"]["presence"]
+            for path in ("backups/a.zip", "backups/old/b.zip", "photos/cache/t.jpg",
+                         "backups", "photos/gone.jpg", "backups_x/c.txt")
+        }
+        self.assertEqual(presences, {
+            "backups/a.zip": "present", "backups/old/b.zip": "present",
+            "photos/cache/t.jpg": "present",
+            # A file named like the folder, and everything outside, was walked.
+            "backups": "missing", "photos/gone.jpg": "missing", "backups_x/c.txt": "missing",
+        })
+        # A removed parent folder does not take the excluded rows with it.
+        self.observe("photos/cache/u.jpg")
+        self.observe("photos/v.jpg")
+        self.catalog.mark_local_path_missing(
+            vault_id=2, path="photos", observed_at=T2, excluded_folders=folders,
+        )
+        self.assertEqual(self.file("photos/cache/u.jpg")["local_copy"]["presence"], "present")
+        self.assertEqual(self.file("photos/v.jpg")["local_copy"]["presence"], "missing")
+        # Shown Excluded and not observed, derived from the current policy.
+        item = self.catalog.get_file_item(2, "backups/a.zip")
+        self.assertEqual(item["state"], "excluded")
+        self.assertTrue(item["in_excluded_folder"])
+        self.observe("backups_x/d.txt")
+        self.assertFalse(self.catalog.get_file_item(2, "backups_x/d.txt")["in_excluded_folder"])
+
     def test_reappearance_revokes_the_whole_pending_deletion(self) -> None:
         first = self.observe("a.txt")
         second = self.observe("b.txt")

@@ -12,6 +12,7 @@ const translations: Record<string, string> = {
   "state.stopped": "Fermato da te",
   "state.last_known": "Ultimo stato noto: {state} ({date})",
   "state.previous_snapshot_protected": "Versione precedente protetta",
+  "state.not_observed_excluded_folder": "Non osservato: cartella esclusa",
 };
 function t(key: string, params?: Record<string, string | number>) {
   return Object.entries(params || {}).reduce((text, [key, value]) => text.replaceAll(`{${key}}`, String(value)), translations[key] || key);
@@ -54,5 +55,12 @@ describe("protection-state labels", () => {
     const badge = itemStateBadge({ ...file("pending"), previous_snapshot_protected: true }, t);
     expect(badge.state).toBe("pending");
     expect(badge.label).toBe("In attesa · Versione precedente protetta");
+  });
+
+  it("marks a file in an Excluded Folder as not observed (#688)", () => {
+    const badge = itemStateBadge({ ...file("excluded"), in_excluded_folder: true }, t);
+    expect(badge.state).toBe("excluded");
+    expect(badge.label).toBe("Escluso · Non osservato: cartella esclusa");
+    expect(itemStateBadge(file("excluded"), t).label).toBe("Escluso");
   });
 });

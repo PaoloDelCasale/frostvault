@@ -13,6 +13,9 @@ the watcher registers the readable part of the tree around them explicitly:
 
 When the set changes (a permission was fixed, a name was repaired, a new folder
 turned out unreadable) the watcher registers the tree again.
+
+Excluded Folders (ADR-0044) are registered around the same way: they are not
+watched at all, so their events never arrive and they cost no native watch.
 """
 from __future__ import annotations
 
@@ -33,32 +36,33 @@ class UnobservedPaths:
 
     unreadable: frozenset[str] = frozenset()
     unsupported: frozenset[str] = frozenset()
-    # Subset of the two sets above that are directories.
+    # The directories the watcher must not register: those of the two sets
+    # above, plus the Excluded Folders.
     directories: frozenset[str] = frozenset()
+    # Excluded Folders (ADR-0044), a subset of ``directories``. They are not a
+    # gap: the Vault deliberately does not look inside.
+    excluded: frozenset[str] = frozenset()
+
+    def _filtered(self, keep) -> "UnobservedPaths":
+        return UnobservedPaths(
+            frozenset(p for p in self.unreadable if keep(p)),
+            frozenset(p for p in self.unsupported if keep(p)),
+            frozenset(p for p in self.directories if keep(p)),
+            frozenset(p for p in self.excluded if keep(p)),
+        )
 
     def under(self, prefix: str) -> "UnobservedPaths":
-        def inside(path: str) -> bool:
-            return path == prefix or path.startswith(prefix + "/")
-        return UnobservedPaths(
-            frozenset(p for p in self.unreadable if inside(p)),
-            frozenset(p for p in self.unsupported if inside(p)),
-            frozenset(p for p in self.directories if inside(p)),
-        )
+        return self._filtered(lambda path: path == prefix or path.startswith(prefix + "/"))
 
     def without(self, prefix: str) -> "UnobservedPaths":
-        def outside(path: str) -> bool:
-            return not (path == prefix or path.startswith(prefix + "/"))
-        return UnobservedPaths(
-            frozenset(p for p in self.unreadable if outside(p)),
-            frozenset(p for p in self.unsupported if outside(p)),
-            frozenset(p for p in self.directories if outside(p)),
-        )
+        return self._filtered(lambda path: not (path == prefix or path.startswith(prefix + "/")))
 
     def merged(self, other: "UnobservedPaths") -> "UnobservedPaths":
         return UnobservedPaths(
             self.unreadable | other.unreadable,
             self.unsupported | other.unsupported,
             self.directories | other.directories,
+            self.excluded | other.excluded,
         )
 
     def __bool__(self) -> bool:
@@ -120,6 +124,40 @@ def note_unreadable_directories(vault_id: int, directories: Iterable[str]) -> No
     with _lock:
         old = _state.get(int(vault_id), UnobservedPaths())
         _record_found(int(vault_id), old.merged(UnobservedPaths(added, frozenset(), added)))
+
+
+def note_excluded_directories(vault_id: int, directories: Iterable[str]) -> None:
+    """A batch met a new Excluded Folder: stop watching it before any scan."""
+    added = frozenset(directories)
+    if not added:
+        return
+    with _lock:
+        old = _state.get(int(vault_id), UnobservedPaths())
+        _record_found(
+            int(vault_id), old.merged(UnobservedPaths(directories=added, excluded=added)),
+        )
+
+
+def release_excluded(vault_id: int, still_excluded) -> frozenset[str]:
+    """A policy change looks inside some Excluded Folders again (ADR-0044).
+
+    They leave the plan at once, so the watcher registers them again. Returns
+    those a live watcher had registered around: for them the coverage expands
+    and the watcher pairs the new registration with a full scan (ADR-0027).
+    """
+    with _lock:
+        vault_id = int(vault_id)
+        old = _state.get(vault_id, UnobservedPaths())
+        released = frozenset(path for path in old.excluded if not still_excluded(path))
+        if not released:
+            return frozenset()
+        gaps = old.unreadable | old.unsupported
+        _state[vault_id] = UnobservedPaths(
+            old.unreadable, old.unsupported,
+            old.directories - (released - gaps), old.excluded - released,
+        )
+        registered = _registered.get(vault_id)
+        return released & registered[1] if registered is not None else frozenset()
 
 
 def registration_plan(vault_id: int) -> tuple[UnobservedPaths, dict[str, int]]:

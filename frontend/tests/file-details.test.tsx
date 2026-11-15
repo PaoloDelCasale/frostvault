@@ -43,6 +43,12 @@ describe("deliberate file Details", () => {
     expect(within(await screen.findByTestId("details-summary")).getByText("state.excluded")).toHaveAttribute("data-state", "excluded");
     expect(screen.getByText("essential.excluded_help")).toBeInTheDocument();
     expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("excluded-folder-help")).not.toBeInTheDocument();
+  });
+  it("says a file in an Excluded Folder is not observed (#688)", async () => {
+    setup("excluded", true, false, false, false, { in_excluded_folder: true });
+    expect(within(await screen.findByTestId("details-summary")).getByText("state.excluded · state.not_observed_excluded_folder")).toHaveAttribute("data-state", "excluded");
+    expect(screen.getByTestId("excluded-folder-help")).toHaveTextContent("essential.excluded_folder_help");
   });
   it("explains a Stopped Upload and uploads it now on request (#630)", async () => {
     const calls = setup("stopped", true, false, false, false, { upload_eligible: true });

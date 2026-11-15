@@ -1,5 +1,10 @@
 # Excluded is a protection state, not pending work
 
+> Amended by [ADR-0044](0044-excluded-folders-are-not-observed.md): a folder that
+> a Vault exclusion rule covers entirely (`dir/**`, `**/dir/**`) is an Excluded
+> Folder. It is no longer walked nor watched, and the files already catalogued
+> there keep their last known state instead of being observed again.
+
 Issue #498: a Vault from a Mac folder never became protected. Files the
 automatic upload never admits (`._*`, `.DS_Store`, `Thumbs.db`, `*.lock`,
 `*-wal`, `*-journal`, plus the Vault's own include/exclude globs) fell through

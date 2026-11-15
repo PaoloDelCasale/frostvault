@@ -105,6 +105,14 @@ rules). It is not pending work and never counts against a Vault's protection;
 a manual upload remains possible.
 _Avoid_: Ignored, Skipped, Pending
 
+**Excluded Folder**:
+A folder that one of the Vault's own exclusion rules covers entirely
+(`dir/**`): neither scans nor real-time detection look inside it. Files
+already known there keep their last known state as Excluded and are marked
+not observed; they never become missing. Removing the rule makes the Vault
+look inside again.
+_Avoid_: Ignored folder, Skipped folder, Pruned folder
+
 **Stopped Upload**:
 The protection state of a present Local Copy whose upload the Owner stopped: it
 is kept out of automatic upload until its content changes. It is not pending

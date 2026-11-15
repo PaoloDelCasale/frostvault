@@ -42,6 +42,7 @@ from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services import watch_plan
+from .services import excluded_folders as excluded_folder_rules
 from .services import write_access
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
@@ -573,14 +574,21 @@ def _scan_tree(
     scan_journal: dict[str, Any] | None = None,
     subtree: Path | None = None,
     invalidate_content: bool = False,
+    excluded_folders: excluded_folder_rules.ExcludedFolders | None = None,
 ) -> tuple[int, str | None]:
     """Observe a root with short catalog-write transactions.
 
     Directory traversal and metadata reads happen before each bounded write
     batch.  The caller can defer the missing-copy transition until it has
-    proved that the complete scan still owns the enrolled root.
+    proved that the complete scan still owns the enrolled root. Excluded
+    Folders are not entered (ADR-0044); pass the rules the caller's missing
+    transition will use.
     """
     vault_id = int(vault["id"])
+    if excluded_folders is None:
+        excluded_folders = excluded_folder_rules.load(connection, vault_id)
+    prune = excluded_folders.covers_directory if excluded_folders else None
+    pruned: set[str] = set()
     count = 0
     scan_started_at = scan_started_at or scan_id
     pending: list[tuple[str, str, int | None, int | None, str]] = []
@@ -681,10 +689,16 @@ def _scan_tree(
         if is_directory:
             unsupported_directories.add(relative)
 
+    def pruned_folder(entry: Path) -> None:
+        pruned.add(entry.relative_to(root).as_posix())
+
     def observe(walk: PinnedTree) -> None:
         nonlocal tree
         tree = walk
-        for entry, pinned_entry in walk.entries(on_error=failed_directory, on_unsupported_name=unsupported):
+        for entry, pinned_entry in walk.entries(
+            on_error=failed_directory, on_unsupported_name=unsupported,
+            prune=prune, on_pruned=pruned_folder,
+        ):
             if is_restore_temporary_name(entry.name):
                 continue
             try:
@@ -768,10 +782,17 @@ def _scan_tree(
                 scan_journal["incomplete"] = True
             if allow_chunk_commits:
                 connection.commit()
+        # An Excluded Folder removed from disk stays out of the plan while its
+        # rule holds: its disappearance is not a coverage gain to scan for.
+        pruned |= {
+            path for path in watch_plan.unobserved(vault_id).excluded
+            if excluded_folders.covers_directory(path)
+        }
         found = watch_plan.UnobservedPaths(
             unreadable=frozenset(unreadable_all),
             unsupported=frozenset(unsupported_all),
-            directories=frozenset(unreadable_directories | unsupported_directories),
+            directories=frozenset(unreadable_directories | unsupported_directories | pruned),
+            excluded=frozenset(pruned),
         )
         if subtree is None:
             watch_plan.record_full_scan(vault_id, found)
@@ -820,6 +841,7 @@ def _scan_tree(
             seen_at=scan_id,
             observed_at=now_iso(),
             scan_started_at=scan_started_at,
+            excluded_folders=excluded_folders,
         )
         if allow_chunk_commits:
             connection.commit()
@@ -839,6 +861,7 @@ def scan_tree(
     _root: Path | None = None,
     _finalize_missing: bool = True,
     _scan_journal: dict[str, Any] | None = None,
+    _excluded_folders: excluded_folder_rules.ExcludedFolders | None = None,
 ) -> int:
     access = source_layout.vault_local_access(vault["source_root"])
     if not access.local_operations_allowed and access.volume_health != "scan_required":
@@ -859,6 +882,7 @@ def scan_tree(
             finalize_missing=_finalize_missing,
             scan_started_at=scan_id,
             scan_journal=_scan_journal,
+            excluded_folders=_excluded_folders,
         )
         return count
     with db() as connection:
@@ -872,6 +896,7 @@ def scan_tree(
             finalize_missing=_finalize_missing,
             scan_started_at=scan_id,
             scan_journal=_scan_journal,
+            excluded_folders=_excluded_folders,
         )
     if completed_alias:
         source_layout.note_full_local_scan_completed(completed_alias)
@@ -916,6 +941,7 @@ def _apply_filesystem_changes(
         state = connection.execute(
             "SELECT lifecycle FROM vaults WHERE id=%s", (vault["id"],),
         ).fetchone()
+        excluded = excluded_folder_rules.load(connection, int(vault["id"]))
     if state and state["lifecycle"] == "reconnect_required":
         raise RuntimeError("Source watcher suspended for Vault relocation")
     if state and state["lifecycle"] != "active":
@@ -942,6 +968,10 @@ def _apply_filesystem_changes(
         except ValueError:
             continue
         if relative == "." or ".." in entry.parts or is_restore_temporary_name(entry.name):
+            continue
+        if excluded.contains_path(relative):
+            # Inside an Excluded Folder: not observed, its rows keep their
+            # last known state (ADR-0044).
             continue
         parent = entry.parent.resolve()
         if parent == root or root in parent.parents:
@@ -976,6 +1006,10 @@ def _apply_filesystem_changes(
             if parent != root and root not in parent.parents:
                 continue
             if entry.is_dir() and not entry.is_symlink():
+                if excluded.covers_directory(relative):
+                    # A new Excluded Folder: not entered, and no longer watched.
+                    watch_plan.note_excluded_directories(int(vault["id"]), {relative})
+                    continue
                 if entry not in added_paths:
                     # Metadata-only directory changes (also emitted by polling
                     # on child writes) are not content events for every child.
@@ -984,6 +1018,7 @@ def _apply_filesystem_changes(
                     connection, vault, event_id, root=root, subtree=entry,
                     allow_chunk_commits=True, finalize_missing=False,
                     scan_journal=journal, invalidate_content=True,
+                    excluded_folders=excluded,
                 )[0]
                 subtrees.append(entry)
                 continue
@@ -1032,6 +1067,7 @@ def _apply_filesystem_changes(
                     vault_id=vault["id"],
                     path=relative,
                     observed_at=now_iso(),
+                    excluded_folders=excluded,
                 )
             changed += 1
         if "root_identity" in vault:
@@ -1492,7 +1528,10 @@ def _scan_generation_is_current(vault_id: int, scan_id: str) -> bool:
 
 def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
     with db() as connection:
-        return ArchiveCatalog(connection).local_copies_to_fingerprint(vault_id)
+        rows = ArchiveCatalog(connection).local_copies_to_fingerprint(vault_id)
+        excluded = excluded_folder_rules.load(connection, vault_id)
+    # Files in an Excluded Folder keep their last known state (ADR-0044).
+    return [row for row in rows if not excluded.contains_path(row["path"])] if excluded else rows
 
 
 def _collect_local_fingerprint_updates(
@@ -1719,6 +1758,9 @@ def _verified_local_scan(
             _current_verified_scan_row(connection, vault)
             if not _scan_generation_is_current(int(vault["id"]), scan_id):
                 raise _ScanRootMismatch("Local scan was superseded")
+            # The rules the walk prunes with also keep the missing transition
+            # out of those folders, even if the policy changes meanwhile.
+            excluded_folders = excluded_folder_rules.load(connection, int(vault["id"]))
             count = scan_tree(
                 vault,
                 scan_id,
@@ -1726,6 +1768,7 @@ def _verified_local_scan(
                 _root=pinned_root,
                 _finalize_missing=False,
                 _scan_journal=scan_journal,
+                _excluded_folders=excluded_folders,
             )
             _current_verified_scan_row(connection, vault)
 
@@ -1778,6 +1821,7 @@ def _verified_local_scan(
                     seen_at=scan_id,
                     observed_at=now_iso(),
                     scan_started_at=scan_id,
+                    excluded_folders=excluded_folders,
                 )
             _current_verified_scan_row(connection, vault)
             was_relocation_scan = (
@@ -5601,6 +5645,44 @@ def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
                 _deferred_job_ids(_database_scope(connection)) if exclude_deferred else ()
             ),
         )
+
+
+# Vaults with a full scan requested by a policy change and not started yet.
+_full_scan_requests: set[int] = set()
+
+
+def request_full_scan(vault: dict[str, Any]) -> None:
+    """Run a full scan of the Vault now, or right after the one in progress.
+
+    Used when the Vault starts looking inside folders it did not observe
+    (an Excluded Folder whose rule was removed, ADR-0044). A scan already
+    walking used the older rules, so it does not count.
+    """
+    vault_id = int(vault["id"])
+    with status_lock:
+        if vault_id in _full_scan_requests:
+            return
+        _full_scan_requests.add(vault_id)
+
+    def run() -> None:
+        while True:
+            with status_lock:
+                # A request made after this point needs a scan of its own.
+                _full_scan_requests.discard(vault_id)
+            try:
+                result = scan_vault(vault)
+            except Exception as exc:
+                _report_worker_error("source_scan", exc, vault_id)
+                return
+            if not result.get("already_running"):
+                return
+            with status_lock:
+                if vault_id in _full_scan_requests:
+                    return  # A newer request waits for the same scan.
+                _full_scan_requests.add(vault_id)
+            time.sleep(WATCHER_SCAN_BUSY_SECONDS)
+
+    threading.Thread(target=run, name=f"full-scan-request-{vault_id}", daemon=True).start()
 
 
 def scan_all_vaults() -> None:
