@@ -1672,6 +1672,10 @@ export interface components {
         DuplicateCleanupStatus: {
             cap_bytes: number;
             cap_files: number;
+            current: {
+                bytes: number;
+                count: number;
+            } | null;
             enabled: boolean;
             grace_days: number;
             grace_days_max: number;
@@ -1684,6 +1688,8 @@ export interface components {
                 /** @enum {string} */
                 outcome: "scheduled" | "none" | "capped" | "skipped";
                 run_after?: string;
+                waiting_bytes?: number;
+                waiting_count?: number;
             } | null;
             last_run_at: string | null;
             next_run_at: string | null;
@@ -1694,6 +1700,21 @@ export interface components {
                 group_id: string;
                 run_after: string | null;
             }[];
+            ready: {
+                bytes: number;
+                count: number;
+            } | null;
+            totals: {
+                deleted_bytes: number;
+                deleted_count: number;
+                last_deleted_at: string | null;
+            };
+            waiting: {
+                bytes: number;
+                count: number;
+                earliest_deletion_at: string | null;
+                first_eligible_at: string | null;
+            } | null;
         };
         /**
          * DuplicateCleanupUpdate

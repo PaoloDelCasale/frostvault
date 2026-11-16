@@ -52,6 +52,10 @@ export const defaultDuplicateCleanup = {
   next_run_at: null as string | null,
   last_outcome: null as null | Record<string, unknown>,
   pending: [] as { group_id: string; file_count: number; byte_count: number; run_after: string | null; cancellable: boolean }[],
+  current: { count: 0, bytes: 0 } as null | { count: number; bytes: number },
+  waiting: { count: 0, bytes: 0, first_eligible_at: null, earliest_deletion_at: null } as null | { count: number; bytes: number; first_eligible_at: string | null; earliest_deletion_at: string | null },
+  ready: { count: 0, bytes: 0 } as null | { count: number; bytes: number },
+  totals: { deleted_count: 0, deleted_bytes: 0, last_deleted_at: null as string | null },
 };
 
 export const defaultLifecycle = {

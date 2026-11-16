@@ -712,6 +712,29 @@
           "cap_files": {
             "type": "number"
           },
+          "current": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -752,6 +775,12 @@
                   },
                   "run_after": {
                     "type": "string"
+                  },
+                  "waiting_bytes": {
+                    "type": "number"
+                  },
+                  "waiting_count": {
+                    "type": "number"
                   }
                 },
                 "required": [
@@ -810,6 +839,89 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "additionalProperties": false,
+            "properties": {
+              "deleted_bytes": {
+                "type": "number"
+              },
+              "deleted_count": {
+                "type": "number"
+              },
+              "last_deleted_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "deleted_count",
+              "deleted_bytes",
+              "last_deleted_at"
+            ],
+            "type": "object"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  },
+                  "earliest_deletion_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "first_eligible_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes",
+                  "first_eligible_at",
+                  "earliest_deletion_at"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -822,7 +934,11 @@
           "last_run_at",
           "next_run_at",
           "last_outcome",
-          "pending"
+          "pending",
+          "current",
+          "waiting",
+          "ready",
+          "totals"
         ],
         "type": "object"
       },

@@ -6,15 +6,35 @@ import { useSavedFlash } from "@/components/useSavedFlash";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime } from "@/pages/archive/format";
+import { formatBytes, formatDate, formatDateTime } from "@/pages/archive/format";
 
 const GIB = 1024 ** 3;
 type Draft = { grace: string; files: string; gib: string };
-const draftOf = (status: DuplicateCleanupStatus): Draft => ({
-  grace: String(status.grace_days), files: String(status.cap_files),
-  gib: String(Math.round((status.cap_bytes / GIB) * 100) / 100),
+/**
+ * Numbers always grouped, four-digit ones too (#729): «5.000» / «5,000», as
+ * the server writes them in this feature's notifications.
+ */
+const numberFormat = (locale: string, digits = 0) => {
+  const options = { maximumFractionDigits: digits, useGrouping: true };
+  try { return new Intl.NumberFormat(locale, options); } catch { return new Intl.NumberFormat("en", options); }
+};
+const draftOf = (status: DuplicateCleanupStatus, locale: string): Draft => ({
+  grace: String(status.grace_days), files: numberFormat(locale).format(status.cap_files),
+  gib: numberFormat(locale, 2).format(Math.round((status.cap_bytes / GIB) * 100) / 100),
 });
 const whole = (value: string) => (/^\d+$/.test(value.trim()) ? Number(value) : NaN);
+/**
+ * A number typed with or without the locale's digit grouping («1.024,5» in
+ * Italian, «1,024.5» in English); a lone `.` or `,` is a decimal separator.
+ */
+function parseAmount(value: string, locale: string): number {
+  const decimal = numberFormat(locale, 1).formatToParts(1.5).find((part) => part.type === "decimal")?.value ?? ".";
+  const group = decimal === "," ? "." : ",";
+  const text = value.trim().replace(/[\s\u00a0\u202f']/g, "");
+  const grouped = new RegExp(`^\\d{1,3}(\\${group}\\d{3})+(\\${decimal}\\d+)?$`).test(text);
+  const plain = (grouped ? text.split(group).join("") : text).replace(",", ".");
+  return /^\d+(\.\d+)?$/.test(plain) ? Number(plain) : NaN;
+}
 
 /**
  * Automatic Duplicate Cleanup of one Vault (#726): off by default. Turning it
@@ -22,7 +42,7 @@ const whole = (value: string) => (/^\d+$/.test(value.trim()) ? Number(value) : N
  * prompts); turning it off never does.
  */
 export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: number; paused?: boolean; onNotice: (message: string, error?: boolean) => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
   const [status, setStatus] = useState<DuplicateCleanupStatus | null>(null);
@@ -30,7 +50,9 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [enabledSaved, flashEnabledSaved] = useSavedFlash();
-  function accept(next: DuplicateCleanupStatus) { setStatus(next); setDraft(draftOf(next)); }
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  function accept(next: DuplicateCleanupStatus) { setStatus(next); setDraft(draftOf(next, localeRef.current)); }
   useEffect(() => {
     let live = true;
     setStatus(null); setLoadError("");
@@ -38,13 +60,18 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
+  // The caps are written in the page language: show them again when it changes.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  useEffect(() => { if (statusRef.current) setDraft(draftOf(statusRef.current, locale)); }, [locale]);
 
-  const grace = whole(draft.grace), files = whole(draft.files), gib = Number(draft.gib.replace(",", "."));
+  const grace = whole(draft.grace), files = parseAmount(draft.files, locale), gib = parseAmount(draft.gib, locale);
   const capBytes = Math.round(gib * GIB);
   const valid = status !== null && grace >= status.grace_days_min && grace <= status.grace_days_max
-    && files >= 1 && Number.isFinite(gib) && capBytes >= 1;
-  const dirty = status !== null && (draft.grace !== String(status.grace_days) || draft.files !== String(status.cap_files)
-    || draft.gib !== draftOf(status).gib);
+    && Number.isInteger(files) && files >= 1 && Number.isFinite(gib) && capBytes >= 1;
+  // Compared as numbers: «5000» and «5,000» are the same cap.
+  const dirty = status !== null && (grace !== status.grace_days || files !== status.cap_files
+    || capBytes !== Math.round(parseAmount(draftOf(status, locale).gib, locale) * GIB));
 
   async function run(action: () => Promise<DuplicateCleanupStatus | void>, done?: () => void) {
     setBusy(true);
@@ -66,8 +93,14 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
   });
 
   const outcome = status?.last_outcome;
-  const outcomeText = outcome ? t(`duplicate_cleanup.outcome.${outcome.outcome}`, outcome.outcome === "scheduled" || outcome.outcome === "capped"
-    ? { count: outcome.file_count ?? 0, bytes: formatBytes(outcome.byte_count ?? 0) } : {}) : "";
+  // «No duplicates to delete» only when there were none at all (#729); an
+  // older outcome without the waiting count reads as before.
+  const counted = (count: number, bytes?: number) => ({ count, count_shown: numberFormat(locale).format(count), bytes: formatBytes(bytes ?? 0) });
+  const outcomeText = !outcome ? "" : outcome.outcome === "none" && (outcome.waiting_count ?? 0) > 0
+    ? t("duplicate_cleanup.outcome.none_waiting", counted(outcome.waiting_count ?? 0))
+    : t(`duplicate_cleanup.outcome.${outcome.outcome}`, outcome.outcome === "scheduled" || outcome.outcome === "capped"
+      ? counted(outcome.file_count ?? 0, outcome.byte_count) : {});
+  const current = status?.current, waiting = status?.waiting, ready = status?.ready, totals = status?.totals;
   return <section className="grid gap-3" data-panel="duplicate-cleanup">
     {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
     <div className="grid gap-1">
@@ -82,6 +115,17 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
       <p className="text-sm text-muted">{status?.enabled === false ? t("duplicate_cleanup.off_hint") : ""} {t("duplicate_cleanup.reauth_hint")}</p>
       {status?.enabled && paused && <p className="text-sm text-muted">{t("duplicate_cleanup.paused_hint")}</p>}
     </div>
+    {status && <div className="grid gap-1 text-sm" data-testid="duplicate-cleanup-counts">
+      <p data-testid="duplicate-cleanup-current">{!current ? t("duplicate_cleanup.current_unknown") : current.count === 0
+        ? t("duplicate_cleanup.current_none") : t("duplicate_cleanup.current", counted(current.count, current.bytes))}</p>
+      {status.enabled && waiting && waiting.count > 0 && <p data-testid="duplicate-cleanup-waiting">{t("duplicate_cleanup.waiting", {
+        ...counted(waiting.count, waiting.bytes), eligible: formatDate(waiting.first_eligible_at), earliest: formatDate(waiting.earliest_deletion_at),
+      })}</p>}
+      {status.enabled && ready && ready.count > 0 && <p data-testid="duplicate-cleanup-ready">{t("duplicate_cleanup.ready", counted(ready.count, ready.bytes))}</p>}
+      {totals && totals.deleted_count > 0 && <p data-testid="duplicate-cleanup-totals">{t("duplicate_cleanup.totals", {
+        ...counted(totals.deleted_count, totals.deleted_bytes), when: formatDate(totals.last_deleted_at),
+      })}</p>}
+    </div>}
     {status?.enabled && <>
       <form className="grid gap-3 sm:grid-cols-3" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <FormField label={t("duplicate_cleanup.grace_days")} htmlFor="duplicate-grace">
@@ -107,7 +151,7 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
       </p>
     </>}
     {status?.pending.map((group) => <div key={group.group_id} className="grid gap-2 rounded-card border border-line p-3 text-sm" data-testid="duplicate-cleanup-pending">
-      <p>{t("duplicate_cleanup.pending", { count: group.file_count, bytes: formatBytes(group.byte_count), when: formatDateTime(group.run_after) })}</p>
+      <p>{t("duplicate_cleanup.pending", { ...counted(group.file_count, group.byte_count), when: formatDateTime(group.run_after) })}</p>
       {group.cancellable && <Button type="button" variant="secondary" className="min-h-11 w-fit" disabled={busy} onClick={() => cancel(group.group_id)}>{t("duplicate_cleanup.cancel")}</Button>}
     </div>)}
   </section>;

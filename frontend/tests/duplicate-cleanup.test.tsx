@@ -36,7 +36,7 @@ describe("Automatic Duplicate Cleanup settings", () => {
     expect(toggle).toBeChecked();
     expect(await within(section).findByTestId("saved-indicator")).toHaveTextContent("Saved");
     expect(within(section).getByLabelText("Wait before a file counts as a duplicate (days)")).toHaveValue("7");
-    expect(within(section).getByLabelText("File cap per run")).toHaveValue("5000");
+    expect(within(section).getByLabelText("File cap per run")).toHaveValue("5,000");
     expect(within(section).getByLabelText("Size cap per run (GiB)")).toHaveValue("50");
     expect(within(section).getByTestId("duplicate-cleanup-last-run")).toHaveTextContent("Not run yet.");
   });
@@ -95,6 +95,99 @@ describe("Automatic Duplicate Cleanup settings", () => {
     expect(await screen.findByText("Automatic deletion cancelled.")).toBeInTheDocument();
   });
 
+  // #729: the duplicates now, those still waiting and the totals, above the last run.
+  it("shows the duplicates now, those waiting, those ready and the totals", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup, enabled: true, last_run_at: "2026-11-16T23:46:00Z", next_run_at: "2026-11-17T23:46:00Z",
+        last_outcome: { outcome: "none", at: "2026-11-16T23:46:00Z", file_count: 0, byte_count: 0, waiting_count: 2149, waiting_bytes: 6.3 * 1024 ** 3 },
+        current: { count: 2152, bytes: 6.4 * 1024 ** 3 },
+        waiting: { count: 2149, bytes: 6.3 * 1024 ** 3, first_eligible_at: "2026-11-23T10:00:00Z", earliest_deletion_at: "2026-11-30T23:46:00Z" },
+        ready: { count: 3, bytes: 3 * 1024 ** 2 },
+        totals: { deleted_count: 1200, deleted_bytes: 2 * 1024 ** 3, last_deleted_at: "2026-11-10T03:00:00Z" },
+      }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-current")).toHaveTextContent("Cloud duplicates now: 2,152 (6.4 GiB).");
+    expect(screen.getByTestId("duplicate-cleanup-waiting")).toHaveTextContent(
+      /^2,149 duplicates \(6\.3 GiB\) waiting: eligible from Nov 23, 2026, deletion not before (Nov 30|Dec 1), 2026\.$/);
+    expect(screen.getByTestId("duplicate-cleanup-ready")).toHaveTextContent("3 duplicates (3.0 MiB) ready for the next run.");
+    expect(screen.getByTestId("duplicate-cleanup-totals")).toHaveTextContent(
+      "Deleted so far: 1,200 duplicates, 2.0 GiB freed; last deletion on Nov 10, 2026.");
+    const lastRun = screen.getByTestId("duplicate-cleanup-last-run");
+    expect(lastRun).toHaveTextContent(/no duplicate has finished its wait yet \(2,149 waiting\)/);
+    expect(lastRun).not.toHaveTextContent("no duplicates to delete");
+    // The counts come before the last run.
+    expect(screen.getByTestId("duplicate-cleanup-counts").compareDocumentPosition(lastRun) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says «no duplicates to delete» only when there are none, also for older outcomes", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup, enabled: true, last_run_at: "2026-11-16T23:46:00Z", next_run_at: "2026-11-17T23:46:00Z",
+        last_outcome: { outcome: "none", at: "2026-11-16T23:46:00Z", file_count: 0, byte_count: 0 },
+      }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-last-run")).toHaveTextContent(/no duplicates to delete/);
+    expect(screen.getByTestId("duplicate-cleanup-current")).toHaveTextContent("No cloud duplicates right now.");
+    expect(screen.queryByTestId("duplicate-cleanup-waiting")).toBeNull();
+    expect(screen.queryByTestId("duplicate-cleanup-ready")).toBeNull();
+    expect(screen.queryByTestId("duplicate-cleanup-totals")).toBeNull();
+  });
+
+  it("shows the duplicates now and the totals while off, without waits or dates", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup,
+        current: { count: 4, bytes: 4096 },
+        waiting: { count: 4, bytes: 4096, first_eligible_at: "2026-11-23T10:00:00Z", earliest_deletion_at: null },
+        ready: { count: 0, bytes: 0 },
+        totals: { deleted_count: 1, deleted_bytes: 1024, last_deleted_at: "2026-11-10T03:00:00Z" },
+      }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-current")).toHaveTextContent("Cloud duplicates now: 4 (4.0 KiB).");
+    expect(screen.getByTestId("duplicate-cleanup-totals")).toHaveTextContent("Deleted so far: 1 duplicate, 1.0 KiB freed");
+    expect(screen.queryByTestId("duplicate-cleanup-waiting")).toBeNull();
+    expect(screen.queryByTestId("duplicate-cleanup-ready")).toBeNull();
+    expect(screen.queryByTestId("duplicate-cleanup-last-run")).toBeNull();
+  });
+
+  it("says when the duplicates cannot be counted now", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({ ...defaultDuplicateCleanup, current: null, waiting: null, ready: null }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-current")).toHaveTextContent(/cannot be counted right now/);
+  });
+
+  it("writes and reads the caps with the Italian digit grouping", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({ ...defaultDuplicateCleanup, enabled: true, cap_bytes: 1536 * 1024 ** 3, current: { count: 2149, bytes: 1024 } }),
+      [`PUT ${URL}`]: (init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        updates.push(body);
+        return jsonResponse({ ...defaultDuplicateCleanup, enabled: true, ...body });
+      },
+    }, { locale: "it" }) });
+    const files = await screen.findByLabelText("Soglia di file per esecuzione");
+    await waitFor(() => expect(files).toHaveValue("5.000"));
+    expect(screen.getByLabelText("Soglia di dimensione per esecuzione (GiB)")).toHaveValue("1.536");
+    expect(screen.getByTestId("duplicate-cleanup-current")).toHaveTextContent("Doppioni nel cloud adesso: 2.149 (1,0 KiB).");
+    const save = screen.getByRole("button", { name: "Salva attesa e soglie" });
+    await user.clear(files);
+    await user.type(files, "5000");
+    expect(save).toBeDisabled();
+    await user.clear(files);
+    await user.type(files, "12.500");
+    const gib = screen.getByLabelText("Soglia di dimensione per esecuzione (GiB)");
+    await user.clear(gib);
+    await user.type(gib, "0,5");
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() => expect(updates).toEqual([{ grace_days: 7, cap_files: 12500, cap_bytes: 0.5 * 1024 ** 3 }]));
+    expect(await screen.findByLabelText("Soglia di file per esecuzione")).toHaveValue("12.500");
+  });
+
   it("is hidden once the Vault's protection has stopped", async () => {
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
       "GET /api/general/vaults": () => jsonResponse({ items: [{ id: 1, name: "Test Archive", lifecycle: "tombstone", paused: false, source_root: "/sources/x" }] }),
@@ -106,7 +199,9 @@ describe("Automatic Duplicate Cleanup settings", () => {
   it("names every message in both languages", () => {
     for (const locale of ["en", "it"] as const) {
       const messages = loadCatalog(locale);
-      for (const key of ["title", "summary", "enable", "off_hint", "how", "never_only_cloud", "save", "pending_one", "pending_other"]) {
+      for (const key of ["title", "summary", "enable", "off_hint", "how", "never_only_cloud", "save", "pending_one", "pending_other",
+        "current_none", "current_one", "current_other", "current_unknown", "waiting_one", "waiting_other", "ready_one", "ready_other",
+        "totals_one", "totals_other", "outcome.none_waiting_one", "outcome.none_waiting_other"]) {
         expect(messages[`duplicate_cleanup.${key}`], `${locale} ${key}`).toBeTruthy();
       }
     }

@@ -360,9 +360,9 @@ class _Selection:
     directories: tuple[str, ...] = ()
     listing: ListingFilter | None = None
     whole_vault: bool = False
-    # Automatic Duplicate Cleanup (#726): every file of the Vault whose Local
-    # Copy was last seen at or before this time.
-    seen_before: str | None = None
+    # Cloud Duplicates of the whole Vault (#726, #729): every file with a
+    # Current and no Local Copy, the only files that can be eligible.
+    cloud_only: bool = False
 
     @property
     def strict(self) -> bool:
@@ -465,10 +465,9 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
         sql, values = _listing_sql(connection, vault, selection.listing)
         parts.append(sql)
         params.extend(values)
-    if selection.seen_before is not None:
-        # A file never seen locally (NULL) is never a candidate: no invented time.
-        parts.append("(f.local_presence = 'missing' AND f.local_seen_at <= %s::timestamptz)")
-        params.append(selection.seen_before)
+    if selection.cloud_only:
+        parts.append("(f.current_version_id IS NOT NULL"
+                     " AND (f.local_presence IS NULL OR f.local_presence = 'missing'))")
     return "(" + " OR ".join(parts) + ")", params
 
 
@@ -477,7 +476,7 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
 # _validate_files, which still revalidates the eligible set before consent.
 _CLASSIFY_SQL = """
 WITH c AS MATERIALIZED (
-    SELECT f.id AS file_id, f.path, f.current_version_id, cur.size,
+    SELECT f.id AS file_id, f.path, f.current_version_id, cur.size, f.local_seen_at,
       CASE
         WHEN f.local_presence IS NOT NULL AND f.local_presence <> 'missing' THEN 'present_locally'
         WHEN f.current_version_id IS NULL THEN 'not_verified'
@@ -508,10 +507,11 @@ WITH c AS MATERIALIZED (
     LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
     WHERE f.vault_id = %s AND f.path <> '' AND {selection}
 )
-SELECT file_id, path, current_version_id, size, reason, NULL::bigint AS n
+SELECT file_id, path, current_version_id, size, local_seen_at, reason, NULL::bigint AS n
 FROM c WHERE reason = 'eligible'
 UNION ALL
-SELECT NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible' GROUP BY reason
+SELECT NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible'
+GROUP BY reason
 """
 
 
@@ -671,36 +671,61 @@ def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any
     return ScheduledDeletion(group_id, job_ids, preview, pending_until)
 
 
-def automatic_duplicates(connection: Any, vault: dict[str, Any], *,
-                         seen_before: str) -> tuple[list[dict[str, Any]], DeletionPreview]:
-    """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
+def cloud_duplicates(connection: Any,
+                     vault: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Every Cloud Duplicate of the Vault a deletion could schedule now (#726, #729).
 
-    The eligible Cloud-only files of the whole Vault whose Local Copy was last
-    seen at or before ``seen_before`` (files already in pending work, such as
-    another deletion group, are skipped as ``pending_work``), narrowed to the
-    Cloud Duplicates; local absence is then proven for those only. A file
-    without another protected local copy is never returned.
+    The same set as the manual «Only Cloud Duplicates» preview of the whole
+    Vault: the eligible Cloud-only files (files already in pending work, such
+    as another deletion group, are skipped as ``pending_work``) narrowed to the
+    Cloud Duplicates; local absence is then proven for those only. Each row
+    carries ``local_seen_at`` (None when never seen locally). Returns the rows
+    and the skipped counts per reason.
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("Protection observations are not confirmed")
-    _aware(seen_before)
-    where, params = _selection_sql(connection, vault, _Selection(seen_before=seen_before))
+    where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
                               [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
     eligible = [r for r in rows if r["reason"] == "eligible"]
     duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
     chosen = [r for r in eligible if str(r["file_id"]) in duplicates]
     present = _present_paths(vault, [r["path"] for r in chosen]) if chosen else set()
-    chosen = [r for r in chosen if r["path"] not in present]
-    size = sum(int(r["size"] or 0) for r in chosen)
     skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
     if present:
         skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
+    return [r for r in chosen if r["path"] not in present], skipped
+
+
+def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime
+                      ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(ready, waiting)``: the rows whose Local Copy was last seen at or
+    before ``seen_before``, and those seen after it. A file never seen locally
+    is in neither: no invented time ever makes it a candidate."""
+    ready = [r for r in rows if r["local_seen_at"] is not None
+             and _aware(r["local_seen_at"]) <= seen_before]
+    waiting = [r for r in rows if r["local_seen_at"] is not None
+               and _aware(r["local_seen_at"]) > seen_before]
+    return ready, waiting
+
+
+def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before: str
+                         ) -> tuple[list[dict[str, Any]], DeletionPreview, list[dict[str, Any]]]:
+    """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
+
+    Those of :func:`cloud_duplicates` whose Local Copy was last seen at or
+    before ``seen_before``, with their preview; a file without another
+    protected local copy is never returned. The third item lists the Cloud
+    Duplicates still waiting (seen after ``seen_before``, #729).
+    """
+    rows, skipped = cloud_duplicates(connection, vault)
+    chosen, waiting = split_by_sighting(rows, _aware(seen_before))
+    size = sum(int(r["size"] or 0) for r in chosen)
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
         duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
         duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped)
-    return chosen, preview
+    return chosen, preview, waiting
 
 
 def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
