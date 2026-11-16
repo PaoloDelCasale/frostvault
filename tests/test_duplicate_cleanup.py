@@ -297,6 +297,9 @@ class ExecutionTests(DuplicateCleanupFixture):
         self.assertEqual(self.statuses(group), ["completed", "completed"])
         before = self.status()["totals"]
         self.assertEqual((before["deleted_count"], before["deleted_bytes"]), (2, len(PHOTO) + len(VIDEO)))
+        with self.db() as connection:  # the terminal notices were delivered and read
+            connection.execute("DELETE FROM job_terminal_notifications")
+            connection.execute("UPDATE notifications SET read_at=now() WHERE read_at IS NULL")
         history_retention.collect(self.db, now=utcnow() + timedelta(days=400))
         self.assertEqual(self.count("SELECT 1 FROM jobs WHERE group_id=%s", group), 0,
                          "the history retention collected the completed Jobs")
