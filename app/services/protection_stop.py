@@ -45,6 +45,17 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value else None)
 
 
+def _local_files(connection: Any, vault_id: int) -> int:
+    """Files with a Local Copy: the Cloud-only gate refuses deleting the
+    Vault's cloud content while any exists (#715), and local data is never
+    deleted, so the Stop Protection dialog explains it before confirmation."""
+    row = connection.execute(
+        """SELECT count(*) AS total FROM files
+           WHERE vault_id=%s AND local_presence IN ('present','unsupported')""",
+        (vault_id,)).fetchone()
+    return int(row["total"] or 0)
+
+
 def status(connection: Any, vault_id: int) -> dict[str, Any]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if not vault:
@@ -54,7 +65,8 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
               "stopped": vault["lifecycle"] in {"stopping", "tombstone"},
               "root_released": bool(vault["root_released_at"]),
               "cloud_disposition": "delete" if group_id else "keep",
-              "group_id": group_id, "jobs": [], "cancellable": False, "pending_until": None}
+              "group_id": group_id, "jobs": [], "cancellable": False, "pending_until": None,
+              "local_files_blocking_cloud_delete": _local_files(connection, vault_id)}
     if group_id:
         jobs = [{"id": int(j["id"]), "status": j["status"], "pending_until": _iso(j["pending_until"])}
                 for j in _group_jobs(connection, vault_id, group_id)]
@@ -118,6 +130,9 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
     record_audit_event(connection, event="folder_protection.stopped", actor=actor,
                        vault_id=vault_id, outcome="requested", cloud_disposition=cloud_disposition,
                        group_id=group_id, reason=reason.strip(), local_data="retained")
+    # Monitoring ends with the stop: its Problems close now (#715).
+    from .notifications import reconcile_problem_states
+    reconcile_problem_states(connection)
     reconcile_one(connection, vault_id)
     return status(connection, vault_id)
 

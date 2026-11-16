@@ -683,6 +683,10 @@ def set_problem(
         "SELECT * FROM notifications WHERE dedupe_key=%s", (key,),
     ).fetchone()
     stamp = _now()
+    if active and vault_id is not None and _vault_stopped(connection, vault_id):
+        # A stopped Vault is no longer protected or monitored (#715): its
+        # problems close and nothing reopens them.
+        active = False
     if not active:
         if previous and previous.get("problem_status") == "open":
             connection.execute(
@@ -784,6 +788,30 @@ _UPLOAD_RECONCILIATION_RESOLUTION = """
 """
 
 
+# Stop Protection ends monitoring of a Vault (#715): every open Problem of a
+# stopping or tombstone Vault closes, whatever its family, except a failure of
+# the Delayed Cloud Deletion requested by that stop, which still needs the
+# Owner while the request stands.
+STOPPED_VAULT_RESOLUTION = """
+    n.vault_id IN (SELECT stopped.id FROM vaults stopped
+                   WHERE stopped.lifecycle IN ('stopping','tombstone'))
+    AND NOT EXISTS (
+        SELECT 1 FROM jobs purge
+        JOIN cloud_purge_requests request
+          ON request.group_id=purge.group_id AND request.stop_protection
+        WHERE purge.id=n.job_id AND purge.vault_id=n.vault_id
+          AND purge.action='cloud-purge' AND purge.status='failed'
+    )
+"""
+
+
+def _vault_stopped(connection: Any, vault_id: int) -> bool:
+    row = connection.execute(
+        "SELECT lifecycle FROM vaults WHERE id=%s", (int(vault_id),),
+    ).fetchone()
+    return bool(row) and row["lifecycle"] in {"stopping", "tombstone"}
+
+
 def _problem_resolutions() -> dict[frozenset[str], str]:
     from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as resolution
     return {
@@ -816,8 +844,7 @@ def reconcile_problem_states(connection: Any) -> None:
         predicate for events, predicate in _problem_resolutions().items()
         if events & open_events
     ]
-    if not predicates:
-        return
+    predicates.append(STOPPED_VAULT_RESOLUTION)
     stamp = _now()
     connection.execute(
         f"""

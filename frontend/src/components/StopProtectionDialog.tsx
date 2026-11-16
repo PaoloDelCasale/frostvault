@@ -87,6 +87,15 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     } finally { setBusy(false); }
   }
 
+  // Local data is never deleted: the cloud copy can go only when nothing is
+  // still present on the server (#715), so say so before confirmation.
+  const localFiles = operation?.local_files_blocking_cloud_delete ?? 0;
+  const deleteBlocked = localFiles > 0;
+
+  useEffect(() => {
+    if (deleteBlocked) setChoice("keep");
+  }, [deleteBlocked]);
+
   const failed = operation?.jobs.some((job) => job.status === "failed")
     && operation.jobs.every((job) => ["completed", "cancelled", "failed"].includes(job.status));
 
@@ -120,9 +129,12 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
           <select id="stop-cloud-choice" value={choice} onChange={(event) => setChoice(event.target.value === "delete" ? "delete" : "keep")}
             className="min-h-11 rounded border border-input bg-surface px-3">
             <option value="keep">{t("stop_protection.keep")}</option>
-            <option value="delete">{t("stop_protection.delete")}</option>
+            <option value="delete" disabled={deleteBlocked}>{t("stop_protection.delete")}</option>
           </select>
         </FormField>
+        {deleteBlocked ? <p className="text-sm text-muted" data-testid="stop-delete-unavailable">
+          {t("stop_protection.delete_unavailable", { count: localFiles })}
+        </p> : null}
         {choice === "delete" ? <p className="text-sm text-destructive">{t("stop_protection.delete_help")}</p> : null}
         <FormField label={t("stop_protection.confirmation", { vault: vaultName })} htmlFor="stop-confirmation">
           <FormInput id="stop-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required />

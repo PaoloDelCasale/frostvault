@@ -2235,6 +2235,7 @@ export interface components {
                 pending_until: string | null;
                 status: string;
             }[];
+            local_files_blocking_cloud_delete: number;
             pending_until: string | null;
             root_released: boolean;
             stopped: boolean;
