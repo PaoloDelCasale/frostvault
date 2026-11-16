@@ -683,9 +683,11 @@ def set_problem(
         "SELECT * FROM notifications WHERE dedupe_key=%s", (key,),
     ).fetchone()
     stamp = _now()
-    if active and vault_id is not None and _vault_stopped(connection, vault_id):
+    if (active and vault_id is not None and event not in STOPPED_VAULT_PROBLEM_EVENTS
+            and _vault_stopped(connection, vault_id)):
         # A stopped Vault is no longer protected or monitored (#715): its
-        # problems close and nothing reopens them.
+        # problems close and nothing reopens them, except a failed Vault
+        # Deletion of its Tombstone, which needs the Owner (#717).
         active = False
     if not active:
         if previous and previous.get("problem_status") == "open":
@@ -788,10 +790,16 @@ _UPLOAD_RECONCILIATION_RESOLUTION = """
 """
 
 
+# Problems of a stopped Vault that still need the Owner: a failed Vault
+# Deletion of its Tombstone (#717, ADR-0047).
+STOPPED_VAULT_PROBLEM_EVENTS = frozenset({"vault_deletion_failed"})
+
+
 # Stop Protection ends monitoring of a Vault (#715): every open Problem of a
 # stopping or tombstone Vault closes, whatever its family, except a failure of
 # the Delayed Cloud Deletion requested by that stop, which still needs the
-# Owner while the request stands.
+# Owner while the request stands, and a failed Vault Deletion while it stays
+# failed (#717): retrying or cancelling it closes the Problem.
 STOPPED_VAULT_RESOLUTION = """
     n.vault_id IN (SELECT stopped.id FROM vaults stopped
                    WHERE stopped.lifecycle IN ('stopping','tombstone'))
@@ -802,6 +810,10 @@ STOPPED_VAULT_RESOLUTION = """
         WHERE purge.id=n.job_id AND purge.vault_id=n.vault_id
           AND purge.action='cloud-purge' AND purge.status='failed'
     )
+    AND NOT (n.event='vault_deletion_failed' AND EXISTS (
+        SELECT 1 FROM vault_deletions deletion
+        WHERE deletion.vault_id=n.vault_id AND deletion.status='failed'
+    ))
 """
 
 

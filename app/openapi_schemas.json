@@ -280,6 +280,18 @@
             "stopping",
             "tombstone"
           ]
+        },
+        "vault_deletion_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pending",
+            "running",
+            "failed",
+            null
+          ]
         }
       },
       "required": [
@@ -3323,6 +3335,200 @@
         "files",
         "bytes",
         "bytes_per_minute"
+      ]
+    },
+    "VaultDeletionPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "object_count": {
+          "type": "number"
+        },
+        "version_count": {
+          "type": "number"
+        },
+        "delete_marker_count": {
+          "type": "number"
+        },
+        "multipart_upload_count": {
+          "type": "number"
+        },
+        "byte_count": {
+          "type": "number"
+        },
+        "by_storage_class": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "storage_class": {
+                "type": "string"
+              },
+              "version_count": {
+                "type": "number"
+              },
+              "byte_count": {
+                "type": "number"
+              },
+              "early_deletion_cost": {
+                "type": "number"
+              },
+              "early_deletion_version_count": {
+                "type": "number"
+              },
+              "minimum_days": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "storage_class",
+              "version_count",
+              "byte_count",
+              "early_deletion_cost",
+              "early_deletion_version_count",
+              "minimum_days"
+            ]
+          }
+        },
+        "early_deletion_cost": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "executes_at": {
+          "type": "string"
+        },
+        "delay_seconds": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "prefix",
+        "object_count",
+        "version_count",
+        "delete_marker_count",
+        "multipart_upload_count",
+        "byte_count",
+        "by_storage_class",
+        "early_deletion_cost",
+        "currency",
+        "pricing_effective_at",
+        "region",
+        "executes_at",
+        "delay_seconds"
+      ]
+    },
+    "VaultDeletionStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_name": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "active",
+            "reconnect_required",
+            "stopping",
+            "tombstone"
+          ]
+        },
+        "deletable": {
+          "type": "boolean"
+        },
+        "local_files": {
+          "type": "number"
+        },
+        "request": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "running",
+                    "failed"
+                  ]
+                },
+                "requested_at": {
+                  "type": "string"
+                },
+                "pending_until": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "attempts": {
+                  "type": "number"
+                },
+                "failed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "failure": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": true
+                },
+                "preview": {
+                  "$ref": "#/components/schemas/VaultDeletionPreview"
+                },
+                "cancellable": {
+                  "type": "boolean"
+                },
+                "retryable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "status",
+                "requested_at",
+                "pending_until",
+                "reason",
+                "attempts",
+                "failed_at",
+                "failure",
+                "preview",
+                "cancellable",
+                "retryable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "vault_id",
+        "vault_name",
+        "lifecycle",
+        "deletable",
+        "local_files",
+        "request"
       ]
     }
   }

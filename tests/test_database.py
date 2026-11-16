@@ -46,6 +46,8 @@ BASELINE_TABLES = {
     "metadata_backup_runs", "recovery_kit_custody", "metadata_restore",
     "metadata_restore_vaults", "metadata_restore_updates",
 }
+# Tables added by later linear revisions of the chain.
+HEAD_TABLES = BASELINE_TABLES | {"vault_deletions"}
 
 
 def _tables(path: Path) -> set[str]:
@@ -137,7 +139,7 @@ class StartupGuardTests(_GuardFixture):
     def test_empty_database_is_initialized_at_the_baseline_with_one_owner(self) -> None:
         initialize_database()
 
-        self.assertEqual(_tables(self.path), BASELINE_TABLES)
+        self.assertEqual(_tables(self.path), HEAD_TABLES)
         with PostgresConnection(str(self.path)) as connection:
             revisions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
             owner = connection.execute("SELECT * FROM owner").fetchall()
@@ -307,7 +309,7 @@ class StartupGuardTests(_GuardFixture):
 
         outcomes = sorted(r.value if isinstance(r, SchemaState) else repr(r) for r in results)
         self.assertEqual(outcomes, ["current", "current", "empty"])
-        self.assertEqual(_tables(self.path), BASELINE_TABLES)
+        self.assertEqual(_tables(self.path), HEAD_TABLES)
 
     def test_failed_initialization_leaves_the_database_empty(self) -> None:
         upgrade = schema_guard._alembic_upgrade
@@ -470,7 +472,7 @@ class BaselineSchemaTests(unittest.TestCase):
         tables = {row["tablename"] for row in self.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
         )}
-        self.assertEqual(tables, BASELINE_TABLES)
+        self.assertEqual(tables, HEAD_TABLES)
         referenced = {row["referenced"] for row in self.execute(
             "SELECT confrelid::regclass::text AS referenced FROM pg_constraint WHERE contype = 'f'"
         )}

@@ -126,6 +126,7 @@ from .services import cloud_deletion as cloud_deletion_service
 from .services.vaults import VAULT_ROW_SQL
 from .services import vault_moves
 from .services import protection_stop as protection_stop_service
+from .services import vault_deletion as vault_deletion_service
 from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
@@ -7442,6 +7443,17 @@ def _background_loop_closes_problem(clean: bool, streak: int) -> tuple[int, bool
     return streak, streak >= BACKGROUND_LOOP_OK_CYCLES and not known_ok
 
 
+def run_vault_deletions_once() -> int:
+    """Run every elapsed Vault Deletion (#717); a failure is its own Problem."""
+    try:
+        completed = vault_deletion_service.run_due(db, s3_client)
+    except Exception as exc:
+        _report_worker_error("vault_deletion", exc)
+        return 0
+    _note_worker_ok("vault_deletion")
+    return completed
+
+
 def _record_background_loop_error(exc: Exception) -> None:
     # Never include paths/provider messages in logs. The existing bounded error
     # store and counter own diagnostics for ordinary and fast-refill cycles.
@@ -7473,6 +7485,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     backlog_observed_at: float | None = None
     backlog_runnable = 0
     last_aggregates: float | None = None
+    last_vault_deletions: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -7501,6 +7514,11 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                     last_aggregates = loop.time()
                     _submit_directory_aggregates()
                 await asyncio.to_thread(protection_stop_service.reconcile_all)
+                # Elapsed Vault Deletions run off the loop, one run at a time.
+                if (last_vault_deletions is None
+                        or loop.time() - last_vault_deletions >= vault_deletion_service.POLL_SECONDS):
+                    last_vault_deletions = loop.time()
+                    _submit_maintenance("vault_deletion", run_vault_deletions_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

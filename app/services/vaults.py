@@ -94,12 +94,16 @@ def list_vault_inventory(connection: Any) -> list[dict[str, Any]]:
     rows = connection.execute(
         f"{VAULT_ROW_SQL} ORDER BY lower(v.name), v.id"
     ).fetchall()
+    # A requested Vault Deletion of a Tombstone (#717): pending, running or failed.
+    deletions = {int(r["vault_id"]): r["status"] for r in connection.execute(
+        "SELECT vault_id, status FROM vault_deletions").fetchall()}
     items = []
     for row in rows:
         item = {field: row[field] for field in _VAULT_INVENTORY_FIELDS}
         item["uuid"] = str(row["uuid"])
         released = row["root_released_at"]
         item["root_released_at"] = released.isoformat() if released else None
+        item["vault_deletion_status"] = deletions.get(int(row["id"]))
         items.append(item)
     return items
 
