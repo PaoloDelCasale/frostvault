@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .shutdown import WorkerStopping
-from .upload_snapshot import PartDigests
+from .upload_snapshot import CHUNK_SIZE, PartDigests
 
-_CHUNK_SIZE = 1024 * 1024
+# The same 4 MiB reads as the Upload Snapshot (#713).
+_CHUNK_SIZE = CHUNK_SIZE
 
 
 def hash_stable_regular_file(

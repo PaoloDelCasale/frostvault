@@ -1581,9 +1581,14 @@ def search_all_files(
 
 @app.get("/api/upload-activity", response_model=response_model("UploadActivityResponse"))
 def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
+    from .services import source_devices
     from .services.upload_activity import upload_activity
     with db() as connection:
-        return upload_activity(connection)
+        result = upload_activity(connection)
+    # Uploads held back while the server is busy (#713).
+    priority = source_devices.server_priority().status()
+    return {**result, "server_priority": {"throttled": priority["throttled"],
+                                          "since": priority["since"]}}
 
 
 @app.get("/api/general", response_model=response_model("GeneralOverview"))
@@ -1658,6 +1663,10 @@ def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = Non
     # The known cause of the last failed source scan, to read it translated (#711).
     from .services.scan_causes import source_error_cause
     runtime["last_error_source_cause"] = source_error_cause(runtime.get("last_error_source"))
+    # Installation-wide read scheduling (#713): server priority and the reads
+    # in flight per Source Device.
+    from .services import source_devices
+    runtime.update(source_devices.status())
     if unconfirmed.by_path:
         # Only named paths are unconfirmed (ADR-0042, #684): say how many and
         # where to look, instead of the generic incomplete-scan error.

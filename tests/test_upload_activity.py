@@ -76,6 +76,7 @@ class UploadActivityTests(unittest.TestCase):
             with patch.object(main, 'db', connection), patch('app.services.upload_activity.upload_activity', return_value=expected):
                 response = client.get('/api/upload-activity?vault_id=999')
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), expected)
+            # Plus the installation-wide server priority (#713).
+            self.assertEqual(response.json(), {**expected, 'server_priority': {'throttled': False, 'since': None}})
         finally:
             main.app.dependency_overrides.pop(main.current_user, None)

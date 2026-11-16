@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_for_futures
@@ -43,6 +44,7 @@ from .services import local_observation
 from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services import watch_plan
+from .services import source_devices
 from .services import excluded_folders as excluded_folder_rules
 from .services import write_access
 from .services.catalog_event_hub import publish_committed_event
@@ -1662,13 +1664,22 @@ def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
     return [row for row in rows if not excluded.contains_path(row["path"])] if excluded else rows
 
 
-def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+def _hash_local_copy(
+    root: Path, row: dict[str, Any], *, device: str | None = None,
+    cancelled: threading.Event | None = None,
+) -> tuple[str, dict[str, Any] | None]:
     """Fingerprint one Local Copy; runs on a hashing thread, writes nothing.
 
     The outcome is applied by the scan thread: ``hashed`` with its update,
     ``absent`` (no longer a regular file), ``unreadable`` (an OSError, named by
     its path) or ``unattributed`` (changed while read, or not a regular file).
+    The read holds a slot of the file's Source Device (#713), shared with
+    uploads; waiting for it stops at shutdown or when the scan is closed.
     """
+    def waiting() -> None:
+        if shutdown_state.requested or (cancelled is not None and cancelled.is_set()):
+            raise WorkerStopping("Scan read cancelled while waiting for its device")
+
     try:
         local_path = safe_local_path(str(root), row["path"])
         if not local_path.is_file():
@@ -1676,9 +1687,12 @@ def _hash_local_copy(root: Path, row: dict[str, Any]) -> tuple[str, dict[str, An
         # The same read records the multipart part digests of a file of at
         # least 8 MiB, so its upload needs no reading pass of its own (#703).
         parts = PartDigests()
-        digest, stat_result = hash_stable_regular_file(
-            local_path, should_stop=lambda: shutdown_state.requested, parts=parts,
-        )
+        with source_devices.slots().reading(
+            device or source_devices.device_of(local_path), waiting,
+        ):
+            digest, stat_result = hash_stable_regular_file(
+                local_path, should_stop=lambda: shutdown_state.requested, parts=parts,
+            )
     except WorkerStopping:
         raise
     except FileNotFoundError:
@@ -1717,6 +1731,9 @@ def _iter_local_fingerprints(
     batches while the rest is still being read. Journal and Problem updates
     stay on the calling thread. Closing the iterator (a superseded scan)
     cancels the reads not yet started and waits for the running ones.
+    Reads are fed round-robin across Source Devices, at most
+    ``SOURCE_DEVICE_READ_CONCURRENCY`` of this scan per device (#713), so a
+    busy disk does not starve the others.
     """
     concurrency = max(1, int(_runtime_settings().scan_hash_concurrency))
 
@@ -1733,6 +1750,9 @@ def _iter_local_fingerprints(
                     connection, event="file_unreadable", vault_id=int(vault["id"]),
                     path=row["path"],
                 )
+        elif kind == "hashed" and update is not None:
+            # Its queued upload reads it next, from the page cache (#713).
+            source_devices.hot_files().add(update["vault_file_id"])
         elif kind == "unattributed" and scan_journal is not None:
             scan_journal["incomplete"] = True
             # Not attributable to a path: no problem may be closed on this walk.
@@ -1749,27 +1769,43 @@ def _iter_local_fingerprints(
     # A bounded window, not one future per row: a 139,000-file adoption keeps
     # only a few reads queued, and cancelling it leaves nothing behind.
     window = concurrency * 2
-    pending: dict[Future, dict[str, Any]] = {}
-    remaining = iter(rows)
+    pending: dict[Future, tuple[dict[str, Any], str]] = {}
+    in_flight: Counter[str] = Counter()
+    slots = source_devices.slots()
+
+    feed = source_devices.interleave_by_device(
+        rows, device_of=lambda row: source_devices.device_of_entry(root, row["path"]),
+        busy=lambda device: in_flight[device], limit=slots.limit,
+    )
+    cancelled = threading.Event()
     pool = ThreadPoolExecutor(
         max_workers=concurrency, thread_name_prefix=f"scan-hash-{int(vault['id'])}",
     )
     try:
         while True:
             # No new read starts once the process is stopping (#696).
-            for row in (() if shutdown_state.requested else remaining):
-                pending[pool.submit(_hash_local_copy, root, row)] = row
-                if len(pending) >= window:
+            while not shutdown_state.requested and len(pending) < window:
+                step = next(feed, False)
+                if not step:
+                    # Exhausted (False) or every device at its limit (None).
                     break
+                device, row = step
+                pending[pool.submit(
+                    _hash_local_copy, root, row, device=device, cancelled=cancelled,
+                )] = (row, device)
+                in_flight[device] += 1
             if not pending:
                 return
             done, _ = wait_for_futures(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                row = pending.pop(future)
+                row, device = pending.pop(future)
+                in_flight[device] -= 1
                 update = outcome(row, *future.result())
                 if update is not None:
                     yield update
     finally:
+        # Reads still waiting for a device slot give up; running ones finish.
+        cancelled.set()
         pool.shutdown(wait=True, cancel_futures=True)
 
 
@@ -5791,6 +5827,9 @@ def observe_queue_stall(queued: int, *, now: float | None = None) -> bool:
     """
     global _queue_problem_open, _queue_last_stalled_at, _queue_problem_updated_at
     current = time.monotonic() if now is None else now
+    if source_devices.throttled():
+        # Uploads held back for the server (#713) are a choice, not a stall.
+        _queue_progress.note_progress()
     stalled, idle = _queue_progress.evaluate(queued, _active_operation_count(), now=current)
     metrics_service.set_gauge("queue_stalled", 1.0 if stalled else 0.0)
     metrics_service.set_gauge("queue_stalled_seconds", idle if stalled else 0.0)
@@ -5815,6 +5854,13 @@ def observe_queue_stall(queued: int, *, now: float | None = None) -> bool:
             )
         _queue_problem_open = False
     return stalled
+
+
+def _claim_source_device(job: Mapping[str, Any]) -> str | None:
+    """The Source Device an upload candidate reads, or None (not an upload)."""
+    if job.get("action") != "upload" or not job.get("source_root") or not job.get("path"):
+        return None
+    return source_devices.device_of_entry(str(job["source_root"]), str(job["path"]))
 
 
 def process_jobs_once(*, wait: bool = True) -> int:
@@ -5880,9 +5926,14 @@ def process_jobs_once(*, wait: bool = True) -> int:
                     now=now,
                     restore_due_before=_restore_due_before(runtime, current=current),
                     limit=max(10, concurrency * 10) * 8,
-                    per_vault_limit=window,
+                    # Enough ready Jobs to rotate uploads across Source
+                    # Devices, plus those the scan just read (#713).
+                    per_vault_limit=(max(window, source_devices.CLAIM_WINDOW)
+                                     if available_slots else window),
                     exclude_job_ids=_deferred_job_ids(scope),
                     unserved_only=not available_slots,
+                    include_file_ids=(source_devices.hot_files().ids()
+                                      if available_slots else ()),
                 )
                 if int(row["id"]) not in seen_ids
             ]
@@ -5950,6 +6001,15 @@ def process_jobs_once(*, wait: bool = True) -> int:
         ordered = select_fair_jobs(
             eligible_candidates, limit=len(eligible_candidates),
             active_by_vault=active_by_vault, now=scheduler_clock,
+        )
+        if source_devices.throttled():
+            # Server priority (#713): running uploads finish, none starts.
+            ordered = [job for job in ordered if job['action'] != 'upload']
+        # Uploads rotate across Source Devices with a free read slot, and an
+        # upload of a Local Copy the scan just read goes first (#713).
+        ordered = source_devices.rotate_claims(
+            ordered, device_of=_claim_source_device,
+            slots=source_devices.slots(), hot=source_devices.hot_files(),
         )
         for job in ordered:
             if len(ready_candidates) >= available_slots or shutdown_state.requested:

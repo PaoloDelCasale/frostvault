@@ -2124,6 +2124,44 @@
                 "string",
                 "null"
               ]
+            },
+            "server_priority_enabled": {
+              "type": "boolean"
+            },
+            "server_priority_throttled": {
+              "type": "boolean"
+            },
+            "server_priority_throttled_since": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_device_read_limit": {
+              "type": "integer"
+            },
+            "source_devices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "device": {
+                    "type": "string"
+                  },
+                  "reading": {
+                    "type": "integer"
+                  },
+                  "waiting": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "device",
+                  "reading",
+                  "waiting"
+                ]
+              }
             }
           },
           "type": "object"
@@ -2941,6 +2979,25 @@
               }
             ]
           }
+        },
+        "server_priority": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "throttled": {
+              "type": "boolean"
+            },
+            "since": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "throttled",
+            "since"
+          ]
         }
       },
       "required": [

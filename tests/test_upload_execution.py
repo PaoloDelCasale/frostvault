@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import psycopg
 
 from app.services import upload_provenance as provenance
-from app.services.upload_snapshot import CHUNK_SIZE
+from app.services.upload_pipeline import ACCOUNTED_CHUNK
 
 
 class ReceiptJournalTests(unittest.TestCase):
@@ -252,7 +252,7 @@ class SinglePutPayloadTests(unittest.TestCase):
     # -- behavior ------------------------------------------------------------
 
     def test_small_file_is_opened_and_read_once_and_its_hashed_bytes_are_sent(self):
-        weight = len(b"snapshot A") + 2 * CHUNK_SIZE
+        weight = len(b"snapshot A") + 2 * ACCOUNTED_CHUNK
         outcome = self.run_job()
         self.assertEqual((outcome.status, outcome.archive_version_id), ("completed", "version"))
         self.assertEqual(self.opened, ["os.open"], "one open of the Local Copy per upload")
@@ -271,7 +271,7 @@ class SinglePutPayloadTests(unittest.TestCase):
     def test_a_file_changing_during_the_read_is_never_uploaded(self):
         for replace in (False, True):
             with self.subTest(replace=replace):
-                self.source.write_bytes(b"snapshot A" * CHUNK_SIZE)
+                self.source.write_bytes(b"snapshot A" * ACCOUNTED_CHUNK)
                 self.events.clear()
                 def changing(source, check_active, **kwargs):
                     calls = 0
@@ -282,10 +282,10 @@ class SinglePutPayloadTests(unittest.TestCase):
                         if calls == 2:  # After the open, before the first chunk.
                             if replace:
                                 other = source.with_name("replacement")
-                                other.write_bytes(b"snapshot B" * CHUNK_SIZE)
+                                other.write_bytes(b"snapshot B" * ACCOUNTED_CHUNK)
                                 other.replace(source)
                             else:
-                                source.write_bytes(b"snapshot B, longer" * CHUNK_SIZE)
+                                source.write_bytes(b"snapshot B, longer" * ACCOUNTED_CHUNK)
                     return self.hash(source, active, **kwargs)
                 self.worker.prepare_upload_snapshot.side_effect = changing
                 with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
@@ -296,7 +296,7 @@ class SinglePutPayloadTests(unittest.TestCase):
                 self.assert_released()
 
     def test_payload_reservation_is_released_on_every_exit(self):
-        weight = len(b"snapshot A") + 2 * CHUNK_SIZE
+        weight = len(b"snapshot A") + 2 * ACCOUNTED_CHUNK
         cases = {
             "match_with_current": dict(match=True),
             "automatic_gate": dict(origin="automatic"),
@@ -341,7 +341,7 @@ class SinglePutPayloadTests(unittest.TestCase):
             return {"VersionId": "landed"}
         self.worker.upload_s3_file.side_effect = transport
         self.assertEqual(self.run_job().status, "completed")
-        snapshot_weight = 2 * (8 * CHUNK_SIZE + CHUNK_SIZE)
+        snapshot_weight = 2 * (8 * ACCOUNTED_CHUNK + ACCOUNTED_CHUNK)
         self.assertEqual(self.events, [
             ("read", (0, 0, 1, 0), False),
             ("unchanged", (0, 0, 0, 0)),

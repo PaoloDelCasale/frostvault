@@ -17,6 +17,7 @@ import threading
 import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from s3transfer.subscribers import BaseSubscriber
 from s3transfer.upload import InterruptReader
 from s3transfer.utils import OSUtils, ReadFileChunk
 
+from . import source_devices
 from .s3_clients import configure_upload_client
 from .upload_snapshot import (
     UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD, payload_matches, validated_snapshot_buffer,
@@ -170,8 +172,12 @@ class _UploadClient:
                  max_bandwidth: int | None = None,
                  on_acknowledged: Callable[[dict[str, Any]], None] | None = None,
                  write_client: Any = None,
-                 on_multipart: Callable[[str, str], None] | None = None) -> None:
+                 on_multipart: Callable[[str, str], None] | None = None,
+                 source: Path | None = None) -> None:
         self.client = client
+        # The Local Copy read by the send: its parts are read holding a slot
+        # of its Source Device (#713).
+        self.source = source
         self.write_client = write_client if write_client is not None else client
         configure_upload_client(client)
         configure_upload_client(self.write_client)
@@ -215,14 +221,15 @@ class _UploadClient:
         buffer = io.BytesIO()
         try:
             left = length
-            while left:
-                self.check_active()
-                chunk = body.read(min(CHUNK_SIZE, left))
-                if not chunk:
-                    raise RuntimeError("Local file changed since fingerprinting")
-                buffer.write(chunk)
-                digest.update(chunk)
-                left -= len(chunk)
+            with self._device_slot():
+                while left:
+                    self.check_active()
+                    chunk = body.read(min(CHUNK_SIZE, left))
+                    if not chunk:
+                        raise RuntimeError("Local file changed since fingerprinting")
+                    buffer.write(chunk)
+                    digest.update(chunk)
+                    left -= len(chunk)
             if base64.b64encode(digest.digest()).decode("ascii") != snapshot.part_checksums[number - 1]:
                 raise RuntimeError("Local file changed since fingerprinting")
             self.check_active()
@@ -241,6 +248,12 @@ class _UploadClient:
         except BaseException:
             buffer.close()
             raise
+
+    def _device_slot(self) -> Any:
+        """Only the read of a part holds the slot, never its network send."""
+        if self.source is None:
+            return nullcontext()
+        return source_devices.reading(self.source, self.check_active)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)
@@ -389,7 +402,8 @@ def _small_put(facade: _UploadClient, *, source: Path, bucket: str, key: str,
     try:
         facade.check_active()
         if payload is None:
-            buffer = validated_snapshot_buffer(source, snapshot, facade.check_active)
+            with facade._device_slot():
+                buffer = validated_snapshot_buffer(source, snapshot, facade.check_active)
         else:
             # The bytes the snapshot hashed (#702): checked in memory, no file I/O.
             if not payload_matches(payload, snapshot):
@@ -525,7 +539,8 @@ def upload_file(
             raise RuntimeError("Local file changed since fingerprinting")
     facade = _UploadClient(client, snapshot=snapshot, check_active=check_active,
                            max_bandwidth=max_bandwidth, on_acknowledged=on_acknowledged,
-                           write_client=write_client, on_multipart=on_multipart)
+                           write_client=write_client, on_multipart=on_multipart,
+                           source=source if snapshot is not None else None)
     if snapshot is not None and snapshot.size < MULTIPART_THRESHOLD:
         return _small_put(facade, source=source, bucket=bucket, key=key,
                           snapshot=snapshot, metadata=metadata, on_progress=on_progress,

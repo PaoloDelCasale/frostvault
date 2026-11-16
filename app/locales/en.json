@@ -853,6 +853,8 @@
   "activity.rate": "Speed: {rate} per minute · about {remaining} left",
   "activity.rate_unknown": "Speed not measured yet: a few finished uploads are needed.",
   "activity.paused": "Vault paused: these files are not uploaded until you resume it.",
+  "activity.server_busy": "Slowed down: server busy",
+  "activity.server_busy_detail": "The server's disks are very busy: FrostVault reads one file per disk and starts no new uploads until the load drops. Uploads in progress finish.",
   "activity.paused_heading": "Paused Vaults",
   "activity.paused_only_one": "{count} file paused",
   "activity.paused_only_other": "{count} files paused",

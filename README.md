@@ -795,7 +795,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
-| Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time) |
+| Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time), `SOURCE_DEVICE_READ_CONCURRENCY` (default 3, 1–16: reads in flight per Source Device, shared by scan verification and uploads; on an Unraid user share each array disk is a device), `SERVER_PRIORITY_IOWAIT_PERCENT` (empty or 0 = off: above this host iowait for 10 s, one read per device and no new uploads until 30 s below; see [ADR-0046](docs/adr/0046-reads-per-source-device.md)) |
 
 All installation configuration is environment-only and takes effect on process
 restart. There is no mutable settings UI or API. Before upgrading through

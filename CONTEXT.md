@@ -87,6 +87,14 @@ The observed filesystem representation of a Vault File, including its last known
 content fingerprint even when it is no longer present.
 _Avoid_: Source file, local version
 
+**Source Device**:
+The disk a Local Copy's bytes are read from, which may differ from file to
+file inside one Source Volume (for example each array disk behind an Unraid
+user share). Reads of Local Copies are spread across Source Devices and
+limited per device; a wrong guess of a file's device only makes reading
+slower, never changes what is read or protected.
+_Avoid_: Source Volume, Disk, Mount
+
 **Archive Version**:
 An immutable internal identity for one cloud representation of a Vault File's
 content: the Current Snapshot, a replacement in progress, or a superseded one
@@ -221,6 +229,12 @@ _Avoid_: File missing error, Orphan job
 A queue with runnable Jobs, nothing running and no claim for five minutes.
 Reported as a protected metric and an Owner problem.
 _Avoid_: Deadlock, Hang
+
+**Server Priority**:
+An optional installation-wide setting that slows FrostVault down while the
+server's disks are very busy: one read per Source Device and no new uploads
+until the load drops. A queue held back this way is not a Stalled Queue.
+_Avoid_: Quiet hours, Throttle window
 
 **Cost Estimate**:
 An approximate storage or restore cost computed from the AWS list prices bundled

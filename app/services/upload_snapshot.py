@@ -24,10 +24,14 @@ from typing import Any, Callable
 
 from s3transfer.utils import ChunksizeAdjuster
 
-CHUNK_SIZE = 1024 * 1024
-MULTIPART_THRESHOLD = 8 * CHUNK_SIZE
-DEFAULT_PART_SIZE = 8 * CHUNK_SIZE
-MAX_PART_SIZE = 1024 * CHUNK_SIZE
+MIB = 1024 * 1024
+# Bytes asked of one read() of a Local Copy (#713): fewer, larger requests
+# through a FUSE union and fewer seeks on an HDD shared by several readers.
+# Part boundaries never depend on it: they are fixed by the sizes below.
+CHUNK_SIZE = 4 * MIB
+MULTIPART_THRESHOLD = 8 * MIB
+DEFAULT_PART_SIZE = 8 * MIB
+MAX_PART_SIZE = 1024 * MIB
 MAX_OBJECT_SIZE = 5 * 1024**4
 MODES = frozenset({"s3_checksum", "read_back"})
 MTIME_METADATA_KEY = "frostvault-mtime-ns"

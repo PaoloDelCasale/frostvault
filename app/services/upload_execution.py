@@ -45,12 +45,12 @@ import time
 
 import psycopg
 
-from . import upload_pipeline, upload_provenance as provenance
+from . import source_devices, upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
 from .snapshot_cleanup import RESUME_NEEDED_SQL
 from .upload_retry import classify_upload_failure
 from .upload_snapshot import (
-    CHUNK_SIZE, MULTIPART_THRESHOLD, FileOwnership, SnapshotPayload, UploadSnapshot,
+    MULTIPART_THRESHOLD, FileOwnership, SnapshotPayload, UploadSnapshot,
     UploadProofMismatch, unsupported_checksum_api,
 )
 
@@ -489,7 +489,10 @@ class UploadExecution:
                 run.pipeline.small_payload(observed.st_size, run.check_active))
             payload = SnapshotPayload(observed.st_size)
         # Admission precedes the very first read/buffer allocation.
-        with run.pipeline.prepare.take(run.check_active, 2 * CHUNK_SIZE):
+        # The device slot (#713) follows the reader permit: a scarce slot of a
+        # disk is never held while waiting for a reader.
+        with run.pipeline.prepare.take(run.check_active, upload_pipeline.PREPARE_READER_BYTES), \
+                source_devices.reading(run.source, run.check_active):
             if payload is None:
                 snapshot, hashed = w.prepare_upload_snapshot(run.source, run.check_active)
             else:

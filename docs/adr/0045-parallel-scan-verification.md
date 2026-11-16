@@ -23,7 +23,10 @@ and the FUSE layer can order them; 1 keeps the old sequential behaviour. At
 most twice as many reads are queued as run, so a scan that is superseded or
 loses its root identity cancels the reads not yet started and waits only for
 the running ones. Uploads and Recoveries have their own limit
-(`OPERATION_CONCURRENCY`); the two are not shared.
+(`OPERATION_CONCURRENCY`); the two are not shared. Since #713 both also
+share one limit of reads per Source Device and the verification feeds its
+reads round-robin across devices, see
+[ADR-0046](0046-reads-per-source-device.md).
 
 **Published as results arrive.** Digests are published in
 `LOCAL_SCAN_WRITE_BATCH_SIZE` compare-and-swap batches as soon as they

@@ -78,6 +78,8 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
   const pausedOthers = paused.filter((vault) => vault !== selected);
   const pausedFiles = paused.reduce((sum, vault) => sum + uploadBacklog(vault).files, 0);
   const pace = uploadPace(data.global, t);
+  // Server priority (#713): uploads held back while the server's disks are busy.
+  const serverBusy = data.server_priority?.throttled === true;
   const label = files > 0
     ? pace ? t("activity.indicator_rate", { count: files, size: formatBytes(bytes), ...pace })
       : t("activity.indicator", { count: files, size: formatBytes(bytes) })
@@ -88,11 +90,16 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
         className={buttonVariants({ variant: "secondary", className: "min-w-11 gap-2 px-3" })}>
         <ArrowUpFromLine className={files > 0 ? "size-4 animate-pulse text-green motion-reduce:animate-none" : "size-4 text-muted"} aria-hidden="true" />
         <span className="hidden tabular-nums lg:inline">{label}</span>
+        {serverBusy && <span className="hidden text-xs font-semibold text-muted lg:inline" data-testid="activity-server-busy-badge">{t("activity.server_busy")}</span>}
         <span className="tabular-nums lg:hidden" aria-hidden="true">{files || (busy(data.global) ? t("activity.preparing") : pausedFiles)}</span>
       </button>}>
       <section className="grid min-w-0 gap-3" data-testid="upload-activity">
         <h2 className="font-bold">{t("activity.heading")}</h2>
         {query.isError && <p role="status" className="text-sm">{t("activity.unavailable")}</p>}
+        {serverBusy && <div role="status" className="grid gap-1" data-testid="activity-server-busy">
+          <p className="text-sm font-semibold">{t("activity.server_busy")}</p>
+          <p className="text-xs text-muted">{t("activity.server_busy_detail")}</p>
+        </div>}
         {busy(data.global) ? <Summary activity={data.global} observedAt={data.observed_at} t={t} /> : <p className="text-sm">{t("activity.idle")}</p>}
         {selected && <div className="grid gap-2 border-t border-line pt-3" data-testid="selected-vault-activity">
           <h3 className="break-words font-bold">{selected.vault_name}</h3>

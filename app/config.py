@@ -83,6 +83,17 @@ class Settings:
     scan_hash_concurrency: int = max(
         1, min(32, int(os.getenv("SCAN_HASH_CONCURRENCY", "4")))
     )
+    # Reads of Local Copies in flight per Source Device (#713, ADR-0046),
+    # shared by scan verification and uploads, on top of their own limits:
+    # beyond 2-3 streams an HDD seeks more than it reads.
+    source_device_read_concurrency: int = max(
+        1, min(16, int(os.getenv("SOURCE_DEVICE_READ_CONCURRENCY", "3") or "3"))
+    )
+    # Opt-in server priority (#713): above this host iowait percentage for
+    # 10 s, one read per device and no new uploads until 30 s below. 0 = off.
+    server_priority_iowait_percent: int = max(
+        0, min(100, int(os.getenv("SERVER_PRIORITY_IOWAIT_PERCENT", "0") or "0"))
+    )
     restore_poll_interval: int = int(os.getenv("JOB_POLL_SECONDS", "900"))
     restore_days: int = int(os.getenv("RESTORE_DAYS", "3"))
     restore_tier: str = os.getenv("RESTORE_TIER", "Bulk")
