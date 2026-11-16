@@ -311,6 +311,11 @@ class WatcherSubtreeTests(unittest.TestCase):
             storage.apply_filesystem_changes({"id": 2, "source_root": str(root)}, {(Change.added, str(root / "incoming"))})
             self.assertIn("incoming/nested/file.bin", observed)
             catalog.observe_local_copies_batch.reset_mock()
+            # The catalog now holds the folder: its one-level listing (#721)
+            # finds nothing unknown, so a metadata change walks nothing.
+            connection.execute.return_value.fetchall.return_value = [
+                {"kind": "folder", "path": "incoming/nested"},
+            ]
             self.assertEqual(storage.apply_filesystem_changes(
                 {"id": 2, "source_root": str(root)}, {(Change.modified, str(root / "incoming"))},
             ), 0)

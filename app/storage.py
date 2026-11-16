@@ -108,7 +108,9 @@ from .services.runtime_status import (
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
 )
-from .services.fs_preflight import PinnedTree, TreeIdentityChanged, inspect_entry, removal_is_unproven
+from .services.fs_preflight import (
+    PinnedTree, TreeIdentityChanged, inspect_entry, is_storable_name, removal_is_unproven,
+)
 from .services.problems import display_path, report_problem, resolve_stale_path_problems
 from .services.local_files import (
     hash_stable_regular_file,
@@ -184,6 +186,10 @@ _scan_logger = logging.getLogger(__name__)
 # uvicorn's handler prints INFO in production; the traversal's time split goes
 # there so its cost can be read from the container log (#707).
 _traversal_logger = logging.getLogger("uvicorn.error")
+# The watcher's own findings (#721), printed beside the traversal's.
+_watcher_logger = logging.getLogger("uvicorn.error")
+# The raw watcher batch is logged at DEBUG with at most this many paths.
+WATCHER_DEBUG_BATCH_PATHS = 50
 
 # Cloud scans keep provider I/O outside write transactions and commit catalog
 # merges in bounded batches so other writers (lease renewal,
@@ -1032,6 +1038,146 @@ def scan_tree(
     return count
 
 
+def _check_directory_level(
+    connection: Any,
+    vault_id: int,
+    root: Path,
+    directory: Path,
+    excluded: excluded_folder_rules.ExcludedFolders,
+    *,
+    with_files: bool = True,
+) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]], set[str]]:
+    """List one directory one level deep against the catalog (#721).
+
+    A directory event does not say what changed inside it, and on some
+    sources (an Unraid ``fuse.shfs`` share) a new folder arrives only as a
+    ``modified`` of itself or of its parent. Returns:
+
+    - the child files the catalog does not hold as present with this size and
+      mtime (with ``with_files``);
+    - the child folders with no present catalogued file under them, to walk
+      like an added folder;
+    - the child Excluded Folders, never entered (ADR-0044).
+
+    One ``scandir`` and one catalog query; symlinks are never followed, and
+    restore temporary and uncataloguable names are left to the walks.
+    """
+    prefix = directory.relative_to(root).as_posix()
+    files: dict[str, tuple[Path, os.stat_result]] = {}
+    folders: dict[str, Path] = {}
+    excluded_found: set[str] = set()
+    try:
+        with os.scandir(directory) as listing:
+            children = list(listing)
+    except OSError:
+        # An unreadable or vanished folder: the walks and scans report it.
+        return [], [], excluded_found
+    for child in children:
+        name = child.name
+        if is_restore_temporary_name(name) or not is_storable_name(name):
+            continue
+        relative = name if prefix == "." else f"{prefix}/{name}"
+        try:
+            if child.is_dir(follow_symlinks=False):
+                if excluded.covers_directory(relative):
+                    excluded_found.add(relative)
+                else:
+                    folders[relative] = directory / name
+            elif with_files and not excluded.contains_path(relative):
+                files[relative] = (directory / name, child.stat(follow_symlinks=False))
+        except OSError:
+            continue
+    if not files and not folders:
+        return [], [], excluded_found
+    known_files: dict[str, dict[str, Any]] = {}
+    known_folders: set[str] = set()
+    for row in connection.execute(
+        """
+        SELECT 'file' AS kind, path, local_presence, local_size, local_mtime_ns
+        FROM files WHERE vault_id=%s AND path = ANY(%s::text[])
+        UNION ALL
+        SELECT 'folder', d.path, NULL, NULL, NULL
+        FROM unnest(%s::text[]) AS d(path)
+        WHERE EXISTS (
+            SELECT 1 FROM files f
+            WHERE f.vault_id=%s AND f.local_presence='present'
+              AND f.path > (d.path || '/') COLLATE "C"
+              AND f.path < (d.path || '0') COLLATE "C"
+        )
+        """,
+        (vault_id, list(files), list(folders), vault_id),
+    ).fetchall():
+        if row["kind"] == "folder":
+            known_folders.add(row["path"])
+        else:
+            known_files[row["path"]] = row
+    changed_files = []
+    for relative, (path, info) in files.items():
+        row = known_files.get(relative)
+        if row is None or row["local_presence"] != "present" or (
+            row["local_size"], row["local_mtime_ns"]
+        ) != (info.st_size, info.st_mtime_ns):
+            changed_files.append((relative, path))
+    unknown_folders = [
+        (relative, path) for relative, path in folders.items() if relative not in known_folders
+    ]
+    return changed_files, unknown_folders, excluded_found
+
+
+def _check_watched_directory_levels(
+    vault: dict[str, Any],
+    root: Path,
+    directories: list[Path],
+    excluded: excluded_folder_rules.ExcludedFolders,
+    *,
+    skip: set[Path],
+) -> tuple[list[tuple[str, Path]], list[Path], set[Path]]:
+    """The one-level checks of a watcher batch's changed directories (#721).
+
+    Returns the unknown child folders to walk (parents first), the unknown or
+    changed child files to observe like a file event (none of ``skip``, the
+    paths with an event of their own), and those of the files that are echoes
+    of FrostVault's own restores, observed like the walk observes them. The
+    listings and lookups run in one short read transaction; the echo check,
+    which may hash, stays outside every transaction.
+    """
+    vault_id = int(vault["id"])
+    folders: dict[Path, str] = {}
+    files: list[tuple[str, Path]] = []
+    queued = set(skip)
+    noted: set[str] = set()
+    if not directories:
+        return [], [], set()
+    with db() as connection:
+        for directory in dict.fromkeys(directories):
+            relative = directory.relative_to(root).as_posix()
+            if directory != root:
+                if excluded.covers_directory(relative):
+                    continue
+                parent = directory.parent.resolve()
+                if parent != root and root not in parent.parents:
+                    continue
+            child_files, child_folders, child_excluded = _check_directory_level(
+                connection, vault_id, root, directory, excluded,
+            )
+            noted |= child_excluded
+            for child_relative, child in child_folders:
+                folders.setdefault(child, child_relative)
+            for child_relative, child in child_files:
+                if child not in queued:
+                    queued.add(child)
+                    files.append((child_relative, child))
+    if noted:
+        # Already noted when the scan found them; a new one stops being watched.
+        watch_plan.note_excluded_directories(vault_id, noted)
+    echoes = {
+        child for relative, child in files
+        if local_observation.consume(vault_id, relative, child)
+    }
+    new_folders = sorted(((relative, path) for path, relative in folders.items()), key=lambda item: str(item[1]))
+    return new_folders, [child for _relative, child in files], echoes
+
+
 def apply_filesystem_changes(
     vault: dict[str, Any], changes: set[tuple[Change, str]], *, wait: bool = True,
 ) -> int | None:
@@ -1090,11 +1236,16 @@ def _apply_filesystem_changes(
     subtrees: list[Path] = []
     added_paths = {Path(value) for change, value in changes if change == Change.added}
     paths: list[Path] = []
+    # Directories this batch lists one level deep (#721), the root included.
+    level_directories: list[Path] = []
     for value in {value for _, value in changes}:
         entry = Path(value)
         try:
             relative = entry.relative_to(root).as_posix()
         except ValueError:
+            continue
+        if relative == "." and ".." not in entry.parts:
+            level_directories.append(root)
             continue
         if relative == "." or ".." in entry.parts or is_restore_temporary_name(entry.name):
             continue
@@ -1108,6 +1259,19 @@ def _apply_filesystem_changes(
             # that work outside every catalog write transaction.
             if not local_observation.consume(int(vault["id"]), relative, entry):
                 paths.append(entry)
+    level_directories += [
+        entry for entry in paths
+        if entry.is_dir() and not entry.is_symlink()
+        and not any(added == entry or added in entry.parents for added in added_paths)
+    ]
+    # Every directory event (added ones are walked whole) lists that directory
+    # one level deep: on some sources a new folder arrives only as a modified
+    # parent, or as a modified folder whose content raised no event (#721).
+    new_folders, new_files, echoes = _check_watched_directory_levels(
+        vault, root, level_directories, excluded,
+        skip={Path(value) for _, value in changes} | set(paths),
+    )
+    paths += new_files
     # Directory transactions commit in bounded batches. Process them before
     # the atomic single-file/deletion batch, never committing a partial direct
     # observation as an accidental side effect of a later subtree flush.
@@ -1117,6 +1281,23 @@ def _apply_filesystem_changes(
         # A rename emits one directory event, not an event for each child.
         # Coalesce overlapping prefixes and stream bounded scan-write batches;
         # never finalize missing copies outside the affected subtree.
+        for relative, entry in new_folders:
+            # A folder the catalog does not know, found by listing a changed
+            # directory: walked like an added folder (#721).
+            if any(parent == entry or parent in entry.parents for parent in subtrees):
+                continue
+            walked = _scan_tree(
+                connection, vault, event_id, root=root, subtree=entry,
+                allow_chunk_commits=True, finalize_missing=False,
+                scan_journal=journal, invalidate_content=True,
+                excluded_folders=excluded,
+            )[0]
+            subtrees.append(entry)
+            changed += walked
+            _watcher_logger.info(
+                "Vault %s: new folder found: %s, %d files",
+                vault["id"], display_path(relative), walked,
+            )
         for entry in paths:
             try:
                 relative = entry.relative_to(root).as_posix()
@@ -1141,7 +1322,9 @@ def _apply_filesystem_changes(
                     continue
                 if entry not in added_paths:
                     # Metadata-only directory changes (also emitted by polling
-                    # on child writes) are not content events for every child.
+                    # on child writes) are not content events for every child:
+                    # only the children its one-level listing found unknown
+                    # were queued above (#721).
                     continue
                 changed += _scan_tree(
                     connection, vault, event_id, root=root, subtree=entry,
@@ -1174,7 +1357,9 @@ def _apply_filesystem_changes(
                     mtime_ns=entry_stat.st_mtime_ns,
                     seen_at=event_id,
                     observed_at=event_id,
-                    invalidate_content=True,
+                    # A listed child that is an echo of our own restore keeps
+                    # its fingerprint, as in a subtree walk (#721).
+                    invalidate_content=entry not in echoes,
                 )
                 changed += 1
                 continue
@@ -6414,6 +6599,85 @@ def _new_watcher_directories(root: Path, changes: set[tuple[Change, str]]) -> se
     return directories
 
 
+# Folder identities one watcher run already handed to a successor. Past this
+# many it starts over: at worst a folder gets one more handoff.
+WATCHER_HANDED_OFF_LIMIT = 4096
+
+
+def _unknown_watcher_directories(
+    vault_id: int, root: Path, changes: set[tuple[Change, str]],
+    handed_off: set[tuple[int, int, int]],
+) -> set[tuple[Change, str]]:
+    """Folders a directory event reveals without an ``added`` event (#721).
+
+    On an Unraid ``fuse.shfs`` source a new folder can arrive only as a
+    ``modified`` of itself or of its parent, so no successor observer is
+    registered and nothing inside it is ever reported. Each changed directory
+    (not an added one, already handed off and walked whole) is listed one level
+    deep; a child folder the catalog does not know is returned as an added
+    directory. ``handed_off`` keeps one handoff per folder identity (device,
+    inode and change time: a folder recreated under the same name, or changed,
+    is another), so an empty folder does not re-register the tree each time
+    its parent changes.
+    """
+    candidates: list[tuple[str, Path]] = []
+    for change, value in changes:
+        if change != Change.modified:
+            continue
+        entry = Path(value)
+        if is_restore_temporary_name(entry.name) or ".." in entry.parts:
+            continue
+        try:
+            relative = entry.relative_to(root).as_posix()
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            if relative != ".":
+                parent = entry.parent.resolve()
+                if parent != root and root not in parent.parents:
+                    continue
+        except (ValueError, OSError):
+            continue
+        candidates.append((relative, entry))
+    if not candidates:
+        return set()
+    found: set[tuple[Change, str]] = set()
+    if len(handed_off) > WATCHER_HANDED_OFF_LIMIT:
+        handed_off.clear()
+    with db() as connection:
+        excluded = excluded_folder_rules.load(connection, vault_id)
+        for relative, entry in candidates:
+            if relative != "." and excluded.covers_directory(relative):
+                continue
+            _files, folders, _excluded = _check_directory_level(
+                connection, vault_id, root, entry, excluded, with_files=False,
+            )
+            for _relative, child in folders:
+                try:
+                    info = child.lstat()
+                except OSError:
+                    continue
+                identity = (info.st_dev, info.st_ino, info.st_ctime_ns)
+                if identity in handed_off:
+                    continue
+                handed_off.add(identity)
+                found.add((Change.added, str(child)))
+    return found
+
+
+def _log_watcher_batch(vault_id: int, changes: set[tuple[Change, str]]) -> None:
+    """The raw native batch at DEBUG, to tell what a source reports (#721)."""
+    if not changes or not _watcher_logger.isEnabledFor(logging.DEBUG):
+        return
+    shown = sorted((change.name, display_path(value)) for change, value in changes)
+    more = len(shown) - WATCHER_DEBUG_BATCH_PATHS
+    _watcher_logger.debug(
+        "Vault %s: watcher batch of %d changes: %s%s",
+        vault_id, len(shown),
+        ", ".join(f"{name} {path}" for name, path in shown[:WATCHER_DEBUG_BATCH_PATHS]),
+        f" (and {more} more)" if more > 0 else "",
+    )
+
+
 # A watcher that stopped is restarted after a growing pause. A run counts as
 # healthy again, and resets the pause, once it stayed up this long. Its paired
 # scan runs beside it (#690), so a long scan cannot hide a watcher that dies at
@@ -6663,6 +6927,8 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
     scan_started_mark = 0
     # Consecutive registrations that failed on the same vanished folder.
     vanished_streak: dict[str, int] = {}
+    # Folders found by a one-level check and handed to a successor (#721).
+    handed_off: set[tuple[int, int, int]] = set()
 
     def request_scan(at: float) -> None:
         nonlocal next_scan_at, scan_due_mark
@@ -6790,9 +7056,20 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                             vault_id, registered_gaps, owner=asyncio.current_task(), debt=registered_debt,
                         )
                     pending_reconcile |= native_changes
+                    _log_watcher_batch(vault_id, native_changes)
                     new_directories = await asyncio.to_thread(
                         _new_watcher_directories, root, native_changes,
                     ) if native_changes else set()
+                    if native_changes and not settings.filesystem_watch_force_polling:
+                        # A folder reported only as a modified folder or parent
+                        # (Unraid fuse.shfs, #721) is an added directory: the
+                        # successor registers it before the batch is applied,
+                        # and the batch walks it whole.
+                        discovered = await asyncio.to_thread(
+                            _unknown_watcher_directories, vault_id, root, native_changes, handed_off,
+                        )
+                        pending_reconcile |= discovered
+                        new_directories |= discovered
                     # PollWatcher recursively rediscovers topology every poll;
                     # it needs no re-registration. Keep its original snapshot
                     # alive: a timeout is NOT a completed polling-cycle fence,
@@ -6854,7 +7131,12 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
                         additions = await asyncio.to_thread(
                             _new_watcher_directories, root, first | tail,
                         )
-                        rearm_required = bool(additions)
+                        _log_watcher_batch(vault_id, first | tail)
+                        discovered = await asyncio.to_thread(
+                            _unknown_watcher_directories, vault_id, root, first | tail, handed_off,
+                        ) if not settings.filesystem_watch_force_polling else set()
+                        pending_reconcile |= discovered
+                        rearm_required = bool(additions or discovered)
                     if pending_reconcile and not rearm_required:
                         # Reconcile only once every added subtree is covered by
                         # a registered successor, including additions made in

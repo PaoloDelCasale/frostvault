@@ -353,6 +353,67 @@ class HandoffReplacementTests(Harness):
         await self.replacement_during_handoff(in_successor=False)
 
 
+class ModifiedParentHandoffTests(Harness):
+    """#721: a backend that reports a new folder only as a ``modified`` parent.
+
+    Model what an Unraid ``fuse.shfs`` source showed: Immich creates
+    ``library/<date>/`` and renames a file into it, and the observer reports
+    only a metadata change of ``library``. An observer registered before the
+    folder existed never reports anything inside it.
+    """
+
+    async def test_a_folder_found_by_the_one_level_check_gets_a_successor(self):
+        root = self.make_root()
+        library = root / "library"
+        library.mkdir()
+        day = library / "2026-11-16"
+        begin = asyncio.Event()
+        late_write = asyncio.Event()
+        registrations: list[bool] = []
+        closed: list[int] = []
+        observed = self.catalog_observations()
+        scan = self.scanning(root)
+
+        def observer(*paths, **options):
+            async def generate():
+                index = len(registrations)
+                sees_day = day.exists()
+                registrations.append(sees_day)
+                try:
+                    yield set()  # registration barrier
+                    if index == 0:
+                        await begin.wait()
+                        yield {(Change.modified, str(library))}
+                    while True:
+                        await asyncio.sleep(0.01)
+                        if late_write.is_set() and sees_day:
+                            late_write.clear()
+                            yield {(Change.added, str(day / "later.heic"))}
+                        else:
+                            yield set()
+                finally:
+                    closed.append(index)
+            return generate()
+
+        self.stack.enter_context(patch("app.storage.awatch", side_effect=observer))
+        task = self.start(root)
+        try:
+            await self.settle(lambda: scan.call_count == 1)
+            day.mkdir()
+            (day / "IMG.heic").write_bytes(b"photo")
+            begin.set()
+            await self.settle(lambda: "library/2026-11-16/IMG.heic" in observed)
+            self.assertIn(True, registrations, "the new folder needs a successor registration")
+            (day / "later.heic").write_bytes(b"later")
+            late_write.set()
+            await self.settle(lambda: "library/2026-11-16/later.heic" in observed, timeout=2)
+            self.assertEqual(scan.call_count, 1, "no full scan may rescue the new folder")
+            self.report.assert_not_called()
+        finally:
+            await self.stop(task)
+        self.assertEqual(sorted(closed), list(range(len(registrations))))
+
+
 class NewDirectoryStartupTests(Harness):
     """Real native observers, including writes while the startup scan is busy."""
 
