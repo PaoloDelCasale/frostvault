@@ -504,10 +504,11 @@ def _duplicate_ids(connection: Any, vault: dict[str, Any], file_ids: list[str]) 
         f"""SELECT DISTINCT e.id AS file_id
             FROM files e
             JOIN archive_versions ecur ON ecur.id = e.current_version_id
-            JOIN archive_versions cur ON cur.plaintext_sha256 = ecur.plaintext_sha256
-            JOIN files f ON f.current_version_id = cur.id
+            -- files_rename_digest_idx (vault_id, local_sha256) finds the copies.
+            JOIN files f ON f.vault_id = e.vault_id AND f.local_sha256 = ecur.plaintext_sha256
+            JOIN archive_versions cur ON cur.id = f.current_version_id
             WHERE e.id = ANY(%s::uuid[]) AND ecur.plaintext_sha256 IS NOT NULL
-              AND f.vault_id = e.vault_id AND f.path <> e.path
+              AND f.path <> e.path
               AND f.held_version_id IS NULL AND f.reconciliation_block IS NULL
               AND {PROTECTED_SQL} AND NOT ({blocked})""",
         [file_ids, *blocked_params]).fetchall()
