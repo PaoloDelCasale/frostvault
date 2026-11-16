@@ -11,6 +11,11 @@ def notification_path(vault_id: int | None, params: dict[str, Any]) -> str:
         # Overview's archived list (#717).
         return "/#archived"
     query: dict[str, str] = {"vault_id": str(vault_id)}
+    if params.get("duplicate_cleanup") and not params.get("group_id"):
+        # A capped Automatic Duplicate Cleanup (#726) is confirmed by hand from
+        # the Vault's Cloud-only files, with «Duplicates only».
+        query["state"] = "cloud_only"
+        return "/?" + urlencode(query)
     path = params.get("path")
     if isinstance(path, str) and path:
         query.update(directory=path.rpartition("/")[0], file=path)

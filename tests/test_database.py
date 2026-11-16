@@ -218,6 +218,45 @@ class StartupGuardTests(_GuardFixture):
             owner = connection.execute("SELECT display_name FROM owner").fetchone()
         self.assertEqual(owner["display_name"], "Kept")
 
+    def test_catalog_of_the_previous_revision_gets_duplicate_cleanup_off(self) -> None:
+        """#726: every Vault starts with Automatic Duplicate Cleanup off, never run,
+        and every existing deletion request stays the Owner's (not automatic)."""
+        _migrate_to(self.dsn, "0005_vault_deletions")
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region) VALUES (1, 's3', 'b', 'eu-south-1')")
+        self.execute(
+            "INSERT INTO vaults(id, target_id, name, source_root) VALUES (1, 1, 'Docs', '/sources/docs')")
+        self.execute(
+            "INSERT INTO job_groups(id, vault_id, path, created_at) "
+            "VALUES ('00000000-0000-0000-0000-000000000001', 1, '', now())")
+        self.execute(
+            "INSERT INTO cloud_purge_requests(group_id, reason) "
+            "VALUES ('00000000-0000-0000-0000-000000000001', 'manual')")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            vault = connection.execute(
+                """SELECT duplicate_cleanup_enabled, duplicate_cleanup_grace_days,
+                          duplicate_cleanup_cap_files, duplicate_cleanup_cap_bytes,
+                          duplicate_cleanup_last_run_at, duplicate_cleanup_last_outcome
+                   FROM vaults WHERE id=1""").fetchone()
+            request = connection.execute(
+                "SELECT automatic FROM cloud_purge_requests").fetchone()
+            for bad in ("duplicate_cleanup_grace_days=0", "duplicate_cleanup_grace_days=91",
+                        "duplicate_cleanup_cap_files=0", "duplicate_cleanup_cap_bytes=0"):
+                with self.subTest(bad=bad), self.assertRaises(psycopg.errors.CheckViolation):
+                    connection.execute(f"UPDATE vaults SET {bad} WHERE id=1")
+                connection.rollback()
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute(
+                    "UPDATE cloud_purge_requests SET automatic=true, stop_protection=true")
+            connection.rollback()
+        self.assertEqual(dict(vault), {
+            "duplicate_cleanup_enabled": False, "duplicate_cleanup_grace_days": 7,
+            "duplicate_cleanup_cap_files": 5000, "duplicate_cleanup_cap_bytes": 50 * 1024 ** 3,
+            "duplicate_cleanup_last_run_at": None, "duplicate_cleanup_last_outcome": None})
+        self.assertFalse(request["automatic"])
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade

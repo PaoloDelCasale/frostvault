@@ -337,6 +337,8 @@ class ArchiveCatalog:
 
         The whole selection is revoked, never left partially authorized: a
         reappearance or rename is new evidence the consent never covered.
+        An automatic group (Automatic Duplicate Cleanup, ADR-0048) loses only
+        these files: each of its members was chosen on its own evidence.
         Callers already hold the Vault lock.
         """
         ids = [str(file_id) for file_id in file_ids if file_id]
@@ -356,6 +358,11 @@ class ArchiveCatalog:
                         AND consent.file_id = ANY(%s::uuid[])
                         AND consent.action='cloud-purge'
                         AND consent.status='pending_delay'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM cloud_purge_requests request
+                            WHERE request.group_id = consent.group_id
+                              AND request.automatic
+                        )
                   )
               )
             """,

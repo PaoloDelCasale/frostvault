@@ -129,6 +129,7 @@ from .services.vaults import VAULT_ROW_SQL
 from .services import vault_moves
 from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
+from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
@@ -5175,10 +5176,37 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     validate_cloud_vault(job)
     client = s3_client()
     provider = _provenance.provider_identity(client)
+    expected_job_ids: list[int] = []
+    revoked_ids: set[int] = set()
+
+    def still_valid(connection: Any) -> bool:
+        """Revalidate the consent. An automatic group may lose single members
+        (#726): they leave the claim; a lost lead hands the rest back to the
+        scheduler, which claims them again under another lead."""
+        revoked: set[int] = set()
+        valid = cloud_deletion_service.validate_execution(
+            connection, vault_id=vault_id, group_id=group_id, at=now_iso(), revoked=revoked,
+        )
+        if not revoked:
+            return valid
+        revoked_ids.update(revoked)
+        expected_job_ids[:] = [i for i in expected_job_ids if i not in revoked]
+        if valid and int(job["id"]) in revoked:
+            released = ArchiveCatalog(connection).release_purge_group_claim(
+                vault_id=vault_id, group_id=group_id, claim_token=str(claim_token), now=now_iso(),
+            )
+            if released:
+                cloud_deletion_service.revoke_grants(
+                    connection, group_id=group_id,
+                    file_ids=[str(r["file_id"]) for r in connection.execute(
+                        "SELECT file_id FROM jobs WHERE id = ANY(%s::bigint[])", (released,),
+                    ).fetchall()],
+                )
+            return False
+        return valid
+
     with db() as connection:
-        if not cloud_deletion_service.validate_execution(
-            connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
-        ):
+        if not still_valid(connection):
             return
         purge_jobs, items = ArchiveCatalog(connection).load_claimed_purge_group(
             lead_job_id=int(job["id"]), claim_token=str(claim_token), now=now_iso(),
@@ -5188,7 +5216,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     # The lead carries the worker's claim checkpoints: settle it in the last
     # batch, so an ended lead never fences the members still to be deleted.
     items = sorted(items, key=lambda item: int(item["id"]) == int(job["id"]))
-    expected_job_ids = [int(purge_job["id"]) for purge_job in purge_jobs]
+    expected_job_ids[:] = [int(purge_job["id"]) for purge_job in purge_jobs]
     actor = "owner"
 
     def renew(connection: Any) -> None:
@@ -5205,11 +5233,12 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         batch = items[offset : offset + CLOUD_DELETE_BATCH_SIZE]
         ensure_job_active(job["id"], "Cloud purge stopped")
         with db() as connection:
-            if not cloud_deletion_service.validate_execution(
-                connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
-            ):
+            if not still_valid(connection):
                 return
             renew(connection)
+            batch = [item for item in batch if int(item["id"]) not in revoked_ids]
+            if not batch:
+                continue
             vault = cloud_deletion_service.lock_vault(connection, vault_id)
             cloud_deletion_service.freeze_grants(
                 connection, vault=vault, group_id=group_id, jobs=batch, provider=provider,
@@ -5219,13 +5248,15 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         sent = False
         try:
             with owned_connection(db()) as connection:
-                if not cloud_deletion_service.validate_execution(
-                    connection, vault_id=vault_id, group_id=group_id, at=now_iso(),
-                ):
+                if not still_valid(connection):
                     return
                 renew(connection)
                 if job_cancelled(int(job["id"])):
                     raise OperationCancelled("Cloud purge stopped")
+                # A member revoked just now had its grant revoked with it.
+                batch = [item for item in batch if int(item["id"]) not in revoked_ids]
+                if not batch:
+                    continue
                 sent = True
                 try:
                     response = client.delete_objects(
@@ -7736,6 +7767,17 @@ def run_vault_deletions_once() -> int:
     return completed
 
 
+def run_duplicate_cleanup_once() -> int:
+    """Run the due Automatic Duplicate Cleanups (#726); returns how many Vaults ran."""
+    try:
+        ran = duplicate_cleanup_service.run_due(db)
+    except Exception as exc:
+        _report_worker_error("duplicate_cleanup", exc)
+        return 0
+    _note_worker_ok("duplicate_cleanup")
+    return ran
+
+
 def _record_background_loop_error(exc: Exception) -> None:
     # Never include paths/provider messages in logs. The existing bounded error
     # store and counter own diagnostics for ordinary and fast-refill cycles.
@@ -7768,6 +7810,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     backlog_runnable = 0
     last_aggregates: float | None = None
     last_vault_deletions: float | None = None
+    last_duplicate_cleanup: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -7801,6 +7844,12 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_vault_deletions >= vault_deletion_service.POLL_SECONDS):
                     last_vault_deletions = loop.time()
                     _submit_maintenance("vault_deletion", run_vault_deletions_once)
+                # Automatic Duplicate Cleanup (#726): each Vault runs once a day
+                # from its persisted last run; the poll only looks for due ones.
+                if (last_duplicate_cleanup is None
+                        or loop.time() - last_duplicate_cleanup >= duplicate_cleanup_service.POLL_SECONDS):
+                    last_duplicate_cleanup = loop.time()
+                    _submit_maintenance("duplicate_cleanup", run_duplicate_cleanup_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

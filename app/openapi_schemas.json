@@ -3601,6 +3601,129 @@
         "local_files",
         "request"
       ]
+    },
+    "DuplicateCleanupStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "grace_days": {
+          "type": "number"
+        },
+        "cap_files": {
+          "type": "number"
+        },
+        "cap_bytes": {
+          "type": "number"
+        },
+        "grace_days_min": {
+          "type": "number"
+        },
+        "grace_days_max": {
+          "type": "number"
+        },
+        "last_run_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_run_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_outcome": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "scheduled",
+                    "none",
+                    "capped",
+                    "skipped"
+                  ]
+                },
+                "at": {
+                  "type": "string"
+                },
+                "file_count": {
+                  "type": "number"
+                },
+                "byte_count": {
+                  "type": "number"
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "run_after": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "outcome",
+                "at"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "group_id": {
+                "type": "string"
+              },
+              "file_count": {
+                "type": "number"
+              },
+              "byte_count": {
+                "type": "number"
+              },
+              "run_after": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cancellable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "group_id",
+              "file_count",
+              "byte_count",
+              "run_after",
+              "cancellable"
+            ]
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "grace_days",
+        "cap_files",
+        "cap_bytes",
+        "grace_days_min",
+        "grace_days_max",
+        "last_run_at",
+        "next_run_at",
+        "last_outcome",
+        "pending"
+      ]
     }
   }
 }

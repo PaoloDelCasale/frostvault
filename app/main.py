@@ -66,6 +66,7 @@ from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
+from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
 from .oidc import (
@@ -748,6 +749,17 @@ class VaultDeletionRequest(BaseModel):
 
     confirmation: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=1, max_length=500)
+
+
+class DuplicateCleanupUpdate(BaseModel):
+    """Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    grace_days: int | None = Field(default=None, ge=1, le=90)
+    cap_files: int | None = Field(default=None, ge=1, le=1_000_000)
+    cap_bytes: int | None = Field(default=None, ge=1, le=1024 ** 5)
 
 
 class LifecycleTransitionUpdate(BaseModel):
@@ -1579,6 +1591,43 @@ def retry_vault_deletion(vault_id: int, request: Request,
                                                 actor=_actor(request))
     except (LookupError, ValueError) as exc:
         raise _vault_deletion_error(exc) from exc
+
+
+def _duplicate_cleanup_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, LookupError):
+        return LocalizedHTTPError(404, "api.duplicate_cleanup.not_found")
+    code = getattr(exc, "code", "invalid")
+    return LocalizedHTTPError(409 if code == "stopped" else 422,
+                              "api.duplicate_cleanup.stopped" if code == "stopped"
+                              else "api.duplicate_cleanup.invalid")
+
+
+@app.get("/api/vaults/{vault_id}/duplicate-cleanup", response_model=response_model("DuplicateCleanupStatus"))
+def duplicate_cleanup_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    try:
+        with db() as connection:
+            return duplicate_cleanup_service.status(connection, vault_id)
+    except LookupError as exc:
+        raise _duplicate_cleanup_error(exc) from exc
+
+
+@app.put("/api/vaults/{vault_id}/duplicate-cleanup", response_model=response_model("DuplicateCleanupStatus"))
+def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, request: Request,
+                             user: dict[str, Any] = Depends(current_user)):
+    """Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
+
+    Turning it on or changing its grace period or cap needs a fresh
+    authentication; turning it off never does.
+    """
+    values = action.model_dump(exclude_none=True)
+    if values != {"enabled": False}:
+        require_recent_reauth(request, user)
+    try:
+        with db() as connection:
+            return duplicate_cleanup_service.update_settings(
+                connection, vault_id=vault_id, actor=_actor(request), values=values)
+    except (LookupError, ValueError) as exc:
+        raise _duplicate_cleanup_error(exc) from exc
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

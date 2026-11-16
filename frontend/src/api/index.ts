@@ -31,6 +31,9 @@ export {
   fetchStopProtection,
   stopProtection,
   cancelStoppedFolderDeletion,
+  fetchDuplicateCleanup,
+  updateDuplicateCleanup,
+  cancelCloudDeletionGroup,
   fetchVaultDeletion,
   previewVaultDeletion,
   requestVaultDeletion,
@@ -128,6 +131,7 @@ export {
 } from "./query";
 
 export type {
+  DuplicateCleanupStatus,
   GeneralVault,
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,

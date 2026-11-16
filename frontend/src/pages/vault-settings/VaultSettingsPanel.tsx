@@ -11,6 +11,7 @@ import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
+import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { RetentionPanel } from "./RetentionPanel";
 import { UploadVerificationPanel } from "./UploadVerificationPanel";
@@ -98,6 +99,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
       more={<><p>{t("folder_settings.retention_help")}</p><p>{t("folder_settings.retention_example")}</p><p>{t("folder_settings.retention_never")}</p></>}>
       <RetentionPanel vaultId={vaultId} onNotice={show} />
     </SettingsSection>
+    {!stopped && <SettingsSection id="duplicates" highlighted={highlight === "duplicates"} title={t("duplicate_cleanup.title")} summary={t("duplicate_cleanup.summary")}
+      more={<><p>{t("duplicate_cleanup.how")}</p><p>{t("duplicate_cleanup.never_only_cloud")}</p></>}>
+      <DuplicateCleanupPanel vaultId={vaultId} paused={vault?.paused} onNotice={show} />
+    </SettingsSection>}
     <SettingsSection id="plan" highlighted={highlight === "plan"} title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
       <details className="rounded-card border border-line"><summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("settings.plan_open")}</summary>
         <div className="border-t border-line p-3"><LifecyclePanel vaultId={vaultId} onNotice={show} /></div></details>
