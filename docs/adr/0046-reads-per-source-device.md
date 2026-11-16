@@ -8,7 +8,7 @@ upload authority are unchanged.
 ## Context
 
 On 0.10.0 a Vault of 139,270 files (534 GiB) was being adopted from an Unraid
-user share (`/mnt/user`, FUSE `shfs`) whose files are spread over two HDDs of
+user share (FUSE `shfs`) whose files are spread over two HDDs of
 the array, with `OPERATION_CONCURRENCY=16` and `SCAN_HASH_CONCURRENCY=8`.
 CPU, memory and PostgreSQL were no longer the limit (FrostVault ~15% of one
 core); uploads ran at 1.5–1.7 GiB/min on a 500 Mbit/s link and the scan

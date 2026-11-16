@@ -440,7 +440,8 @@ class SHA256ManagedUploadTests(UploadSnapshotTests):
         with self.assertRaises(OperationCancelled): wrapped.read(1)
 
     def test_cancel_during_bounded_buffering_stops_before_put(self):
-        snapshot = self.snapshot(b"a" * (2 * CHUNK_SIZE))
+        # Two reads, still below the multipart threshold.
+        snapshot = self.snapshot(b"a" * (CHUNK_SIZE + CHUNK_SIZE // 2))
         checks = 0
         def active():
             nonlocal checks
