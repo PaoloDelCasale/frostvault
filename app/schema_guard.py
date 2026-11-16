@@ -145,6 +145,9 @@ def _engine(dsn: str):
 
     values = conninfo_to_dict(dsn.replace("postgresql+psycopg://", "postgresql://", 1))
     # libpq supplies omitted values from PG*, as for every other connection.
+    from .connection_options import session_options
+
+    values["options"] = session_options(dsn)
     return create_engine(URL.create("postgresql+psycopg", query=values), poolclass=NullPool)
 
 

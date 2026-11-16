@@ -49,9 +49,15 @@ def eligibility(row: dict[str, Any], target: str) -> str | None:
 
 
 def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
-    """Each file's explicit Current; never an older version behind a replacement."""
+    """Each file's explicit Current; never an older version behind a replacement.
+
+    Only the columns ``eligibility``, ``refresh_cold_sources``, ``estimate``
+    and ``schedule`` read: a large Vault has one row per file (#718).
+    """
     return connection.execute("""
-        SELECT f.id AS file_id, f.path, av.*,
+        SELECT f.id AS file_id, f.path, av.storage_class, av.integrity,
+            av.availability, av.plaintext_sha256, av.size, av.provider_version_id,
+            av.restore_state, av.object_key,
             f.replacing_version_id IS NOT NULL OR f.held_version_id IS NOT NULL
             OR EXISTS(SELECT 1 FROM jobs j WHERE j.file_id=f.id
                 AND j.status NOT IN ('completed','failed','cancelled'))

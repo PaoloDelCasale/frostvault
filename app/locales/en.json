@@ -44,6 +44,7 @@
   "move.start": "Move now in background",
   "move.queued_one": "{count} move Job queued. Follow progress or cancel pending work in Operations; cancellation retains copies and does not undo a completed move.",
   "move.queued_other": "{count} move Jobs queued. Follow progress or cancel pending work in Operations; cancellation retains copies and does not undo a completed move.",
+  "move.preview_unavailable": "Move preview unavailable. {detail}",
   "move.unavailable": "No eligible copies for a colder class. Standard has no move action; otherwise verify copies, finish pending work or explicitly recover cold sources first.",
   "move.skip_cloud_check_unavailable_one": "{count} skipped: the exact cold source could not be checked with the provider.",
   "move.skip_cloud_check_unavailable_other": "{count} skipped: the exact cold source could not be checked with the provider.",

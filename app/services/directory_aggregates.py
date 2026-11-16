@@ -687,10 +687,8 @@ def process_directory_aggregate_maintenance(
         for key in totals:
             totals[key] = 0
         with owned_connection(db()) as owned:
-            # Serial rollup plans (#707): this pass runs in the background,
-            # and parallel workers each take a dynamic shared memory segment
-            # that a small /dev/shm (64 MB by default in Docker) cannot hold.
-            owned.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            # Rollup plans are serial (#707): every application connection
+            # starts with max_parallel_workers_per_gather=0 (#718).
             _run(owned)
 
     try:

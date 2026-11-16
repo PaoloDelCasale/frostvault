@@ -14,6 +14,7 @@ from psycopg.pq import TransactionStatus
 from psycopg_pool import ConnectionPool, PoolClosed, PoolTimeout
 
 from . import config
+from .connection_options import session_options
 from .config import settings
 from .schema_guard import SCHEMA_HEAD, DatabaseSchemaError, prepare_schema, require_current_schema
 from .security import hash_password, verify_password
@@ -44,7 +45,12 @@ def pool_max_size() -> int:
 
 def _direct_connection(dsn: str) -> psycopg.Connection:
     """One unpooled connection, closed by its context exit as before #535."""
-    return psycopg.connect(dsn, row_factory=dict_row, connect_timeout=CONNECT_TIMEOUT_SECONDS)
+    return psycopg.connect(
+        dsn,
+        row_factory=dict_row,
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        options=session_options(dsn),
+    )
 
 
 def _reset_session(connection: psycopg.Connection) -> None:
@@ -82,6 +88,8 @@ def _new_pool(dsn: str) -> ConnectionPool:
             "row_factory": dict_row,
             "connect_timeout": CONNECT_TIMEOUT_SECONDS,
             "prepare_threshold": None,
+            # Serial plans as a startup option, so DISCARD ALL keeps them (#718).
+            "options": session_options(dsn),
         },
         min_size=0,
         max_size=pool_max_size(),
