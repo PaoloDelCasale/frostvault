@@ -5,28 +5,48 @@ import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 
-import { formatBytes, formatNumber, pickDurationUnit } from "./format";
+import { formatBytes, pickDurationUnit } from "./format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 /** Skip reasons of a folder selection (#723), in the server's order. */
 const SKIP_REASONS = ["present_locally", "pending_work", "pending_cleanup", "conflict", "not_verified", "no_exact_version"] as const;
 
-function SelectionSummary({ preview, t }: { preview: CloudDeletionPreview; t: Translate }) {
+/**
+ * One block, three rows (#725): what is deleted, what «Only Cloud Duplicates»
+ * keeps, what is skipped. Counts go to `t` as numbers so plural keys resolve.
+ */
+function DeletionSummary({ preview, t }: { preview: CloudDeletionPreview; t: Translate }) {
+  const selection = preview.mode === "selection";
   const skipped = (preview.skipped ?? {}) as Record<string, number>;
   const reasons = SKIP_REASONS.filter((reason) => Number(skipped[reason] ?? 0) > 0)
-    .map((reason) => t(`ui.cloud_purge_skip.${reason}`, { count: formatNumber(Number(skipped[reason])) }));
-  return <div className="grid gap-1 text-sm" data-testid="cloud-purge-selection">
-    <p data-testid="cloud-purge-eligible">
-      {t("ui.cloud_purge_eligible", { files: t("ui.cloud_purge_object", { count: formatNumber(preview.eligible_count) }), bytes: formatBytes(preview.eligible_bytes) })}
-      {" · "}
-      {reasons.length ? t("ui.cloud_purge_skipped", { reasons: reasons.join(", ") }) : t("ui.cloud_purge_skipped_none")}
-    </p>
-    <p data-testid="cloud-purge-split">{t("ui.cloud_purge_split", {
-      duplicates: t("ui.cloud_purge_duplicates", { count: formatNumber(preview.duplicate_count) }),
-      unique: t("ui.cloud_purge_no_local_copy", { count: formatNumber(preview.no_local_copy_count) }),
-    })}</p>
-  </div>;
+    .map((reason) => t(`ui.cloud_purge_skip.${reason}`, { count: Number(skipped[reason]) }));
+  const items = preview.duplicates_only
+    ? t("ui.cloud_purge_duplicates", { count: preview.object_count })
+    : t("ui.cloud_purge_object", { count: preview.object_count });
+  const split = selection && !preview.duplicates_only && preview.duplicate_count > 0 && preview.no_local_copy_count > 0;
+  const excluded = selection && preview.duplicates_only ? preview.no_local_copy_count : 0;
+  const row = "grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-3";
+  return <dl className="grid gap-1.5 rounded-lg border border-line bg-canvas p-3 text-sm" data-testid="cloud-purge-summary">
+    {preview.object_count > 0 ? <div className={row} data-testid="cloud-purge-preview">
+      <dt className="text-muted">{t("ui.cloud_purge_row_delete")}</dt>
+      <dd className="grid gap-0.5">
+        <strong className="font-bold text-ink tabular-nums">{t("ui.cloud_purge_amount", { items, bytes: formatBytes(preview.byte_count) })}</strong>
+        {split ? <span className="text-muted tabular-nums" data-testid="cloud-purge-split">
+          {`${t("ui.cloud_purge_duplicates", { count: preview.duplicate_count })} · ${t("ui.cloud_purge_no_local_copy", { count: preview.no_local_copy_count })}`}
+        </span> : null}
+      </dd>
+    </div> : null}
+    {excluded > 0 ? <div className={row} data-testid="cloud-purge-excluded">
+      <dt className="text-muted">{t("ui.cloud_purge_row_excluded")}</dt>
+      <dd><strong className="font-bold text-ink tabular-nums">{t("ui.cloud_purge_no_local_copy", { count: excluded })}</strong>{" "}
+        <span className="text-muted">({t("ui.cloud_purge_excluded_note")})</span></dd>
+    </div> : null}
+    {selection ? <div className={row} data-testid="cloud-purge-skipped">
+      <dt className="text-muted">{t("ui.cloud_purge_row_skipped")}</dt>
+      <dd className="font-bold text-ink tabular-nums">{reasons.length ? reasons.join(", ") : t("ui.cloud_purge_none")}</dd>
+    </div> : null}
+  </dl>;
 }
 
 function formatDelay(seconds: number, t: Translate): string {
@@ -102,10 +122,13 @@ export function CloudPurgeDialog({
       onOpenChange={onOpenChange}
       title={t("ui.cloud_purge_title")}
       closeLabel={t("ui.close")}
-      description={`${t("ui.cloud_purge_intro")} (${path}${isDirectory ? "/" : ""})`}
+      description={t("ui.cloud_purge_intro")}
       className="w-[min(28rem,calc(100%-1.75rem))]"
     >
       <form className="grid gap-3" onSubmit={handleSubmit} data-testid="cloud-purge-form">
+        <p className="break-all text-sm font-semibold text-ink" data-testid="cloud-purge-scope">
+          {t("ui.cloud_purge_scope", { scope: `${path}${isDirectory ? "/" : ""}` })}
+        </p>
         <p className="text-sm text-muted" data-testid="cloud-purge-local-note">
           {t("ui.cloud_purge_local_note")}
         </p>
@@ -128,20 +151,10 @@ export function CloudPurgeDialog({
           </label>
         ) : null}
         {previewing ? <p role="status" className="text-sm text-muted" data-testid="cloud-purge-previewing">{t("ui.cloud_purge_previewing")}</p> : null}
-        {preview && !previewing && preview.mode === "selection" ? <SelectionSummary preview={preview} t={t} /> : null}
         {preview && !previewing && !preview.object_count ? (
           <p className="text-sm font-semibold" data-testid="cloud-purge-nothing">{t("ui.cloud_purge_nothing")}</p>
         ) : null}
-        {preview && !previewing && preview.object_count > 0 ? (
-          <p className="text-sm font-bold text-ink" data-testid="cloud-purge-preview">
-            {t("ui.cloud_purge_preview", {
-              objects: t("ui.cloud_purge_object", { count: preview.object_count }),
-              versions: t("ui.cloud_purge_version", { count: preview.version_count }),
-              markers: t("ui.cloud_purge_marker", { count: preview.delete_marker_count }),
-              bytes: formatBytes(preview.byte_count),
-            })}
-          </p>
-        ) : null}
+        {preview && !previewing && (preview.object_count > 0 || preview.mode === "selection") ? <DeletionSummary preview={preview} t={t} /> : null}
         {settings?.purge_delay_seconds != null ? (
           <p className="text-sm text-muted" data-testid="cloud-purge-delay">
             {t("ui.cloud_purge_delay", {
@@ -180,7 +193,7 @@ export function CloudPurgeDialog({
             {error}
           </p>
         ) : null}
-        <div className="mt-2 flex flex-wrap justify-end gap-2">
+        <div className="mt-2 flex items-stretch justify-end gap-2">
           <Button
             type="button"
             variant="secondary"
@@ -193,7 +206,7 @@ export function CloudPurgeDialog({
           <Button
             type="submit"
             variant="danger"
-            className="min-h-11 min-w-11"
+            className="min-h-11 min-w-0 shrink whitespace-normal text-center"
             disabled={busy || previewing || !preview || !preview.object_count || !reason.trim() || confirmation !== vaultName}
             aria-busy={busy || undefined}
             data-testid="cloud-purge-submit"

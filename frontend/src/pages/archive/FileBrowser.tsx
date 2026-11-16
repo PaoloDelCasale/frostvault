@@ -25,6 +25,13 @@ export const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 100;
 /** List filters; "" is every file. Counts come from the Vault-wide `/api/stats`. */
 const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["stopped", "files.chip_stopped"], ["excluded", "files.chip_excluded"], ["unsupported", "files.chip_unsupported"], ["problem", "files.chip_problem"]] as const;
+/** The «Selection:» line of «Delete from cloud?» (#725): a folder, a few names, or a count. */
+function purgeScopeLabel(items: { path: string; type?: string }[], t: Translate): string {
+  const name = (item: { path: string; type?: string }) => `${item.path}${item.type === "directory" ? "/" : ""}`;
+  if (items.length === 1 && items[0]!.type === "directory") return t("ui.cloud_purge_scope_folder", { path: name(items[0]!) });
+  if (items.length <= 3) return items.map(name).join(", ");
+  return t("ui.cloud_purge_scope_items", { count: items.length });
+}
 const parentOf = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 
 function FolderStates({ item, t }: { item: ArchiveListItem; t: Translate }) {
@@ -138,7 +145,7 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
       : { body: {
           paths: selected.filter(({ item }) => item.type !== "directory").map(({ item }) => item.path),
           directories: selected.filter(({ item }) => item.type === "directory").map(({ item }) => item.path),
-        }, label: selected.length === 1 ? `${selected[0]!.item.path}${selected[0]!.item.type === "directory" ? "/" : ""}` : t("ui.cloud_purge_scope_items", { count: selected.length }) };
+        }, label: purgeScopeLabel(selected.map(({ item }) => item), t) };
     void previewPurge(request, duplicatesOnly);
   }
   /** Schedules exactly what the preview listed; a changed selection shows a new preview (#723). */

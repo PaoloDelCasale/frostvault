@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +8,7 @@ import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiCli
 import type { CloudDeletionPreview } from "@/api/types";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
 import { CloudPurgeDialog } from "@/pages/archive/CloudPurgeDialog";
+import { translate } from "@/i18n/translate";
 import { jsonResponse } from "./vault-settings-harness";
 
 const t = (key: string, params?: Record<string, string | number>) => params ? `${key} ${JSON.stringify(params)}` : key;
@@ -57,10 +61,11 @@ describe("Delete from cloud on a selection (#723)", () => {
     await user.click(check("library"));
     await user.click(check("b.jpg"));
     await user.click(screen.getByTestId("selection-cloud-purge"));
-    const eligible = await screen.findByTestId("cloud-purge-eligible");
-    expect(eligible).toHaveTextContent("ui.cloud_purge_skip.present_locally");
-    expect(eligible).toHaveTextContent("137,496");
-    expect(screen.getByTestId("cloud-purge-split")).toHaveTextContent("ui.cloud_purge_duplicates");
+    const skipped = await screen.findByTestId("cloud-purge-skipped");
+    expect(skipped).toHaveTextContent('ui.cloud_purge_skip.present_locally {"count":137496}');
+    expect(screen.getByTestId("cloud-purge-preview")).toHaveTextContent('ui.cloud_purge_duplicates {\\"count\\":2149}');
+    expect(screen.getByTestId("cloud-purge-excluded")).toHaveTextContent('ui.cloud_purge_no_local_copy {"count":14}');
+    expect(screen.getByTestId("cloud-purge-scope")).toHaveTextContent("a.jpg, library/, b.jpg");
     expect(screen.getByTestId("cloud-purge-duplicates-only")).toBeChecked();
     expect(posts.at(-1)).toEqual({ url: expect.stringContaining("/api/cloud-deletion/preview"), body: { paths: ["a.jpg", "b.jpg"], directories: ["library"], duplicates_only: true } });
 
@@ -126,7 +131,40 @@ describe("CloudPurgeDialog selection preview", () => {
     render(<CloudPurgeDialog open onOpenChange={() => undefined} path="a.jpg" vaultName="Immich" settings={null}
       preview={preview({ mode: "exact", object_count: 1 })} t={t} onConfirm={() => undefined} />);
     expect(screen.getByTestId("cloud-purge-preview")).toBeInTheDocument();
-    expect(screen.queryByTestId("cloud-purge-selection")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cloud-purge-skipped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("cloud-purge-duplicates-only")).not.toBeInTheDocument();
   });
+});
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const catalog = (locale: string): Record<string, string> => JSON.parse(readFileSync(path.join(root, `app/locales/${locale}.json`), "utf8"));
+
+describe("«Delete from cloud?» summary in Italian and English (#725)", () => {
+  const skippedAll = { present_locally: 1860, pending_work: 1, pending_cleanup: 2, conflict: 1, not_verified: 3, no_exact_version: 1 };
+  const cases = [
+    { locale: "it", expected: ["Selezione: cartella upload/", "Da eliminare", "23 doppioni", "Esclusi", "14 solo nel cloud", "Saltati", "1860 presenti sul server".replace("1860", new Intl.NumberFormat("it").format(1860))] },
+    { locale: "en", expected: ["Selection: folder upload/", "To delete", "23 Cloud Duplicates", "Excluded", "14 only in the cloud", "Skipped", "1,860 present on the server"] },
+  ];
+  for (const { locale, expected } of cases) {
+    it(`shows translated plural counts in ${locale}, never raw keys`, () => {
+      const messages = catalog(locale);
+      const tr = (key: string, params?: Record<string, string | number>) => translate(messages, key, params, locale);
+      const scope = tr("ui.cloud_purge_scope_folder", { path: "upload/" });
+      const { unmount } = render(<CloudPurgeDialog open onOpenChange={() => undefined} path={scope} vaultName="Immich" settings={{ purge_delay_seconds: 604800 } as never}
+        preview={preview({ object_count: 23, duplicate_count: 23, eligible_count: 37, no_local_copy_count: 14, skipped: skippedAll })}
+        t={tr} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+      const text = document.body.textContent ?? "";
+      expect(text).not.toMatch(/ui\./);
+      for (const fragment of expected) expect(text).toContain(fragment);
+      expect(text).not.toMatch(/marker/i);
+      unmount();
+      // «Only Cloud Duplicates» off: every eligible file, split into duplicates and only-in-cloud.
+      render(<CloudPurgeDialog open onOpenChange={() => undefined} path={scope} vaultName="Immich" settings={null}
+        preview={preview({ duplicates_only: false, object_count: 1, duplicate_count: 1, eligible_count: 2, no_local_copy_count: 1, skipped: {} })}
+        t={tr} duplicatesOnly={false} onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+      expect(document.body.textContent).not.toMatch(/ui\./);
+      expect(screen.getByTestId("cloud-purge-split")).toBeInTheDocument();
+      expect(screen.queryByTestId("cloud-purge-excluded")).not.toBeInTheDocument();
+    });
+  }
 });
