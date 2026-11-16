@@ -108,8 +108,10 @@ class UploadSnapshotTests(unittest.TestCase):
     def test_single_put_pass_keeps_no_bytes_of_a_file_changing_while_read(self):
         for replace in (False, True):
             with self.subTest(replace=replace):
-                self.path.write_bytes(b"x" * (2 * CHUNK_SIZE))
-                payload = SnapshotPayload(2 * CHUNK_SIZE)
+                # Two reads, still a single PUT (4 MiB reads since #713).
+                size = CHUNK_SIZE + CHUNK_SIZE // 2
+                self.path.write_bytes(b"x" * size)
+                payload = SnapshotPayload(size)
                 calls = 0
                 def active():
                     nonlocal calls
@@ -117,10 +119,10 @@ class UploadSnapshotTests(unittest.TestCase):
                     if calls == 2:
                         if replace:
                             other = self.path.with_name("replacement")
-                            other.write_bytes(b"y" * (2 * CHUNK_SIZE))
+                            other.write_bytes(b"y" * size)
                             other.replace(self.path)
                         else:
-                            self.path.write_bytes(b"changed-and-longer" * CHUNK_SIZE)
+                            self.path.write_bytes(b"changed-and-longer" * (size // 4))
                 with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
                     prepare_upload_snapshot(self.path, active, payload=payload)
                 self.assertIsNone(payload.data)

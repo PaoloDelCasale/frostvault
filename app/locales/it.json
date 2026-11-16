@@ -853,6 +853,8 @@
   "activity.rate": "Velocità: {rate} al minuto · mancano circa {remaining}",
   "activity.rate_unknown": "Velocità non ancora misurata: servono alcuni upload conclusi.",
   "activity.paused": "Vault in pausa: questi file non vengono caricati finché non lo riprendi.",
+  "activity.server_busy": "Rallentato: server occupato",
+  "activity.server_busy_detail": "I dischi del server sono molto occupati: FrostVault legge un file per disco e non avvia nuovi upload finché il carico non scende. Quelli in corso terminano.",
   "activity.paused_heading": "Vault in pausa",
   "activity.paused_only_one": "{count} file in pausa",
   "activity.paused_only_other": "{count} file in pausa",

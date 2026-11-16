@@ -19,10 +19,12 @@ const empty = (): UploadActivitySummary => ({
 const messages = loadCatalog();
 const t = (key: string, params?: Record<string, string | number>) => translate(messages, key, params);
 
-function show(activity: UploadActivitySummary, vaultId?: number, extra: UploadActivityResponse["vaults"] = []) {
+function show(activity: UploadActivitySummary, vaultId?: number, extra: UploadActivityResponse["vaults"] = [],
+  serverPriority?: UploadActivityResponse["server_priority"]) {
   const data: UploadActivityResponse = {
     observed_at: "2026-11-06T10:00:00Z", global: activity,
     vaults: [{ ...activity, vault_id: 2, vault_name: "Other Vault <img>", paused: false }, ...extra],
+    ...(serverPriority ? { server_priority: serverPriority } : {}),
   };
   const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(data));
   configureApiClient({ fetch });
@@ -183,5 +185,23 @@ describe("aggregate upload activity", () => {
     expect(within(list).getByRole("link", { name: "Test686" })).toBeVisible();
     expect(within(list).getByText(t("activity.paused"))).toBeVisible();
     expect(screen.queryByText(t("activity.by_vault"))).not.toBeInTheDocument();
+  });
+
+  it("says uploads are slowed down while the server is busy (#713)", async () => {
+    const activity = empty(); activity.queued = { files: 12, bytes: 4096, transferred_bytes: 0 };
+    show(activity, undefined, [], { throttled: true, since: "2026-11-06T09:59:00Z" });
+    expect(await screen.findByTestId("activity-server-busy-badge")).toHaveTextContent(t("activity.server_busy"));
+    const panel = await openPanel();
+    const notice = within(panel).getByTestId("activity-server-busy");
+    expect(within(notice).getByText(t("activity.server_busy"))).toBeVisible();
+    expect(within(notice).getByText(t("activity.server_busy_detail"))).toBeVisible();
+  });
+
+  it("shows no server notice when uploads are not held back (#713)", async () => {
+    const activity = empty(); activity.queued = { files: 12, bytes: 4096, transferred_bytes: 0 };
+    show(activity, undefined, [], { throttled: false, since: null });
+    await openPanel();
+    expect(screen.queryByTestId("activity-server-busy")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("activity-server-busy-badge")).not.toBeInTheDocument();
   });
 });

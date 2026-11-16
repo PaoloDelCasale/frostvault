@@ -2497,6 +2497,7 @@ class ArchiveCatalog:
         per_vault_limit: int | None = None,
         exclude_job_ids: Sequence[int] = (),
         unserved_only: bool = False,
+        include_file_ids: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         """Load scheduler candidates using the shared claimability definition.
 
@@ -2512,6 +2513,8 @@ class ArchiveCatalog:
         window, not a global cut: every eligible Vault must be visible to the
         turn selector, including its automatic work.
         Each row carries the File's current path and its Vault's root and bucket.
+        ``include_file_ids`` adds the claimable Jobs of those Files beyond the
+        window: Local Copies the scan just read, whose upload goes first (#713).
         """
         if limit <= 0:
             return []
@@ -2552,14 +2555,15 @@ class ArchiveCatalog:
                       AND ({predicate})
                       AND j.id <> ALL(%s::bigint[])
                 ) ranked
-                WHERE ranked.tier_rank <= {window}
+                WHERE ranked.tier_rank <= {window} OR ranked.file_id = ANY(%s::uuid[])
             ) j
             JOIN files f ON f.id = j.file_id
             WHERE v.lifecycle IN ('active', 'stopping') {idle_filter}
             ORDER BY {self._CROSS_VAULT_TIER_SQL} ASC, {tier} ASC,
                      j.requested_at ASC, j.id ASC
             """,
-            [*params, excluded, *([now] if unserved_only else [])],
+            [*params, excluded, [str(file_id) for file_id in include_file_ids],
+             *([now] if unserved_only else [])],
         ).fetchall()
 
     def observe_scheduler_turns(

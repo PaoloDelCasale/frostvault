@@ -17,7 +17,8 @@ import psycopg
 from app.services import upload_pipeline as pipeline
 from app.services.shutdown import OperationCancelled, WorkerStopping
 from app.services.upload_execution import _UploadCheckpoint
-from app.services.upload_snapshot import CHUNK_SIZE, prepare_upload_snapshot
+from app.services.upload_pipeline import ACCOUNTED_CHUNK
+from app.services.upload_snapshot import prepare_upload_snapshot
 
 
 class UploadCapacityTests(unittest.TestCase):
@@ -41,16 +42,16 @@ class UploadCapacityTests(unittest.TestCase):
                 coordinator = pipeline._Pipeline(concurrency)
                 self.assertEqual(coordinator.prepare.count, prepare)
                 # Two read chunks per reader: exactly ``prepare`` readers fit.
-                self.assertEqual(coordinator.prepare.byte_limit, prepare * 2 * CHUNK_SIZE)
+                self.assertEqual(coordinator.prepare.byte_limit, prepare * 2 * ACCOUNTED_CHUNK)
                 self.assertEqual(coordinator.network.count, network)
                 self.assertEqual(coordinator._buffers.count, network)
                 self.assertEqual(coordinator.catalog.count, catalog)
                 self.assertEqual(coordinator._vault_count, per_vault)
                 # Payload budgets do not grow with c.
-                self.assertEqual(coordinator._buffers.byte_limit, 64 * CHUNK_SIZE)
+                self.assertEqual(coordinator._buffers.byte_limit, 64 * ACCOUNTED_CHUNK)
                 self.assertEqual(coordinator._large_buffers.count, 1)
                 self.assertEqual(coordinator._large_buffers.byte_limit,
-                                 2 * (pipeline.MAX_PART_SIZE + CHUNK_SIZE))
+                                 2 * (pipeline.MAX_PART_SIZE + ACCOUNTED_CHUNK))
 
     def test_concurrency_above_32_is_clamped_to_32(self):
         for concurrency in (33, 64, 1000):
@@ -73,9 +74,9 @@ class UploadCapacityTests(unittest.TestCase):
         coordinator = pipeline._Pipeline(16)
         with ExitStack() as stack:
             for _ in range(8):
-                stack.enter_context(coordinator.prepare.take(lambda: None, 2 * CHUNK_SIZE))
+                stack.enter_context(coordinator.prepare.take(lambda: None, 2 * ACCOUNTED_CHUNK))
             self.assertEqual(coordinator.prepare._count, 8)
-            self.assertFalse(coordinator.prepare._fits(2 * CHUNK_SIZE))
+            self.assertFalse(coordinator.prepare._fits(2 * ACCOUNTED_CHUNK))
         self.assertEqual(coordinator.prepare._count, 0)
 
     def test_a_queued_waiter_is_woken_by_the_release_not_by_polling(self):
@@ -139,7 +140,7 @@ class UploadCapacityTests(unittest.TestCase):
 
     def test_oversized_layout_has_one_bounded_lane_without_blocking_tiny_sends(self):
         tiny = self.snapshot()
-        snapshot = replace(tiny, size=100 * CHUNK_SIZE, part_size=64 * CHUNK_SIZE)
+        snapshot = replace(tiny, size=100 * ACCOUNTED_CHUNK, part_size=64 * ACCOUNTED_CHUNK)
         coordinator = pipeline._Pipeline(4)
         waiting, entered = threading.Event(), threading.Event()
         def another_large():
@@ -148,13 +149,13 @@ class UploadCapacityTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=1) as pool:
             with coordinator.sending(snapshot, lambda: None):
                 self.assertEqual(coordinator._large_buffers._count, 1)
-                self.assertEqual(coordinator._large_buffers._bytes, 130 * CHUNK_SIZE)
+                self.assertEqual(coordinator._large_buffers._bytes, 130 * ACCOUNTED_CHUNK)
                 work = pool.submit(another_large)
                 self.assertTrue(waiting.wait(2))
                 self.assertFalse(entered.is_set())
                 with coordinator.sending(tiny, lambda: None):
                     self.assertEqual(coordinator.network._count, 2)
-                    self.assertEqual(coordinator._buffers._bytes, tiny.size + 2 * CHUNK_SIZE)
+                    self.assertEqual(coordinator._buffers._bytes, tiny.size + 2 * ACCOUNTED_CHUNK)
             work.result(timeout=2)
         for gate in (coordinator.network, coordinator._buffers, coordinator._large_buffers):
             self.assertEqual((gate._count, gate._bytes), (0, 0))
@@ -163,7 +164,7 @@ class UploadCapacityTests(unittest.TestCase):
         """#702: the buffer lane first (before the read), the count around the PUT."""
         tiny = self.snapshot()
         coordinator = pipeline._Pipeline(4)
-        weight = tiny.size + 2 * CHUNK_SIZE
+        weight = tiny.size + 2 * ACCOUNTED_CHUNK
         with coordinator.small_payload(tiny.size, lambda: None):
             self.assertEqual((coordinator._buffers._count, coordinator._buffers._bytes), (1, weight))
             self.assertEqual(coordinator.network._count, 0)
@@ -184,7 +185,7 @@ class UploadCapacityTests(unittest.TestCase):
 
     def test_reserved_payload_still_waits_for_send_admission_and_byte_budget(self):
         tiny = self.snapshot()
-        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_bytes=tiny.size + 2 * CHUNK_SIZE))
+        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_bytes=tiny.size + 2 * ACCOUNTED_CHUNK))
         waiting, entered = threading.Event(), threading.Event()
         def second_payload():
             with coordinator.small_payload(tiny.size, waiting.set):

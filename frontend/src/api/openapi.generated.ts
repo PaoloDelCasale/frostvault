@@ -2170,6 +2170,15 @@ export interface components {
                 last_error_source_cause?: string | null;
                 scan_phase?: string | null;
                 scanning?: boolean;
+                server_priority_enabled?: boolean;
+                server_priority_throttled?: boolean;
+                server_priority_throttled_since?: string | null;
+                source_device_read_limit?: number;
+                source_devices?: {
+                    device: string;
+                    reading: number;
+                    waiting: number;
+                }[];
                 traversal_files_expected?: number | null;
                 traversal_files_per_minute?: number | null;
                 traversal_files_seen?: number | null;
@@ -2291,6 +2300,10 @@ export interface components {
         UploadActivityResponse: {
             global: components["schemas"]["UploadActivitySummary"];
             observed_at: string;
+            server_priority?: {
+                since: string | null;
+                throttled: boolean;
+            };
             vaults: (components["schemas"]["UploadActivitySummary"] & {
                 paused: boolean;
                 vault_id: number;

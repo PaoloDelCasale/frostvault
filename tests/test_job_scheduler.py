@@ -388,7 +388,8 @@ class SchedulerFileIsolationTests(unittest.TestCase):
     def test_candidate_window_is_per_vault(self) -> None:
         process_jobs_once()
         kwargs = self.catalog.list_claimable_jobs.call_args.kwargs
-        self.assertEqual(kwargs["per_vault_limit"], 10)
+        # Wide enough to rotate uploads across Source Devices (#713).
+        self.assertEqual(kwargs["per_vault_limit"], 64)
         self.assertGreater(kwargs["limit"], kwargs["per_vault_limit"])
 
     def test_busy_scheduler_observes_turns_without_claiming_backlog(self) -> None:

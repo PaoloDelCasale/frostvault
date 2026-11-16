@@ -162,7 +162,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         # Each tiny transfer reserves its payload plus bounded read chunks.
         # Enough bytes for one, even though four network count permits exist.
         self.pipeline = pipeline._Pipeline(4, pipeline._Limits(
-            network_count=4, network_bytes=2 * pipeline.CHUNK_SIZE + len(worker_tests.A)))
+            network_count=4, network_bytes=2 * pipeline.ACCOUNTED_CHUNK + len(worker_tests.A)))
         with patch.object(pipeline, "pipeline_for", return_value=self.pipeline):
             first, second = self.queue("report.txt"), self.queue("second.txt")
             started, release = self.held_send()
@@ -528,7 +528,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 with ExitStack() as full:
                     for _ in range(self.pipeline.prepare.count):
-                        full.enter_context(self.pipeline.prepare.take(lambda: None, 2 * pipeline.CHUNK_SIZE))
+                        full.enter_context(self.pipeline.prepare.take(lambda: None, pipeline.PREPARE_READER_BYTES))
                     work = pool.submit(self.worker.run_job, job)
                     self.wait_for(lambda: self.worker.row(job)["message_key"] == "job.hashing_local_file")
                     hashing.assert_not_called()

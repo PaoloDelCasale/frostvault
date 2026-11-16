@@ -44,7 +44,7 @@ from typing import Any, Callable, Iterator
 import psycopg
 
 from .database_retry import owned_connection
-from .upload_snapshot import CHUNK_SIZE, MAX_PART_SIZE, MULTIPART_THRESHOLD, UploadSnapshot
+from .upload_snapshot import MAX_PART_SIZE, MIB, MULTIPART_THRESHOLD, UploadSnapshot
 
 
 class UploadJournalHeld(psycopg.OperationalError):
@@ -56,8 +56,13 @@ MAX_CONCURRENCY = 32
 # Hash readers stop growing here: more parallel reads of the same disks only
 # compete with each other and with scan verification (#700).
 MAX_PREPARE_READERS = 8
+# The accounting unit of one live read chunk in the payload budget. Reads are
+# 4 MiB since #713 (upload_snapshot.CHUNK_SIZE); the extra is transient and,
+# like Python/SDK/TLS allocations, outside this payload (not RSS) budget, so
+# the number of sends a budget admits does not shrink.
+ACCOUNTED_CHUNK = MIB
 # Live read chunks one preparation reader holds; preparation_capacity weight.
-PREPARE_READER_BYTES = 2 * CHUNK_SIZE
+PREPARE_READER_BYTES = 2 * ACCOUNTED_CHUNK
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ class _Limits:
     prepare_count: int | None = None
     prepare_bytes: int | None = None
     network_count: int | None = None
-    network_bytes: int = 64 * CHUNK_SIZE
+    network_bytes: int = 64 * MIB
     catalog_count: int | None = None
     catalog_per_vault: int | None = None
 
@@ -171,7 +176,7 @@ class _Pipeline:
         network_count = min(concurrency, limits.network_count)
         self.network = _Capacity(network_count, network_count)
         self._buffers = _Capacity(network_count, limits.network_bytes)
-        self._large_buffers = _Capacity(1, 2 * (MAX_PART_SIZE + CHUNK_SIZE))
+        self._large_buffers = _Capacity(1, 2 * (MAX_PART_SIZE + ACCOUNTED_CHUNK))
         catalog_count = min(concurrency, limits.catalog_count)
         self.catalog = _Capacity(catalog_count, catalog_count)
         self._vault_count = min(concurrency, limits.catalog_per_vault)
@@ -251,14 +256,14 @@ class _Pipeline:
         """
         if not 0 <= size < MULTIPART_THRESHOLD:
             raise ValueError("Only single-PUT payloads are reserved before the read")
-        with self._buffers.take(check, size + 2 * CHUNK_SIZE):
+        with self._buffers.take(check, size + 2 * ACCOUNTED_CHUNK):
             yield
 
     @contextmanager
     def sending(self, snapshot: UploadSnapshot, check: Callable[[], None], *,
                 payload_reserved: bool = False) -> Iterator[None]:
-        weight = (snapshot.size + 2 * CHUNK_SIZE if snapshot.size < MULTIPART_THRESHOLD
-                  else 2 * (snapshot.part_size + CHUNK_SIZE))
+        weight = (snapshot.size + 2 * ACCOUNTED_CHUNK if snapshot.size < MULTIPART_THRESHOLD
+                  else 2 * (snapshot.part_size + ACCOUNTED_CHUNK))
         def active() -> None:
             check()
             self.require_send_admission()

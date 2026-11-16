@@ -63,6 +63,11 @@ class StatsTests(unittest.TestCase):
             self.assertEqual(payload["source_volume"]["local_operations_allowed"], health == "ok")
             self.assertNotIn("filesystem", payload)
             self.assertNotIn("filesystem", payload["runtime"])
+            # Installation-wide read scheduling (#713), off by default.
+            self.assertIs(payload["runtime"]["server_priority_throttled"], False)
+            self.assertIsNone(payload["runtime"]["server_priority_throttled_since"])
+            self.assertGreaterEqual(payload["runtime"]["source_device_read_limit"], 1)
+            self.assertIsInstance(payload["runtime"]["source_devices"], list)
 
     def test_summary_is_scoped_and_matches_listing(self):
         with PostgresConnection(str(self.path)) as connection:

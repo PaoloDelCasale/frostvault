@@ -257,6 +257,20 @@ class ClaimableWindowTests(QueueFixture):
         self.assertEqual([row["id"] for row in rows], ids[2:4])
         self.assertEqual(self.candidates(limit=0), [])
 
+    def test_jobs_of_files_the_scan_just_read_join_the_window(self):
+        # #713: their upload goes first, from the page cache, even when they
+        # sit beyond the per-Vault window.
+        for index in range(5):
+            self.write(2, f"f{index}.jpg")
+        self.advance(300)
+        self.assertEqual(self.queue(2), 5)
+        jobs = self.jobs(2)
+        last = jobs[-1]
+        rows = self.candidates(limit=10, per_vault_limit=2)
+        self.assertNotIn(last["id"], [row["id"] for row in rows])
+        rows = self.candidates(limit=10, per_vault_limit=2, include_file_ids=[last["file_id"]])
+        self.assertEqual([row["id"] for row in rows], [jobs[0]["id"], jobs[1]["id"], last["id"]])
+
     def test_unrunnable_head_of_queue_does_not_block_following_jobs(self):
         self.write(2, "head.jpg")
         self.advance(300)

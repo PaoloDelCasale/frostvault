@@ -2880,6 +2880,44 @@
               "scanning": {
                 "type": "boolean"
               },
+              "server_priority_enabled": {
+                "type": "boolean"
+              },
+              "server_priority_throttled": {
+                "type": "boolean"
+              },
+              "server_priority_throttled_since": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_device_read_limit": {
+                "type": "integer"
+              },
+              "source_devices": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "device": {
+                      "type": "string"
+                    },
+                    "reading": {
+                      "type": "integer"
+                    },
+                    "waiting": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "device",
+                    "reading",
+                    "waiting"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "traversal_files_expected": {
                 "type": [
                   "number",
@@ -3331,6 +3369,25 @@
           },
           "observed_at": {
             "type": "string"
+          },
+          "server_priority": {
+            "additionalProperties": false,
+            "properties": {
+              "since": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "throttled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "throttled",
+              "since"
+            ],
+            "type": "object"
           },
           "vaults": {
             "items": {
