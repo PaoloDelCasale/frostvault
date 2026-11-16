@@ -14,7 +14,14 @@ type PhaseState = "done" | "running" | "waiting";
 const PHASES = ["traversal", "verification", "finalization"] as const;
 type Phase = (typeof PHASES)[number];
 /** Source error causes the Owner reads translated; any other keeps its text. */
-const CAUSES = new Set(["tree_changed", "root_changed", "root_unavailable", "superseded", "incomplete", "watcher_denied"]);
+const CAUSES: Record<string, string> = {
+  tree_changed: "vault.scan.cause.tree_changed",
+  root_changed: "vault.scan.cause.root_changed",
+  root_unavailable: "vault.scan.cause.root_unavailable",
+  superseded: "vault.scan.cause.superseded",
+  incomplete: "vault.scan.cause.incomplete",
+  watcher_denied: "vault.scan.cause.watcher_denied",
+};
 
 function percent(done: number, total: number): number {
   return total > 0 ? (done / total) * 100 : 0;
@@ -113,7 +120,7 @@ export function ScanStatus({ runtime, t, adoption, unconfirmed = false }: {
     {failed && <p className={cn(scanning ? "text-muted" : "text-ink")} data-testid="scan-last-failed">
       {t("vault.scan.previous_failed", {
         at: formatDateTime(failedAt as string),
-        cause: cause && CAUSES.has(cause) ? t("vault.scan.cause." + cause) : String(stored),
+        cause: cause && Object.hasOwn(CAUSES, cause) ? t(CAUSES[cause]) : String(stored),
       })}
       {scanning && <> · {t("vault.scan.previous_failed_resolving")}</>}
     </p>}
