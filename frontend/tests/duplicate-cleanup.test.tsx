@@ -153,9 +153,38 @@ describe("Automatic Duplicate Cleanup settings", () => {
 
   it("says when the duplicates cannot be counted now", async () => {
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      [`GET ${URL}`]: () => jsonResponse({ ...defaultDuplicateCleanup, current: null, waiting: null, ready: null }),
+      [`GET ${URL}`]: () => jsonResponse({ ...defaultDuplicateCleanup, current: null, waiting: null, ready: null, unseen: null }),
     }) });
     expect(await screen.findByTestId("duplicate-cleanup-current")).toHaveTextContent(/cannot be counted right now/);
+    expect(screen.queryByTestId("duplicate-cleanup-unseen")).toBeNull();
+  });
+
+  // #729 review: duplicates never seen on the server are counted apart and never deleted automatically.
+  it("counts the duplicates never seen on the server apart and points to «Delete from cloud»", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup, enabled: true, last_run_at: "2026-11-16T23:46:00Z", next_run_at: "2026-11-17T23:46:00Z",
+        last_outcome: { outcome: "none", at: "2026-11-16T23:46:00Z", file_count: 0, byte_count: 0, waiting_count: 0, waiting_bytes: 0, unseen_count: 2 },
+        current: { count: 2, bytes: 2048 },
+        unseen: { count: 2, bytes: 2048 },
+      }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-current")).toHaveTextContent("Cloud duplicates now: 2 (2.0 KiB).");
+    expect(screen.getByTestId("duplicate-cleanup-unseen")).toHaveTextContent(
+      "2 duplicates (2.0 KiB) never seen on the server: the automatic cleanup does not delete them. You can delete them yourself with «Delete from cloud» and «Only Cloud Duplicates».");
+    expect(screen.queryByTestId("duplicate-cleanup-waiting")).toBeNull();
+    expect(screen.queryByTestId("duplicate-cleanup-ready")).toBeNull();
+    const lastRun = screen.getByTestId("duplicate-cleanup-last-run");
+    expect(lastRun).toHaveTextContent(/no duplicate the cleanup can delete \(2 never seen on the server\)/);
+    expect(lastRun).not.toHaveTextContent("no duplicates to delete");
+  });
+
+  it("shows the duplicates never seen on the server while off too, in Italian", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({ ...defaultDuplicateCleanup, current: { count: 1, bytes: 1024 }, unseen: { count: 1, bytes: 1024 } }),
+    }, { locale: "it" }) });
+    expect(await screen.findByTestId("duplicate-cleanup-unseen")).toHaveTextContent(
+      "1 doppione (1,0 KiB) mai visto sul server: la pulizia automatica non lo elimina. Puoi eliminarlo tu con «Elimina dal cloud» e «Solo doppioni».");
   });
 
   it("writes and reads the caps with the Italian digit grouping", async () => {
@@ -201,7 +230,8 @@ describe("Automatic Duplicate Cleanup settings", () => {
       const messages = loadCatalog(locale);
       for (const key of ["title", "summary", "enable", "off_hint", "how", "never_only_cloud", "save", "pending_one", "pending_other",
         "current_none", "current_one", "current_other", "current_unknown", "waiting_one", "waiting_other", "ready_one", "ready_other",
-        "totals_one", "totals_other", "outcome.none_waiting_one", "outcome.none_waiting_other"]) {
+        "totals_one", "totals_other", "outcome.none_waiting_one", "outcome.none_waiting_other",
+        "unseen_one", "unseen_other", "outcome.none_unseen_one", "outcome.none_unseen_other"]) {
         expect(messages[`duplicate_cleanup.${key}`], `${locale} ${key}`).toBeTruthy();
       }
     }

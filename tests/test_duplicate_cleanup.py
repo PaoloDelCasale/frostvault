@@ -13,6 +13,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -20,7 +21,8 @@ from fastapi.testclient import TestClient
 from app import main, storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.services import cloud_deletion, duplicate_cleanup
+from app.services import cloud_deletion, duplicate_cleanup, history_retention
+from app.services.cloud_deletion import load_vault_health, observation_is_unconfirmed
 from app.sessions import create_session, csrf_token_for
 from tests.owner_fixtures import insert_owner
 from tests.postgres import database_dsn
@@ -289,6 +291,24 @@ class ExecutionTests(DuplicateCleanupFixture):
         self.assertEqual(totals, {"deleted_count": 1, "deleted_bytes": len(VIDEO),
                                   "last_deleted_at": finished["finished_at"].isoformat()})
 
+    def test_the_totals_survive_the_history_retention_of_their_jobs(self) -> None:
+        group, _, _ = self.automatic_group()
+        self.drain(group)
+        self.assertEqual(self.statuses(group), ["completed", "completed"])
+        before = self.status()["totals"]
+        self.assertEqual((before["deleted_count"], before["deleted_bytes"]), (2, len(PHOTO) + len(VIDEO)))
+        history_retention.collect(self.db, now=utcnow() + timedelta(days=400))
+        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE group_id=%s", group), 0,
+                         "the history retention collected the completed Jobs")
+        self.assertEqual(self.status()["totals"], before)
+
+    def test_a_manual_deletion_never_adds_to_the_totals(self) -> None:
+        self.moved("manual.bin", b"manual-729-bytes")
+        manual = self.schedule(paths=["old/manual.bin"])
+        self.drain(manual.group_id)
+        self.assertEqual(self.statuses(manual.group_id), ["completed"])
+        self.assertIsNone(self.status()["totals"], "never recorded: no invented zero")
+
     def test_an_observed_reappearance_revokes_only_that_automatic_member(self) -> None:
         group, _, _ = self.automatic_group()
         target = self.source / "old/video.mp4"
@@ -333,6 +353,7 @@ class CountTests(DuplicateCleanupFixture):
         now = utcnow()
         status = self.status(now)
         self.assertEqual(status["current"], {"count": 3, "bytes": 3 * len(PHOTO)})
+        self.assertEqual(status["unseen"], {"count": 1, "bytes": len(PHOTO)})
         manual = self.preview(listing=cloud_deletion.ListingFilter(), duplicates_only=True)
         self.assertEqual((status["current"]["count"], status["current"]["bytes"]),
                          (manual.duplicate_count, manual.duplicate_bytes),
@@ -343,11 +364,12 @@ class CountTests(DuplicateCleanupFixture):
             "count": 1, "bytes": len(PHOTO), "first_eligible_at": eligible.isoformat(),
             # Never run yet: the first run is at the next poll, then daily.
             "earliest_deletion_at": (first_run_from(now, eligible) + self.DELAY).isoformat()})
-        self.assertEqual(status["totals"], {"deleted_count": 0, "deleted_bytes": 0, "last_deleted_at": None})
+        self.assertIsNone(status["totals"], "nothing deleted automatically yet")
 
         outcome = self.run_cleanup(now)
         self.assertEqual((outcome["outcome"], outcome["file_count"]), ("scheduled", 1))
-        self.assertEqual((outcome["waiting_count"], outcome["waiting_bytes"]), (1, len(PHOTO)))
+        self.assertEqual((outcome["waiting_count"], outcome["waiting_bytes"], outcome["unseen_count"]),
+                         (1, len(PHOTO), 1))
         after = self.status(now)
         self.assertEqual(after["current"]["count"], 2, "a scheduled duplicate is no longer counted")
         self.assertEqual(after["ready"]["count"], 0)
@@ -359,7 +381,8 @@ class CountTests(DuplicateCleanupFixture):
     def test_a_run_with_only_waiting_duplicates_records_how_many_wait(self) -> None:
         self.configure()
         nothing = self.run_cleanup()
-        self.assertEqual((nothing["outcome"], nothing["waiting_count"], nothing["waiting_bytes"]), ("none", 0, 0))
+        self.assertEqual((nothing["outcome"], nothing["waiting_count"], nothing["waiting_bytes"],
+                          nothing["unseen_count"]), ("none", 0, 0, 0))
         young = self.cloud_only_at("young/photo.jpg", PHOTO)
         self.put("new/photo.jpg", PHOTO)
         self.age(young, days=1)
@@ -381,8 +404,43 @@ class CountTests(DuplicateCleanupFixture):
         self.moved("photo.jpg", PHOTO)
         self.stop("keep")
         status = self.status()
-        self.assertEqual((status["current"], status["waiting"], status["ready"]), (None, None, None))
-        self.assertEqual(status["totals"]["deleted_count"], 0)
+        self.assertEqual((status["current"], status["waiting"], status["ready"], status["unseen"]),
+                         (None, None, None, None))
+        self.assertIsNone(status["totals"])
+
+    def test_an_unavailable_volume_counts_nothing_even_without_candidates(self) -> None:
+        """No Cloud Duplicate is left to check, yet the root must still be
+        verified: an unavailable Source Volume is «unknown», never zero."""
+        self.age(self.cloud_only_at("old/original.jpg", ORIGINAL))  # Cloud-only, not a duplicate
+        self.configure()
+        self.assertEqual(self.status()["current"], {"count": 0, "bytes": 0})
+        with self.db() as connection:
+            self.assertFalse(observation_is_unconfirmed(load_vault_health(connection, 2)),
+                             "the previous health is still healthy")
+        with patch("app.services.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=False)):
+            status = self.status()
+            outcome = self.run_cleanup()
+        self.assertEqual((status["current"], status["waiting"], status["ready"], status["unseen"]),
+                         (None, None, None, None))
+        self.assertEqual(outcome["outcome"], "skipped", "a run proves nothing either")
+
+    def test_duplicates_never_seen_locally_are_counted_apart_and_never_scheduled(self) -> None:
+        self.put("new/photo.jpg", PHOTO)
+        unseen = self.cloud_only_at("old/photo.jpg", PHOTO)
+        with self.db() as connection:
+            connection.execute("UPDATE files SET local_seen_at=NULL WHERE id=%s", (unseen,))
+        self.configure()
+        status = self.status()
+        self.assertEqual(status["current"], {"count": 1, "bytes": len(PHOTO)})
+        self.assertEqual(status["unseen"], {"count": 1, "bytes": len(PHOTO)})
+        self.assertEqual((status["ready"]["count"], status["waiting"]["count"]), (0, 0))
+        self.assertIsNone(status["waiting"]["first_eligible_at"])
+        outcome = self.run_cleanup()
+        self.assertEqual((outcome["outcome"], outcome["file_count"], outcome["waiting_count"],
+                          outcome["unseen_count"]), ("none", 0, 0, 1))
+        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE action='cloud-purge'"), 0)
+        self.assertEqual(self.status()["last_outcome"]["unseen_count"], 1)
 
 
 class HttpTests(DuplicateCleanupFixture):
@@ -412,7 +470,8 @@ class HttpTests(DuplicateCleanupFixture):
         self.assertEqual(status.status_code, 200, status.text)
         self.assertFalse(status.json()["enabled"])
         self.assertEqual(status.json()["current"], {"count": 0, "bytes": 0})
-        self.assertEqual(status.json()["totals"]["deleted_count"], 0)
+        self.assertIsNone(status.json()["totals"])
+        self.assertEqual(status.json()["unseen"], {"count": 0, "bytes": 0})
         self.assertIn("waiting", status.json())
         self.assertIn("ready", status.json())
         self.reauth(datetime(2000, 1, 1, tzinfo=timezone.utc))

@@ -3671,6 +3671,9 @@
                 },
                 "waiting_bytes": {
                   "type": "number"
+                },
+                "unseen_count": {
+                  "type": "number"
                 }
               },
               "required": [
@@ -3800,27 +3803,57 @@
             }
           ]
         },
-        "totals": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "deleted_count": {
-              "type": "number"
-            },
-            "deleted_bytes": {
-              "type": "number"
-            },
-            "last_deleted_at": {
-              "type": [
-                "string",
-                "null"
+        "unseen": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "count",
+                "bytes"
               ]
+            },
+            {
+              "type": "null"
             }
-          },
-          "required": [
-            "deleted_count",
-            "deleted_bytes",
-            "last_deleted_at"
+          ]
+        },
+        "totals": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "deleted_count": {
+                  "type": "number"
+                },
+                "deleted_bytes": {
+                  "type": "number"
+                },
+                "last_deleted_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "deleted_count",
+                "deleted_bytes",
+                "last_deleted_at"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -3838,6 +3871,7 @@
         "current",
         "waiting",
         "ready",
+        "unseen",
         "totals"
       ]
     }

@@ -1688,6 +1688,7 @@ export interface components {
                 /** @enum {string} */
                 outcome: "scheduled" | "none" | "capped" | "skipped";
                 run_after?: string;
+                unseen_count?: number;
                 waiting_bytes?: number;
                 waiting_count?: number;
             } | null;
@@ -1708,7 +1709,11 @@ export interface components {
                 deleted_bytes: number;
                 deleted_count: number;
                 last_deleted_at: string | null;
-            };
+            } | null;
+            unseen: {
+                bytes: number;
+                count: number;
+            } | null;
             waiting: {
                 bytes: number;
                 count: number;

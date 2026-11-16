@@ -3597,6 +3597,8 @@ def _reconcile_cloud_purge_group(
     group_id = lead.get("group_id")
     if not group_id:
         raise RuntimeError("Cloud purge is missing its group identity")
+    cloud_deletion_service.lock_vault_for_totals(
+        connection, vault_id=int(lead["vault_id"]), group_id=str(group_id))
     group_rows = connection.execute(
         """
         SELECT j.*, EXISTS (
@@ -5307,6 +5309,8 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                         failed.append((item, message))
             stamp = now_iso()
             with owned_connection(db()) as connection:
+                cloud_deletion_service.lock_vault_for_totals(
+                    connection, vault_id=vault_id, group_id=group_id)
                 renew(connection)
                 cloud_deletion_service.record_deleted(
                     connection, jobs=deleted, at=stamp, actor=actor,

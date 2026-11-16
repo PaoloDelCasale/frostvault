@@ -93,14 +93,17 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
   });
 
   const outcome = status?.last_outcome;
-  // «No duplicates to delete» only when there were none at all (#729); an
-  // older outcome without the waiting count reads as before.
+  // «No duplicates to delete» only when there were none at all (#729): not
+  // while some wait, nor when some were never seen on the server. An older
+  // outcome without these counts reads as before.
   const counted = (count: number, bytes?: number) => ({ count, count_shown: numberFormat(locale).format(count), bytes: formatBytes(bytes ?? 0) });
   const outcomeText = !outcome ? "" : outcome.outcome === "none" && (outcome.waiting_count ?? 0) > 0
     ? t("duplicate_cleanup.outcome.none_waiting", counted(outcome.waiting_count ?? 0))
-    : t(`duplicate_cleanup.outcome.${outcome.outcome}`, outcome.outcome === "scheduled" || outcome.outcome === "capped"
-      ? counted(outcome.file_count ?? 0, outcome.byte_count) : {});
-  const current = status?.current, waiting = status?.waiting, ready = status?.ready, totals = status?.totals;
+    : outcome.outcome === "none" && (outcome.unseen_count ?? 0) > 0
+      ? t("duplicate_cleanup.outcome.none_unseen", counted(outcome.unseen_count ?? 0))
+      : t(`duplicate_cleanup.outcome.${outcome.outcome}`, outcome.outcome === "scheduled" || outcome.outcome === "capped"
+        ? counted(outcome.file_count ?? 0, outcome.byte_count) : {});
+  const current = status?.current, waiting = status?.waiting, ready = status?.ready, unseen = status?.unseen, totals = status?.totals;
   return <section className="grid gap-3" data-panel="duplicate-cleanup">
     {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
     <div className="grid gap-1">
@@ -122,6 +125,7 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
         ...counted(waiting.count, waiting.bytes), eligible: formatDate(waiting.first_eligible_at), earliest: formatDate(waiting.earliest_deletion_at),
       })}</p>}
       {status.enabled && ready && ready.count > 0 && <p data-testid="duplicate-cleanup-ready">{t("duplicate_cleanup.ready", counted(ready.count, ready.bytes))}</p>}
+      {unseen && unseen.count > 0 && <p data-testid="duplicate-cleanup-unseen">{t("duplicate_cleanup.unseen", counted(unseen.count, unseen.bytes))}</p>}
       {totals && totals.deleted_count > 0 && <p data-testid="duplicate-cleanup-totals">{t("duplicate_cleanup.totals", {
         ...counted(totals.deleted_count, totals.deleted_bytes), when: formatDate(totals.last_deleted_at),
       })}</p>}

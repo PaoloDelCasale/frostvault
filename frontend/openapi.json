@@ -776,6 +776,9 @@
                   "run_after": {
                     "type": "string"
                   },
+                  "unseen_count": {
+                    "type": "number"
+                  },
                   "waiting_bytes": {
                     "type": "number"
                   },
@@ -864,27 +867,57 @@
             ]
           },
           "totals": {
-            "additionalProperties": false,
-            "properties": {
-              "deleted_bytes": {
-                "type": "number"
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "deleted_bytes": {
+                    "type": "number"
+                  },
+                  "deleted_count": {
+                    "type": "number"
+                  },
+                  "last_deleted_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted_count",
+                  "deleted_bytes",
+                  "last_deleted_at"
+                ],
+                "type": "object"
               },
-              "deleted_count": {
-                "type": "number"
-              },
-              "last_deleted_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "deleted_count",
-              "deleted_bytes",
-              "last_deleted_at"
-            ],
-            "type": "object"
+            ]
+          },
+          "unseen": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "waiting": {
             "anyOf": [
@@ -938,6 +971,7 @@
           "current",
           "waiting",
           "ready",
+          "unseen",
           "totals"
         ],
         "type": "object"

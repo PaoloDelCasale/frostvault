@@ -38,7 +38,7 @@ from typing import Any
 from . import source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .component_health import load_vault_health
-from .directory_aggregates import mark_paths_dirty
+from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
                                 masked_state_sql, observation_is_unconfirmed)
 
@@ -690,42 +690,56 @@ def cloud_duplicates(connection: Any,
     eligible = [r for r in rows if r["reason"] == "eligible"]
     duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
     chosen = [r for r in eligible if str(r["file_id"]) in duplicates]
-    present = _present_paths(vault, [r["path"] for r in chosen]) if chosen else set()
+    # Always called, even with nothing left to check: an unreadable root or a
+    # changed identity must raise, so a count of zero is never a guess (#729).
+    present = _present_paths(vault, [r["path"] for r in chosen])
     skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
     if present:
         skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
     return [r for r in chosen if r["path"] not in present], skipped
 
 
-def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime
-                      ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """``(ready, waiting)``: the rows whose Local Copy was last seen at or
-    before ``seen_before``, and those seen after it. A file never seen locally
-    is in neither: no invented time ever makes it a candidate."""
-    ready = [r for r in rows if r["local_seen_at"] is not None
-             and _aware(r["local_seen_at"]) <= seen_before]
-    waiting = [r for r in rows if r["local_seen_at"] is not None
-               and _aware(r["local_seen_at"]) > seen_before]
-    return ready, waiting
+@dataclass(frozen=True)
+class Sighting:
+    """Cloud Duplicates split by the last sighting of their Local Copy (#729).
+
+    ``ready``: seen at or before the cut-off; ``waiting``: seen after it;
+    ``unseen``: never seen locally, so never a candidate of the automatic
+    cleanup (no invented time ever makes it one).
+    """
+    ready: list[dict[str, Any]]
+    waiting: list[dict[str, Any]]
+    unseen: list[dict[str, Any]]
+
+
+def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime) -> Sighting:
+    ready: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    unseen: list[dict[str, Any]] = []
+    for row in rows:
+        seen = row["local_seen_at"]
+        (unseen if seen is None else ready if _aware(seen) <= seen_before else waiting).append(row)
+    return Sighting(ready, waiting, unseen)
 
 
 def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before: str
-                         ) -> tuple[list[dict[str, Any]], DeletionPreview, list[dict[str, Any]]]:
+                         ) -> tuple[DeletionPreview, Sighting]:
     """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
 
     Those of :func:`cloud_duplicates` whose Local Copy was last seen at or
-    before ``seen_before``, with their preview; a file without another
-    protected local copy is never returned. The third item lists the Cloud
-    Duplicates still waiting (seen after ``seen_before``, #729).
+    before ``seen_before`` (``Sighting.ready``), with their preview; a file
+    without another protected local copy is never among them. The waiting
+    and never-seen Cloud Duplicates are returned too (#729).
     """
     rows, skipped = cloud_duplicates(connection, vault)
-    chosen, waiting = split_by_sighting(rows, _aware(seen_before))
+    sighting = split_by_sighting(rows, _aware(seen_before))
+    chosen = sighting.ready
     size = sum(int(r["size"] or 0) for r in chosen)
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
         duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
         duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped)
-    return chosen, preview, waiting
+    return preview, sighting
 
 
 def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
@@ -960,7 +974,9 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
     """The exact DELETE returned (or the version is proven absent): record it.
 
     Clears Current and removes the Archive Version row with its completed
-    proof, then completes each Job. The caller holds the group claim.
+    proof, then completes each Job; a member of an automatic deletion adds to
+    the Vault's cleanup totals (#729). The caller holds the Vault row, then
+    the group claim.
     """
     if not jobs:
         return
@@ -989,17 +1005,56 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
     connection.execute("DELETE FROM archive_versions WHERE id = ANY(%s::uuid[])", (versions,))
     connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (batches,))
     ids = [int(j["id"]) for j in jobs]
-    connection.execute(
+    completed = connection.execute(
         """UPDATE jobs SET status='completed', message='Cloud deletion completed',
                message_key=NULL, message_params=NULL, transferred_bytes=total_bytes,
                updated_at=%s, finished_at=%s
-           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
-        (at, at, ids))
+           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')
+           RETURNING total_bytes""",
+        (at, at, ids)).fetchall()
+    _count_automatic_deletions(connection, vault_id=int(jobs[0]["vault_id"]),
+                               group_id=str(jobs[0]["group_id"]), completed=completed, at=at)
     mark_paths_dirty(connection, int(jobs[0]["vault_id"]), [r["path"] for r in connection.execute(
         "SELECT path FROM files WHERE id = ANY(%s::uuid[])", (files,)).fetchall()])
     record_audit_event(connection, event="cloud_deletion.completed", actor=actor,
                        vault_id=int(jobs[0]["vault_id"]), outcome="success",
                        group_id=str(jobs[0]["group_id"]), deleted=len(ids), job_ids=ids[:100])
+
+
+def lock_vault_for_totals(connection: Any, *, vault_id: int, group_id: str) -> None:
+    """Hold the Vault row before the Jobs of an automatic group (#729).
+
+    Recording one of its members as deleted adds to the Vault's cleanup
+    totals; taking the Vault row first keeps the repository-wide lock order
+    (Vault row, then Jobs). A manual group touches no Vault row.
+    """
+    automatic = connection.execute(
+        "SELECT automatic FROM cloud_purge_requests WHERE group_id=%s", (group_id,)).fetchone()
+    if automatic and automatic["automatic"]:
+        lock_vaults_in_order(connection, [vault_id])
+
+
+def _count_automatic_deletions(connection: Any, *, vault_id: int, group_id: str,
+                               completed: list[dict[str, Any]], at: str) -> None:
+    """Add the members just completed to the Vault's cleanup totals (#729).
+
+    Only for an automatic request, in the transaction that records them as
+    deleted: the totals outlive the history retention of their Jobs. Revoked,
+    failed or cancelled members never reach here. The caller holds the Vault
+    row first (the repository-wide lock order).
+    """
+    if not completed:
+        return
+    connection.execute(
+        """UPDATE vaults v SET
+               duplicate_cleanup_deleted_count = COALESCE(v.duplicate_cleanup_deleted_count, 0) + %s,
+               duplicate_cleanup_deleted_bytes = COALESCE(v.duplicate_cleanup_deleted_bytes, 0) + %s,
+               duplicate_cleanup_last_deleted_at = GREATEST(v.duplicate_cleanup_last_deleted_at,
+                                                            %s::timestamptz)
+           FROM cloud_purge_requests r
+           WHERE v.id = %s AND r.group_id = %s AND r.automatic""",
+        (len(completed), sum(int(r["total_bytes"] or 0) for r in completed), at,
+         vault_id, group_id))
 
 
 def record_failed(connection: Any, *, failures: list[tuple[dict[str, Any], str]],

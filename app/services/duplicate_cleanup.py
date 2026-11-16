@@ -16,7 +16,9 @@ the next run under the cap, or when the cleanup is turned off.
 never runs a Vault again early.
 
 The status also counts, live, the Cloud Duplicates there are now, those still
-in their wait and the totals already deleted automatically (#729).
+in their wait and those never seen locally (which the cleanup never deletes),
+and reads the totals already deleted automatically, kept on the Vault so they
+outlive the history retention of their Jobs (#729).
 """
 from __future__ import annotations
 
@@ -89,10 +91,11 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
     within the last ``grace_days``, with when the first becomes eligible and
     the earliest it can be deleted (the first daily run from then, plus the
     seven-day delay; None while the cleanup is off); ``ready``: those the next
-    run would take. All None when nothing can be proven now (a stopped Vault,
-    an unreadable root, unconfirmed observations).
+    run would take; ``unseen``: those whose Local Copy was never seen, which
+    the cleanup never deletes. All None when nothing can be proven now (a
+    stopped Vault, an unavailable or replaced root, unconfirmed observations).
     """
-    unknown = {"current": None, "waiting": None, "ready": None}
+    unknown = {"current": None, "waiting": None, "ready": None, "unseen": None}
     if row["lifecycle"] != "active" or row.get("root_released_at"):
         return unknown
     try:
@@ -100,35 +103,33 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
     except cloud_deletion.CloudDeletionError:
         return unknown
     grace = timedelta(days=int(row["duplicate_cleanup_grace_days"]))
-    ready, waiting = cloud_deletion.split_by_sighting(rows, now - grace)
+    sighting = cloud_deletion.split_by_sighting(rows, now - grace)
+    waiting = sighting.waiting
     first = min((r["local_seen_at"] for r in waiting), default=None)
     first_eligible = first + grace if first is not None else None
     earliest = None
     if first_eligible is not None and next_run is not None:
         earliest = _earliest_run(next_run, first_eligible) + timedelta(
             seconds=cloud_deletion.DELETION_DELAY_SECONDS)
-    return {"current": _amount(rows), "ready": _amount(ready),
+    return {"current": _amount(rows), "ready": _amount(sighting.ready),
             "waiting": {**_amount(waiting), "first_eligible_at": _iso(first_eligible),
-                        "earliest_deletion_at": _iso(earliest)}}
+                        "earliest_deletion_at": _iso(earliest)},
+            "unseen": _amount(sighting.unseen)}
 
 
-def _totals(connection: Any, vault_id: int) -> dict[str, Any]:
-    """What automatic deletions removed so far: completed members only, so a
-    revoked (cancelled) member never counts."""
-    row = connection.execute(
-        """SELECT count(*) AS n, COALESCE(sum(j.total_bytes), 0) AS bytes,
-                  max(j.finished_at) AS last
-           FROM jobs j JOIN cloud_purge_requests r ON r.group_id = j.group_id
-           WHERE j.vault_id=%s AND r.automatic AND j.action='cloud-purge'
-             AND j.status='completed'""",
-        (vault_id,)).fetchone()
-    return {"deleted_count": int(row["n"]), "deleted_bytes": int(row["bytes"]),
-            "last_deleted_at": _iso(row["last"])}
+def _totals(row: dict[str, Any]) -> dict[str, Any] | None:
+    """What automatic deletions removed so far, as recorded on the Vault when
+    each member was deleted; None until a first one is recorded (#729)."""
+    if row["duplicate_cleanup_deleted_count"] is None:
+        return None
+    return {"deleted_count": int(row["duplicate_cleanup_deleted_count"]),
+            "deleted_bytes": int(row["duplicate_cleanup_deleted_bytes"]),
+            "last_deleted_at": _iso(row["duplicate_cleanup_last_deleted_at"])}
 
 
 def status(connection: Any, vault_id: int, *, now: datetime | None = None) -> dict[str, Any]:
     """The Vault's settings, its last run, its pending automatic deletions and
-    its Cloud Duplicates now, waiting and deleted so far (#729)."""
+    its Cloud Duplicates now, waiting, never seen and deleted so far (#729)."""
     row = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if row is None:
         raise LookupError("Vault not found")
@@ -154,7 +155,7 @@ def status(connection: Any, vault_id: int, *, now: datetime | None = None) -> di
         "next_run_at": _iso(next_run),
         "last_outcome": row["duplicate_cleanup_last_outcome"],
         **_duplicates(connection, row, now=moment, next_run=upcoming),
-        "totals": _totals(connection, vault_id),
+        "totals": _totals(row),
         "pending": [{"group_id": str(p["group_id"]), "file_count": int(p["file_count"]),
                      "byte_count": int(p["byte_count"]), "run_after": _iso(p["run_after"]),
                      "cancellable": bool(p["cancellable"])} for p in pending],
@@ -239,7 +240,7 @@ def run_vault(connection: Any, vault_id: int, *, now: datetime) -> dict[str, Any
     settings = _settings(vault)
     seen_before = (now - timedelta(days=settings["grace_days"])).isoformat()
     try:
-        files, preview, waiting = cloud_deletion.automatic_duplicates(
+        preview, sighting = cloud_deletion.automatic_duplicates(
             connection, vault, seen_before=seen_before)
     except cloud_deletion.CloudDeletionError as exc:
         # Nothing can be proven today (an unreadable root, unconfirmed
@@ -247,9 +248,12 @@ def run_vault(connection: Any, vault_id: int, *, now: datetime) -> dict[str, Any
         record_audit_event(connection, event="duplicate_cleanup.skipped", actor="system",
                            vault_id=vault_id, outcome="skipped", reason=str(exc)[:200])
         return _finish(connection, vault_id, now, {"outcome": "skipped"})
-    count, size = preview.object_count, preview.byte_count
-    # Every outcome also says how many duplicates are still in their wait (#729).
-    waits = {"waiting_count": len(waiting), "waiting_bytes": sum(int(r["size"] or 0) for r in waiting)}
+    files, count, size = sighting.ready, preview.object_count, preview.byte_count
+    # Every outcome also says how many duplicates are still in their wait, and
+    # how many were never seen locally, which the cleanup never deletes (#729).
+    waits = {"waiting_count": len(sighting.waiting),
+             "waiting_bytes": sum(int(r["size"] or 0) for r in sighting.waiting),
+             "unseen_count": len(sighting.unseen)}
     if not files:
         _set_capped_problem(connection, vault_id, active=False)
         return _finish(connection, vault_id, now,
