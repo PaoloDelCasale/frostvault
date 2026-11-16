@@ -13,7 +13,8 @@ from .services.job_admission import (
 )
 from .services.s3_copy import storage_class_requires_restore
 from .services.protection_states import (
-    CURRENT_JOIN_SQL, PROTECTED_SQL, VISIBLE_SQL, aggregate_state, current_is_recoverable,
+    CURRENT_JOIN_SQL, PROTECTED_SQL, UNCONFIRMED_EXEMPT, VISIBLE_SQL, aggregate_state,
+    current_is_recoverable, masked_state_sql,
     local_copy_matches_current, path_excluded_sql, project_file, state_sql,
 )
 from .services.directory_aggregates import (
@@ -2005,9 +2006,7 @@ class ArchiveCatalog:
         parent_path = directory or ""
         folder_state = state
         stopped: dict[str, int] = {}
-        if self.protection_unconfirmed:
-            folder_state = "" if not state or state == "unconfirmed" else "__none__"
-        else:
+        if not self.protection_unconfirmed:
             # The projection holds Stopped Uploads as pending (#630).
             from .services.operation_policies import get_policy
             stopped = stopped_upload_counts(
@@ -2089,13 +2088,12 @@ class ArchiveCatalog:
             clauses.append("strpos(f.path, '/') = 0")
         clauses.append(VISIBLE_SQL)
         if state:
-            if self.protection_unconfirmed:
-                clauses.append("1=1" if state == "unconfirmed" else "1=0")
-            elif self.unconfirmed.by_path:
-                # Only the blocked paths are unconfirmed (ADR-0042, #684).
+            if self.protection_unconfirmed or self.unconfirmed.by_path:
+                # Only the blocked paths are unconfirmed (ADR-0042, #684);
+                # Excluded and Unsupported keep their state there (#711).
                 blocked, blocked_params = self.unconfirmed.sql("f.path")
-                clauses.append(
-                    f"(CASE WHEN {blocked} THEN 'unconfirmed' ELSE ({self._state_sql(vault_id)}) END) = %s")
+                state_expression = self._state_sql(vault_id)
+                clauses.append(f"{masked_state_sql(blocked, state_expression)} = %s")
                 params.extend([*blocked_params, state])
             else:
                 clauses.append(f"({self._state_sql(vault_id)}) = %s")
@@ -3308,7 +3306,8 @@ class ArchiveCatalog:
                 continue
             total = int(row["total"] or 0)
             last_known_counts[str(state)] = last_known_counts.get(str(state), 0) + total
-            shown = "unconfirmed" if row["blocked"] else str(state)
+            shown = ("unconfirmed" if row["blocked"] and state not in UNCONFIRMED_EXEMPT
+                     else str(state))
             states[shown] = states.get(shown, 0) + total
             local_bytes += int(row["local_bytes"] or 0)
             cloud_bytes += int(row["cloud_bytes"] or 0)
@@ -3321,7 +3320,10 @@ class ArchiveCatalog:
             (vault_id,),
         ).fetchone()["total"]
         if self.protection_unconfirmed and states:
-            states = {"unconfirmed": sum(states.values())}
+            masked = sum(count for name, count in states.items() if name not in UNCONFIRMED_EXEMPT)
+            states = {name: count for name, count in states.items() if name in UNCONFIRMED_EXEMPT}
+            if masked:
+                states["unconfirmed"] = masked
         protection_state = aggregate_state(states)
         if self.unconfirmed.by_path and protection_state != "problem":
             # The Vault root contains every blocked path, like a folder above

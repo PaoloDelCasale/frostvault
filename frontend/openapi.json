@@ -2078,6 +2078,16 @@
               "null"
             ]
           },
+          "resolving": {
+            "enum": [
+              "scan",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -2855,6 +2865,12 @@
                   "null"
                 ]
               },
+              "last_error_source_cause": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "scan_phase": {
                 "type": [
                   "string",
@@ -2901,6 +2917,12 @@
                 ]
               },
               "verify_bytes_done": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "verify_bytes_per_minute": {
                 "type": [
                   "number",
                   "null"
@@ -3272,6 +3294,36 @@
         "title": "UploadAction",
         "type": "object"
       },
+      "UploadActivityRate": {
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytes_per_minute": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_seconds": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_seconds",
+          "files",
+          "bytes",
+          "bytes_per_minute"
+        ],
+        "type": "object"
+      },
       "UploadActivityResponse": {
         "properties": {
           "global": {
@@ -3288,6 +3340,9 @@
                 },
                 {
                   "properties": {
+                    "paused": {
+                      "type": "boolean"
+                    },
                     "vault_id": {
                       "type": "integer"
                     },
@@ -3297,7 +3352,8 @@
                   },
                   "required": [
                     "vault_id",
-                    "vault_name"
+                    "vault_name",
+                    "paused"
                   ],
                   "type": "object"
                 }
@@ -3353,6 +3409,9 @@
           "queued": {
             "$ref": "#/components/schemas/UploadActivityStage"
           },
+          "rate": {
+            "$ref": "#/components/schemas/UploadActivityRate"
+          },
           "stability_wait": {
             "$ref": "#/components/schemas/UploadActivityStage"
           },
@@ -3369,7 +3428,8 @@
           "uploading",
           "verifying",
           "awaiting_admission_files",
-          "next_stable_at"
+          "next_stable_at",
+          "rate"
         ],
         "type": "object"
       },

@@ -87,6 +87,7 @@ export type StopProtectionStatus = components["schemas"]["StopProtectionStatus"]
 export type StorageEstimateRequest = components["schemas"]["StorageEstimateRequest"];
 export type StorageEstimateResponse = components["schemas"]["StorageEstimateResponse"];
 export type UploadAction = components["schemas"]["UploadAction"];
+export type UploadActivityRate = components["schemas"]["UploadActivityRate"];
 export type UploadActivityResponse = components["schemas"]["UploadActivityResponse"];
 export type UploadActivityStage = components["schemas"]["UploadActivityStage"];
 export type UploadActivitySummary = components["schemas"]["UploadActivitySummary"];

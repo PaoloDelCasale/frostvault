@@ -16,7 +16,8 @@ from .operation_policies import (
     unconfirmed_scope,
 )
 from .protection_states import (
-    CURRENT_JOIN_SQL, FAILED_UPLOAD_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, state_sql,
+    CURRENT_JOIN_SQL, FAILED_UPLOAD_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL, masked_state_sql,
+    state_sql,
 )
 
 _last_maintenance = 0.0
@@ -76,7 +77,8 @@ def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
     if not access.local_operations_allowed or not (source_health and source_health['last_error']):
         inbox.set_problem(connection, key=f"blocked:{vault_id}:source", event="protection_blocked",
                           vault_id=vault_id, active=not access.local_operations_allowed,
-                          params={"component": "source"})
+                          params={"component": "source",
+                                  "cause_key": "notification.protection_blocked.cause.volume_unavailable"})
     rows = connection.execute(f"""
         SELECT f.id, f.path, f.local_mtime_ns AS mtime_ns,
                f.local_content_observed_at AS content_observed_at,
@@ -129,7 +131,7 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
         counts = dict.fromkeys(STATES, 0)
         state_expression = state_sql(get_policy(connection, vault["id"]))
         for row in connection.execute(f"""
-            SELECT CASE WHEN {blocked} THEN 'unconfirmed' ELSE {state_expression} END AS state,
+            SELECT {masked_state_sql(blocked, state_expression)} AS state,
                    count(*) AS total FROM files f
             {CURRENT_JOIN_SQL}
             WHERE f.vault_id=%s AND {VISIBLE_SQL} GROUP BY 1

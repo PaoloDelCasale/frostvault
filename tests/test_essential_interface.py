@@ -109,7 +109,9 @@ class EssentialInterfaceTests(unittest.TestCase):
         self.assertEqual(result["items"], [])
         calls = connection.execute.call_args_list
         self.assertIn("UNION ALL", calls[1].args[0])
-        self.assertIn("1=0", calls[1].args[0])
+        # The missing volume's Vault shows unconfirmed, so cloud_only cannot
+        # match there; only Excluded and Unsupported keep their state (#711).
+        self.assertIn("WHEN (TRUE) AND", calls[1].args[0])
         self.assertIn("LIMIT %s OFFSET %s", calls[1].args[0])
         self.assertEqual(calls[1].args[1][-2:], [10, 10])
         self.assertTrue(all("DELETE" not in call.args[0] and "UPDATE" not in call.args[0] for call in calls))

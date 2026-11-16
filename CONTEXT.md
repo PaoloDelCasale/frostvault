@@ -113,6 +113,14 @@ not observed; they never become missing. Removing the rule makes the Vault
 look inside again.
 _Avoid_: Ignored folder, Skipped folder, Pruned folder
 
+**Unconfirmed**:
+The protection state shown for a Local Copy FrostVault cannot yet confirm,
+because the Vault has no successful scan or its path could not be read. It
+covers every other state except Excluded and Unsupported, which never count
+against protection; the last known state underneath (for example already in
+the cloud, or waiting for upload) stays visible as a detail, never as protected.
+_Avoid_: Pending, Adoption, Unknown
+
 **Stopped Upload**:
 The protection state of a present Local Copy whose upload the Owner stopped: it
 is kept out of automatic upload until its content changes. It is not pending

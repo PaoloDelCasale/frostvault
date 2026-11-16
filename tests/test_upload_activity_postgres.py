@@ -108,6 +108,44 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.assertEqual(self.connection.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'], before)
         self.assertEqual(self.connection.execute("SELECT count(*) AS n FROM archive_versions WHERE availability='available'").fetchone()['n'], before)
 
+    def finished(self, vault_id, minutes_ago, total, *, status='completed'):
+        file_id = self.connection.execute(
+            "INSERT INTO files(vault_id,path,path_since) VALUES (%s,%s,%s) RETURNING id",
+            (vault_id, f'done-{vault_id}-{minutes_ago}-{total}-{status}', NOW.isoformat())).fetchone()['id']
+        at = NOW.timestamp() - minutes_ago * 60
+        self.connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,requested_at,
+            updated_at,finished_at,total_bytes) VALUES (%s,%s,'upload',%s,to_timestamp(%s),
+            to_timestamp(%s),to_timestamp(%s),%s)""", (vault_id, file_id, status, at, at, at, total))
+
+    def test_rate_is_measured_on_recent_completions_and_paused_vaults_stay_apart(self):
+        """#711: bytes finished in the last 15 minutes, over the span since the first."""
+        seed_vault(self.connection, vault_id=10, name='Paused', source_root='/paused')
+        self.connection.execute("UPDATE vaults SET paused=true WHERE id=10")
+        for minutes_ago in (10, 6, 2):
+            self.finished(9, minutes_ago, 1_000_000)
+        self.finished(9, 20, 50_000_000)  # outside the window
+        self.finished(9, 1, 70_000_000, status='failed')  # not an upload that landed
+        self.finished(10, 3, 1_000_000)
+        for index in range(5):
+            self.connection.execute("""INSERT INTO files(vault_id,path,path_since) VALUES (10,%s,%s)""",
+                                    (f'paused-{index}', NOW.isoformat()))
+        self.connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,requested_at,updated_at,total_bytes)
+            SELECT 10,id,'upload','queued',%s,%s,100 FROM files WHERE vault_id=10 AND path LIKE 'paused-%%'""",
+                                (NOW.isoformat(), NOW.isoformat()))
+        result = upload_activity(self.connection, now=NOW)
+        by_id = {row['vault_id']: row for row in result['vaults']}
+        # 3 MB over the 10 minutes since the first completion.
+        self.assertEqual(by_id[9]['rate'], {'window_seconds': 900, 'files': 3, 'bytes': 3_000_000,
+                                            'bytes_per_minute': 300_000})
+        self.assertFalse(by_id[9]['paused'])
+        self.assertTrue(by_id[10]['paused'])
+        self.assertEqual(by_id[10]['queued']['files'], 5)
+        # Too few completions for a pace, and a Paused Vault is outside the totals.
+        self.assertIsNone(by_id[10]['rate']['bytes_per_minute'])
+        self.assertEqual(result['global']['queued']['files'], 0)
+        self.assertEqual(result['global']['rate']['bytes_per_minute'], 300_000)
+        self.assertEqual(result['global']['rate']['files'], 3)
+
     def test_postgres_regex_path_rules_match_real_admission_rules(self):
         paths = ['a.jpg', 'photos/a.jpg', 'photos/sub/a.jpg', 'a/b/c', 'x/a/b/c/y',
                  'foo', 'x/foo/y', '.DS_Store', 'x/._foo', 'a\nb.jpg', 'a[1].jpg',

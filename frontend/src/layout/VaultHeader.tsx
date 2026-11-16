@@ -4,11 +4,27 @@ import { fetchGeneralVaults } from "@/api";
 import { useVaultStats } from "@/api/useVaultStats";
 type Params = Record<string, string | number>;
 import { ScanStatus } from "@/components/ScanStatus";
+import { uploadBacklog, uploadPace, useUploadActivity } from "@/api/uploadActivity";
+import { adoptionOf } from "@/lib/adoption";
+import { formatBytes, formatNumber } from "@/pages/archive/format";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { cn } from "@/lib/utils";
 import { vaultFilesUrl, vaultSettingsUrl } from "@/router";
+
+/** This Vault's upload queue with its pace and time left, or that it is paused (#711). */
+function VaultUploadLine({ vaultId, t }: { vaultId: number; t: (key: string, params?: Params) => string }) {
+  const activity = useUploadActivity().data?.vaults?.find((vault) => vault.vault_id === vaultId);
+  if (!activity) return null;
+  const backlog = uploadBacklog(activity);
+  if (backlog.files <= 0) return null;
+  const pace = activity.paused ? null : uploadPace(activity, t);
+  return <p className="pb-2 text-sm text-muted" data-testid="vault-upload-line">
+    {t("vault.upload.line", { files: formatNumber(backlog.files), size: formatBytes(backlog.bytes) })}
+    {activity.paused ? <> · {t("vault.upload.paused")}</> : pace ? <> · {t("vault.upload.rate", pace)}</> : null}
+  </p>;
+}
 
 /** Vault title, aggregate state, the pause action and the Files | Settings tabs. */
 export function VaultHeader({ vaultId, vaultName, active, t }: {
@@ -28,7 +44,9 @@ export function VaultHeader({ vaultId, vaultName, active, t }: {
       {stats.data && <VaultStateBadge state={vaultState(stats.data)} manual={stats.data.manual_upload} t={t} />}
       {pause && <div className="ml-auto"><VaultPauseControl vaultId={vaultId} paused={vault.paused} /></div>}
     </div>
-    <ScanStatus runtime={stats.data?.runtime} t={t} />
+    <ScanStatus runtime={stats.data?.runtime} t={t} adoption={adoptionOf(stats.data)}
+      unconfirmed={Number((stats.data?.states as Record<string, number> | undefined)?.unconfirmed ?? 0) > 0} />
+    {active === "files" && <VaultUploadLine vaultId={vaultId} t={t} />}
     <nav aria-label={t("files.tabs_label")} className="-mb-px flex gap-5">
       {tab("files", vaultFilesUrl(vaultId))}{tab("settings", vaultSettingsUrl(vaultId))}
     </nav>

@@ -65,6 +65,17 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     key = localized.get("remediation_key")
     if isinstance(key, str) and has_message(key, "en"):
         localized["remediation"] = translate(key, locale=locale)
+    # A blocked protection says its known cause (#711); a problem recorded
+    # without one, or by an earlier release, keeps the generic advice.
+    cause = localized.get("cause_key")
+    localized["cause"] = translate(
+        cause if isinstance(cause, str) and has_message(cause, "en")
+        else "notification.protection_blocked.cause.default", locale=locale)
+    # An internal error names its type, never its message (#711).
+    localized["error_detail"] = (
+        translate("notification.internal_error.detail", locale=locale,
+                  error_type=str(localized["error_type"]))
+        if localized.get("error_type") else "")
     # An unreadable path says whose it is, when it could be stat'ed (#681).
     localized["access"] = (
         translate("notification.file_unreadable.access", locale=locale, **localized)

@@ -1,8 +1,9 @@
 """Worker failures become generic internal-error problems, not a diagnostic store.
 
-The Owner inbox stays free of exception data (it may carry credentials or
-URLs) and tells the Owner to check the server log, so the full exception with
-its traceback is written there, once, at the point of recording.
+The Owner inbox stays free of exception messages (they may carry credentials
+or URLs): it names only the exception type, and tells the Owner to check the
+server log, where the full exception with its traceback is written, once, at
+the point of recording.
 """
 from __future__ import annotations
 
@@ -39,6 +40,18 @@ def log_report_failure(
     )
 
 
+def error_type(exc: BaseException) -> str:
+    """The safe identity of a failure: its class, and SQLSTATE for PostgreSQL.
+
+    Never the message, which may carry credentials, URLs or paths (#711).
+    """
+    name = type(exc).__name__
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate.isalnum() and len(sqlstate) == 5:
+        return f"{name}, SQLSTATE {sqlstate}"
+    return name
+
+
 def record_worker_error(
     connection: Any, *, component: str, exc: BaseException,
     vault_id: int | None = None, log: bool = True, **detail: Any,
@@ -51,4 +64,5 @@ def record_worker_error(
     # the failing worker without a dedicated error page or exception taxonomy.
     return report_problem(
         connection, event="internal_error", vault_id=vault_id, component=component,
+        error_type=error_type(exc),
     )

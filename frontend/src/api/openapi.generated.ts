@@ -1932,6 +1932,8 @@ export interface components {
             read: boolean;
             read_at: string | null;
             resolved_at: string | null;
+            /** @enum {string|null} */
+            resolving?: "scan" | null;
             title: string;
             title_key: string | null;
             user_id: number;
@@ -2165,6 +2167,7 @@ export interface components {
                 last_error?: string | null;
                 last_error_source?: string | null;
                 last_error_source_at?: string | null;
+                last_error_source_cause?: string | null;
                 scan_phase?: string | null;
                 scanning?: boolean;
                 traversal_files_expected?: number | null;
@@ -2174,6 +2177,7 @@ export interface components {
                 traversal_probe_seconds?: number | null;
                 traversal_write_seconds?: number | null;
                 verify_bytes_done?: number | null;
+                verify_bytes_per_minute?: number | null;
                 verify_bytes_total?: number | null;
                 verify_files_done?: number | null;
                 verify_files_total?: number | null;
@@ -2278,10 +2282,17 @@ export interface components {
             /** Restore Tier */
             restore_tier?: string | null;
         };
+        UploadActivityRate: {
+            bytes: number;
+            bytes_per_minute: number | null;
+            files: number;
+            window_seconds: number;
+        };
         UploadActivityResponse: {
             global: components["schemas"]["UploadActivitySummary"];
             observed_at: string;
             vaults: (components["schemas"]["UploadActivitySummary"] & {
+                paused: boolean;
                 vault_id: number;
                 vault_name: string;
             })[];
@@ -2296,6 +2307,7 @@ export interface components {
             bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
             next_stable_at: string | null;
             queued: components["schemas"]["UploadActivityStage"];
+            rate: components["schemas"]["UploadActivityRate"];
             stability_wait: components["schemas"]["UploadActivityStage"];
             uploading: components["schemas"]["UploadActivityStage"];
             verifying: components["schemas"]["UploadActivityStage"];

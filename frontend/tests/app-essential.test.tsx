@@ -14,8 +14,9 @@ describe("Owner app routing and shell (#512)", () => {
   let blocked = false;
   let reloads = 0;
   let stopped = 0;
+  let adopting = false;
   beforeEach(() => {
-    blocked = false; reloads = 0; stopped = 0;
+    blocked = false; reloads = 0; stopped = 0; adopting = false;
     calls.length = 0; localStorage.clear(); resetApiClientForTests(); window.history.replaceState({}, "", "/");
     window.addEventListener("beforeunload", () => { reloads += 1; });
     configureApiClient({ fetch: vi.fn(async (input) => {
@@ -29,6 +30,7 @@ describe("Owner app routing and shell (#512)", () => {
       }
       if (url.startsWith("/api/stats")) {
         const second = url.endsWith("vault_id=2");
+        if (adopting && !second) return jsonResponse({ states: { unconfirmed: 10, excluded: 1 }, protection_state: "unconfirmed", storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: { protected: 6, pending: 4, excluded: 1 }, runtime: {}, source_volume: {}, delete_enabled: true });
         return jsonResponse({ states: second ? { protected: 5, ...(stopped ? { stopped } : {}) } : { protected: 3, pending: 2 }, protection_state: second ? (stopped ? "stopped" : "protected") : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
       }
       if (url.startsWith("/api/problems") || url.startsWith("/api/general/vaults") || url.startsWith("/api/general/source-volumes")) return jsonResponse({ items: [] });
@@ -67,6 +69,17 @@ describe("Owner app routing and shell (#512)", () => {
     const table = screen.getByTestId("overview-table");
     await waitFor(() => expect(within(table).getAllByTestId("overview-row")[1]).toHaveTextContent("5 / 9"));
     expect(within(table).getByText("Stopped by you")).toHaveAttribute("data-state", "stopped");
+  });
+
+  it("tells what an unconfirmed Vault already has in the cloud and still waits for (#711)", async () => {
+    adopting = true; show();
+    const tile = await screen.findByTestId("tile-protected");
+    expect(await within(tile).findByTestId("tile-protected-awaiting")).toHaveTextContent("6 files in the cloud, awaiting scan confirmation");
+    expect(within(tile).getByText("5")).toBeInTheDocument(); // only the confirmed ones count as protected
+    expect(within(screen.getByTestId("tile-pending")).getByText("4")).toBeInTheDocument();
+    const table = screen.getByTestId("overview-table");
+    expect(await within(table).findByTestId("overview-awaiting")).toHaveTextContent("+6 in the cloud, to confirm");
+    expect(within(table).getAllByTestId("protection-bar").length).toBe(2);
   });
 
   it("lists the Vaults in the header switcher, not in the sidebar", async () => {

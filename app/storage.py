@@ -1802,19 +1802,24 @@ def _fingerprint_scanned_local_copies(
     vault_id = int(vault["id"])
     rows = _unfingerprinted_local_rows(vault_id)
     done = {"files": 0, "bytes": 0}
+    started = time.monotonic()
     _scan_progress(
         vault_id, scan_id, scan_phase="verification",
         verify_files_total=len(rows), verify_files_done=0,
         verify_bytes_total=sum(int(row.get("size") or 0) for row in rows),
-        verify_bytes_done=0,
+        verify_bytes_done=0, verify_bytes_per_minute=None,
     )
 
     def advance(row: dict[str, Any]) -> None:
         done["files"] += 1
         done["bytes"] += int(row.get("size") or 0)
+        # The pace since the phase began, for its time estimate (#711); a
+        # first minute says too little about the rest.
+        elapsed = time.monotonic() - started
         _scan_progress(
             vault_id, scan_id,
             verify_files_done=done["files"], verify_bytes_done=done["bytes"],
+            verify_bytes_per_minute=(round(done["bytes"] * 60 / elapsed) if elapsed >= 60 else None),
         )
 
     hashed = 0
@@ -2271,10 +2276,13 @@ def _record_scan_component_health(
                     params=dict(problem_params or {}),
                 )
             elif component in {"source", "cloud", "policy"} and (ok or notify_problem):
+                from .services.scan_causes import source_error_cause
+                cause = source_error_cause(error) if component == "source" and not ok else None
                 notification_service.set_problem(
                     connection, key=f"blocked:{vault_id}:{component}",
                     event="protection_blocked", vault_id=int(vault_id), active=not ok,
-                    params={"component": component},
+                    params={"component": component, **(
+                        {"cause_key": f"notification.protection_blocked.cause.{cause}"} if cause else {})},
                 )
             elif not ok and notify_problem:
                 report_problem(connection, vault_id=int(vault_id),
@@ -2312,7 +2320,7 @@ def _record_scan_component_health(
 # Verification progress of the running scan (#691), runtime status only.
 _NO_VERIFICATION_PROGRESS = {
     "verify_files_total": None, "verify_files_done": None,
-    "verify_bytes_total": None, "verify_bytes_done": None,
+    "verify_bytes_total": None, "verify_bytes_done": None, "verify_bytes_per_minute": None,
     # Traversal progress of the running scan (#696).
     "traversal_files_seen": None, "traversal_files_per_minute": None,
     "traversal_files_expected": None,
@@ -5591,10 +5599,14 @@ def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None
 
 
 def _run_directory_aggregates() -> None:
+    # Its own component (#711): a failing fold is not the loop failing, and
+    # the loop's clean cycles must not close the fold's problem.
     try:
         process_directory_aggregate_maintenance()
     except Exception as exc:
-        _record_background_loop_error(exc)
+        _report_worker_error("directory_aggregates", exc)
+    else:
+        _note_worker_ok("directory_aggregates")
 
 
 def _submit_directory_aggregates() -> None:
@@ -7351,9 +7363,30 @@ async def background_loop() -> None:
         await _background_loop(loop, wakeup)
 
 
+# Clean cycles in a row that close the loop's internal-error problem (#711):
+# more than one, so an error that recurs every few cycles stays one episode
+# instead of reopening (and emailing) again each time.
+BACKGROUND_LOOP_OK_CYCLES = 3
+
+
+def _background_loop_closes_problem(clean: bool, streak: int) -> tuple[int, bool]:
+    """The new clean-cycle streak, and whether the loop's problem closes now.
+
+    A loop that works again closes its internal-error problem by itself, like
+    every other worker (#496, #711), once per recovery: only while it is not
+    already known to be healthy, so a clean cycle costs no database write.
+    """
+    streak = streak + 1 if clean else 0
+    with _workers_known_ok_lock:
+        known_ok = ("background_loop", None) in _workers_known_ok
+    return streak, streak >= BACKGROUND_LOOP_OK_CYCLES and not known_ok
+
+
 def _record_background_loop_error(exc: Exception) -> None:
     # Never include paths/provider messages in logs. The existing bounded error
     # store and counter own diagnostics for ordinary and fast-refill cycles.
+    with _workers_known_ok_lock:
+        _workers_known_ok.discard(("background_loop", None))
     try:
         with db() as connection:
             worker_error_store.record_worker_error(
@@ -7380,12 +7413,14 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     backlog_observed_at: float | None = None
     backlog_runnable = 0
     last_aggregates: float | None = None
+    clean_cycles = 0
     try:
         while True:
             # Clear before dispatch, not before waiting: a completion arriving
             # during the normal cycle must still trigger a prompt refill.
             wakeup.clear()
             runnable_count = 0
+            clean = True
             runtime = settings
             health_service.mark_worker_heartbeat()
             metrics_service.set_gauge("worker_up", 1)
@@ -7475,6 +7510,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                     metadata_backup_service.mark_verification_attempt()
                 await asyncio.to_thread(_deliver_notifications_once)
             except Exception as exc:
+                clean = False
                 await asyncio.to_thread(_record_background_loop_error, exc)
             batch_size = max(10, runtime.operation_concurrency * 10)
             # Poll fast only for work the worker can start now: Jobs set aside as
@@ -7490,7 +7526,11 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
             try:
                 await _refill_until_deadline(wakeup, delay)
             except Exception as exc:
+                clean = False
                 await asyncio.to_thread(_record_background_loop_error, exc)
+            clean_cycles, close = _background_loop_closes_problem(clean, clean_cycles)
+            if close:
+                await asyncio.to_thread(_note_worker_ok, "background_loop")
     except asyncio.CancelledError:
         # Lifespan owns pool draining after all producers have been cancelled.
         # Detaching here would lose the running futures before they can drain.

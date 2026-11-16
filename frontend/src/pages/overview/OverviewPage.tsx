@@ -22,16 +22,24 @@ const STATE_RANK: Record<string, number> = { problem: 1, unconfirmed: 2, pending
 type Row = {
   id: number; name: string; state: string; protected: number; files: number; local: number; cloud: number;
   cost: number | null; problems: number; loaded: boolean; manual: boolean; pending: number;
+  /** In the cloud and verified, waiting for a scan to confirm the Local Copy (#711). */
+  awaiting: number;
 };
 
 function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: Overview | undefined): Row {
   const states = (stats?.states ?? {}) as Record<string, number>;
+  // Unconfirmed hides the state underneath; the last known one still tells
+  // what waits for upload and what is already in the cloud (#711).
+  const known = (stats?.last_known_states ?? states) as Record<string, number>;
+  const unconfirmed = (states.unconfirmed ?? 0) > 0;
   const storage = (stats?.storage ?? {}) as { local_bytes?: number; cloud_bytes?: number };
   const summary = overview?.vaults.find((item) => item.id === vault.id);
   const state = vaultState(stats);
   return {
-    id: vault.id, name: vault.name, state, loaded: Boolean(stats), manual: Boolean(stats?.manual_upload), pending: states.pending ?? 0,
+    id: vault.id, name: vault.name, state, loaded: Boolean(stats), manual: Boolean(stats?.manual_upload),
+    pending: (unconfirmed ? known.pending : states.pending) ?? 0,
     protected: states.protected ?? 0,
+    awaiting: unconfirmed ? Math.max(0, (known.protected ?? 0) - (states.protected ?? 0)) : 0,
     files: Object.entries(states).filter(([name]) => name !== "excluded" && name !== "unsupported").reduce((sum, [, count]) => sum + count, 0),
     local: storage.local_bytes ?? 0, cloud: storage.cloud_bytes ?? 0,
     cost: summary ? summary.monthly_estimate : null, problems: summary?.open_problem_count ?? 0,
@@ -47,6 +55,21 @@ function Tile({ icon, label, value, detail, tone = "neutral", testId }: {
     <p className="text-2xl font-extrabold tabular-nums">{value}</p>
     {detail ? <div className="text-sm text-muted">{detail}</div> : null}
   </div>;
+}
+
+/**
+ * The protected share and, lighter, the share already in the cloud that a
+ * scan has still to confirm (#711). Decorative: the numbers beside it say it.
+ */
+function ProtectionBar({ protectedCount, awaiting, total, className }: {
+  protectedCount: number; awaiting: number; total: number; className?: string;
+}) {
+  const share = (count: number) => `${Math.max(0, Math.min(100, (count / total) * 100))}%`;
+  return <span aria-hidden="true" data-testid="protection-bar"
+    className={cn("flex h-1.5 w-full overflow-hidden rounded-badge bg-[var(--progress-track)]", className)}>
+    <span className="block h-full bg-green" style={{ width: share(protectedCount) }} />
+    <span className="block h-full bg-green/40" style={{ width: share(awaiting) }} />
+  </span>;
 }
 
 /** Home: how protected is everything, and which Vault needs attention. */
@@ -69,7 +92,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     const order = left < right ? -1 : left > right ? 1 : a.name.localeCompare(b.name);
     return sort.ascending ? order : -order;
   });
-  const totals = rows.reduce((sum, row) => ({ protected: sum.protected + row.protected, files: sum.files + row.files }), { protected: 0, files: 0 });
+  const totals = rows.reduce((sum, row) => ({
+    protected: sum.protected + row.protected, files: sum.files + row.files, awaiting: sum.awaiting + row.awaiting,
+  }), { protected: 0, files: 0, awaiting: 0 });
   const pending = rows.reduce((sum, row) => sum + row.pending, 0);
   // Manual Upload Vaults wait for the Owner, not for automatic upload (#647).
   const manualPending = rows.reduce((sum, row) => sum + (row.manual ? row.pending : 0), 0);
@@ -93,7 +118,11 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     if (key === "name") return <a href={vaultFilesUrl(row.id)} className="font-bold text-ink no-underline hover:underline">{row.name}</a>;
     if (key === "state") return <div className="grid justify-items-start gap-2"><VaultStateBadge state={row.state} manual={row.manual} t={t} />{paused(row)}</div>;
     if (!row.loaded && key !== "cost" && key !== "problems") return <span className="text-muted">—</span>;
-    if (key === "protected") return `${number.format(row.protected)} / ${number.format(row.files)}`;
+    if (key === "protected") return <span className="grid justify-items-end gap-1">
+      <span>{number.format(row.protected)} / {number.format(row.files)}</span>
+      {row.awaiting > 0 && <span className="text-xs text-muted" data-testid="overview-awaiting">{t("overview.row_awaiting", { count: number.format(row.awaiting) })}</span>}
+      {row.files > 0 && <ProtectionBar protectedCount={row.protected} awaiting={row.awaiting} total={row.files} className="w-24" />}
+    </span>;
     if (key === "local") return formatBytes(row.local);
     if (key === "cloud") return formatBytes(row.cloud);
     if (key === "cost") return row.cost === null ? "—" : money(row.cost);
@@ -112,7 +141,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     </section> : <>
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label={t("overview.summary")}>
         <Tile testId="tile-protected" icon={<ShieldCheck className="size-4" />} tone={protectedTone} label={t("overview.tile_protected")}
-          value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? t("overview.tile_protected_of", { total: number.format(totals.files) }) : null} />
+          value={loaded ? number.format(totals.protected) : "—"} detail={loaded ? <>{t("overview.tile_protected_of", { total: number.format(totals.files) })}
+            {totals.awaiting > 0 && <span className="block" data-testid="tile-protected-awaiting">{t("overview.tile_protected_awaiting", { count: totals.awaiting })}</span>}
+            {totals.files > 0 && <ProtectionBar protectedCount={totals.protected} awaiting={totals.awaiting} total={totals.files} className="mt-2" />}</> : null} />
         <Tile testId="tile-pending" icon={<Clock className="size-4" />} tone={pending ? "warn" : "neutral"} label={t("overview.tile_pending")}
           value={loaded ? number.format(pending) : "—"} detail={<>{(!loaded || manualPending < pending || pending === 0) && t("overview.tile_pending_hint")}
             {loaded && manualPending > 0 && <span className="block" data-testid="tile-pending-manual">{t("overview.tile_pending_manual", { count: manualPending })}</span>}{loaded && stoppedFiles > 0 && <span className="block" data-testid="tile-stopped">{t("overview.tile_stopped", { count: stoppedFiles })}</span>}</>} />

@@ -145,6 +145,51 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         self.assertEqual(summary["states"], {"unconfirmed": 4})
         self.assertEqual(item["state"], "unconfirmed")
 
+    def add_excluded(self, connection) -> None:
+        """A fixed-noise file in the blocked folder, never pending work (#711)."""
+        ArchiveCatalog(connection).observe_local_copy(
+            vault_id=2, path="priv/secret/.DS_Store", file_type="regular", size=4, mtime_ns=1,
+            observed_at="2026-11-15T10:00:00+00:00")
+        aggregates.rebuild_vault_directory_aggregates(connection, 2)
+
+    def test_excluded_keeps_its_state_in_a_blocked_path(self) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            self.add_excluded(connection)
+            catalog = ArchiveCatalog(connection, protection_unconfirmed=self.scope(connection))
+            summary = catalog.summary(2)
+            item = catalog.get_file_item(2, "priv/secret/.DS_Store")
+            secret = {entry["path"]: entry for entry in catalog.list_files_page(2, directory="priv")["items"]}["priv/secret"]
+            excluded = [entry["path"] for entry in
+                        catalog.list_files_page(2, directory="priv/secret", state="excluded")["items"]]
+            unconfirmed = [entry["path"] for entry in
+                           catalog.list_files_page(2, directory="priv/secret", state="unconfirmed")["items"]]
+        self.assertEqual(summary["states"], {"protected": 3, "unconfirmed": 1, "excluded": 1})
+        self.assertEqual(item["state"], "excluded")
+        self.assertEqual(secret["state"], "unconfirmed")
+        self.assertEqual(secret["state_counts"], {"excluded": 1, "unconfirmed": 1})
+        self.assertEqual(excluded, ["priv/secret/.DS_Store"])
+        self.assertEqual(unconfirmed, ["priv/secret/c.txt"])
+
+    def test_excluded_keeps_its_state_in_a_whole_unconfirmed_vault(self) -> None:
+        with PostgresConnection(str(self.path)) as connection:
+            self.add_excluded(connection)
+            record_component_health(connection, vault_id=2, component="cloud", ok=False,
+                                    error="listing failed")
+            catalog = ArchiveCatalog(connection, protection_unconfirmed=self.scope(connection))
+            summary = catalog.summary(2)
+            item = catalog.get_file_item(2, "priv/secret/.DS_Store")
+            root_excluded = [entry["path"] for entry in catalog.list_files_page(2, state="excluded")["items"]]
+            root_unconfirmed = [entry["path"] for entry in catalog.list_files_page(2, state="unconfirmed")["items"]]
+            root_protected = catalog.list_files_page(2, state="protected")["items"]
+            secret = {entry["path"]: entry for entry in catalog.list_files_page(2, directory="priv")["items"]}["priv/secret"]
+        self.assertEqual(summary["states"], {"unconfirmed": 4, "excluded": 1})
+        self.assertEqual(summary["protection_state"], "unconfirmed")
+        self.assertEqual(item["state"], "excluded")
+        self.assertEqual(root_excluded, ["priv"])
+        self.assertEqual(root_unconfirmed, ["other", "priv", "a.txt"])
+        self.assertEqual(root_protected, [])
+        self.assertEqual(secret["state_counts"], {"excluded": 1, "unconfirmed": 1})
+
     def test_stats_say_how_many_paths_are_unreadable(self) -> None:
         from app.main import stats
 
