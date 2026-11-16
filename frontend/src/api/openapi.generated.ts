@@ -1077,6 +1077,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/duplicate-cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Duplicate Cleanup Status */
+        get: operations["duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get"];
+        /**
+         * Update Duplicate Cleanup
+         * @description Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
+         *
+         *     Turning it on or changing its grace period or cap needs a fresh
+         *     authentication; turning it off never does.
+         */
+        put: operations["update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/pause": {
         parameters: {
             query?: never;
@@ -1644,6 +1668,46 @@ export interface components {
             type: "directory";
         } & {
             [key: string]: unknown;
+        };
+        DuplicateCleanupStatus: {
+            cap_bytes: number;
+            cap_files: number;
+            enabled: boolean;
+            grace_days: number;
+            grace_days_max: number;
+            grace_days_min: number;
+            last_outcome: {
+                at: string;
+                byte_count?: number;
+                file_count?: number;
+                group_id?: string;
+                /** @enum {string} */
+                outcome: "scheduled" | "none" | "capped" | "skipped";
+                run_after?: string;
+            } | null;
+            last_run_at: string | null;
+            next_run_at: string | null;
+            pending: {
+                byte_count: number;
+                cancellable: boolean;
+                file_count: number;
+                group_id: string;
+                run_after: string | null;
+            }[];
+        };
+        /**
+         * DuplicateCleanupUpdate
+         * @description Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value.
+         */
+        DuplicateCleanupUpdate: {
+            /** Cap Bytes */
+            cap_bytes?: number | null;
+            /** Cap Files */
+            cap_files?: number | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Grace Days */
+            grace_days?: number | null;
         };
         /** FileAction */
         FileAction: {
@@ -4606,6 +4670,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultSelectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DuplicateCleanupUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
                 };
             };
             /** @description Validation Error */

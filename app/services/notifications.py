@@ -19,7 +19,8 @@ from typing import Any, Protocol
 from psycopg.types.json import Jsonb
 
 from ..config import settings
-from ..i18n import format_bytes, format_datetime, format_money, has_message, parse_message_params, translate
+from ..i18n import (_localized_digits, format_bytes, format_datetime, format_money, has_message,
+                    parse_message_params, translate)
 
 
 # Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
@@ -81,6 +82,16 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
         translate("notification.file_unreadable.access", locale=locale, **localized)
         if "owner_uid" in localized else ""
     )
+    # Automatic Duplicate Cleanup (#726): counts, sizes and the execution time
+    # are stored raw and shown in the reader's locale.
+    for raw, shown in (("count", "count_shown"), ("cap_files", "cap_files_shown")):
+        if isinstance(localized.get(raw), int):
+            localized[shown] = _localized_digits(f"{localized[raw]:,}", locale)
+    for raw, shown in (("byte_count", "bytes"), ("cap_bytes", "cap_size")):
+        if raw in localized:
+            localized[shown] = format_bytes(localized[raw], locale)
+    if "executes_at" in localized:
+        localized["executes"] = format_datetime(localized["executes_at"], locale)
     return localized
 
 
@@ -790,6 +801,15 @@ _UPLOAD_RECONCILIATION_RESOLUTION = """
 """
 
 
+# A capped Automatic Duplicate Cleanup (#726) closes with the next run under
+# the cap (``duplicate_cleanup.run_vault``) or once the cleanup is off.
+_DUPLICATE_CLEANUP_RESOLUTION = """
+    n.event='duplicate_cleanup_capped' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.duplicate_cleanup_enabled
+    )
+"""
+
+
 # Problems of a stopped Vault that still need the Owner: a failed Vault
 # Deletion of its Tombstone (#717, ADR-0047).
 STOPPED_VAULT_PROBLEM_EVENTS = frozenset({"vault_deletion_failed"})
@@ -833,6 +853,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"file_unreadable"}): _FILE_UNREADABLE_RESOLUTION,
         frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
         frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
+        frozenset({"duplicate_cleanup_capped"}): _DUPLICATE_CLEANUP_RESOLUTION,
     }
 
 

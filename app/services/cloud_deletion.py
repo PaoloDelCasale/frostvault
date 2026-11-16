@@ -18,6 +18,12 @@ Protection labels are not deletion authority: source identity, actual local
 absence, the exact Current, catalog state and concurrent work are checked
 independently. A reappearance revokes the whole pending selection
 (``ArchiveCatalog._revoke_deletion_consents``).
+
+An automatic request (Automatic Duplicate Cleanup, #726, ADR-0048) covers
+only Cloud Duplicates. Its members are revoked one by one: at execution, a
+file that is no longer a valid Cloud Duplicate is skipped and recorded, and
+the rest of the group proceeds. Anything about the Vault itself still cancels
+the whole group, as for the Owner's requests, which stay all-or-nothing.
 """
 from __future__ import annotations
 
@@ -294,6 +300,38 @@ def _files_by_id(connection: Any, file_ids: list[str]) -> list[dict[str, Any]]:
     ).fetchall()
 
 
+def _row_problem(row: dict[str, Any], prefix: str, own_group: str | None) -> str | None:
+    """Why one live file row cannot be consented, or None when it can."""
+    if (row["local_presence"] not in {None, "missing"} or row["held_version_id"] is not None
+            or row["current_version_id"] is None or row["replacing_version_id"] is not None
+            or row["integrity"] != "verified" or row["availability"] != "available"
+            or not row["path"]):
+        return "Only Cloud-only files can be deleted from the cloud"
+    if (row["other_versions"] or row["attempt_open"]
+            or (row["batch_open"] and (own_group is None
+                                       or str(row["batch_group"] or "") != str(own_group)))):
+        return "Selected file has pending cloud cleanup"
+    if (not row["object_key"] or not row["provider_version_id"]
+            or row["provider_version_id"] == "null"
+            or not str(row["object_key"]).startswith(prefix)
+            or row["attempt_outcome"] != "landed"
+            or row["landed_version_id"] != row["provider_version_id"]):
+        return "An exact cloud VersionId in this Vault is required"
+    return None
+
+
+def _busy_files(connection: Any, file_ids: list[str], own_group: str | None) -> set[str]:
+    """The files with unfinished work outside ``own_group``."""
+    if not file_ids:
+        return set()
+    rows = connection.execute(
+        """SELECT DISTINCT file_id FROM jobs WHERE file_id = ANY(%s::uuid[])
+             AND status NOT IN ('completed','failed','cancelled')
+             AND (CAST(%s AS uuid) IS NULL OR group_id IS DISTINCT FROM CAST(%s AS uuid))""",
+        (file_ids, own_group, own_group)).fetchall()
+    return {str(r["file_id"]) for r in rows}
+
+
 def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str, Any]],
                     *, own_group: str | None = None, check_local: bool = True) -> None:
     """Every selected file is Cloud-only with exactly one consentable version."""
@@ -301,30 +339,11 @@ def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str
         raise CloudDeletionError("Protection observations are not confirmed")
     prefix = _vault_prefix(vault)
     for row in files:
-        if (row["local_presence"] not in {None, "missing"} or row["held_version_id"] is not None
-                or row["current_version_id"] is None or row["replacing_version_id"] is not None
-                or row["integrity"] != "verified" or row["availability"] != "available"
-                or not row["path"]):
-            raise CloudDeletionError("Only Cloud-only files can be deleted from the cloud")
-        if (row["other_versions"] or row["attempt_open"]
-                or (row["batch_open"] and (own_group is None
-                                           or str(row["batch_group"] or "") != str(own_group)))):
-            raise CloudDeletionError("Selected file has pending cloud cleanup")
-        if (not row["object_key"] or not row["provider_version_id"]
-                or row["provider_version_id"] == "null"
-                or not str(row["object_key"]).startswith(prefix)
-                or row["attempt_outcome"] != "landed"
-                or row["landed_version_id"] != row["provider_version_id"]):
-            raise CloudDeletionError("An exact cloud VersionId in this Vault is required")
-    if files:
-        pending = connection.execute(
-            """SELECT 1 FROM jobs WHERE file_id = ANY(%s::uuid[])
-                 AND status NOT IN ('completed','failed','cancelled')
-                 AND (CAST(%s AS uuid) IS NULL OR group_id IS DISTINCT FROM CAST(%s AS uuid))
-               LIMIT 1""",
-            ([str(r["file_id"]) for r in files], own_group, own_group)).fetchone()
-        if pending:
-            raise CloudDeletionError("Selected file has pending work")
+        problem = _row_problem(row, prefix, own_group)
+        if problem:
+            raise CloudDeletionError(problem)
+    if _busy_files(connection, [str(r["file_id"]) for r in files], own_group):
+        raise CloudDeletionError("Selected file has pending work")
     if check_local:
         require_local_absence(vault, [r["path"] for r in files])
 
@@ -341,6 +360,9 @@ class _Selection:
     directories: tuple[str, ...] = ()
     listing: ListingFilter | None = None
     whole_vault: bool = False
+    # Automatic Duplicate Cleanup (#726): every file of the Vault whose Local
+    # Copy was last seen at or before this time.
+    seen_before: str | None = None
 
     @property
     def strict(self) -> bool:
@@ -443,6 +465,10 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
         sql, values = _listing_sql(connection, vault, selection.listing)
         parts.append(sql)
         params.extend(values)
+    if selection.seen_before is not None:
+        # A file never seen locally (NULL) is never a candidate: no invented time.
+        parts.append("(f.local_presence = 'missing' AND f.local_seen_at <= %s::timestamptz)")
+        params.append(selection.seen_before)
     return "(" + " OR ".join(parts) + ")", params
 
 
@@ -606,22 +632,33 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
         # The eligible set passes the very checks of an exact selection.
         _validate_files(connection, vault, _files_by_id(connection, [str(f["file_id"]) for f in files]),
                         check_local=False)
+    return _record_consent(connection, vault_id=vault_id, files=files, preview=preview,
+                           group_path=selection.group_path, actor=actor, requested=requested,
+                           requested_at=requested_at, reason=reason, origin=origin)
+
+
+def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any]],
+                    preview: DeletionPreview, group_path: str, actor: str, requested: datetime,
+                    requested_at: str, reason: str, origin: str) -> ScheduledDeletion:
+    """One group, its request and one pending Job per file, then the audit record."""
     pending_until = (requested + timedelta(seconds=DELETION_DELAY_SECONDS)).isoformat()
     group_id = str(uuid.uuid4())
     connection.execute(
         "INSERT INTO job_groups(id, vault_id, path, created_at) VALUES (%s, %s, %s, %s)",
-        (group_id, vault_id, selection.group_path, requested_at))
+        (group_id, vault_id, group_path, requested_at))
     connection.execute(
-        "INSERT INTO cloud_purge_requests(group_id, reason, stop_protection) VALUES (%s, %s, %s)",
-        (group_id, reason.strip(), origin == "stop-protection"))
+        """INSERT INTO cloud_purge_requests(group_id, reason, stop_protection, automatic)
+           VALUES (%s, %s, %s, %s)""",
+        (group_id, reason.strip(), origin == "stop-protection", origin == "automatic"))
     rows = connection.execute(
         """INSERT INTO jobs(vault_id, file_id, archive_version_id, group_id, action, status,
                             origin, total_bytes, requested_at, updated_at, run_after)
            SELECT %s, f.file_id, f.version_id, %s, 'cloud-purge', 'pending_delay',
-                  'manual', f.size, %s, %s, %s
+                  %s, f.size, %s, %s, %s
            FROM unnest(%s::uuid[], %s::uuid[], %s::bigint[]) AS f(file_id, version_id, size)
            RETURNING id, file_id""",
-        (vault_id, group_id, requested_at, requested_at, pending_until,
+        (vault_id, group_id, "automatic" if origin == "automatic" else "manual",
+         requested_at, requested_at, pending_until,
          [str(f["file_id"]) for f in files], [str(f["current_version_id"]) for f in files],
          [int(f["size"] or 0) for f in files])).fetchall()
     job_ids = sorted(int(r["id"]) for r in rows)
@@ -629,8 +666,65 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
                        vault_id=vault_id, outcome="requested", group_id=group_id,
                        paths=sorted(f["path"] for f in files)[:100], reason=reason.strip(),
                        pending_until=pending_until, preview=preview.as_dict(),
-                       stop_protection=origin == "stop-protection")
+                       stop_protection=origin == "stop-protection",
+                       automatic=origin == "automatic")
     return ScheduledDeletion(group_id, job_ids, preview, pending_until)
+
+
+def automatic_duplicates(connection: Any, vault: dict[str, Any], *,
+                         seen_before: str) -> tuple[list[dict[str, Any]], DeletionPreview]:
+    """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
+
+    The eligible Cloud-only files of the whole Vault whose Local Copy was last
+    seen at or before ``seen_before`` (files already in pending work, such as
+    another deletion group, are skipped as ``pending_work``), narrowed to the
+    Cloud Duplicates; local absence is then proven for those only. A file
+    without another protected local copy is never returned.
+    """
+    if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
+        raise CloudDeletionError("Protection observations are not confirmed")
+    _aware(seen_before)
+    where, params = _selection_sql(connection, vault, _Selection(seen_before=seen_before))
+    rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
+                              [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
+    eligible = [r for r in rows if r["reason"] == "eligible"]
+    duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
+    chosen = [r for r in eligible if str(r["file_id"]) in duplicates]
+    present = _present_paths(vault, [r["path"] for r in chosen]) if chosen else set()
+    chosen = [r for r in chosen if r["path"] not in present]
+    size = sum(int(r["size"] or 0) for r in chosen)
+    skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
+    if present:
+        skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
+    preview = DeletionPreview(
+        len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
+        duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
+        duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped)
+    return chosen, preview
+
+
+def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
+                                  files: list[dict[str, Any]], preview: DeletionPreview,
+                                  requested_at: str, reason: str) -> ScheduledDeletion:
+    """Record one automatic Delayed Cloud Deletion of ``files`` (#726).
+
+    The caller holds the Vault lock and resolved ``files`` with
+    :func:`automatic_duplicates` in this transaction. The same seven-day delay
+    and execution checks as the Owner's requests apply. The audit actor is
+    ``system``; the request, its Jobs (origin ``automatic``) and the audit
+    record say it was automatic.
+    """
+    if vault["lifecycle"] != "active" or vault.get("root_released_at") or vault.get("paused"):
+        raise CloudDeletionError("Automatic cleanup runs only on an active Vault")
+    if not files:
+        raise CloudDeletionError("No Cloud-only files selected")
+    if not (reason or "").strip() or len(reason) > 500:
+        raise CloudDeletionError("A deletion reason is required")
+    _validate_files(connection, vault, _files_by_id(connection, [str(f["file_id"]) for f in files]),
+                    check_local=False)
+    return _record_consent(connection, vault_id=int(vault["id"]), files=files, preview=preview,
+                           group_path="", actor="system", requested=_aware(requested_at),
+                           requested_at=requested_at, reason=reason, origin="automatic")
 
 
 def _group_jobs(connection: Any, vault_id: int, group_id: str) -> list[dict[str, Any]]:
@@ -690,13 +784,16 @@ def revoke_grants(connection: Any, *, group_id: str, file_ids: list[str] | None 
     connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (ids,))
 
 
-def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str) -> bool:
+def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str,
+                       revoked: set[int] | None = None) -> bool:
     """Under the Vault lock, revoke stale consent before *any* S3 delete call.
 
     The consent never widens: each Job still names the file's Current, the
     file is still Cloud-only and the request still matches the Vault's
     lifecycle (an ordinary deletion only while active, a Stop Protection one
-    only while stopping). Anything else cancels the whole group.
+    only while stopping). Anything else cancels the whole group, except in an
+    automatic group (#726): there a file that no longer qualifies is revoked
+    alone (its Job id is added to ``revoked``) and the others proceed.
     """
     vault = lock_vault(connection, vault_id)
     rows = _group_jobs(connection, vault_id, group_id)
@@ -718,6 +815,14 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
                 raise CloudDeletionError("The seven-day delay has not elapsed")
         files = {str(f["file_id"]): f for f in _files_by_id(
             connection, [str(r["file_id"]) for r in active])}
+        if request.get("automatic"):
+            invalid = _automatic_invalid(connection, vault, active, files, group_id)
+            dropped = [r for r in active if str(r["file_id"]) in invalid]
+            if dropped:
+                _revoke_members(connection, dropped, invalid, files, at=at)
+                if revoked is not None:
+                    revoked.update(int(r["id"]) for r in dropped)
+            return len(dropped) < len(active)
         for row in active:
             live = files.get(str(row["file_id"]))
             if (live is None or row["archive_version_id"] is None
@@ -728,6 +833,68 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
         _cancel_rows(connection, active, at=at, actor="system", reason=str(exc))
         return False
     return True
+
+
+def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict[str, Any]],
+                       files: dict[str, dict[str, Any]], group_id: str) -> dict[str, str]:
+    """``{file_id: why}`` for the members of an automatic group that no longer qualify.
+
+    Each member must still be exactly what it consented to, Cloud-only with no
+    other work, absent locally and a Cloud Duplicate. What concerns the whole
+    Vault (unconfirmed observations, an unreadable root) raises instead and
+    cancels the group.
+    """
+    if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
+        raise CloudDeletionError("Protection observations are not confirmed")
+    prefix = _vault_prefix(vault)
+    invalid: dict[str, str] = {}
+    for row in active:
+        file_id = str(row["file_id"])
+        live = files.get(file_id)
+        if (live is None or row["archive_version_id"] is None
+                or str(live["current_version_id"] or "") != str(row["archive_version_id"])):
+            invalid[file_id] = "Cloud content changed after confirmation"
+            continue
+        problem = _row_problem(live, prefix, group_id)
+        if problem:
+            invalid[file_id] = problem
+    remaining = [file_id for file_id in (str(r["file_id"]) for r in active) if file_id not in invalid]
+    for file_id in _busy_files(connection, remaining, group_id):
+        invalid[file_id] = "Selected file has pending work"
+    remaining = [file_id for file_id in remaining if file_id not in invalid]
+    present = _present_paths(vault, [files[file_id]["path"] for file_id in remaining])
+    for file_id in remaining:
+        if files[file_id]["path"] in present:
+            invalid[file_id] = "A selected file is present on the server"
+    remaining = [file_id for file_id in remaining if file_id not in invalid]
+    duplicates = _duplicate_ids(connection, vault, remaining)
+    for file_id in remaining:
+        if file_id not in duplicates:
+            invalid[file_id] = "No longer a Cloud Duplicate"
+    return invalid
+
+
+def _revoke_members(connection: Any, rows: list[dict[str, Any]], reasons: dict[str, str],
+                    files: dict[str, dict[str, Any]], *, at: str) -> None:
+    """Cancel some members of an automatic group, each with its reason, and record it."""
+    by_reason: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_reason.setdefault(reasons[str(row["file_id"])], []).append(row)
+    for reason, members in by_reason.items():
+        connection.execute(
+            """UPDATE jobs SET status='cancelled', message=%s, message_key=NULL,
+                   message_params=NULL, updated_at=%s, finished_at=%s
+               WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
+            (f"Skipped: {reason}"[:500], at, at, [int(r["id"]) for r in members]))
+    revoke_grants(connection, group_id=str(rows[0]["group_id"]),
+                  file_ids=[str(r["file_id"]) for r in rows])
+    record_audit_event(
+        connection, event="cloud_deletion.files_revoked", actor="system",
+        vault_id=int(rows[0]["vault_id"]), outcome="revoked", group_id=str(rows[0]["group_id"]),
+        revoked=len(rows), reasons={reason: len(m) for reason, m in by_reason.items()},
+        paths=sorted(str((files.get(str(r["file_id"])) or {}).get("path") or "")
+                     for r in rows)[:100],
+        job_ids=[int(r["id"]) for r in rows][:100])
 
 
 def freeze_grants(connection: Any, *, vault: dict[str, Any], group_id: str,

@@ -6,6 +6,8 @@ import {
 } from "./client";
 import type { ApiDownload } from "./client";
 import type {
+  DuplicateCleanupStatus,
+  DuplicateCleanupUpdate,
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,
   MetadataBackupVerification,
@@ -449,6 +451,25 @@ export function stopProtection(vaultId: number, payload: StopProtectionPayload):
 
 export function cancelStoppedFolderDeletion(vaultId: number): Promise<StopProtectionStatus> {
   return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection/cancel-deletion`, { method: "POST", body: "{}" });
+}
+
+/** Automatic Duplicate Cleanup of one Vault (#726, ADR-0048). */
+export function fetchDuplicateCleanup(vaultId: number): Promise<DuplicateCleanupStatus> {
+  return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`);
+}
+
+/** Turning it on or changing its wait and caps needs a fresh authentication. */
+export function updateDuplicateCleanup(vaultId: number, payload: DuplicateCleanupUpdate): Promise<DuplicateCleanupStatus> {
+  return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`, {
+    method: "PUT", body: JSON.stringify(payload),
+  });
+}
+
+/** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */
+export function cancelCloudDeletionGroup(vaultId: number, groupId: string): Promise<JobCancelResponse> {
+  return apiRequest<JobCancelResponse>(scoped("/api/jobs/cancel", vaultId), {
+    method: "POST", body: JSON.stringify({ group_id: groupId, action: "cloud-purge" }),
+  });
 }
 
 /** Vault Deletion of a Tombstone (#717, ADR-0047). */

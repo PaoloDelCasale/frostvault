@@ -703,6 +703,187 @@
         ],
         "type": "object"
       },
+      "DuplicateCleanupStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "cap_bytes": {
+            "type": "number"
+          },
+          "cap_files": {
+            "type": "number"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "grace_days": {
+            "type": "number"
+          },
+          "grace_days_max": {
+            "type": "number"
+          },
+          "grace_days_min": {
+            "type": "number"
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "byte_count": {
+                    "type": "number"
+                  },
+                  "file_count": {
+                    "type": "number"
+                  },
+                  "group_id": {
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "enum": [
+                      "scheduled",
+                      "none",
+                      "capped",
+                      "skipped"
+                    ],
+                    "type": "string"
+                  },
+                  "run_after": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "at"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "byte_count": {
+                  "type": "number"
+                },
+                "cancellable": {
+                  "type": "boolean"
+                },
+                "file_count": {
+                  "type": "number"
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "run_after": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "group_id",
+                "file_count",
+                "byte_count",
+                "run_after",
+                "cancellable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "grace_days",
+          "cap_files",
+          "cap_bytes",
+          "grace_days_min",
+          "grace_days_max",
+          "last_run_at",
+          "next_run_at",
+          "last_outcome",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "DuplicateCleanupUpdate": {
+        "additionalProperties": false,
+        "description": "Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value.",
+        "properties": {
+          "cap_bytes": {
+            "anyOf": [
+              {
+                "maximum": 1125899906842624.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Bytes"
+          },
+          "cap_files": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Files"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "grace_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grace Days"
+          }
+        },
+        "title": "DuplicateCleanupUpdate",
+        "type": "object"
+      },
       "FileAction": {
         "properties": {
           "archive_version_id": {
@@ -7577,6 +7758,93 @@
           }
         },
         "summary": "Select Vault"
+      }
+    },
+    "/api/vaults/{vault_id}/duplicate-cleanup": {
+      "get": {
+        "operationId": "duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCleanupStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Duplicate Cleanup Status"
+      },
+      "put": {
+        "description": "Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).\n\nTurning it on or changing its grace period or cap needs a fresh\nauthentication; turning it off never does.",
+        "operationId": "update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateCleanupUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateCleanupStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Duplicate Cleanup"
       }
     },
     "/api/vaults/{vault_id}/pause": {

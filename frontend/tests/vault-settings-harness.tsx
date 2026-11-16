@@ -41,6 +41,19 @@ export const defaultPolicy = {
   exclude_globs: [] as string[],
 };
 
+export const defaultDuplicateCleanup = {
+  enabled: false,
+  grace_days: 7,
+  cap_files: 5000,
+  cap_bytes: 50 * 1024 ** 3,
+  grace_days_min: 1,
+  grace_days_max: 90,
+  last_run_at: null as string | null,
+  next_run_at: null as string | null,
+  last_outcome: null as null | Record<string, unknown>,
+  pending: [] as { group_id: string; file_count: number; byte_count: number; run_after: string | null; cancellable: boolean }[],
+};
+
 export const defaultLifecycle = {
   profile: { transitions: [] as { days: number; storage_class: string }[] },
   guided_profiles: {
@@ -101,6 +114,9 @@ export function createVaultAccessFetch(
     }
     if (url === "/api/vault/lifecycle") {
       return jsonResponse(defaultLifecycle);
+    }
+    if (/^\/api\/vaults\/\d+\/duplicate-cleanup$/.test(url) && method === "GET") {
+      return jsonResponse(defaultDuplicateCleanup);
     }
     if (url === "/api/vault/move") {
       return jsonResponse({ vault_id: 1, targets: [] });

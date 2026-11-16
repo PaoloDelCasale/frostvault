@@ -5,6 +5,9 @@ export function problemLink(vaultId: number | null, params: Record<string, unkno
   if (!vaultId) return "/system";
   // A Vault Deletion acts on a Tombstone, reachable only from the Overview (#717).
   if (params.vault_deletion) return "/#archived";
+  // Automatic Duplicate Cleanup (#726): a scheduled run is cancelled from its
+  // settings; a capped one is confirmed by hand from the Cloud-only files.
+  if (params.duplicate_cleanup) return params.group_id ? vaultSettingsUrl(vaultId, "duplicates") : vaultFilesUrl(vaultId, { state: "cloud_only" });
   const path = typeof params.path === "string" ? params.path : "";
   if (!path) return vaultSettingsUrl(vaultId);
   return vaultFilesUrl(vaultId, { directory: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "", file: path });

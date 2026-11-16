@@ -75,6 +75,14 @@ of the same Vault. Deleting it from the cloud loses no content; a Cloud-only
 file without such a copy is the only remaining copy of its content.
 _Avoid_: Orphan, Leftover, Copy, Conflict
 
+**Automatic Duplicate Cleanup**:
+An opt-in, per-Vault setting under which FrostVault itself schedules, once a
+day, the Cloud Duplicates whose Local Copy was last seen long enough ago as one
+Delayed Cloud Deletion, with the same delay and cancellation. It never schedules
+a Cloud-only file without such a copy, and above its cap it schedules nothing
+and asks the Owner to confirm by hand.
+_Avoid_: Auto-purge, Sync deletion, Deduplication, Mirror cleanup
+
 **Vault Tombstone**:
 The non-operational Vault and retained identity/history after Stop Protection
 releases its root.
