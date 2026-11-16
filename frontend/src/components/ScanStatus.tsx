@@ -113,7 +113,7 @@ export function ScanStatus({ runtime, t, adoption, unconfirmed = false }: {
     {failed && <p className={cn(scanning ? "text-muted" : "text-ink")} data-testid="scan-last-failed">
       {t("vault.scan.previous_failed", {
         at: formatDateTime(failedAt as string),
-        cause: cause && CAUSES.has(cause) ? t(`vault.scan.cause.${cause}`) : String(stored),
+        cause: cause && CAUSES.has(cause) ? t("vault.scan.cause." + cause) : String(stored),
       })}
       {scanning && <> · {t("vault.scan.previous_failed_resolving")}</>}
     </p>}
