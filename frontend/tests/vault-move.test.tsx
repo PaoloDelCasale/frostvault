@@ -91,6 +91,37 @@ describe("Vault-wide Move now in the storage plan section", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("No eligible files: pending work");
   });
 
+  it("reports an unavailable preview inline and keeps the rest of the plan usable (#718)", async () => {
+    const user = userEvent.setup();
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      "GET /api/vault/move": () => jsonResponse({ detail: "Internal Server Error" }, 500),
+    }) });
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
+    const notice = await screen.findByTestId("vault-move-preview-unavailable");
+    expect(notice).toHaveTextContent(/^Move preview unavailable\. /);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: loadCatalog("en")["move.title"] })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move now in background" })).not.toBeInTheDocument();
+  });
+
+  it("keeps queued Jobs reported when only the refreshed preview fails", async () => {
+    const user = userEvent.setup();
+    let previews = 0;
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      "GET /api/vault/move": () => (previews++ === 0
+        ? jsonResponse({ vault_id: 1, targets: [estimate] })
+        : jsonResponse({ detail: "Internal Server Error" }, 500)),
+      "POST /api/vault/move": () => jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 }),
+    }) });
+    await user.click(await screen.findByText("Show plan and moves", { exact: true }));
+    await user.click(await screen.findByRole("checkbox", { name: /I understand the estimated costs/ }));
+    await user.click(screen.getByRole("button", { name: "Move now in background" }));
+    expect(await screen.findByText(/2 move Jobs queued/)).toBeInTheDocument();
+    expect(await screen.findByTestId("vault-move-preview-unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("refuses a stale page after the selected Vault changed in another tab", async () => {
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
       "GET /api/vault/move": () => jsonResponse({ vault_id: 2, targets: [estimate] }),
@@ -106,6 +137,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
       expect(messages["move.minimum"]).toContain("{days}");
       expect(messages["move.exclusions"]).toBeTruthy();
       expect(messages["move.help"]).toBeTruthy();
+      expect(messages["move.preview_unavailable"]).toContain("{detail}");
     }
   });
 });

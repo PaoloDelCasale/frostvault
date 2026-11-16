@@ -166,6 +166,32 @@ class PooledDatabaseTests(unittest.TestCase):
         self.assertEqual(row, {"lock_timeout": startup_lock_timeout, "advisory": 0,
                                "scratch": None, "prepared": 0})
 
+    def test_every_session_plans_serially_even_after_a_reset(self):
+        # Parallel workers need /dev/shm segments a Docker PostgreSQL cannot
+        # hold (#718): the startup option survives DISCARD ALL and SET.
+        def parallel(connection):
+            return connection.execute("SHOW max_parallel_workers_per_gather").fetchone()[
+                "max_parallel_workers_per_gather"]
+
+        with database.db() as connection:
+            pid = connection.info.backend_pid
+            self.assertEqual(parallel(connection), "0")
+            connection.execute("SET max_parallel_workers_per_gather = 2")
+        with database.db() as connection:
+            self.assertEqual(connection.info.backend_pid, pid)
+            self.assertEqual(parallel(connection), "0")
+        with database._direct_connection(self.dsn) as connection:
+            self.assertEqual(parallel(connection), "0")
+        from app.schema_guard import _engine
+
+        engine = _engine(self.dsn)
+        try:
+            with engine.connect() as connection:
+                self.assertEqual(connection.exec_driver_sql(
+                    "SHOW max_parallel_workers_per_gather").scalar(), "0")
+        finally:
+            engine.dispose()
+
     def test_statements_repeated_across_checkouts_survive_each_reset(self):
         # psycopg prepares a statement after five runs. It forgets its
         # prepared statements on DISCARD ALL only while that command is new to

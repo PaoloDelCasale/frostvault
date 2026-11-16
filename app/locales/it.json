@@ -44,6 +44,7 @@
   "move.start": "Sposta ora in background",
   "move.queued_one": "{count} lavoro di spostamento accodato. Segui l'avanzamento o annulla il lavoro in Operazioni: l'annullamento conserva le copie e non inverte uno spostamento completato.",
   "move.queued_other": "{count} lavori di spostamento accodati. Segui l'avanzamento o annulla i lavori in Operazioni: l'annullamento conserva le copie e non inverte uno spostamento completato.",
+  "move.preview_unavailable": "Anteprima dello spostamento non disponibile. {detail}",
   "move.unavailable": "Nessuna copia idonea verso una classe più fredda. Standard non consente spostamenti; altrimenti verifica le copie, termina i lavori o recupera esplicitamente le sorgenti fredde.",
   "move.skip_cloud_check_unavailable_one": "{count} saltato: impossibile controllare la sorgente fredda esatta sul provider.",
   "move.skip_cloud_check_unavailable_other": "{count} saltati: impossibile controllare la sorgente fredda esatta sul provider.",

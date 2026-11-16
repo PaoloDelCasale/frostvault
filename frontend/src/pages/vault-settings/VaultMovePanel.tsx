@@ -18,6 +18,8 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A failed preview (#718) is reported inline; the panel stays usable.
+  const [previewError, setPreviewError] = useState("");
   useEffect(() => {
     let live = true;
     void fetchVaultMove(vaultId).then((next) => {
@@ -26,10 +28,11 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
           setError(t("move.vault_changed"));
           return;
         }
+        setPreviewError("");
         setPreview(next);
         setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
       }
-    }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, t)); });
+    }).catch((cause: unknown) => { if (live) setPreviewError(errorMessage(cause, t)); });
     return () => { live = false; };
   }, [vaultId, t]);
   const estimate = preview?.targets.find((item) => item.target_class === target);
@@ -41,13 +44,24 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       const result = await startVaultMove({ vault_id: vaultId, target_class: target, acknowledge_costs: true });
       onNotice(t("move.queued", { count: result.item_count }));
       setAcknowledged(false);
+    } catch (cause) {
+      setError(errorMessage(cause, t));
+      setBusy(false);
+      return;
+    }
+    try {
       const next = await fetchVaultMove(vaultId);
       if (next.vault_id !== vaultId) {
         setPreview(null);
         setError(t("move.vault_changed"));
-      } else setPreview(next);
+      } else {
+        setPreviewError("");
+        setPreview(next);
+      }
     } catch (cause) {
-      setError(errorMessage(cause, t));
+      // The Jobs are queued: only the refreshed preview is unavailable.
+      setPreview(null);
+      setPreviewError(errorMessage(cause, t));
     } finally { setBusy(false); }
   }
   return <section className="mt-5 grid gap-3 border-t border-line pt-4" data-panel="vault-move">
@@ -69,7 +83,9 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       </>}
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={acknowledged} disabled={busy} onChange={(event) => setAcknowledged(event.target.checked)} />{t("move.acknowledge")}</label>
       <Button type="button" variant="primary" disabled={busy || !acknowledged || !estimate?.eligible_count} className="w-fit" onClick={() => void move()}>{t("move.start")}</Button>
-    </> : preview ? <p className="text-sm text-muted">{t("move.unavailable")}</p> : !error && <p role="status">{t("ui.loading")}</p>}
+    </> : preview ? <p className="text-sm text-muted">{t("move.unavailable")}</p>
+      : previewError ? <p role="status" className="text-sm text-muted" data-testid="vault-move-preview-unavailable">{t("move.preview_unavailable", { detail: previewError })}</p>
+      : !error && <p role="status">{t("ui.loading")}</p>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <ActiveOperations vaultId={vaultId} t={t} moves />
   </section>;
