@@ -1037,6 +1037,18 @@
           },
           "uuid": {
             "type": "string"
+          },
+          "vault_deletion_status": {
+            "enum": [
+              "pending",
+              "running",
+              "failed",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3747,6 +3759,223 @@
           "adopt"
         ],
         "type": "string"
+      },
+      "VaultDeletionPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "by_storage_class": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "byte_count": {
+                  "type": "number"
+                },
+                "early_deletion_cost": {
+                  "type": "number"
+                },
+                "early_deletion_version_count": {
+                  "type": "number"
+                },
+                "minimum_days": {
+                  "type": "number"
+                },
+                "storage_class": {
+                  "type": "string"
+                },
+                "version_count": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "storage_class",
+                "version_count",
+                "byte_count",
+                "early_deletion_cost",
+                "early_deletion_version_count",
+                "minimum_days"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "byte_count": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "delay_seconds": {
+            "type": "number"
+          },
+          "delete_marker_count": {
+            "type": "number"
+          },
+          "early_deletion_cost": {
+            "type": "number"
+          },
+          "executes_at": {
+            "type": "string"
+          },
+          "multipart_upload_count": {
+            "type": "number"
+          },
+          "object_count": {
+            "type": "number"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "pricing_effective_at": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "version_count": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "prefix",
+          "object_count",
+          "version_count",
+          "delete_marker_count",
+          "multipart_upload_count",
+          "byte_count",
+          "by_storage_class",
+          "early_deletion_cost",
+          "currency",
+          "pricing_effective_at",
+          "region",
+          "executes_at",
+          "delay_seconds"
+        ],
+        "type": "object"
+      },
+      "VaultDeletionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Confirmation",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmation",
+          "reason"
+        ],
+        "title": "VaultDeletionRequest",
+        "type": "object"
+      },
+      "VaultDeletionStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "deletable": {
+            "type": "boolean"
+          },
+          "lifecycle": {
+            "enum": [
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "type": "string"
+          },
+          "local_files": {
+            "type": "number"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attempts": {
+                    "type": "number"
+                  },
+                  "cancellable": {
+                    "type": "boolean"
+                  },
+                  "failed_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "failure": {
+                    "additionalProperties": true,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "pending_until": {
+                    "type": "string"
+                  },
+                  "preview": {
+                    "$ref": "#/components/schemas/VaultDeletionPreview"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "requested_at": {
+                    "type": "string"
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "running",
+                      "failed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "requested_at",
+                  "pending_until",
+                  "reason",
+                  "attempts",
+                  "failed_at",
+                  "failure",
+                  "preview",
+                  "cancellable",
+                  "retryable"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vault_id": {
+            "type": "number"
+          },
+          "vault_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vault_id",
+          "vault_name",
+          "lifecycle",
+          "deletable",
+          "local_files",
+          "request"
+        ],
+        "type": "object"
       },
       "VaultFileListItem": {
         "additionalProperties": true,
@@ -7423,6 +7652,210 @@
           }
         },
         "summary": "Cancel Stopped Folder Deletion"
+      }
+    },
+    "/api/vaults/{vault_id}/vault-deletion": {
+      "get": {
+        "operationId": "vault_deletion_status_api_vaults__vault_id__vault_deletion_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultDeletionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Deletion Status"
+      },
+      "post": {
+        "description": "Delete a Vault Tombstone after the seven-day delay (#717, ADR-0047).\n\nThe confirmation lists the prefix again: a request is recorded only with\na preview that a live listing has just produced.",
+        "operationId": "request_vault_deletion_api_vaults__vault_id__vault_deletion_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultDeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultDeletionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Vault Deletion"
+      }
+    },
+    "/api/vaults/{vault_id}/vault-deletion/cancel": {
+      "post": {
+        "operationId": "cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultDeletionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Vault Deletion"
+      }
+    },
+    "/api/vaults/{vault_id}/vault-deletion/preview": {
+      "get": {
+        "operationId": "vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultDeletionPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Deletion Preview"
+      }
+    },
+    "/api/vaults/{vault_id}/vault-deletion/retry": {
+      "post": {
+        "operationId": "retry_vault_deletion_api_vaults__vault_id__vault_deletion_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultDeletionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Vault Deletion"
       }
     },
     "/assets/{asset_path}": {

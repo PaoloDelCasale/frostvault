@@ -73,6 +73,12 @@ The non-operational Vault and retained identity/history after Stop Protection
 releases its root.
 _Avoid_: Deleted Vault, Active Vault
 
+**Vault Deletion**:
+The Owner's explicit, delayed and cancellable removal of a Vault Tombstone:
+all of its cloud content goes, then the Vault leaves the catalog and only an
+audit record of it remains. Local Copies are never touched.
+_Avoid_: Forget Vault, Delayed Cloud Deletion, Stop Protection
+
 **Vault File**:
 A stable logical file in a Vault whose identity survives confirmed renames and
 content changes.

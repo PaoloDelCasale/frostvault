@@ -6,6 +6,10 @@ from typing import Any
 def notification_path(vault_id: int | None, params: dict[str, Any]) -> str:
     if not vault_id:
         return "/general"
+    if params.get("vault_deletion"):
+        # A Tombstone has no Vault page: its Vault Deletion lives in the
+        # Overview's archived list (#717).
+        return "/#archived"
     query: dict[str, str] = {"vault_id": str(vault_id)}
     path = params.get("path")
     if isinstance(path, str) and path:

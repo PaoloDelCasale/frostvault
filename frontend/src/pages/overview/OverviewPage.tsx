@@ -8,6 +8,7 @@ import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
+import { VaultDeletionDialog } from "@/components/VaultDeletionDialog";
 import { buttonVariants } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -77,6 +78,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const { t, locale } = useI18n();
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "state", ascending: true });
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
+  const [deleting, setDeleting] = useState<GeneralVault | null>(null);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: ["vault-stats", vault.id],
@@ -102,6 +104,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const stoppedFiles = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.stopped ?? 0), 0);
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
   const archived = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "stopping" || vault.lifecycle === "tombstone");
+  const archivedOpen = typeof window !== "undefined" && window.location.hash === "#archived" ? true : undefined;
   const problems = overview?.open_problem_count;
   // The tile takes its tone from the protected share, never green at 0 of N (#658).
   const protectedTone = !loaded || totals.files === 0 ? "neutral" : totals.protected >= totals.files ? "good" : "warn";
@@ -188,14 +191,22 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
       </section>
     </>}
 
-    {archived.length > 0 && <details className="rounded-card border border-line bg-surface p-3" data-testid="overview-archived">
+    {/* A Vault Deletion Problem links here (#717): it opens on #archived. */}
+    {archived.length > 0 && <details id="archived" open={archivedOpen} className="rounded-card border border-line bg-surface p-3" data-testid="overview-archived">
       <summary className="flex min-h-11 cursor-pointer items-center gap-2 font-semibold"><Archive className="size-4 text-muted" aria-hidden="true" />{t("overview.archived", { count: archived.length })}</summary>
       <p className="mb-2 text-sm text-muted">{t("overview.archived_help")}</p>
       <ul className="grid">{archived.map((vault) => <li key={vault.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-t border-line py-2">
-        <span className="min-w-0 break-words">{vault.name}</span>
-        <button type="button" className={buttonVariants({ variant: "secondary", size: "sm" })} onClick={() => setStopped(vault)}>{t("stop_protection.status")}</button>
+        <span className="flex min-w-0 flex-wrap items-center gap-2"><span className="min-w-0 break-words">{vault.name}</span>
+          {vault.vault_deletion_status ? <span className={cn("w-fit rounded-full border px-2 py-1 text-xs font-bold", vault.vault_deletion_status === "failed" ? "border-destructive text-destructive" : "border-line")}
+            data-testid="overview-vault-deletion">{t(`vault_deletion.badge_${vault.vault_deletion_status}`)}</span> : null}</span>
+        <span className="flex flex-wrap gap-2">
+          <button type="button" className={buttonVariants({ variant: "secondary", size: "sm" })} onClick={() => setStopped(vault)}>{t("stop_protection.status")}</button>
+          {vault.lifecycle === "tombstone" ? <button type="button" className={buttonVariants({ variant: vault.vault_deletion_status ? "secondary" : "danger", size: "sm" })}
+            onClick={() => setDeleting(vault)}>{vault.vault_deletion_status ? t("vault_deletion.title") : t("vault_deletion.action")}</button> : null}
+        </span>
       </li>)}</ul>
     </details>}
+    <VaultDeletionDialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }} vaultId={deleting?.id ?? 0} vaultName={deleting?.name ?? ""} onCompleted={async () => { await general.refetch(); }} />
     <StopProtectionDialog open={stopped !== null} onOpenChange={(open) => { if (!open) setStopped(null); }} vaultId={stopped?.id ?? 0} vaultName={stopped?.name ?? ""} onCompleted={async () => { await general.refetch(); }} />
   </div>;
 }

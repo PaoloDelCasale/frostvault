@@ -12,6 +12,9 @@ import type {
   RecoveryKitStatus,
   StopProtectionPayload,
   StopProtectionStatus,
+  VaultDeletionPreview,
+  VaultDeletionRequest,
+  VaultDeletionStatus,
   GeneralVaultsResponse,
   SourceVolumeInventoryResponse,
   SourceDirectoryBrowseResponse,
@@ -446,6 +449,30 @@ export function stopProtection(vaultId: number, payload: StopProtectionPayload):
 
 export function cancelStoppedFolderDeletion(vaultId: number): Promise<StopProtectionStatus> {
   return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection/cancel-deletion`, { method: "POST", body: "{}" });
+}
+
+/** Vault Deletion of a Tombstone (#717, ADR-0047). */
+export function fetchVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
+  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion`);
+}
+
+/** A live listing of the Vault's whole prefix; fails when the listing fails. */
+export function previewVaultDeletion(vaultId: number): Promise<VaultDeletionPreview> {
+  return apiRequest<VaultDeletionPreview>(`/api/vaults/${vaultId}/vault-deletion/preview`);
+}
+
+export function requestVaultDeletion(vaultId: number, payload: VaultDeletionRequest): Promise<VaultDeletionStatus> {
+  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export function cancelVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
+  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion/cancel`, { method: "POST", body: "{}" });
+}
+
+export function retryVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
+  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion/retry`, { method: "POST", body: "{}" });
 }
 
 export function requestScan(): Promise<ScanResponse> {

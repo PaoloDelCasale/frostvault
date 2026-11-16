@@ -65,6 +65,7 @@ from .services.source_layout import (
 from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
+from .services import vault_deletion as vault_deletion_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
 from .oidc import (
@@ -715,6 +716,13 @@ class StopProtectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cloud_disposition: str = Field(pattern="^(keep|delete)$")
+    confirmation: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class VaultDeletionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     confirmation: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=1, max_length=500)
 
@@ -1460,6 +1468,94 @@ def cancel_stopped_folder_deletion(vault_id: int, request: Request,
                                                             actor=_actor(request))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+VAULT_DELETION_ERROR_CODES = frozenset({
+    "not_tombstone", "reason", "already_requested", "active_jobs", "not_requested",
+    "running", "not_failed", "listing_failed", "refused",
+})
+
+
+def _vault_deletion_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, LookupError):
+        return LocalizedHTTPError(404, "api.vault_deletion.not_found")
+    if isinstance(exc, cloud_deletion_service.ConfirmationRequired):
+        return LocalizedHTTPError(422, "api.vault_deletion.confirmation")
+    code = getattr(exc, "code", "refused")
+    if code not in VAULT_DELETION_ERROR_CODES:
+        code = "refused"
+    return LocalizedHTTPError(502 if code == "listing_failed" else 409, f"api.vault_deletion.{code}")
+
+
+def _vault_deletion_preview(vault_id: int) -> dict[str, Any]:
+    """A live listing of the Tombstone's prefix: no listing, no preview (ADR-0047)."""
+    with db() as connection:
+        target = vault_deletion_service.deletion_target(connection, vault_id)
+    try:
+        client = s3_client()
+    except Exception as exc:
+        raise vault_deletion_service.VaultDeletionListingError("S3 is not configured") from exc
+    return vault_deletion_service.preview(client, target)
+
+
+@app.get("/api/vaults/{vault_id}/vault-deletion", response_model=response_model("VaultDeletionStatus"))
+def vault_deletion_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    try:
+        with db() as connection:
+            return vault_deletion_service.status(connection, vault_id)
+    except LookupError as exc:
+        raise _vault_deletion_error(exc) from exc
+
+
+@app.get("/api/vaults/{vault_id}/vault-deletion/preview", response_model=response_model("VaultDeletionPreview"))
+def vault_deletion_preview(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    try:
+        return _vault_deletion_preview(vault_id)
+    except (LookupError, ValueError) as exc:
+        raise _vault_deletion_error(exc) from exc
+
+
+@app.post("/api/vaults/{vault_id}/vault-deletion", status_code=202, response_model=response_model("VaultDeletionStatus"))
+def request_vault_deletion(vault_id: int, action: VaultDeletionRequest, request: Request,
+                           user: dict[str, Any] = Depends(current_user),
+                           _reauth: dict[str, Any] = Depends(require_recent_reauth)):
+    """Delete a Vault Tombstone after the seven-day delay (#717, ADR-0047).
+
+    The confirmation lists the prefix again: a request is recorded only with
+    a preview that a live listing has just produced.
+    """
+    try:
+        preview = _vault_deletion_preview(vault_id)
+        with db() as connection:
+            return vault_deletion_service.request_deletion(
+                connection, vault_id=vault_id, actor=_actor(request),
+                confirmation=action.confirmation, reason=action.reason,
+                preview_summary=preview, requested_at=now_iso())
+    except (LookupError, ValueError) as exc:
+        raise _vault_deletion_error(exc) from exc
+
+
+@app.post("/api/vaults/{vault_id}/vault-deletion/cancel", response_model=response_model("VaultDeletionStatus"))
+def cancel_vault_deletion(vault_id: int, request: Request,
+                          user: dict[str, Any] = Depends(current_user)):
+    try:
+        with db() as connection:
+            return vault_deletion_service.cancel(connection, vault_id=vault_id,
+                                                 actor=_actor(request))
+    except (LookupError, ValueError) as exc:
+        raise _vault_deletion_error(exc) from exc
+
+
+@app.post("/api/vaults/{vault_id}/vault-deletion/retry", response_model=response_model("VaultDeletionStatus"))
+def retry_vault_deletion(vault_id: int, request: Request,
+                         user: dict[str, Any] = Depends(current_user),
+                         _reauth: dict[str, Any] = Depends(require_recent_reauth)):
+    try:
+        with db() as connection:
+            return vault_deletion_service.retry(connection, vault_id=vault_id,
+                                                actor=_actor(request))
+    except (LookupError, ValueError) as exc:
+        raise _vault_deletion_error(exc) from exc
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

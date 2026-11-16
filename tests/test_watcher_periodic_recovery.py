@@ -82,6 +82,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 (storage, "process_jobs_once"), (storage, "_deliver_notifications_once"),
                 (storage, "process_directory_aggregate_maintenance"),
                 (storage.protection_stop_service, "reconcile_all"),
+                (storage, "run_vault_deletions_once"),
                 (storage, "observe_queue_stall"),
                 (storage.health_service, "mark_worker_heartbeat"),
             ):
@@ -104,7 +105,9 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected.isdisjoint(cycles[1][1]))
             self.assertTrue(expected <= cycles[2][1], "missed files must not need a restart")
             self.assertEqual(cycles[2][0], [v["id"] for v in vaults] * 2)
-            self.assertEqual([call.args[0] for call in submit.call_args_list], ["scan", "scan"])
+            # The Vault Deletion poll (#717) has its own cadence and coverage.
+            self.assertEqual([call.args[0] for call in submit.call_args_list
+                              if call.args[0] != "vault_deletion"], ["scan", "scan"])
             queries = [call.args[0] for call in connection.execute.call_args_list]
             self.assertTrue(any("v.lifecycle='active'" in sql for sql in queries))
 

@@ -1166,6 +1166,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/vault-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vault Deletion Status */
+        get: operations["vault_deletion_status_api_vaults__vault_id__vault_deletion_get"];
+        put?: never;
+        /**
+         * Request Vault Deletion
+         * @description Delete a Vault Tombstone after the seven-day delay (#717, ADR-0047).
+         *
+         *     The confirmation lists the prefix again: a request is recorded only with
+         *     a preview that a live listing has just produced.
+         */
+        post: operations["request_vault_deletion_api_vaults__vault_id__vault_deletion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Vault Deletion */
+        post: operations["cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vault Deletion Preview */
+        get: operations["vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Vault Deletion */
+        post: operations["retry_vault_deletion_api_vaults__vault_id__vault_deletion_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_path}": {
         parameters: {
             query?: never;
@@ -1646,6 +1721,8 @@ export interface components {
             s3_prefix: string;
             source_root: string;
             uuid: string;
+            /** @enum {string|null} */
+            vault_deletion_status?: "pending" | "running" | "failed" | null;
         };
         GeneralVaultReconnectPayload: {
             reason: string;
@@ -2392,6 +2469,58 @@ export interface components {
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
+        VaultDeletionPreview: {
+            by_storage_class: {
+                byte_count: number;
+                early_deletion_cost: number;
+                early_deletion_version_count: number;
+                minimum_days: number;
+                storage_class: string;
+                version_count: number;
+            }[];
+            byte_count: number;
+            currency: string;
+            delay_seconds: number;
+            delete_marker_count: number;
+            early_deletion_cost: number;
+            executes_at: string;
+            multipart_upload_count: number;
+            object_count: number;
+            prefix: string;
+            pricing_effective_at: string;
+            region: string;
+            version_count: number;
+        };
+        /** VaultDeletionRequest */
+        VaultDeletionRequest: {
+            /** Confirmation */
+            confirmation: string;
+            /** Reason */
+            reason: string;
+        };
+        VaultDeletionStatus: {
+            deletable: boolean;
+            /** @enum {string} */
+            lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
+            local_files: number;
+            request: {
+                attempts: number;
+                cancellable: boolean;
+                failed_at: string | null;
+                failure: {
+                    [key: string]: unknown;
+                } | null;
+                pending_until: string;
+                preview: components["schemas"]["VaultDeletionPreview"];
+                reason: string;
+                requested_at: string;
+                retryable: boolean;
+                /** @enum {string} */
+                status: "pending" | "running" | "failed";
+            } | null;
+            vault_id: number;
+            vault_name: string;
+        };
         /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
         VaultFileListItem: {
             availability?: string | null;
@@ -4604,6 +4733,165 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StopProtectionStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_deletion_status_api_vaults__vault_id__vault_deletion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_vault_deletion_api_vaults__vault_id__vault_deletion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_vault_deletion_api_vaults__vault_id__vault_deletion_retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionStatus"];
                 };
             };
             /** @description Validation Error */
