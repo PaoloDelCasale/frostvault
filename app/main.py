@@ -684,22 +684,45 @@ class JobCancelAction(GroupCancelAction):
     action: str = Field(min_length=1, max_length=20)
 
 
+class CloudDeletionListing(BaseModel):
+    """A file-list view, resolved by the server like ``/api/files`` (#723)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory: str = Field(default="", max_length=1024)
+    q: str = Field(default="", max_length=1024)
+    state: str = Field(default="", max_length=32)
+
+
 class CloudDeletionPreviewRequest(BaseModel):
+    """Exact files (``path``/``paths``), recursive folders (``is_directory`` or
+    ``directories``) or a whole list view (``listing``), mixed freely.
+
+    One exact file is all-or-nothing; any other selection covers only its
+    eligible files (#723). ``duplicates_only`` keeps only Cloud Duplicates.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    path: str = Field(min_length=1, max_length=1024)
+    path: str | None = Field(default=None, min_length=1, max_length=1024)
     is_directory: bool = False
     paths: list[str] | None = None
+    directories: list[str] | None = None
+    listing: CloudDeletionListing | None = None
+    duplicates_only: bool = False
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "CloudDeletionPreviewRequest":
+        if not (self.path or self.paths or self.directories or self.listing):
+            raise ValueError("Select at least one file or folder")
+        return self
 
 
-class CloudPurgeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(min_length=1, max_length=1024)
-    is_directory: bool = False
-    paths: list[str] | None = None
+class CloudPurgeRequest(CloudDeletionPreviewRequest):
     confirmation: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
+    # The preview's fingerprint; required for any selection but one exact file.
+    fingerprint: str | None = Field(default=None, max_length=128)
 
 
 class VaultReconnect(BaseModel):
@@ -3220,10 +3243,19 @@ def free_space(
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
-def _cloud_deletion_paths(action: CloudDeletionPreviewRequest | CloudPurgeRequest) -> list[str]:
+def _cloud_deletion_selection(action: CloudDeletionPreviewRequest) -> dict[str, Any]:
     if action.paths:
-        return list(action.paths)
-    return [action.path]
+        paths = list(action.paths)
+    else:
+        paths = [action.path] if action.path else []
+    listing = None
+    if action.listing is not None:
+        listing = cloud_deletion_service.ListingFilter(
+            directory=normalize_directory(action.listing.directory, api=True),
+            q=action.listing.q, state=action.listing.state)
+    return {"paths": paths, "is_directory": action.is_directory,
+            "directories": list(action.directories or []), "listing": listing,
+            "duplicates_only": action.duplicates_only}
 
 
 @app.get("/api/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
@@ -3239,8 +3271,7 @@ def preview_cloud_deletion(
     try:
         with db() as connection:
             preview = cloud_deletion_service.preview_selection(
-                connection, vault_id=vault["id"], paths=_cloud_deletion_paths(action),
-                is_directory=action.is_directory)
+                connection, vault_id=vault["id"], **_cloud_deletion_selection(action))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {
@@ -3261,15 +3292,17 @@ def cloud_purge(
             scheduled = cloud_deletion_service.schedule_cloud_purge(
                 connection,
                 vault_id=vault["id"],
-                paths=_cloud_deletion_paths(action),
-                is_directory=action.is_directory,
+                **_cloud_deletion_selection(action),
                 actor=_actor(request),
                 requested_at=now_iso(),
                 confirmation=action.confirmation,
                 reason=action.reason,
+                fingerprint=action.fingerprint,
             )
     except cloud_deletion_service.ConfirmationRequired as exc:
         raise HTTPException(422, str(exc)) from exc
+    except cloud_deletion_service.SelectionChanged as exc:
+        raise LocalizedHTTPError(409, exc.message_key) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {

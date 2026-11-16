@@ -612,7 +612,67 @@
         "delete_marker_count": {
           "type": "number"
         },
+        "duplicate_bytes": {
+          "type": "number"
+        },
+        "duplicate_count": {
+          "type": "number"
+        },
+        "duplicates_only": {
+          "type": "boolean"
+        },
+        "eligible_bytes": {
+          "type": "number"
+        },
+        "eligible_count": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "exact",
+            "selection"
+          ],
+          "type": "string"
+        },
+        "no_local_copy_bytes": {
+          "type": "number"
+        },
+        "no_local_copy_count": {
+          "type": "number"
+        },
         "object_count": {
+          "type": "number"
+        },
+        "skipped": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "present_locally": {
+              "type": "number"
+            },
+            "pending_work": {
+              "type": "number"
+            },
+            "pending_cleanup": {
+              "type": "number"
+            },
+            "conflict": {
+              "type": "number"
+            },
+            "not_verified": {
+              "type": "number"
+            },
+            "no_exact_version": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "skipped_count": {
           "type": "number"
         },
         "version_count": {
@@ -623,7 +683,18 @@
         "object_count",
         "version_count",
         "delete_marker_count",
-        "byte_count"
+        "byte_count",
+        "fingerprint",
+        "mode",
+        "duplicates_only",
+        "eligible_count",
+        "eligible_bytes",
+        "duplicate_count",
+        "duplicate_bytes",
+        "no_local_copy_count",
+        "no_local_copy_bytes",
+        "skipped",
+        "skipped_count"
       ],
       "type": "object"
     },

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, File as FileIcon, Folder, Search, X } from "lucide-react";
-import { apiRequest } from "@/api/client";
-import type { ArchiveListItem, FilesResponse } from "@/api/types";
+import { ApiError, apiRequest } from "@/api/client";
+import type { ArchiveListItem, CloudDeletionPreview, CloudDeletionSettings, FilesResponse } from "@/api/types";
 import { vaultApi } from "@/api/vault";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
@@ -13,6 +13,7 @@ import { VaultHeader } from "@/layout/VaultHeader";
 import { useVaultStats } from "@/api/useVaultStats";
 import { cn } from "@/lib/utils";
 import { navigate, vaultFilesUrl, vaultSettingsUrl } from "@/router";
+import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { FileDetails } from "./FileDetails";
 import { RecoverSelection, type Target } from "./RecoverSelection";
 import { formatBytes, formatDateTime, formatNumber } from "./format";
@@ -32,11 +33,21 @@ function FolderStates({ item, t }: { item: ArchiveListItem; t: Translate }) {
   return <span className="flex flex-wrap gap-1">{counts.map(([state, count]) => <Badge key={state} size="sm" state={state as BadgeState} label={`${t(`state.${state}`)} ${formatNumber(count)}`} />)}</span>;
 }
 
-export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh }: FileBrowserProps) {
+/** The selection a cloud deletion covers (#723): items, or every result of the view. */
+type PurgeRequest = { body: Record<string, unknown>; label: string };
+type PurgeState = { request: PurgeRequest; settings: CloudDeletionSettings | null; preview: CloudDeletionPreview | null; previewing: boolean; busy: boolean; error: string };
+
+export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount = 0, onRefresh }: FileBrowserProps) {
   const [revision, setRevision] = useState(0);
   const [params, setParams] = useState(() => new URLSearchParams(window.location.search));
   const [input, setInput] = useState(params.get("q") ?? "");
-  const [selected, setSelected] = useState<Target[]>([]);
+  const [selected, setSelectedItems] = useState<Target[]>([]);
+  /** «Select all (N)»: every result of this view, for «Delete from cloud» only (#723). */
+  const [allResults, setAllResults] = useState(false);
+  const setSelected: typeof setSelectedItems = (value) => { setAllResults(false); setSelectedItems(value); };
+  const [purge, setPurge] = useState<PurgeState | null>(null);
+  const [duplicatesOnly, setDuplicatesOnly] = useState(true);
+  const purgeRequestId = useRef(0);
   const [details, setDetails] = useState<Target | null>(null);
   const [recover, setRecover] = useState<Target[] | null>(null);
   const [release, setRelease] = useState<Target[] | null>(null);
@@ -107,6 +118,43 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     catch (error) { setMessage(errorMessage(error, t)); }
     finally { setBusy(false); }
   }
+  /** Loads the settings and a fresh preview; a newer request supersedes an older one. */
+  async function previewPurge(request: PurgeRequest, onlyDuplicates: boolean, error = "") {
+    const id = ++purgeRequestId.current;
+    setPurge((current) => ({ request, settings: current?.settings ?? null, preview: null, previewing: true, busy: false, error }));
+    try {
+      const [settings, preview] = await Promise.all([
+        scope.request<CloudDeletionSettings>("/api/cloud-deletion"),
+        scope.post<CloudDeletionPreview>("/api/cloud-deletion/preview", { ...request.body, duplicates_only: onlyDuplicates }),
+      ]);
+      if (id === purgeRequestId.current) setPurge((current) => current && { ...current, settings, preview, previewing: false });
+    } catch (cause) {
+      if (id === purgeRequestId.current) setPurge((current) => current && { ...current, previewing: false, error: errorMessage(cause, t) });
+    }
+  }
+  function openPurge() {
+    const request: PurgeRequest = allResults
+      ? { body: { listing: { directory: q ? "" : directory, q, state } }, label: t("ui.cloud_purge_scope_all", { count: formatNumber(total) }) }
+      : { body: {
+          paths: selected.filter(({ item }) => item.type !== "directory").map(({ item }) => item.path),
+          directories: selected.filter(({ item }) => item.type === "directory").map(({ item }) => item.path),
+        }, label: selected.length === 1 ? `${selected[0]!.item.path}${selected[0]!.item.type === "directory" ? "/" : ""}` : t("ui.cloud_purge_scope_items", { count: selected.length }) };
+    void previewPurge(request, duplicatesOnly);
+  }
+  /** Schedules exactly what the preview listed; a changed selection shows a new preview (#723). */
+  async function confirmPurge(payload: { reason: string; confirmation: string }) {
+    if (!purge?.preview || purge.busy || purge.previewing) return;
+    const { request, preview } = purge;
+    setPurge({ ...purge, busy: true, error: "" });
+    try {
+      await scope.post("/api/cloud-purge", { ...request.body, duplicates_only: duplicatesOnly, fingerprint: preview.fingerprint, ...payload });
+      setPurge(null); refresh();
+    } catch (cause) {
+      const message = errorMessage(cause, t);
+      if (cause instanceof ApiError && cause.status === 409) void previewPurge(request, duplicatesOnly, message);
+      else setPurge((current) => current && { ...current, busy: false, error: message });
+    }
+  }
   const counts = (stats.data?.states ?? {}) as Record<string, number>;
   const count = (value: string) => value ? counts[value] ?? 0 : Object.values(counts).reduce((sum, n) => sum + n, 0);
   const total = query.data?.total ?? 0;
@@ -131,6 +179,10 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
   function toggle(target: Target) { setSelected((current) => current.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path) ? current.filter((row) => row.vaultId !== target.vaultId || row.item.path !== target.item.path) : [...current, target]); }
   const checked = (target: Target) => selected.some((row) => row.vaultId === target.vaultId && row.item.path === target.item.path);
   const allChecked = rows.length > 0 && rows.every(checked);
+  const cloudDeletion = capabilities?.cloud_deletion_enabled !== false && !global;
+  const purgeEligible = ({ item }: Target) => item.type === "directory" ? Number(item.available_actions?.["cloud-purge"] ?? 0) > 0 : item.state === "cloud_only" && !item.local_exists;
+  const purgeOffered = cloudDeletion && (allResults || selected.some(purgeEligible));
+  const selectAllOffered = cloudDeletion && !allResults && allChecked && total > rows.length;
   const checkbox = (target: Target) => <input className="size-5 accent-[var(--green)]" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} />;
   const highlighted = (target: Target) => target.item.path === focusPath;
   const attention = problemCount > 0;
@@ -174,11 +226,14 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
       <Button variant="secondary" disabled={busy} onClick={() => void uploadStopped()}>{t("essential.upload_now")}</Button>
     </div>}
     {selected.length > 0 && <div className="sticky top-[72px] z-10 flex min-w-0 flex-wrap items-center gap-2 rounded-card border border-green bg-surface p-2 shadow-md" role="region" aria-label={t("files.selection_bar")} data-testid="selection-bar">
-      <span className="px-2 font-semibold tabular-nums" role="status">{t("files.selected", { count: selected.length })}</span>
+      <span className="px-2 font-semibold tabular-nums" role="status">{allResults ? t("files.all_results_selected", { count: formatNumber(total) }) : t("files.selected", { count: selected.length })}</span>
+      {selectAllOffered && <Button variant="ghost" onClick={() => setAllResults(true)} data-testid="select-all-results">{t("files.select_all_results", { count: formatNumber(total) })}</Button>}
       <Button disabled={busy || selected.some((row) => !eligible(row, "recover"))} onClick={() => setRecover([...selected])}>{t("ui.row_action_recover")}</Button>
       <Button variant="secondary" disabled={busy || selected.some((row) => !eligible(row, "free-space"))} onClick={() => setRelease([...selected])}>{t("essential.free_now")}</Button>
+      {purgeOffered && <Button variant="danger" disabled={busy} onClick={() => openPurge()} data-testid="selection-cloud-purge">{t("files.cloud_purge")}</Button>}
       {selected.length === 1 && selected[0]?.item.type === "file" && <Button variant="secondary" onClick={() => setDetails(selected[0] ?? null)}>{t("essential.details")}</Button>}
       <Button variant="ghost" className="ml-auto" onClick={() => setSelected([])}><X aria-hidden="true" />{t("files.clear_selection")}</Button>
+      {allResults && <p className="basis-full px-2 text-sm text-muted" data-testid="all-results-note">{t("files.all_results_note")}</p>}
     </div>}
     {freeOutcome && <div role="alert" className="flex min-w-0 items-start gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/60 p-3 text-sm" data-testid="free-space-outcome">
       <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
@@ -224,6 +279,10 @@ export function FileBrowser({ t, vaultId, vaultName, problemCount = 0, onRefresh
     </nav>}
     {message && <p role="alert">{message}</p>}
     {effectiveDetails && <FileDetails key={`${effectiveDetails.vaultId}:${effectiveDetails.item.path}`} target={effectiveDetails} onClose={() => { setDetails(null); if (focusPath) update({ file: "" }); }} onRecover={() => { setRecover([effectiveDetails]); setDetails(null); if (focusPath) update({ file: "" }); }} onRefresh={refresh} t={t} />}
+    {purge && <CloudPurgeDialog open onOpenChange={(open) => { if (!open && !purge.busy) { purgeRequestId.current += 1; setPurge(null); } }} path={purge.request.label} vaultName={vaultName}
+      settings={purge.settings} preview={purge.preview} previewing={purge.previewing} busy={purge.busy} error={purge.error} t={t}
+      duplicatesOnly={duplicatesOnly} onDuplicatesOnlyChange={(value) => { setDuplicatesOnly(value); void previewPurge(purge.request, value); }}
+      onConfirm={(payload) => void confirmPurge(payload)} />}
     {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}
     <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { count: release?.length ?? 0 })} confirmLabel={busy ? t("ui.free_space_running") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" keepOpenOnConfirm onConfirm={() => void free()}>
       <details className="rounded-card border border-line" data-testid="free-space-items"><summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold">{t("files.free_space_show_items", { count: release?.length ?? 0 })}</summary>

@@ -8,6 +8,7 @@ export type AuthMethod = components["schemas"]["AuthMethod"];
 export type BulkUploadAdmissionActivity = components["schemas"]["BulkUploadAdmissionActivity"];
 export type BulkUploadAdmissionResponse = components["schemas"]["BulkUploadAdmissionResponse"];
 export type CatalogRevisionResponse = components["schemas"]["CatalogRevisionResponse"];
+export type CloudDeletionListing = components["schemas"]["CloudDeletionListing"];
 export type CloudDeletionPreview = components["schemas"]["CloudDeletionPreview"];
 export type CloudDeletionPreviewRequest = components["schemas"]["CloudDeletionPreviewRequest"];
 export type CloudDeletionSettings = components["schemas"]["CloudDeletionSettings"];

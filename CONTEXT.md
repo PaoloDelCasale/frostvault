@@ -68,6 +68,13 @@ The Owner's explicit permanent removal of Cloud-only content after a seven-day
 cancellable delay; it never removes Local Copies or follows an SMB deletion.
 _Avoid_: Purge now, Hide, Sync deletion
 
+**Cloud Duplicate**:
+A Cloud-only Vault File whose content is still present as a Local Copy, and
+protected by a verified Current Snapshot with the same content, at another path
+of the same Vault. Deleting it from the cloud loses no content; a Cloud-only
+file without such a copy is the only remaining copy of its content.
+_Avoid_: Orphan, Leftover, Copy, Conflict
+
 **Vault Tombstone**:
 The non-operational Vault and retained identity/history after Stop Protection
 releases its root.

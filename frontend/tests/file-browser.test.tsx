@@ -125,7 +125,8 @@ describe("essential file browser", () => {
     expect(bar).toHaveTextContent("files.selected");
     expect(within(bar).getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled();
     expect(within(bar).getByRole("button", { name: "essential.free_now" })).toBeDisabled();
-    expect(within(bar).queryByRole("button", { name: /cloud.purge/ })).not.toBeInTheDocument();
+    // A Cloud-only selection offers «Delete from cloud» (#723).
+    expect(within(bar).getByRole("button", { name: "files.cloud_purge" })).toBeEnabled();
     await user.click(within(screen.getByTestId("state-filter")).getByRole("button", { name: /files.chip_pending/ }));
     expect(screen.queryByTestId("selection-bar")).not.toBeInTheDocument();
     await user.click(select(/essential.select First/));

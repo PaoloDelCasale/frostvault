@@ -21,9 +21,10 @@ independently. A reappearance revokes the whole pending selection
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any
@@ -32,7 +33,8 @@ from . import source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .component_health import load_vault_health
 from .directory_aggregates import mark_paths_dirty
-from .protection_states import observation_is_unconfirmed
+from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
+                                masked_state_sql, observation_is_unconfirmed)
 
 DELETION_DELAY_SECONDS = 7 * 24 * 60 * 60
 TERMINAL = ("completed", "failed", "cancelled")
@@ -46,16 +48,71 @@ class ConfirmationRequired(CloudDeletionError):
     pass
 
 
+class SelectionChanged(CloudDeletionError):
+    """What a folder selection covers differs from what its preview listed (#723)."""
+
+    message_key = "api.cloud_purge_selection_changed"
+
+
+# Why a file of a folder selection is skipped (#723), in the order they are tested.
+SKIP_REASONS = ("present_locally", "pending_work", "pending_cleanup", "conflict",
+                "not_verified", "no_exact_version")
+
+
+@dataclass(frozen=True)
+class ListingFilter:
+    """A file-list view (``/api/files``): ``q`` searches the Vault, otherwise
+    the direct children of ``directory``; ``state`` filters both."""
+
+    directory: str = ""
+    q: str = ""
+    state: str = ""
+
+
 @dataclass(frozen=True)
 class DeletionPreview:
+    """What a confirmation schedules (the counts) and how the selection splits.
+
+    ``object_count``/``byte_count`` are the files that would be scheduled. A
+    folder, multi-item or list selection (``mode`` "selection") covers only its
+    eligible files; ``skipped`` counts the rest per reason. Eligible files are
+    Cloud Duplicates or have no local copy anywhere in the Vault; with
+    ``duplicates_only`` only the duplicates are scheduled. ``fingerprint``
+    names the exact (file, Current) set: a confirmation must present it.
+    """
+
     object_count: int
     version_count: int
     delete_marker_count: int
     byte_count: int
+    fingerprint: str = ""
+    mode: str = "exact"
+    duplicates_only: bool = False
+    eligible_count: int = 0
+    eligible_bytes: int = 0
+    duplicate_count: int = 0
+    duplicate_bytes: int = 0
+    skipped: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
+    @property
+    def no_local_copy_count(self) -> int:
+        return self.eligible_count - self.duplicate_count
+
+    @property
+    def no_local_copy_bytes(self) -> int:
+        return self.eligible_bytes - self.duplicate_bytes
+
+    def as_dict(self) -> dict[str, Any]:
         return dict(object_count=self.object_count, version_count=self.version_count,
-                    delete_marker_count=self.delete_marker_count, byte_count=self.byte_count)
+                    delete_marker_count=self.delete_marker_count, byte_count=self.byte_count,
+                    fingerprint=self.fingerprint, mode=self.mode,
+                    duplicates_only=self.duplicates_only,
+                    eligible_count=self.eligible_count, eligible_bytes=self.eligible_bytes,
+                    duplicate_count=self.duplicate_count, duplicate_bytes=self.duplicate_bytes,
+                    no_local_copy_count=self.no_local_copy_count,
+                    no_local_copy_bytes=self.no_local_copy_bytes,
+                    skipped={reason: int(self.skipped.get(reason, 0)) for reason in SKIP_REASONS},
+                    skipped_count=sum(int(n) for n in self.skipped.values()))
 
 
 @dataclass(frozen=True)
@@ -105,6 +162,17 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
     replaced roots, missing mounts, symlinks and nested mounts are not absence.
     No local file (even an unsupported entry) can authorize a cloud deletion.
     """
+    _present_paths(vault, paths, first_only=True)
+
+
+def _present_paths(vault: dict[str, Any], paths: list[str], *,
+                   first_only: bool = False) -> set[str]:
+    """The paths with a local entry; anything that is not proven absence raises.
+
+    ``first_only`` raises at the first present entry (an exact selection);
+    otherwise the present paths are returned so a folder selection skips them.
+    """
+    present: set[str] = set()
     access = source_layout.vault_local_access(vault["source_root"])
     if (not access.local_operations_allowed
             or vault.get("lifecycle") not in {"active", "stopping"}):
@@ -124,6 +192,7 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
                 or not vault.get("root_identity")
                 or vault_relocation.opened_root_identity(root) != vault["root_identity"]):
             raise CloudDeletionError("Vault root identity changed")
+        root_device = os.fstat(root).st_dev
         for path in paths:
             relative = PurePosixPath(path)
             if not path or relative.is_absolute() or ".." in relative.parts or str(relative) != path:
@@ -137,7 +206,7 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
                     except FileNotFoundError:
                         break
                     children.append(child)
-                    if (os.fstat(child).st_dev != os.fstat(root).st_dev
+                    if (os.fstat(child).st_dev != root_device
                             or source_layout.path_is_mount(f"/proc/self/fd/{child}")):
                         raise CloudDeletionError("Nested mount prevents confirming absence")
                     parent = child
@@ -146,7 +215,9 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
                         os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
                     except FileNotFoundError:
                         continue
-                    raise CloudDeletionError("A selected file is present on the server")
+                    if first_only:
+                        raise CloudDeletionError("A selected file is present on the server")
+                    present.add(path)
             finally:
                 for child in reversed(children):
                     os.close(child)
@@ -160,6 +231,7 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+    return present
 
 
 # Everything a decision about one selected file reads, from its live row.
@@ -223,7 +295,7 @@ def _files_by_id(connection: Any, file_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str, Any]],
-                    *, own_group: str | None = None) -> None:
+                    *, own_group: str | None = None, check_local: bool = True) -> None:
     """Every selected file is Cloud-only with exactly one consentable version."""
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("Protection observations are not confirmed")
@@ -253,29 +325,266 @@ def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str
             ([str(r["file_id"]) for r in files], own_group, own_group)).fetchone()
         if pending:
             raise CloudDeletionError("Selected file has pending work")
-    require_local_absence(vault, [r["path"] for r in files])
+    if check_local:
+        require_local_absence(vault, [r["path"] for r in files])
 
 
-def _preview(files: list[dict[str, Any]]) -> DeletionPreview:
-    return DeletionPreview(len(files), len(files), 0, sum(int(f["size"] or 0) for f in files))
+@dataclass(frozen=True)
+class _Selection:
+    """What one request names: exact files, recursive folders, a list view.
+
+    Strict (all-or-nothing, as before #723): one exact file, or the whole
+    Vault of a Stop Protection. Anything else covers its eligible files only.
+    """
+
+    files: tuple[str, ...] = ()
+    directories: tuple[str, ...] = ()
+    listing: ListingFilter | None = None
+    whole_vault: bool = False
+
+    @property
+    def strict(self) -> bool:
+        return self.whole_vault or (
+            len(self.files) == 1 and not self.directories and self.listing is None)
+
+    @property
+    def group_path(self) -> str:
+        if self.whole_vault:
+            return ""
+        if self.files or self.directories:
+            return (self.files or self.directories)[0]
+        return self.listing.directory if self.listing else ""
+
+
+def _selection(*, paths: list[str], is_directory: bool, whole_vault: bool,
+               directories: list[str] | None, listing: ListingFilter | None) -> _Selection:
+    if whole_vault:
+        return _Selection(whole_vault=True)
+    folders = list(directories or [])
+    files: list[str] = []
+    if is_directory:
+        folders = [*paths, *folders]
+    else:
+        files = list(paths)
+    if files:
+        _require_paths(files)
+    if folders:
+        _require_paths(folders)
+    if listing is not None:
+        if listing.state and listing.state not in STATES:
+            raise CloudDeletionError("Unknown protection state")
+        if listing.directory:
+            _require_paths([listing.directory])
+    if not files and not folders and listing is None:
+        raise CloudDeletionError("Select valid relative file paths")
+    return _Selection(tuple(dict.fromkeys(files)), tuple(dict.fromkeys(folders)), listing)
+
+
+def _unconfirmed(connection: Any, vault: dict[str, Any]) -> Any:
+    from .operation_policies import unconfirmed_scope
+    access = source_layout.vault_local_access(vault.get("source_root") or "")
+    return unconfirmed_scope(connection, int(vault["id"]), lifecycle=vault.get("lifecycle", "active"),
+                             local_operations_allowed=access.local_operations_allowed)
+
+
+_HAS_COPY_SQL = "(f.current_version_id IS NOT NULL OR f.local_presence IS DISTINCT FROM 'missing')"
+
+
+def _listing_sql(connection: Any, vault: dict[str, Any],
+                 listing: ListingFilter) -> tuple[str, list[Any]]:
+    """The files a list view shows, with every folder it shows taken whole.
+
+    The same filters as ``/api/files``: a search covers the matching files of
+    the Vault; a folder view its direct child files in ``state`` and each
+    child folder holding at least one file in ``state``.
+    """
+    from ..catalog import ArchiveCatalog
+
+    vault_id = int(vault["id"])
+    catalog = ArchiveCatalog(connection, protection_unconfirmed=_unconfirmed(connection, vault))
+    if listing.q:
+        clauses, params = catalog._direct_child_file_clauses(
+            vault_id, directory="", state=listing.state, search=listing.q)
+        return "(" + " AND ".join(clauses) + ")", params
+    clauses, params = catalog._direct_child_file_clauses(
+        vault_id, directory=listing.directory, state=listing.state)
+    prefix = f"{listing.directory}/" if listing.directory else ""
+    start = len(prefix) + 1
+    nested = "starts_with(f.path, %s) AND strpos(substr(f.path, %s), '/') > 0"
+    folder = f"({nested} AND {_HAS_COPY_SQL})"
+    folder_params: list[Any] = [prefix, start]
+    if listing.state:
+        if catalog.protection_unconfirmed or catalog.unconfirmed.by_path:
+            blocked, blocked_params = catalog.unconfirmed.sql("f.path")
+            state = masked_state_sql(blocked, catalog._state_sql(vault_id))
+        else:
+            blocked_params, state = [], catalog._state_sql(vault_id)
+        folder = f"""({folder} AND split_part(substr(f.path, %s), '/', 1) IN (
+            SELECT split_part(substr(f.path, %s), '/', 1) FROM files f {CURRENT_JOIN_SQL}
+            WHERE f.vault_id = %s AND {nested} AND {VISIBLE_SQL} AND ({state}) = %s))"""
+        folder_params += [start, start, vault_id, prefix, start, *blocked_params, listing.state]
+    return f"(({' AND '.join(clauses)}) OR {folder})", [*params, *folder_params]
+
+
+def _selection_sql(connection: Any, vault: dict[str, Any],
+                   selection: _Selection) -> tuple[str, list[Any]]:
+    parts: list[str] = []
+    params: list[Any] = []
+    if selection.files:
+        parts.append("f.path = ANY(%s::text[])")
+        params.append(list(selection.files))
+    if selection.directories:
+        # starts_with treats SQL wildcards in folder names literally.
+        parts.append(f"""(EXISTS (SELECT 1 FROM unnest(%s::text[]) AS d(path)
+                         WHERE f.path = d.path OR starts_with(f.path, d.path || '/'))
+                         AND {_HAS_COPY_SQL})""")
+        params.append(list(selection.directories))
+    if selection.listing is not None:
+        sql, values = _listing_sql(connection, vault, selection.listing)
+        parts.append(sql)
+        params.extend(values)
+    return "(" + " OR ".join(parts) + ")", params
+
+
+# One row per selected file and why it is skipped, in SQL: no per-file Python
+# work for the (possibly huge) skipped part of a folder. The same facts as
+# _validate_files, which still revalidates the eligible set before consent.
+_CLASSIFY_SQL = """
+WITH c AS MATERIALIZED (
+    SELECT f.id AS file_id, f.path, f.current_version_id, cur.size,
+      CASE
+        WHEN f.local_presence IS NOT NULL AND f.local_presence <> 'missing' THEN 'present_locally'
+        WHEN f.current_version_id IS NULL THEN 'not_verified'
+        WHEN f.replacing_version_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id = f.id AND a.settled_at IS NULL)
+          OR EXISTS (SELECT 1 FROM copy_attempts p WHERE p.file_id = f.id AND p.settled_at IS NULL)
+          OR EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = f.id
+                       AND j.status NOT IN ('completed','failed','cancelled'))
+          THEN 'pending_work'
+        WHEN EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id)
+          OR EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
+                       AND other.id <> f.current_version_id)
+          THEN 'pending_cleanup'
+        WHEN f.held_version_id IS NOT NULL THEN 'conflict'
+        WHEN cur.integrity IS DISTINCT FROM 'verified'
+          OR cur.availability IS DISTINCT FROM 'available' THEN 'not_verified'
+        WHEN cur.object_key IS NULL OR NOT starts_with(cur.object_key, %s)
+          OR cur.provider_version_id IS NULL OR cur.provider_version_id IN ('', 'null')
+          OR COALESCE(att.outcome, cpy.outcome) IS DISTINCT FROM 'landed'
+          OR COALESCE(att.landed_version_id, cpy.landed_version_id)
+             IS DISTINCT FROM cur.provider_version_id
+          THEN 'no_exact_version'
+        ELSE 'eligible'
+      END AS reason
+    FROM files f
+    LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
+    LEFT JOIN upload_attempts att ON att.id = cur.upload_attempt_id
+    LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
+    WHERE f.vault_id = %s AND f.path <> '' AND {selection}
+)
+SELECT file_id, path, current_version_id, size, reason, NULL::bigint AS n
+FROM c WHERE reason = 'eligible'
+UNION ALL
+SELECT NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible' GROUP BY reason
+"""
+
+
+def _duplicate_ids(connection: Any, vault: dict[str, Any], file_ids: list[str]) -> set[str]:
+    """The Cloud Duplicates among ``file_ids`` (CONTEXT.md, #723).
+
+    Another file of the same Vault, at a different path, is present locally
+    and protected by a verified, available Current with the same SHA-256 as
+    this file's Current. A copy whose protection is not confirmed (ADR-0042)
+    or that has an open problem does not count.
+    """
+    if not file_ids:
+        return set()
+    blocked, blocked_params = _unconfirmed(connection, vault).sql("f.path")
+    rows = connection.execute(
+        f"""SELECT DISTINCT e.id AS file_id
+            FROM files e
+            JOIN archive_versions ecur ON ecur.id = e.current_version_id
+            -- files_rename_digest_idx (vault_id, local_sha256) finds the copies.
+            JOIN files f ON f.vault_id = e.vault_id AND f.local_sha256 = ecur.plaintext_sha256
+            JOIN archive_versions cur ON cur.id = f.current_version_id
+            WHERE e.id = ANY(%s::uuid[]) AND ecur.plaintext_sha256 IS NOT NULL
+              AND f.path <> e.path
+              AND f.held_version_id IS NULL AND f.reconciliation_block IS NULL
+              AND {PROTECTED_SQL} AND NOT ({blocked})""",
+        [file_ids, *blocked_params]).fetchall()
+    return {str(r["file_id"]) for r in rows}
+
+
+def _fingerprint(files: list[dict[str, Any]]) -> str:
+    members = sorted(f"{f['file_id']}:{f['current_version_id']}" for f in files)
+    return hashlib.sha256("\n".join(members).encode()).hexdigest()
+
+
+def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
+             duplicates_only: bool) -> tuple[list[dict[str, Any]], DeletionPreview]:
+    """The files a confirmation would schedule, and the preview describing them."""
+    if selection.strict:
+        files = _selected_files(connection, vault_id=int(vault["id"]), paths=list(selection.files),
+                                is_directory=False, whole_vault=selection.whole_vault)
+        if not files:
+            raise CloudDeletionError("No Cloud-only files selected")
+        _validate_files(connection, vault, files)
+        duplicates = set() if selection.whole_vault else _duplicate_ids(
+            connection, vault, [str(f["file_id"]) for f in files])
+        if duplicates_only and not selection.whole_vault and len(duplicates) != len(files):
+            raise CloudDeletionError("The selected file is not a Cloud Duplicate")
+        eligible, skipped, mode = files, {}, "exact"
+    else:
+        if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
+            raise CloudDeletionError("Protection observations are not confirmed")
+        where, params = _selection_sql(connection, vault, selection)
+        rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
+                                  [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
+        eligible = [r for r in rows if r["reason"] == "eligible"]
+        skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
+        # Local absence is proven for the eligible files only; an entry the
+        # catalog has not observed yet is skipped like any present file.
+        present = _present_paths(vault, [r["path"] for r in eligible]) if eligible else set()
+        if present:
+            eligible = [r for r in eligible if r["path"] not in present]
+            skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
+        duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
+        mode = "selection"
+    chosen = ([f for f in eligible if str(f["file_id"]) in duplicates]
+              if duplicates_only else eligible)
+    size = lambda rows: sum(int(r["size"] or 0) for r in rows)  # noqa: E731
+    duplicate_rows = [f for f in eligible if str(f["file_id"]) in duplicates]
+    preview = DeletionPreview(
+        len(chosen), len(chosen), 0, size(chosen), fingerprint=_fingerprint(chosen), mode=mode,
+        duplicates_only=duplicates_only, eligible_count=len(eligible), eligible_bytes=size(eligible),
+        duplicate_count=len(duplicate_rows), duplicate_bytes=size(duplicate_rows), skipped=skipped)
+    return chosen, preview
 
 
 def preview_selection(connection: Any, *, vault_id: int, paths: list[str],
-                      is_directory: bool = False, whole_vault: bool = False) -> DeletionPreview:
+                      is_directory: bool = False, whole_vault: bool = False,
+                      directories: list[str] | None = None,
+                      listing: ListingFilter | None = None,
+                      duplicates_only: bool = False) -> DeletionPreview:
     vault = lock_vault(connection, vault_id)
-    files = _selected_files(connection, vault_id=vault_id, paths=paths,
-                            is_directory=is_directory, whole_vault=whole_vault)
-    if not files:
-        raise CloudDeletionError("No Cloud-only files selected")
-    _validate_files(connection, vault, files)
-    return _preview(files)
+    selection = _selection(paths=paths, is_directory=is_directory, whole_vault=whole_vault,
+                           directories=directories, listing=listing)
+    return _resolve(connection, vault, selection, duplicates_only=duplicates_only)[1]
 
 
 def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
                          is_directory: bool, actor: str, requested_at: str,
                          confirmation: str, reason: str,
-                         whole_vault: bool = False, origin: str = "manual") -> ScheduledDeletion:
-    """Record the consent: one group, its request and one pending Job per file."""
+                         whole_vault: bool = False, origin: str = "manual",
+                         directories: list[str] | None = None,
+                         listing: ListingFilter | None = None,
+                         duplicates_only: bool = False,
+                         fingerprint: str | None = None) -> ScheduledDeletion:
+    """Record the consent: one group, its request and one pending Job per file.
+
+    A folder, multi-item or list selection schedules exactly the set its
+    preview listed: ``fingerprint`` must match the recomputed one (#723).
+    """
     vault = lock_vault(connection, vault_id)
     if vault["lifecycle"] != "active" or vault.get("root_released_at"):
         raise CloudDeletionError("Folder protection has already stopped")
@@ -286,17 +595,22 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
     if not (reason or "").strip() or len(reason) > 500:
         raise CloudDeletionError("A deletion reason is required")
     requested = _aware(requested_at)
-    files = _selected_files(connection, vault_id=vault_id, paths=paths,
-                            is_directory=is_directory, whole_vault=whole_vault)
+    selection = _selection(paths=paths, is_directory=is_directory, whole_vault=whole_vault,
+                           directories=directories, listing=listing)
+    files, preview = _resolve(connection, vault, selection, duplicates_only=duplicates_only)
+    if (fingerprint is not None or not selection.strict) and fingerprint != preview.fingerprint:
+        raise SelectionChanged("The selection changed since the preview: preview it again")
     if not files:
         raise CloudDeletionError("No Cloud-only files selected")
-    _validate_files(connection, vault, files)
-    preview = _preview(files)
+    if not selection.strict:
+        # The eligible set passes the very checks of an exact selection.
+        _validate_files(connection, vault, _files_by_id(connection, [str(f["file_id"]) for f in files]),
+                        check_local=False)
     pending_until = (requested + timedelta(seconds=DELETION_DELAY_SECONDS)).isoformat()
     group_id = str(uuid.uuid4())
     connection.execute(
         "INSERT INTO job_groups(id, vault_id, path, created_at) VALUES (%s, %s, %s, %s)",
-        (group_id, vault_id, "" if whole_vault else paths[0], requested_at))
+        (group_id, vault_id, selection.group_path, requested_at))
     connection.execute(
         "INSERT INTO cloud_purge_requests(group_id, reason, stop_protection) VALUES (%s, %s, %s)",
         (group_id, reason.strip(), origin == "stop-protection"))
