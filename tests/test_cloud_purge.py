@@ -26,6 +26,8 @@ import psycopg
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import cloud_deletion, protection_stop, upload_remediation
+from app.services import notifications as inbox
+from app.services import protection_notifications as monitor
 from tests import test_upload_worker as fixtures
 from tests.test_upload_worker import A, B
 
@@ -444,6 +446,95 @@ class CloudPurgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Wait for active Jobs"):
             self.stop("keep")
         self.assertEqual(self.lifecycle(), "active")
+
+    # -- Problems of a stopped Vault (#715) -----------------------------------
+
+    def open_problem(self, key: str, event: str, **params) -> None:
+        with self.db() as connection:
+            inbox.set_problem(connection, key=key, event=event, vault_id=2,
+                              active=True, email=False, params=params)
+
+    def problem(self, key: str) -> str:
+        return self.rows("SELECT problem_status FROM notifications WHERE dedupe_key=%s",
+                         key)[0]["problem_status"]
+
+    def test_stop_closes_every_open_problem_of_the_vault(self) -> None:
+        self.cloud_only()
+        self.open_problem("delay:2", "protection_delayed", pending=8, stalled=8)
+        self.open_problem("blocked:2:source", "protection_blocked", component="source")
+        self.open_problem("file_unreadable:2:x", "file_unreadable", path="x.txt")
+        with self.db() as connection:
+            self.assertEqual(inbox.count_open_problems(connection), 3)
+        self.stop("keep")
+        for key in ("delay:2", "blocked:2:source", "file_unreadable:2:x"):
+            self.assertEqual(self.problem(key), "resolved", key)
+        [row] = self.rows("SELECT resolved_at, read_at FROM notifications WHERE dedupe_key='delay:2'")
+        self.assertIsNotNone(row["resolved_at"])
+        self.assertIsNotNone(row["read_at"])
+
+    def test_an_already_open_problem_of_a_tombstone_vault_closes_on_reconcile(self) -> None:
+        self.open_problem("delay:2", "protection_delayed", pending=8, stalled=8)
+        with self.db() as connection:
+            # A row left open by an earlier release, before this rule existed.
+            connection.execute("UPDATE vaults SET lifecycle='tombstone', root_released_at=now() WHERE id=2")
+            self.assertEqual(inbox.count_open_problems(connection), 0)
+        self.assertEqual(self.problem("delay:2"), "resolved")
+
+    def test_a_stopped_vault_never_reopens_a_problem(self) -> None:
+        self.cloud_only()
+        self.open_problem("delay:2", "protection_delayed", pending=1, stalled=1)
+        self.stop("delete")
+        self.assertEqual(self.lifecycle(), "stopping")
+        self.assertEqual(self.problem("delay:2"), "resolved")
+        self.open_problem("delay:2", "protection_delayed", pending=2, stalled=2)
+        self.assertEqual(self.problem("delay:2"), "resolved")
+        with self.db() as connection:
+            monitor.maintain_notifications(connection, now=datetime.now(timezone.utc))
+            self.assertEqual(inbox.count_open_problems(connection), 0)
+        self.assertEqual(self.problem("delay:2"), "resolved")
+
+    def test_a_tombstone_vault_opens_no_new_problem(self) -> None:
+        self.cloud_only()
+        self.stop("keep")
+        self.open_problem("blocked:2:source", "protection_blocked", component="source")
+        self.assertEqual(self.rows("SELECT id FROM notifications WHERE dedupe_key='blocked:2:source'"), [])
+
+    def failed_stop_deletion_problem(self) -> tuple[dict, int]:
+        status = self.stop("delete")
+        [job_id] = [j["id"] for j in status["jobs"]]
+        with self.db() as connection:
+            connection.execute(
+                "UPDATE jobs SET status='failed', finished_at=now() WHERE group_id=%s",
+                (status["group_id"],))
+            item = inbox.enqueue_notification(
+                connection, vault_id=2, job_id=job_id, event="job_failed", title="",
+                title_key="notification.job_failed.title", body_key="notification.job_failed.body",
+                message_params={"action": "cloud-purge", "path": "report.txt"},
+                dedupe_key=f"job:{job_id}:job_failed")
+            connection.execute("UPDATE notifications SET problem_status='open' WHERE id=%s",
+                               (item["id"],))
+        return status, job_id
+
+    def test_a_failed_stop_deletion_stays_open_while_the_request_stands(self) -> None:
+        self.cloud_only()
+        self.open_problem("delay:2", "protection_delayed", pending=8, stalled=8)
+        _, job_id = self.failed_stop_deletion_problem()
+        with self.db() as connection:
+            self.assertEqual(inbox.count_open_problems(connection), 1)
+        self.assertEqual(self.problem(f"job:{job_id}:job_failed"), "open")
+        self.assertEqual(self.problem("delay:2"), "resolved")
+        # The Owner keeps the cloud content: the request retires, the failure closes.
+        self.stop("keep")
+        with self.db() as connection:
+            self.assertEqual(inbox.count_open_problems(connection), 0)
+        self.assertEqual(self.problem(f"job:{job_id}:job_failed"), "resolved")
+
+    def test_status_counts_local_files_that_block_cloud_deletion(self) -> None:
+        with self.db() as connection:
+            self.assertEqual(protection_stop.status(connection, 2)["local_files_blocking_cloud_delete"], 1)
+        self.cloud_only()
+        with self.db() as connection:
+            self.assertEqual(protection_stop.status(connection, 2)["local_files_blocking_cloud_delete"], 0)
 
 
 if __name__ == "__main__":

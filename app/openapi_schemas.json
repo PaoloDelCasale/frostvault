@@ -2723,6 +2723,9 @@
             "null"
           ]
         },
+        "local_files_blocking_cloud_delete": {
+          "type": "number"
+        },
         "jobs": {
           "type": "array",
           "items": {
@@ -2758,7 +2761,8 @@
         "group_id",
         "cancellable",
         "pending_until",
-        "jobs"
+        "jobs",
+        "local_files_blocking_cloud_delete"
       ]
     },
     "RetryFailedUploadsResponse": {

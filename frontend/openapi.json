@@ -3140,6 +3140,9 @@
             },
             "type": "array"
           },
+          "local_files_blocking_cloud_delete": {
+            "type": "number"
+          },
           "pending_until": {
             "type": [
               "string",
@@ -3168,7 +3171,8 @@
           "group_id",
           "cancellable",
           "pending_until",
-          "jobs"
+          "jobs",
+          "local_files_blocking_cloud_delete"
         ],
         "type": "object"
       },
