@@ -85,12 +85,21 @@ class CloudPurgeTests(unittest.TestCase):
         return str(file_id)
 
     def schedule(self, paths=("report.txt",), *, requested_at: str = PAST,
-                 is_directory: bool = False) -> cloud_deletion.ScheduledDeletion:
+                 is_directory: bool = False, **selection) -> cloud_deletion.ScheduledDeletion:
+        """Confirm what a fresh preview lists (a selection needs its fingerprint, #723)."""
+        fingerprint = None
+        try:
+            with self.db() as connection:
+                fingerprint = cloud_deletion.preview_selection(
+                    connection, vault_id=2, paths=list(paths), is_directory=is_directory,
+                    **selection).fingerprint
+        except cloud_deletion.CloudDeletionError:
+            pass  # scheduling reports the refusal itself
         with self.db() as connection:
             return cloud_deletion.schedule_cloud_purge(
                 connection, vault_id=2, paths=list(paths), is_directory=is_directory,
                 actor="owner", requested_at=requested_at, confirmation="Docs",
-                reason="no longer needed")
+                reason="no longer needed", fingerprint=fingerprint, **selection)
 
     def claim_group(self, lead: int) -> dict | None:
         claimed_at = storage.now_iso()
@@ -145,8 +154,9 @@ class CloudPurgeTests(unittest.TestCase):
         current = self.cloud_only()
         with self.db() as connection:
             preview = cloud_deletion.preview_selection(connection, vault_id=2, paths=["report.txt"])
-        self.assertEqual(preview.as_dict(), dict(object_count=1, version_count=1,
-                                                 delete_marker_count=0, byte_count=len(A)))
+        self.assertLessEqual(dict(object_count=1, version_count=1, delete_marker_count=0,
+                                  byte_count=len(A), mode="exact").items(),
+                             preview.as_dict().items())
         scheduled = self.schedule(requested_at=storage.now_iso())
         [job_id] = scheduled.job_ids
         job = self.job(job_id)

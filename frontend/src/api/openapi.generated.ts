@@ -1501,23 +1501,80 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * CloudDeletionListing
+         * @description A file-list view, resolved by the server like ``/api/files`` (#723).
+         */
+        CloudDeletionListing: {
+            /**
+             * Directory
+             * @default
+             */
+            directory: string;
+            /**
+             * Q
+             * @default
+             */
+            q: string;
+            /**
+             * State
+             * @default
+             */
+            state: string;
+        };
         CloudDeletionPreview: {
             byte_count: number;
             delete_marker_count: number;
+            duplicate_bytes: number;
+            duplicate_count: number;
+            duplicates_only: boolean;
+            eligible_bytes: number;
+            eligible_count: number;
+            fingerprint: string;
+            /** @enum {string} */
+            mode: "exact" | "selection";
+            no_local_copy_bytes: number;
+            no_local_copy_count: number;
             object_count: number;
+            skipped: {
+                conflict?: number;
+                no_exact_version?: number;
+                not_verified?: number;
+                pending_cleanup?: number;
+                pending_work?: number;
+                present_locally?: number;
+            } & {
+                [key: string]: number;
+            };
+            skipped_count: number;
             version_count: number;
         } & {
             [key: string]: unknown;
         };
-        /** CloudDeletionPreviewRequest */
+        /**
+         * CloudDeletionPreviewRequest
+         * @description Exact files (``path``/``paths``), recursive folders (``is_directory`` or
+         *     ``directories``) or a whole list view (``listing``), mixed freely.
+         *
+         *     One exact file is all-or-nothing; any other selection covers only its
+         *     eligible files (#723). ``duplicates_only`` keeps only Cloud Duplicates.
+         */
         CloudDeletionPreviewRequest: {
+            /** Directories */
+            directories?: string[] | null;
+            /**
+             * Duplicates Only
+             * @default false
+             */
+            duplicates_only: boolean;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
+            listing?: components["schemas"]["CloudDeletionListing"] | null;
             /** Path */
-            path: string;
+            path?: string | null;
             /** Paths */
             paths?: string[] | null;
         };
@@ -1540,13 +1597,23 @@ export interface components {
         CloudPurgeRequest: {
             /** Confirmation */
             confirmation: string;
+            /** Directories */
+            directories?: string[] | null;
+            /**
+             * Duplicates Only
+             * @default false
+             */
+            duplicates_only: boolean;
+            /** Fingerprint */
+            fingerprint?: string | null;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
+            listing?: components["schemas"]["CloudDeletionListing"] | null;
             /** Path */
-            path: string;
+            path?: string | null;
             /** Paths */
             paths?: string[] | null;
             /** Reason */

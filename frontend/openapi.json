@@ -294,6 +294,32 @@
         ],
         "type": "object"
       },
+      "CloudDeletionListing": {
+        "additionalProperties": false,
+        "description": "A file-list view, resolved by the server like ``/api/files`` (#723).",
+        "properties": {
+          "directory": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Directory",
+            "type": "string"
+          },
+          "q": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Q",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "maxLength": 32,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "CloudDeletionListing",
+        "type": "object"
+      },
       "CloudDeletionPreview": {
         "additionalProperties": {},
         "properties": {
@@ -303,7 +329,67 @@
           "delete_marker_count": {
             "type": "number"
           },
+          "duplicate_bytes": {
+            "type": "number"
+          },
+          "duplicate_count": {
+            "type": "number"
+          },
+          "duplicates_only": {
+            "type": "boolean"
+          },
+          "eligible_bytes": {
+            "type": "number"
+          },
+          "eligible_count": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "exact",
+              "selection"
+            ],
+            "type": "string"
+          },
+          "no_local_copy_bytes": {
+            "type": "number"
+          },
+          "no_local_copy_count": {
+            "type": "number"
+          },
           "object_count": {
+            "type": "number"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "properties": {
+              "conflict": {
+                "type": "number"
+              },
+              "no_exact_version": {
+                "type": "number"
+              },
+              "not_verified": {
+                "type": "number"
+              },
+              "pending_cleanup": {
+                "type": "number"
+              },
+              "pending_work": {
+                "type": "number"
+              },
+              "present_locally": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "skipped_count": {
             "type": "number"
           },
           "version_count": {
@@ -314,23 +400,71 @@
           "object_count",
           "version_count",
           "delete_marker_count",
-          "byte_count"
+          "byte_count",
+          "fingerprint",
+          "mode",
+          "duplicates_only",
+          "eligible_count",
+          "eligible_bytes",
+          "duplicate_count",
+          "duplicate_bytes",
+          "no_local_copy_count",
+          "no_local_copy_bytes",
+          "skipped",
+          "skipped_count"
         ],
         "type": "object"
       },
       "CloudDeletionPreviewRequest": {
         "additionalProperties": false,
+        "description": "Exact files (``path``/``paths``), recursive folders (``is_directory`` or\n``directories``) or a whole list view (``listing``), mixed freely.\n\nOne exact file is all-or-nothing; any other selection covers only its\neligible files (#723). ``duplicates_only`` keeps only Cloud Duplicates.",
         "properties": {
+          "directories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directories"
+          },
+          "duplicates_only": {
+            "default": false,
+            "title": "Duplicates Only",
+            "type": "boolean"
+          },
           "is_directory": {
             "default": false,
             "title": "Is Directory",
             "type": "boolean"
           },
+          "listing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudDeletionListing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "path": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Path",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
           },
           "paths": {
             "anyOf": [
@@ -347,9 +481,6 @@
             "title": "Paths"
           }
         },
-        "required": [
-          "path"
-        ],
         "title": "CloudDeletionPreviewRequest",
         "type": "object"
       },
@@ -412,16 +543,64 @@
             "title": "Confirmation",
             "type": "string"
           },
+          "directories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directories"
+          },
+          "duplicates_only": {
+            "default": false,
+            "title": "Duplicates Only",
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
           "is_directory": {
             "default": false,
             "title": "Is Directory",
             "type": "boolean"
           },
+          "listing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudDeletionListing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "path": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Path",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
           },
           "paths": {
             "anyOf": [
@@ -445,7 +624,6 @@
           }
         },
         "required": [
-          "path",
           "confirmation",
           "reason"
         ],

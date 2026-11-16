@@ -161,7 +161,7 @@ class CloudDeletionTests(CloudDeletionFixture):
                 group_id="00000000-0000-0000-0000-0000000000c1", is_directory=False)
         self.assertEqual(queued, [])
 
-    def test_directory_selection_escapes_wildcards_and_never_partially_admits_mixed_files(self) -> None:
+    def test_directory_selection_escapes_wildcards_and_skips_present_files(self) -> None:
         self.second_cloud_only("album_1/photo.jpg")
         self.second_cloud_only("albumX1/sibling.jpg")
         selected = self.schedule(paths=["album_1"], is_directory=True)
@@ -178,9 +178,12 @@ class CloudDeletionTests(CloudDeletionFixture):
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2, path="album_1/present.jpg", file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
-        with self.assertRaises(cloud_deletion.CloudDeletionError):
-            self.schedule(paths=["album_1"], is_directory=True)
-        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE status='pending_delay'"), 0)
+        # A folder covers its eligible files only (#723): the present one is skipped.
+        again = self.schedule(paths=["album_1"], is_directory=True)
+        self.assertEqual(again.preview.skipped["present_locally"], 1)
+        paths = self.rows("""SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id
+                             WHERE j.group_id=%s""", again.group_id)
+        self.assertEqual([r["path"] for r in paths], ["album_1/photo.jpg"])
 
     def test_stop_delete_rejects_present_file_and_never_queues_local_removal(self) -> None:
         self.cloud_only()
