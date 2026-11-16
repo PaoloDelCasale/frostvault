@@ -210,6 +210,16 @@
             "string",
             "null"
           ]
+        },
+        "resolving": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "scan",
+            null
+          ]
         }
       },
       "required": [
@@ -2073,6 +2083,18 @@
                 "null"
               ]
             },
+            "verify_bytes_per_minute": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "last_error_source_cause": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "traversal_lock_wait_seconds": {
               "type": [
                 "number",
@@ -2867,6 +2889,9 @@
             "string",
             "null"
           ]
+        },
+        "rate": {
+          "$ref": "#/components/schemas/UploadActivityRate"
         }
       },
       "required": [
@@ -2875,7 +2900,8 @@
         "uploading",
         "verifying",
         "awaiting_admission_files",
-        "next_stable_at"
+        "next_stable_at",
+        "rate"
       ]
     },
     "UploadActivityResponse": {
@@ -2902,11 +2928,15 @@
                   },
                   "vault_name": {
                     "type": "string"
+                  },
+                  "paused": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
                   "vault_id",
-                  "vault_name"
+                  "vault_name",
+                  "paused"
                 ]
               }
             ]
@@ -3203,6 +3233,36 @@
         "oidc_provider_name"
       ],
       "additionalProperties": true
+    },
+    "UploadActivityRate": {
+      "type": "object",
+      "properties": {
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_per_minute": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "window_seconds",
+        "files",
+        "bytes",
+        "bytes_per_minute"
+      ]
     }
   }
 }

@@ -51,4 +51,11 @@ describe("Problems page (#657)", () => {
     await userEvent.setup().click(within(alert).getByRole("button", { name: en["ui.retry"] }));
     expect(await screen.findByTestId("problem-row")).toBeInTheDocument();
   });
+
+  it("says when a running scan can close a blocked protection by itself (#711)", async () => {
+    renderPage(() => jsonResponse({ items: [{ ...problem, event: "protection_blocked", resolving: "scan" }, { ...problem, id: 7 }], unread_count: 0 }));
+    const [blocked, other] = await screen.findAllByTestId("problem-row");
+    expect(within(blocked!).getByTestId("problem-resolving")).toHaveTextContent(en["problems.resolving_scan"]!);
+    expect(within(other!).queryByTestId("problem-resolving")).toBeNull();
+  });
 });

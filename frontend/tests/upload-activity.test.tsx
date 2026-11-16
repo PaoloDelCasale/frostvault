@@ -14,14 +14,15 @@ const empty = (): UploadActivitySummary => ({
   uploading: { files: 0, bytes: 0, transferred_bytes: 0 },
   verifying: { files: 0, bytes: 0, transferred_bytes: 0 },
   awaiting_admission_files: 0, next_stable_at: null,
+  rate: { window_seconds: 900, files: 0, bytes: 0, bytes_per_minute: null },
 });
 const messages = loadCatalog();
 const t = (key: string, params?: Record<string, string | number>) => translate(messages, key, params);
 
-function show(activity: UploadActivitySummary, vaultId?: number) {
+function show(activity: UploadActivitySummary, vaultId?: number, extra: UploadActivityResponse["vaults"] = []) {
   const data: UploadActivityResponse = {
     observed_at: "2026-11-06T10:00:00Z", global: activity,
-    vaults: [{ ...activity, vault_id: 2, vault_name: "Other Vault <img>" }],
+    vaults: [{ ...activity, vault_id: 2, vault_name: "Other Vault <img>", paused: false }, ...extra],
   };
   const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(data));
   configureApiClient({ fetch });
@@ -70,7 +71,7 @@ describe("aggregate upload activity", () => {
     const { fetch } = show(activity, 2);
     fetch.mockImplementation(async (input) => String(input).startsWith("/api/upload/cancel-pending")
       ? jsonResponse({ message: "x", cancelled_count: 4292 })
-      : jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: activity, vaults: [{ ...activity, vault_id: 2, vault_name: "V" }] }));
+      : jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: activity, vaults: [{ ...activity, vault_id: 2, vault_name: "V", paused: false }] }));
     await openPanel();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: t("activity.cancel_pending") }));
@@ -146,5 +147,41 @@ describe("aggregate upload activity", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     const section = screen.getByTestId("upload-activity");
     expect(within(section).getAllByText(t("activity.sent", { sent: formatBytes(20), total: formatBytes(30) }))).toHaveLength(2);
+  });
+
+  it("states the measured speed and the time left at it (#711)", async () => {
+    const activity = empty();
+    activity.queued = { files: 58136, bytes: 300 * 1024 ** 3, transferred_bytes: 0 };
+    activity.uploading = { files: 4, bytes: 40 * 1024 ** 2, transferred_bytes: 40 * 1024 ** 2 };
+    activity.rate = { window_seconds: 900, files: 400, bytes: 22 * 1024 ** 3, bytes_per_minute: 1.5 * 1024 ** 3 };
+    show(activity);
+    // 300 GiB left at 1.5 GiB per minute: 200 minutes, 3.3 hours.
+    const remaining = t("vault.scan.remaining_hours", { count: 3.3 });
+    const pace = { rate: formatBytes(1.5 * 1024 ** 3), remaining };
+    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.indicator_rate", {
+      count: 58140, size: formatBytes(300 * 1024 ** 3 + 40 * 1024 ** 2), ...pace }));
+    await openPanel();
+    expect(screen.getAllByText(t("activity.rate", pace)).length).toBeGreaterThan(0);
+  });
+
+  it("says the speed is not measured yet instead of inventing one (#711)", async () => {
+    const activity = empty(); activity.queued = { files: 5, bytes: 50, transferred_bytes: 0 };
+    show(activity);
+    await openPanel();
+    expect(screen.getAllByText(t("activity.rate_unknown")).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("activity-rate")).not.toBeInTheDocument();
+  });
+
+  it("lists a Paused Vault's queue apart, outside the indicator's count (#711)", async () => {
+    const paused = empty(); paused.queued = { files: 21709, bytes: 2048, transferred_bytes: 0 };
+    show(empty(), undefined, [{ ...paused, vault_id: 3, vault_name: "Test686", paused: true }]);
+    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.paused_only", { count: 21709 }));
+    await openPanel();
+    expect(screen.getByText(t("activity.idle"))).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByText(t("activity.paused_heading")));
+    const list = screen.getByTestId("paused-vaults-activity");
+    expect(within(list).getByRole("link", { name: "Test686" })).toBeVisible();
+    expect(within(list).getByText(t("activity.paused"))).toBeVisible();
+    expect(screen.queryByText(t("activity.by_vault"))).not.toBeInTheDocument();
   });
 });

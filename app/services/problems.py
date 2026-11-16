@@ -20,6 +20,7 @@ from .notifications import set_problem
 def report_problem(
     connection: Any, *, event: str, vault_id: int | None = None,
     path: str = "", component: str = "", active: bool = True,
+    error_type: str = "",
 ) -> dict[str, Any] | None:
     identity = hashlib.sha256(
         f"{path}\0{component}".encode("utf-8", errors="surrogatepass")
@@ -29,6 +30,8 @@ def report_problem(
     # problem. The identity above still distinguishes the original paths.
     shown = display_path(path)
     params: dict[str, Any] = {"path": shown, "component": component}
+    if error_type:
+        params["error_type"] = error_type
     if event == "file_unreadable" and active and vault_id is not None and path:
         params.update(_unreadable_access(connection, int(vault_id), path))
     return set_problem(

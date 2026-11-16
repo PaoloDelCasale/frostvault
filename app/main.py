@@ -1603,8 +1603,24 @@ def open_problems(request: Request, page: int = Query(1, ge=1),
             "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
             ((page - 1) * 100,),
         ).fetchall()
-        return {"items": [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows],
+        items = [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows]
+        return {"items": [{**item, "resolving": _problem_resolving(item)} for item in items],
                 "open_problem_count": notification_service.count_open_problems(connection)}
+
+
+def _problem_resolving(item: dict[str, Any]) -> str | None:
+    """The running operation that can close this problem by itself (#711).
+
+    A blocked source closes when a complete scan succeeds: while one runs,
+    the Owner reads that it is in progress instead of what to check.
+    """
+    params = item.get("message_params") or {}
+    if (item.get("event") != "protection_blocked" or params.get("component") != "source"
+            or not item.get("vault_id")):
+        return None
+    with status_lock:
+        scanning = bool((runtime_status.get(int(item["vault_id"])) or {}).get("scanning"))
+    return "scan" if scanning else None
 
 
 @app.get("/api/stats", response_model=response_model("StatsResponse"))
@@ -1639,6 +1655,9 @@ def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = Non
             if error:
                 runtime["last_error"] = error
                 break
+    # The known cause of the last failed source scan, to read it translated (#711).
+    from .services.scan_causes import source_error_cause
+    runtime["last_error_source_cause"] = source_error_cause(runtime.get("last_error_source"))
     if unconfirmed.by_path:
         # Only named paths are unconfirmed (ADR-0042, #684): say how many and
         # where to look, instead of the generic incomplete-scan error.

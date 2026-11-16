@@ -31,7 +31,7 @@ from typing import Any, Iterable, Mapping
 
 from .operation_policies import get_policy
 from .protection_states import (
-    CURRENT_JOIN_SQL, aggregate_state, current_is_recoverable,
+    CURRENT_JOIN_SQL, UNCONFIRMED_EXEMPT, aggregate_state, current_is_recoverable,
     local_copy_matches_current, state_sql,
 )
 from .database_retry import owned_connection, retry_database_unit
@@ -1417,7 +1417,10 @@ def directory_row_to_item(
         state_counts["stopped"] = stopped
     last_known_counts = dict(state_counts)
     if unconfirmed:
-        state_counts = {"unconfirmed": int(row["item_count"] or 0)}
+        # Excluded and Unsupported keep their state (#711).
+        kept = {name: count for name, count in state_counts.items() if name in UNCONFIRMED_EXEMPT}
+        masked = int(row["item_count"] or 0) - sum(kept.values())
+        state_counts = {**kept, **({"unconfirmed": masked} if masked > 0 else {})}
     state = aggregate_state(state_counts)
     storage_map = row.get("storage_class_counts") or {}
     if not isinstance(storage_map, dict):
@@ -1481,12 +1484,16 @@ def _child_directory_clauses(
         if column is None:
             return None, params
         clauses.append(f"{column} > 0")
-    if state_filter and getattr(unconfirmed, "by_path", False):
+    masked = getattr(unconfirmed, "by_path", False) or getattr(unconfirmed, "whole_vault", False)
+    if state_filter and masked and state_filter not in UNCONFIRMED_EXEMPT:
+        # Excluded and Unsupported keep their state under the mask (#711):
+        # a folder holding only them is not unconfirmed.
         blocked, blocked_params = unconfirmed.sql("path")
         if state_filter == "unconfirmed":
-            clauses[-1] = f"({clauses[-1]} OR {blocked})"
+            clauses[-1] = (f"({clauses[-1]} OR (({blocked}) "
+                           "AND item_count > state_excluded + state_unsupported))")
         else:
-            clauses.append(f"NOT {blocked}")
+            clauses.append(f"NOT ({blocked})")
         params.extend(blocked_params)
     return clauses, params
 

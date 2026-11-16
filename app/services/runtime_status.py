@@ -14,6 +14,8 @@ _SCALAR_KEYS = (
     # The running scan's phase and verification progress (#691).
     "scan_phase", "verify_files_total", "verify_files_done",
     "verify_bytes_total", "verify_bytes_done",
+    # The verification pace, for its time estimate (#711).
+    "verify_bytes_per_minute",
     # Traversal progress (#696): files seen, their rate, and the Local Copies a
     # previous scan found (None on a first adoption) for a time estimate.
     "traversal_files_seen", "traversal_files_per_minute", "traversal_files_expected",

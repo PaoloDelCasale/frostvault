@@ -391,8 +391,10 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertGreater(summary['monthly_cost_estimate'],0)
             self.assertIn('not an AWS',summary['cost_disclaimer'])
             with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
+                # Excluded and Unsupported keep their state (#711).
                 self.assertEqual(monitor.weekly_summary(c,now=NOW)['states'],
-                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)})
+                                 {**dict.fromkeys(monitor.STATES,0),'unconfirmed':len(monitor.STATES)-2,
+                                  'excluded':1,'unsupported':1})
 
     def test_cloud_preflight_failure_and_recovery_only_persist_safe_context(self):
         from app import storage

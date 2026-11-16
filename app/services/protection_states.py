@@ -28,7 +28,18 @@ from .upload_path_rules import inline_eligibility_sql
 # neither pending work nor protected; a manual upload stays possible.
 STATES = ("pending", "protected", "problem", "unconfirmed", "cloud_only", "stopped", "excluded",
           "unsupported")
+# Unconfirmed covers every other state (#711): an Excluded or Unsupported
+# entry never counts against protection, so a scan still to come cannot
+# change what it means and it keeps its own state.
+UNCONFIRMED_EXEMPT = ("excluded", "unsupported")
 CURRENT_JOIN_SQL = "LEFT JOIN archive_versions cur ON cur.id = f.current_version_id"
+
+
+def masked_state_sql(blocked: str, state: str) -> str:
+    """The shown state: ``state`` unless ``blocked`` makes it unconfirmed."""
+    exempt = ",".join(f"'{name}'" for name in UNCONFIRMED_EXEMPT)
+    return (f"(CASE WHEN ({blocked}) AND ({state}) NOT IN ({exempt}) "
+            f"THEN 'unconfirmed' ELSE ({state}) END)")
 LOCAL_EXISTS_SQL = "coalesce(f.local_presence, 'missing') IN ('present', 'unsupported')"
 # Present implies a regular file (files_local_type_presence_ck); matched implies
 # a fingerprinted Local Copy equal to Current (files_matched_ck).
@@ -148,7 +159,7 @@ def project_file(row: Mapping[str, Any], *, unconfirmed: bool = False) -> dict[s
             last_known = ("excluded" if row.get("path_excluded")
                           else "stopped" if row.get("upload_stopped") else "pending")
     return {
-        "state": "unconfirmed" if unconfirmed else known,
+        "state": "unconfirmed" if unconfirmed and known not in UNCONFIRMED_EXEMPT else known,
         "last_known_state": last_known,
         "last_known_at": row.get("protection_observed_at"),
         "previous_snapshot_protected": bool(

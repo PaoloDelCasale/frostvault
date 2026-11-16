@@ -603,6 +603,8 @@ class BacklogObservationTests(unittest.TestCase):
                     (storage.source_layout, "verify_mounts_once"), (storage, "process_jobs_once"),
                     (storage, "_deliver_notifications_once"), (storage, "_submit_directory_aggregates"),
                     (storage.protection_stop_service, "reconcile_all"), (storage, "_submit_maintenance"),
+                    # Clean cycles close the loop's problem (#711): no database here.
+                    (storage, "_note_worker_ok"),
                 ):
                     stack.enter_context(patch.object(owner, name))
                 stack.enter_context(patch.object(storage, "persisted_maintenance_ages", return_value={}))
@@ -668,13 +670,15 @@ class DirectoryAggregateFoldTests(unittest.TestCase):
         self.assertEqual(calls, [1, 1])
 
     def test_a_failed_fold_is_recorded_not_raised(self):
+        # Its own component (#711), not the background loop's.
         self.addCleanup(storage.shutdown_background_executors)
         with patch.object(storage, "process_directory_aggregate_maintenance",
                           side_effect=RuntimeError("boom")), \
-                patch.object(storage, "_record_background_loop_error") as record:
+                patch.object(storage, "_report_worker_error") as record:
             storage._submit_directory_aggregates()
             storage._aggregate_future.result(5)
         record.assert_called_once()
+        self.assertEqual(record.call_args.args[0], "directory_aggregates")
 
     def test_a_fold_is_drained_at_shutdown(self):
         release = threading.Event()

@@ -3,6 +3,12 @@
 Counts describe currently observed work, not a lifetime/batch completion ratio.
 A stability deadline is conditional on unchanged content, not an upload ETA.
 Only SQL aggregates cross the service boundary (O(Vaults), not O(files/Jobs)).
+
+The rate is measured, never assumed (#711): the bytes of the uploads that
+completed in the last :data:`RATE_WINDOW_SECONDS`, over the part of that
+window since the first of them, and only from :data:`RATE_MIN_FILES` uploads.
+The global totals leave out Paused Vaults: their queue does not move until the
+Owner resumes them, so each Vault says whether it is paused.
 """
 from __future__ import annotations
 
@@ -13,19 +19,35 @@ from .operation_policies import get_policy, stopped_upload_holds_automatic_admis
 from .upload_path_rules import eligibility_sql as _eligibility_sql, path_pattern as _path_pattern  # noqa: F401
 
 STAGES = ("stability_wait", "queued", "uploading", "verifying")
+RATE_WINDOW_SECONDS = 900
+RATE_MIN_FILES = 3
+# A rate measured over less than a minute says nothing about the next hours.
+RATE_MIN_SPAN_SECONDS = 60
 
 
 def _empty() -> dict[str, Any]:
     return {**{stage: {"files": 0, "bytes": 0, "transferred_bytes": 0} for stage in STAGES},
             "awaiting_admission_files": 0, "next_stable_at": None,
-            "bulk_admission": {"requests": 0, "selected_files": 0, "processed_files": 0, "admitted_files": 0}}
+            "bulk_admission": {"requests": 0, "selected_files": 0, "processed_files": 0, "admitted_files": 0},
+            "rate": {"window_seconds": RATE_WINDOW_SECONDS, "files": 0, "bytes": 0,
+                     "bytes_per_minute": None}}
+
+
+def _rate(files: int, size: int, first: datetime | None, now: datetime) -> dict[str, Any]:
+    span = RATE_WINDOW_SECONDS
+    if first is not None:
+        first = first if first.tzinfo else first.replace(tzinfo=timezone.utc)
+        span = min(RATE_WINDOW_SECONDS, max(RATE_MIN_SPAN_SECONDS, (now - first).total_seconds()))
+    per_minute = round(size * 60 / span) if files >= RATE_MIN_FILES and size > 0 else None
+    return {"window_seconds": RATE_WINDOW_SECONDS, "files": files, "bytes": size,
+            "bytes_per_minute": per_minute}
 
 
 def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     stamp = now.isoformat()
     vaults = connection.execute(
-        """SELECT v.id,v.name,v.lifecycle,
+        """SELECT v.id,v.name,v.lifecycle,v.paused,
             a.requests,a.selected_files,a.processed_files,a.admitted_files
         FROM vaults v LEFT JOIN (
             SELECT vault_id,count(*) AS requests,sum(selected_count) AS selected_files,
@@ -33,7 +55,8 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
             FROM bulk_upload_admissions WHERE status='pending' GROUP BY vault_id
         ) a ON a.vault_id=v.id ORDER BY lower(v.name),v.id"""
     ).fetchall()
-    items = {row["id"]: {"vault_id": row["id"], "vault_name": row["name"], **_empty()} for row in vaults}
+    items = {row["id"]: {"vault_id": row["id"], "vault_name": row["name"],
+                         "paused": bool(row.get("paused")), **_empty()} for row in vaults}
     for row in vaults:
         items[row["id"]]["bulk_admission"] = {
             key: int(row.get(key) or 0) for key in _empty()["bulk_admission"]}
@@ -60,6 +83,18 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
         if row["vault_id"] in items:
             items[row["vault_id"]][row["stage"]] = {
                 key: int(row[key]) for key in ("files", "bytes", "transferred_bytes")}
+
+    # Completed uploads of the rate window, through the finished-Job index.
+    for row in connection.execute("""
+        SELECT vault_id, count(*) AS files, COALESCE(sum(GREATEST(total_bytes,0)),0) AS bytes,
+            min(finished_at) AS first_finished_at
+        FROM jobs WHERE finished_at >= %s::timestamptz - %s * interval '1 second'
+            AND action='upload' AND status='completed'
+        GROUP BY vault_id
+    """, [stamp, RATE_WINDOW_SECONDS]).fetchall():
+        if row["vault_id"] in items:
+            items[row["vault_id"]]["rate"] = _rate(
+                int(row["files"]), int(row["bytes"]), row["first_finished_at"], now)
 
     for vault in vaults:
         policy = get_policy(connection, vault["id"])
@@ -101,6 +136,11 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
                 item["next_stable_at"] = row["next_stable_at"].isoformat()
     total = _empty()
     for item in items.values():
+        if item["paused"]:
+            continue
+        rate = item["rate"]
+        total["rate"]["files"] += rate["files"]
+        total["rate"]["bytes"] += rate["bytes"]
         for stage in STAGES:
             for key in ("files", "bytes", "transferred_bytes"):
                 total[stage][key] += item[stage][key]
@@ -110,4 +150,9 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
         deadline = item["next_stable_at"]
         if deadline and (not total["next_stable_at"] or deadline < total["next_stable_at"]):
             total["next_stable_at"] = deadline
+    # Vaults upload side by side: the installation's rate is the sum of the
+    # measured ones.
+    measured = [item["rate"]["bytes_per_minute"] for item in items.values()
+                if not item["paused"] and item["rate"]["bytes_per_minute"]]
+    total["rate"]["bytes_per_minute"] = sum(measured) if measured else None
     return {"observed_at": stamp, "global": total, "vaults": list(items.values())}

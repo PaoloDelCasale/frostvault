@@ -81,6 +81,8 @@ export type NotificationItem = {
   read_at: string | null;
   problem_status?: "open" | "resolved" | null;
   resolved_at?: string | null;
+  /** The running operation that can close this problem by itself (#711). */
+  resolving?: "scan" | null;
 };
 
 export type NotificationListStatus = "unread" | "read" | "all";
