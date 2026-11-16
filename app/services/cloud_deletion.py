@@ -38,7 +38,7 @@ from typing import Any
 from . import source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .component_health import load_vault_health
-from .directory_aggregates import mark_paths_dirty
+from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
                                 masked_state_sql, observation_is_unconfirmed)
 
@@ -360,9 +360,9 @@ class _Selection:
     directories: tuple[str, ...] = ()
     listing: ListingFilter | None = None
     whole_vault: bool = False
-    # Automatic Duplicate Cleanup (#726): every file of the Vault whose Local
-    # Copy was last seen at or before this time.
-    seen_before: str | None = None
+    # Cloud Duplicates of the whole Vault (#726, #729): every file with a
+    # Current and no Local Copy, the only files that can be eligible.
+    cloud_only: bool = False
 
     @property
     def strict(self) -> bool:
@@ -465,10 +465,9 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
         sql, values = _listing_sql(connection, vault, selection.listing)
         parts.append(sql)
         params.extend(values)
-    if selection.seen_before is not None:
-        # A file never seen locally (NULL) is never a candidate: no invented time.
-        parts.append("(f.local_presence = 'missing' AND f.local_seen_at <= %s::timestamptz)")
-        params.append(selection.seen_before)
+    if selection.cloud_only:
+        parts.append("(f.current_version_id IS NOT NULL"
+                     " AND (f.local_presence IS NULL OR f.local_presence = 'missing'))")
     return "(" + " OR ".join(parts) + ")", params
 
 
@@ -477,7 +476,7 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
 # _validate_files, which still revalidates the eligible set before consent.
 _CLASSIFY_SQL = """
 WITH c AS MATERIALIZED (
-    SELECT f.id AS file_id, f.path, f.current_version_id, cur.size,
+    SELECT f.id AS file_id, f.path, f.current_version_id, cur.size, f.local_seen_at,
       CASE
         WHEN f.local_presence IS NOT NULL AND f.local_presence <> 'missing' THEN 'present_locally'
         WHEN f.current_version_id IS NULL THEN 'not_verified'
@@ -508,10 +507,11 @@ WITH c AS MATERIALIZED (
     LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
     WHERE f.vault_id = %s AND f.path <> '' AND {selection}
 )
-SELECT file_id, path, current_version_id, size, reason, NULL::bigint AS n
+SELECT file_id, path, current_version_id, size, local_seen_at, reason, NULL::bigint AS n
 FROM c WHERE reason = 'eligible'
 UNION ALL
-SELECT NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible' GROUP BY reason
+SELECT NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible'
+GROUP BY reason
 """
 
 
@@ -671,36 +671,75 @@ def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any
     return ScheduledDeletion(group_id, job_ids, preview, pending_until)
 
 
-def automatic_duplicates(connection: Any, vault: dict[str, Any], *,
-                         seen_before: str) -> tuple[list[dict[str, Any]], DeletionPreview]:
-    """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
+def cloud_duplicates(connection: Any,
+                     vault: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Every Cloud Duplicate of the Vault a deletion could schedule now (#726, #729).
 
-    The eligible Cloud-only files of the whole Vault whose Local Copy was last
-    seen at or before ``seen_before`` (files already in pending work, such as
-    another deletion group, are skipped as ``pending_work``), narrowed to the
-    Cloud Duplicates; local absence is then proven for those only. A file
-    without another protected local copy is never returned.
+    The same set as the manual «Only Cloud Duplicates» preview of the whole
+    Vault: the eligible Cloud-only files (files already in pending work, such
+    as another deletion group, are skipped as ``pending_work``) narrowed to the
+    Cloud Duplicates; local absence is then proven for those only. Each row
+    carries ``local_seen_at`` (None when never seen locally). Returns the rows
+    and the skipped counts per reason.
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("Protection observations are not confirmed")
-    _aware(seen_before)
-    where, params = _selection_sql(connection, vault, _Selection(seen_before=seen_before))
+    where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
                               [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
     eligible = [r for r in rows if r["reason"] == "eligible"]
     duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
     chosen = [r for r in eligible if str(r["file_id"]) in duplicates]
-    present = _present_paths(vault, [r["path"] for r in chosen]) if chosen else set()
-    chosen = [r for r in chosen if r["path"] not in present]
-    size = sum(int(r["size"] or 0) for r in chosen)
+    # Always called, even with nothing left to check: an unreadable root or a
+    # changed identity must raise, so a count of zero is never a guess (#729).
+    present = _present_paths(vault, [r["path"] for r in chosen])
     skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
     if present:
         skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
+    return [r for r in chosen if r["path"] not in present], skipped
+
+
+@dataclass(frozen=True)
+class Sighting:
+    """Cloud Duplicates split by the last sighting of their Local Copy (#729).
+
+    ``ready``: seen at or before the cut-off; ``waiting``: seen after it;
+    ``unseen``: never seen locally, so never a candidate of the automatic
+    cleanup (no invented time ever makes it one).
+    """
+    ready: list[dict[str, Any]]
+    waiting: list[dict[str, Any]]
+    unseen: list[dict[str, Any]]
+
+
+def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime) -> Sighting:
+    ready: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    unseen: list[dict[str, Any]] = []
+    for row in rows:
+        seen = row["local_seen_at"]
+        (unseen if seen is None else ready if _aware(seen) <= seen_before else waiting).append(row)
+    return Sighting(ready, waiting, unseen)
+
+
+def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before: str
+                         ) -> tuple[DeletionPreview, Sighting]:
+    """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
+
+    Those of :func:`cloud_duplicates` whose Local Copy was last seen at or
+    before ``seen_before`` (``Sighting.ready``), with their preview; a file
+    without another protected local copy is never among them. The waiting
+    and never-seen Cloud Duplicates are returned too (#729).
+    """
+    rows, skipped = cloud_duplicates(connection, vault)
+    sighting = split_by_sighting(rows, _aware(seen_before))
+    chosen = sighting.ready
+    size = sum(int(r["size"] or 0) for r in chosen)
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
         duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
         duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped)
-    return chosen, preview
+    return preview, sighting
 
 
 def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
@@ -935,7 +974,9 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
     """The exact DELETE returned (or the version is proven absent): record it.
 
     Clears Current and removes the Archive Version row with its completed
-    proof, then completes each Job. The caller holds the group claim.
+    proof, then completes each Job; a member of an automatic deletion adds to
+    the Vault's cleanup totals (#729). The caller holds the Vault row, then
+    the group claim.
     """
     if not jobs:
         return
@@ -964,17 +1005,56 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
     connection.execute("DELETE FROM archive_versions WHERE id = ANY(%s::uuid[])", (versions,))
     connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (batches,))
     ids = [int(j["id"]) for j in jobs]
-    connection.execute(
+    completed = connection.execute(
         """UPDATE jobs SET status='completed', message='Cloud deletion completed',
                message_key=NULL, message_params=NULL, transferred_bytes=total_bytes,
                updated_at=%s, finished_at=%s
-           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
-        (at, at, ids))
+           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')
+           RETURNING total_bytes""",
+        (at, at, ids)).fetchall()
+    _count_automatic_deletions(connection, vault_id=int(jobs[0]["vault_id"]),
+                               group_id=str(jobs[0]["group_id"]), completed=completed, at=at)
     mark_paths_dirty(connection, int(jobs[0]["vault_id"]), [r["path"] for r in connection.execute(
         "SELECT path FROM files WHERE id = ANY(%s::uuid[])", (files,)).fetchall()])
     record_audit_event(connection, event="cloud_deletion.completed", actor=actor,
                        vault_id=int(jobs[0]["vault_id"]), outcome="success",
                        group_id=str(jobs[0]["group_id"]), deleted=len(ids), job_ids=ids[:100])
+
+
+def lock_vault_for_totals(connection: Any, *, vault_id: int, group_id: str) -> None:
+    """Hold the Vault row before the Jobs of an automatic group (#729).
+
+    Recording one of its members as deleted adds to the Vault's cleanup
+    totals; taking the Vault row first keeps the repository-wide lock order
+    (Vault row, then Jobs). A manual group touches no Vault row.
+    """
+    automatic = connection.execute(
+        "SELECT automatic FROM cloud_purge_requests WHERE group_id=%s", (group_id,)).fetchone()
+    if automatic and automatic["automatic"]:
+        lock_vaults_in_order(connection, [vault_id])
+
+
+def _count_automatic_deletions(connection: Any, *, vault_id: int, group_id: str,
+                               completed: list[dict[str, Any]], at: str) -> None:
+    """Add the members just completed to the Vault's cleanup totals (#729).
+
+    Only for an automatic request, in the transaction that records them as
+    deleted: the totals outlive the history retention of their Jobs. Revoked,
+    failed or cancelled members never reach here. The caller holds the Vault
+    row first (the repository-wide lock order).
+    """
+    if not completed:
+        return
+    connection.execute(
+        """UPDATE vaults v SET
+               duplicate_cleanup_deleted_count = COALESCE(v.duplicate_cleanup_deleted_count, 0) + %s,
+               duplicate_cleanup_deleted_bytes = COALESCE(v.duplicate_cleanup_deleted_bytes, 0) + %s,
+               duplicate_cleanup_last_deleted_at = GREATEST(v.duplicate_cleanup_last_deleted_at,
+                                                            %s::timestamptz)
+           FROM cloud_purge_requests r
+           WHERE v.id = %s AND r.group_id = %s AND r.automatic""",
+        (len(completed), sum(int(r["total_bytes"] or 0) for r in completed), at,
+         vault_id, group_id))
 
 
 def record_failed(connection: Any, *, failures: list[tuple[dict[str, Any], str]],

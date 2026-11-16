@@ -3665,6 +3665,15 @@
                 },
                 "run_after": {
                   "type": "string"
+                },
+                "waiting_count": {
+                  "type": "number"
+                },
+                "waiting_bytes": {
+                  "type": "number"
+                },
+                "unseen_count": {
+                  "type": "number"
                 }
               },
               "required": [
@@ -3710,6 +3719,142 @@
               "cancellable"
             ]
           }
+        },
+        "current": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "count",
+                "bytes"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "first_eligible_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "earliest_deletion_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "count",
+                "bytes",
+                "first_eligible_at",
+                "earliest_deletion_at"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ready": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "count",
+                "bytes"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unseen": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "count",
+                "bytes"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totals": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "deleted_count": {
+                  "type": "number"
+                },
+                "deleted_bytes": {
+                  "type": "number"
+                },
+                "last_deleted_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "deleted_count",
+                "deleted_bytes",
+                "last_deleted_at"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3722,7 +3867,12 @@
         "last_run_at",
         "next_run_at",
         "last_outcome",
-        "pending"
+        "pending",
+        "current",
+        "waiting",
+        "ready",
+        "unseen",
+        "totals"
       ]
     }
   }

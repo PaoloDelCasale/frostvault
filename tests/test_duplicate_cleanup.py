@@ -13,6 +13,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -20,7 +21,8 @@ from fastapi.testclient import TestClient
 from app import main, storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
-from app.services import duplicate_cleanup
+from app.services import cloud_deletion, duplicate_cleanup, history_retention
+from app.services.cloud_deletion import load_vault_health, observation_is_unconfirmed
 from app.sessions import create_session, csrf_token_for
 from tests.owner_fixtures import insert_owner
 from tests.postgres import database_dsn
@@ -84,6 +86,13 @@ class DuplicateCleanupFixture(SelectionFixture):
                 return
             self.run_purge(int(waiting[0]["id"]))
         self.fail("the group never finished")
+
+    def status(self, now: datetime | None = None) -> dict:
+        with self.db() as connection:
+            return duplicate_cleanup.status(connection, 2, now=now)
+
+    def seen_at(self, file_id: str) -> datetime:
+        return self.rows("SELECT local_seen_at FROM files WHERE id=%s", file_id)[0]["local_seen_at"]
 
     def path_statuses(self, group_id: str) -> dict[str, str]:
         return {r["path"]: r["status"] for r in self.rows(
@@ -266,6 +275,43 @@ class ExecutionTests(DuplicateCleanupFixture):
         self.assertEqual(self.provider.deleted, [])
         self.assertTrue(photo and video)
 
+    def test_the_totals_count_only_completed_automatic_members(self) -> None:
+        group, _, _ = self.automatic_group()
+        self.lose("new/photo.jpg", self.rows("SELECT id FROM files WHERE path='new/photo.jpg'")[0]["id"])
+        self.drain(group)  # the photo is revoked, the video deleted
+        self.assertEqual(self.path_statuses(group), {"old/photo.jpg": "cancelled", "old/video.mp4": "completed"})
+        manual_id = self.moved("manual.bin", b"manual-726-bytes")
+        manual = self.schedule(paths=["old/manual.bin"])
+        self.drain(manual.group_id)
+        self.assertEqual(self.statuses(manual.group_id), ["completed"])
+        self.assertTrue(manual_id)
+        totals = self.status()["totals"]
+        [finished] = self.rows("""SELECT j.finished_at FROM jobs j JOIN files f ON f.id=j.file_id
+                                  WHERE j.group_id=%s AND f.path='old/video.mp4'""", group)
+        self.assertEqual(totals, {"deleted_count": 1, "deleted_bytes": len(VIDEO),
+                                  "last_deleted_at": finished["finished_at"].isoformat()})
+
+    def test_the_totals_survive_the_history_retention_of_their_jobs(self) -> None:
+        group, _, _ = self.automatic_group()
+        self.drain(group)
+        self.assertEqual(self.statuses(group), ["completed", "completed"])
+        before = self.status()["totals"]
+        self.assertEqual((before["deleted_count"], before["deleted_bytes"]), (2, len(PHOTO) + len(VIDEO)))
+        with self.db() as connection:  # the terminal notices were delivered and read
+            connection.execute("DELETE FROM job_terminal_notifications")
+            connection.execute("UPDATE notifications SET read_at=now() WHERE read_at IS NULL")
+        history_retention.collect(self.db, now=utcnow() + timedelta(days=400))
+        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE group_id=%s", group), 0,
+                         "the history retention collected the completed Jobs")
+        self.assertEqual(self.status()["totals"], before)
+
+    def test_a_manual_deletion_never_adds_to_the_totals(self) -> None:
+        self.moved("manual.bin", b"manual-729-bytes")
+        manual = self.schedule(paths=["old/manual.bin"])
+        self.drain(manual.group_id)
+        self.assertEqual(self.statuses(manual.group_id), ["completed"])
+        self.assertIsNone(self.status()["totals"], "never recorded: no invented zero")
+
     def test_an_observed_reappearance_revokes_only_that_automatic_member(self) -> None:
         group, _, _ = self.automatic_group()
         target = self.source / "old/video.mp4"
@@ -276,6 +322,128 @@ class ExecutionTests(DuplicateCleanupFixture):
                 vault_id=2, entries=[("old/video.mp4", "regular", stat.st_size, stat.st_mtime_ns,
                                       storage.now_iso())])
         self.assertEqual(self.path_statuses(group), {"old/photo.jpg": "pending_delay", "old/video.mp4": "cancelled"})
+
+
+def first_run_from(next_run: datetime, at: datetime) -> datetime:
+    """The first daily run at or after ``at``."""
+    run = next_run
+    while run < at:
+        run += timedelta(days=1)
+    return run
+
+
+class CountTests(DuplicateCleanupFixture):
+    """#729: the duplicates now, those still waiting, and the totals."""
+
+    DELAY = timedelta(seconds=cloud_deletion.DELETION_DELAY_SECONDS)
+
+    def library(self) -> tuple[str, str]:
+        """A ready and a waiting duplicate, plus files that are not counted."""
+        ready = self.moved("photo.jpg", PHOTO)                       # seen 30 days ago
+        waiting = self.cloud_only_at("young/photo.jpg", PHOTO)       # seen 1 day ago
+        self.age(waiting, days=1)
+        unseen = self.cloud_only_at("unseen/photo.jpg", PHOTO)       # never seen: current only
+        with self.db() as connection:
+            connection.execute("UPDATE files SET local_seen_at=NULL WHERE id=%s", (unseen,))
+        self.age(self.cloud_only_at("old/original.jpg", ORIGINAL))  # no other copy: not a duplicate
+        self.moved("video.mp4", VIDEO)
+        self.schedule(paths=["old/video.mp4"])                        # already in a manual deletion
+        return ready, waiting
+
+    def test_the_status_counts_the_duplicates_now_waiting_and_ready_live(self) -> None:
+        _, waiting = self.library()
+        self.configure()
+        now = utcnow()
+        status = self.status(now)
+        self.assertEqual(status["current"], {"count": 3, "bytes": 3 * len(PHOTO)})
+        self.assertEqual(status["unseen"], {"count": 1, "bytes": len(PHOTO)})
+        manual = self.preview(listing=cloud_deletion.ListingFilter(), duplicates_only=True)
+        self.assertEqual((status["current"]["count"], status["current"]["bytes"]),
+                         (manual.duplicate_count, manual.duplicate_bytes),
+                         "the same count as the manual «Only Cloud Duplicates» preview of the whole Vault")
+        self.assertEqual(status["ready"], {"count": 1, "bytes": len(PHOTO)})
+        eligible = self.seen_at(waiting) + timedelta(days=7)
+        self.assertEqual(status["waiting"], {
+            "count": 1, "bytes": len(PHOTO), "first_eligible_at": eligible.isoformat(),
+            # Never run yet: the first run is at the next poll, then daily.
+            "earliest_deletion_at": (first_run_from(now, eligible) + self.DELAY).isoformat()})
+        self.assertIsNone(status["totals"], "nothing deleted automatically yet")
+
+        outcome = self.run_cleanup(now)
+        self.assertEqual((outcome["outcome"], outcome["file_count"]), ("scheduled", 1))
+        self.assertEqual((outcome["waiting_count"], outcome["waiting_bytes"], outcome["unseen_count"]),
+                         (1, len(PHOTO), 1))
+        after = self.status(now)
+        self.assertEqual(after["current"]["count"], 2, "a scheduled duplicate is no longer counted")
+        self.assertEqual(after["ready"]["count"], 0)
+        next_run = now + timedelta(days=1)
+        self.assertEqual(after["waiting"]["earliest_deletion_at"],
+                         (first_run_from(next_run, eligible) + self.DELAY).isoformat(),
+                         "aligned with the next daily run")
+
+    def test_a_run_with_only_waiting_duplicates_records_how_many_wait(self) -> None:
+        self.configure()
+        nothing = self.run_cleanup()
+        self.assertEqual((nothing["outcome"], nothing["waiting_count"], nothing["waiting_bytes"],
+                          nothing["unseen_count"]), ("none", 0, 0, 0))
+        young = self.cloud_only_at("young/photo.jpg", PHOTO)
+        self.put("new/photo.jpg", PHOTO)
+        self.age(young, days=1)
+        waiting = self.run_cleanup(utcnow() + timedelta(days=1, seconds=1))
+        self.assertEqual((waiting["outcome"], waiting["file_count"], waiting["waiting_count"],
+                          waiting["waiting_bytes"]), ("none", 0, 1, len(PHOTO)))
+        self.assertEqual(self.status()["last_outcome"]["waiting_count"], 1)
+
+    def test_while_off_the_status_still_counts_the_duplicates_now(self) -> None:
+        self.library()
+        status = self.status()
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["current"]["count"], 3)
+        self.assertEqual(status["waiting"]["count"], 1)
+        self.assertIsNone(status["waiting"]["earliest_deletion_at"], "no run is planned while off")
+        self.assertIsNone(status["next_run_at"])
+
+    def test_nothing_is_counted_when_it_cannot_be_proven(self) -> None:
+        self.moved("photo.jpg", PHOTO)
+        self.stop("keep")
+        status = self.status()
+        self.assertEqual((status["current"], status["waiting"], status["ready"], status["unseen"]),
+                         (None, None, None, None))
+        self.assertIsNone(status["totals"])
+
+    def test_an_unavailable_volume_counts_nothing_even_without_candidates(self) -> None:
+        """No Cloud Duplicate is left to check, yet the root must still be
+        verified: an unavailable Source Volume is «unknown», never zero."""
+        self.age(self.cloud_only_at("old/original.jpg", ORIGINAL))  # Cloud-only, not a duplicate
+        self.configure()
+        self.assertEqual(self.status()["current"], {"count": 0, "bytes": 0})
+        with self.db() as connection:
+            self.assertFalse(observation_is_unconfirmed(load_vault_health(connection, 2)),
+                             "the previous health is still healthy")
+        with patch("app.services.source_layout.vault_local_access",
+                   return_value=SimpleNamespace(local_operations_allowed=False)):
+            status = self.status()
+            outcome = self.run_cleanup()
+        self.assertEqual((status["current"], status["waiting"], status["ready"], status["unseen"]),
+                         (None, None, None, None))
+        self.assertEqual(outcome["outcome"], "skipped", "a run proves nothing either")
+
+    def test_duplicates_never_seen_locally_are_counted_apart_and_never_scheduled(self) -> None:
+        self.put("new/photo.jpg", PHOTO)
+        unseen = self.cloud_only_at("old/photo.jpg", PHOTO)
+        with self.db() as connection:
+            connection.execute("UPDATE files SET local_seen_at=NULL WHERE id=%s", (unseen,))
+        self.configure()
+        status = self.status()
+        self.assertEqual(status["current"], {"count": 1, "bytes": len(PHOTO)})
+        self.assertEqual(status["unseen"], {"count": 1, "bytes": len(PHOTO)})
+        self.assertEqual((status["ready"]["count"], status["waiting"]["count"]), (0, 0))
+        self.assertIsNone(status["waiting"]["first_eligible_at"])
+        outcome = self.run_cleanup()
+        self.assertEqual((outcome["outcome"], outcome["file_count"], outcome["waiting_count"],
+                          outcome["unseen_count"]), ("none", 0, 0, 1))
+        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE action='cloud-purge'"), 0)
+        self.assertEqual(self.status()["last_outcome"]["unseen_count"], 1)
 
 
 class HttpTests(DuplicateCleanupFixture):
@@ -304,6 +472,11 @@ class HttpTests(DuplicateCleanupFixture):
         status = self.client.get(self.url)
         self.assertEqual(status.status_code, 200, status.text)
         self.assertFalse(status.json()["enabled"])
+        self.assertEqual(status.json()["current"], {"count": 0, "bytes": 0})
+        self.assertIsNone(status.json()["totals"])
+        self.assertEqual(status.json()["unseen"], {"count": 0, "bytes": 0})
+        self.assertIn("waiting", status.json())
+        self.assertIn("ready", status.json())
         self.reauth(datetime(2000, 1, 1, tzinfo=timezone.utc))
         for body in ({"enabled": True}, {"grace_days": 14}):
             with self.subTest(body=body):

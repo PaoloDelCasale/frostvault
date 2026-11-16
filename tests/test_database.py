@@ -257,6 +257,52 @@ class StartupGuardTests(_GuardFixture):
             "duplicate_cleanup_last_run_at": None, "duplicate_cleanup_last_outcome": None})
         self.assertFalse(request["automatic"])
 
+    def test_catalog_of_the_previous_revision_gets_no_invented_cleanup_totals(self) -> None:
+        """#729: the cleanup totals start NULL (never recorded), even when a
+        completed automatic deletion is still listed: no backfill."""
+        _migrate_to(self.dsn, "0006_duplicate_cleanup")
+        group = "00000000-0000-0000-0000-000000000002"
+        file_id = "00000000-0000-0000-0000-0000000000f1"
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region) VALUES (1, 's3', 'b', 'eu-south-1')")
+        self.execute(
+            "INSERT INTO vaults(id, target_id, name, source_root, duplicate_cleanup_enabled) "
+            "VALUES (1, 1, 'Docs', '/sources/docs', true)")
+        self.execute(
+            f"INSERT INTO files(id, vault_id, path, path_since) VALUES ('{file_id}', 1, 'old/a.jpg', now())")
+        self.execute(
+            f"INSERT INTO job_groups(id, vault_id, path, created_at) VALUES ('{group}', 1, '', now())")
+        self.execute(
+            f"INSERT INTO cloud_purge_requests(group_id, reason, automatic) VALUES ('{group}', 'auto', true)")
+        self.execute(
+            "INSERT INTO jobs(vault_id, file_id, group_id, action, status, origin, total_bytes, finished_at) "
+            f"VALUES (1, '{file_id}', '{group}', 'cloud-purge', 'completed', 'automatic', 10, now())")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            vault = connection.execute(
+                """SELECT duplicate_cleanup_enabled, duplicate_cleanup_deleted_count,
+                          duplicate_cleanup_deleted_bytes, duplicate_cleanup_last_deleted_at
+                   FROM vaults WHERE id=1""").fetchone()
+            columns = {row["column_name"]: row for row in connection.execute(
+                "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_name = 'vaults' AND column_name IN ('duplicate_cleanup_deleted_count', "
+                "'duplicate_cleanup_deleted_bytes', 'duplicate_cleanup_last_deleted_at')").fetchall()}
+            for bad in ("duplicate_cleanup_deleted_count=1",
+                        "duplicate_cleanup_deleted_count=-1, duplicate_cleanup_deleted_bytes=0, "
+                        "duplicate_cleanup_last_deleted_at=now()",
+                        "duplicate_cleanup_deleted_count=0, duplicate_cleanup_deleted_bytes=-1, "
+                        "duplicate_cleanup_last_deleted_at=now()"):
+                with self.subTest(bad=bad), self.assertRaises(psycopg.errors.CheckViolation):
+                    connection.execute(f"UPDATE vaults SET {bad} WHERE id=1")
+                connection.rollback()
+        self.assertEqual(dict(vault), {
+            "duplicate_cleanup_enabled": True, "duplicate_cleanup_deleted_count": None,
+            "duplicate_cleanup_deleted_bytes": None, "duplicate_cleanup_last_deleted_at": None})
+        self.assertEqual(len(columns), 3)
+        for column in columns.values():
+            self.assertEqual((column["is_nullable"], column["column_default"]), ("YES", None))
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade
