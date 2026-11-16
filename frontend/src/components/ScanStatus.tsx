@@ -79,9 +79,9 @@ export function ScanStatus({ runtime, t, adoption, unconfirmed = false }: {
 }) {
   if (!runtime) return null;
   const scanning = runtime.scanning === true;
-  const error = runtime.last_error_source;
+  const stored = runtime.last_error_source;
   const failedAt = runtime.last_error_source_at;
-  const failed = Boolean(error && failedAt);
+  const failed = Boolean(stored && failedAt);
   if (!scanning && !failed) return null;
   const cause = runtime.last_error_source_cause;
   const current: Phase = PHASES.includes(runtime.scan_phase as Phase) ? runtime.scan_phase as Phase : "traversal";
@@ -113,7 +113,7 @@ export function ScanStatus({ runtime, t, adoption, unconfirmed = false }: {
     {failed && <p className={cn(scanning ? "text-muted" : "text-ink")} data-testid="scan-last-failed">
       {t("vault.scan.previous_failed", {
         at: formatDateTime(failedAt as string),
-        cause: cause && CAUSES.has(cause) ? t(`vault.scan.cause.${cause}`) : String(error),
+        cause: cause && CAUSES.has(cause) ? t(`vault.scan.cause.${cause}`) : String(stored),
       })}
       {scanning && <> · {t("vault.scan.previous_failed_resolving")}</>}
     </p>}
