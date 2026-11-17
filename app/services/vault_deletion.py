@@ -183,7 +183,8 @@ def _version_entry(version: dict[str, Any], catalog: dict[tuple[str, str], dict[
         storage_class=version["storage_class"],
         since=known.get("storage_class_since") if recorded and known else None,
         created_at=known["created_at"] if known else version.get("last_modified"),
-        size=version["size"], plan=plan, now=now, project=False)
+        size=version["size"], plan=plan, now=now, project=False,
+        copied=bool(known and known.get("copied")))
 
 
 def summarize(inventory: PrefixInventory, *, executes_at: datetime,
@@ -291,7 +292,8 @@ def catalog_versions(connection: Any, vault_id: int,
         batch = versions[offset:offset + _LOOKUP_BATCH]
         rows = connection.execute(
             """SELECT av.object_key, av.provider_version_id, av.storage_class,
-                      av.storage_class_since, av.created_at
+                      av.storage_class_since, av.created_at,
+                      av.copy_attempt_id IS NOT NULL AS copied
                FROM unnest(%s::text[], %s::text[]) AS item(object_key, version_id)
                JOIN archive_versions av ON av.object_key = item.object_key
                 AND av.provider_version_id = item.version_id

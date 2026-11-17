@@ -1809,23 +1809,27 @@ class ArchiveCatalog:
             state = None
         from .services.minimum_storage import observed_since_sql
 
-        checked = _required_timestamp(checked_at)
-        since = observed_since_sql("av.storage_class", "%s::text",
-                                   "av.storage_class_since", "%s::timestamptz")
+        since = observed_since_sql(
+            old_class="av.storage_class", new_class="obs.storage_class",
+            old_since="av.storage_class_since", observed_at="obs.checked_at",
+            created_at="av.created_at", size="av.size", plan="v.storage_plan")
         row = self.connection.execute(
             f"""
             UPDATE archive_versions av
             SET restore_state=%s,
                 restore_expiry=CASE WHEN %s::text='available' THEN %s::timestamptz END,
-                restore_checked_at=%s,
+                restore_checked_at=obs.checked_at,
                 storage_class_since={since},
-                storage_class=COALESCE(%s, av.storage_class)
+                storage_class=COALESCE(obs.storage_class, av.storage_class)
             FROM files f
+            JOIN vaults v ON v.id = f.vault_id
+            CROSS JOIN (SELECT %s::text AS storage_class,
+                               %s::timestamptz AS checked_at) AS obs
             WHERE av.id=%s AND f.id=av.file_id
             RETURNING f.vault_id, f.id AS file_id
             """,
-            (state, state, _restore_expiry(expiry), checked, storage_class, storage_class,
-             checked, storage_class, archive_version_id),
+            (state, state, _restore_expiry(expiry), storage_class,
+             _required_timestamp(checked_at), archive_version_id),
         ).fetchone()
         if row is not None:
             self._mark_file_aggregates_dirty(int(row["vault_id"]), str(row["file_id"]))
@@ -1850,6 +1854,7 @@ class ArchiveCatalog:
                    av.availability, av.availability_checked_at, av.verified_at,
                    av.restore_state, av.restore_expiry, av.verification_method, av.verification_fallback,
                    av.verification_egress_bytes, av.created_at, av.storage_class_since,
+                   av.copy_attempt_id IS NOT NULL AS copied,
                    ({_REQUESTED_VERIFICATION_SQL.replace("cur.", "av.")})
                        AS upload_verification_requested
             FROM files f
@@ -1916,8 +1921,11 @@ class ArchiveCatalog:
             "SELECT storage_plan::text AS plan FROM vaults WHERE id=%s", (vault_id,)).fetchone()
         plan = profile_from_json(vault["plan"] if vault else None)
         now = datetime.now(timezone.utc)
+        # Only the current version and the one replacing it can transition.
         return [class_entry(storage_class=row["storage_class"], since=row["storage_class_since"],
-                            created_at=row["created_at"], size=row["size"], plan=plan, now=now)
+                            created_at=row["created_at"], size=row["size"], plan=plan, now=now,
+                            current=row["role"] in {"current", "pending"},
+                            copied=bool(row["copied"]))
                 for row in rows]
 
     def list_file_rows(

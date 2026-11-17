@@ -250,7 +250,7 @@ _FILE_SQL = """
            f.held_version_id, f.replacing_version_id, f.current_version_id,
            cur.integrity, cur.availability, cur.object_key, cur.provider_version_id,
            cur.size, cur.storage_class, cur.storage_class_since,
-           cur.created_at AS version_created_at,
+           cur.created_at AS version_created_at, cur.copy_attempt_id IS NOT NULL AS copied,
            COALESCE(att.outcome, cpy.outcome) AS attempt_outcome,
            COALESCE(att.landed_version_id, cpy.landed_version_id) AS landed_version_id,
            EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
@@ -484,6 +484,7 @@ _CLASSIFY_SQL = """
 WITH c AS MATERIALIZED (
     SELECT f.id AS file_id, f.path, f.current_version_id, cur.size, f.local_seen_at,
       cur.storage_class, cur.storage_class_since, cur.created_at AS version_created_at,
+      cur.copy_attempt_id IS NOT NULL AS copied,
       CASE
         WHEN f.local_presence IS NOT NULL AND f.local_presence <> 'missing' THEN 'present_locally'
         WHEN f.current_version_id IS NULL THEN 'not_verified'
@@ -515,10 +516,10 @@ WITH c AS MATERIALIZED (
     WHERE f.vault_id = %s AND f.path <> '' AND {selection}
 )
 SELECT file_id, path, current_version_id, size, local_seen_at, storage_class,
-       storage_class_since, version_created_at, reason, NULL::bigint AS n
+       storage_class_since, version_created_at, copied, reason, NULL::bigint AS n
 FROM c WHERE reason = 'eligible'
 UNION ALL
-SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c
+SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c
 WHERE reason <> 'eligible'
 GROUP BY reason
 """

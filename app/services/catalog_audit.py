@@ -14,6 +14,12 @@ from .catalog_incidents import (
 )
 from .directory_aggregates import invalidate_for_archive_version_ids
 from .job_admission import TERMINAL_JOB_STATUSES
+from .minimum_storage import observed_since_sql
+
+_OBSERVED_SINCE = observed_since_sql(
+    old_class="av.storage_class", new_class="obs.storage_class",
+    old_since="av.storage_class_since", observed_at="obs.checked_at",
+    created_at="av.created_at", size="av.size", plan="v.storage_plan")
 
 
 def _object_prefix(vault: dict[str, Any]) -> str:
@@ -124,24 +130,24 @@ def audit_vault_catalog(
             continue
 
         storage_class = cloud.get("StorageClass") or "STANDARD"
-        if storage_class != (row["storage_class"] or "STANDARD"):
+        drift = storage_class.upper() != (row["storage_class"] or "STANDARD").upper()
+        if drift:
             report["storage_class_drift"] += 1
-        if (
-            storage_class != (row["storage_class"] or "STANDARD")
-            or row["availability"] != "available"
-        ):
+        if drift or row["availability"] != "available":
             connection.execute(
-                """
-                UPDATE archive_versions
-                SET storage_class=%s, availability='available',
-                    availability_checked_at=%s,
+                f"""
+                UPDATE archive_versions av
+                SET storage_class=obs.storage_class, availability='available',
+                    availability_checked_at=obs.checked_at,
                     -- The Class Entry moves only with an observed change (#731).
-                    storage_class_since=CASE
-                        WHEN storage_class IS NOT NULL AND storage_class <> %s THEN %s
-                        ELSE storage_class_since END
-                WHERE id=%s
+                    storage_class_since={_OBSERVED_SINCE}
+                FROM files f
+                JOIN vaults v ON v.id = f.vault_id
+                CROSS JOIN (SELECT %s::text AS storage_class,
+                                   %s::timestamptz AS checked_at) AS obs
+                WHERE av.id=%s AND f.id = av.file_id
                 """,
-                (storage_class, audit_started, storage_class, audit_started, row["id"]),
+                (storage_class, audit_started, row["id"]),
             )
             dirty_version_ids.append(str(row["id"]))
             if row["availability"] != "available":

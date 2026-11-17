@@ -127,6 +127,19 @@ class RenameWorkerTests(CopyWorkerFixture):
         self.assertEqual((attempt["purpose"], attempt["outcome"], attempt["source_provider_version_id"]),
                          ("rename", "landed", before["provider_version_id"]))
 
+    def test_the_copy_enters_its_class_when_it_is_created(self) -> None:
+        # #731: the upload's PUT and the server-side copy both write straight
+        # into their class: the Class Entry is the version's creation.
+        before = self.protected()
+        self.assertEqual(before["storage_class_since"], before["created_at"])
+        self.rename()
+        job_id = self.admit("rename", "renamed.txt")
+        self.run_job(job_id)
+        current = self.assert_renamed(job_id, before)
+        self.assertIsNotNone(current["storage_class"])
+        self.assertIsNotNone(current["storage_class_since"])
+        self.assertEqual(current["storage_class_since"], current["created_at"])
+
     def test_local_copy_matches_only_through_a_fresh_local_digest(self) -> None:
         before = self.protected()
         self.rename()

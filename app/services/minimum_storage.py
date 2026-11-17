@@ -12,10 +12,16 @@ Otherwise it is *estimated* from the Storage Plan, and every result says so:
 - a version in a class its Storage Plan transitions to entered it
   ``created_at`` + the transition's days + one day (lifecycle rules run once a
   day); a version in any other class entered it when it was written;
-- a version still recorded in an earlier class is expected in the colder
-  class of the Storage Plan once that transition is due, because the change
-  may simply not be observed yet. Objects under 128 KiB never transition with
-  a lifecycle rule: they stay where they were written.
+- a version written straight into its class entered it when it was written:
+  a copy (``copy_attempt_id``: rename, storage-class change, Vault move) and
+  an object under 128 KiB in a class other than STANDARD, which no lifecycle
+  rule moves there;
+- the current version of a file, or the one replacing it, still recorded in
+  an earlier class is expected in the colder class of the Storage Plan once
+  that transition is due, because the change may simply not be observed yet.
+  A superseded version never is: the lifecycle has no noncurrent-version
+  transitions. Objects under 128 KiB never transition with a lifecycle rule:
+  they stay where they were written.
 
 Every amount is a Cost Estimate from the bundled AWS list prices
 (``cost_estimates``): the remaining days of the minimum, times the size,
@@ -90,19 +96,25 @@ class ClassEntry:
 
 
 def class_entry(*, storage_class: str | None, since: Any, created_at: Any, size: int | None,
-                plan: LifecycleProfile, now: datetime, project: bool = True) -> ClassEntry:
+                plan: LifecycleProfile, now: datetime, project: bool = True,
+                current: bool = True, copied: bool = False) -> ClassEntry:
     """The Class Entry of one version at ``now``.
 
     ``project`` lets the Storage Plan move a version recorded in an earlier
     class to the colder class it should be in by now; it is off when the class
     was observed just now (a live listing), which is already the truth.
+    ``current``: the version is the current one of its file or the one
+    replacing it; only those transition, a superseded version never does.
+    ``copied``: the version was written by a server-side copy, straight into
+    its class.
     """
-    current = (storage_class or "STANDARD").upper()
+    current_class = (storage_class or "STANDARD").upper()
     created = _aware(created_at)
     recorded = _aware(since)
-    if project and created is not None and int(size or 0) >= SMALL_OBJECT_BYTES:
+    small = size is not None and int(size) < SMALL_OBJECT_BYTES
+    if (project and current and created is not None and size is not None and not small):
         due = [step for step in plan.transitions
-               if step.storage_class in ALLOWED_TARGETS.get(current, ())
+               if step.storage_class in ALLOWED_TARGETS.get(current_class, ())
                and created + timedelta(days=step.days) + TRANSITION_MARGIN <= now]
         if due:
             step = due[-1]
@@ -112,16 +124,19 @@ def class_entry(*, storage_class: str | None, since: Any, created_at: Any, size:
                 entered = max(entered, recorded)
             return ClassEntry(step.storage_class, min(entered, now), True, True)
     if recorded is not None:
-        return ClassEntry(current, recorded, False)
+        return ClassEntry(current_class, recorded, False)
     if created is None:
-        return ClassEntry(current, None, True)
+        return ClassEntry(current_class, None, True)
+    if copied or (small and current_class != "STANDARD"):
+        # Written straight into its class: no lifecycle transition brought it.
+        return ClassEntry(current_class, created, True)
     for step in plan.transitions:
-        if step.storage_class == current:
+        if step.storage_class == current_class:
             entered = created + timedelta(days=step.days) + TRANSITION_MARGIN
             # Already observed in that class: a future entry is impossible, so
             # it was written straight into it.
-            return ClassEntry(current, entered if entered <= now else created, True)
-    return ClassEntry(current, created, True)
+            return ClassEntry(current_class, entered if entered <= now else created, True)
+    return ClassEntry(current_class, created, True)
 
 
 def remaining_cost(entry: ClassEntry, size: int, at: datetime, prices: PriceList) -> float:
@@ -144,7 +159,8 @@ def _rows_entries(rows: Iterable[dict[str, Any]], plan: LifecycleProfile, now: d
         yield row, class_entry(
             storage_class=row.get("storage_class"), since=row.get("storage_class_since"),
             created_at=row.get("version_created_at", row.get("created_at")),
-            size=row.get("object_size", row.get("size")), plan=plan, now=now, project=project)
+            size=row.get("object_size", row.get("size")), plan=plan, now=now, project=project,
+            current=bool(row.get("is_current", True)), copied=bool(row.get("copied", False)))
 
 
 def deletion_summary(rows: Iterable[dict[str, Any]], *, plan: LifecycleProfile, at: datetime,
@@ -154,7 +170,9 @@ def deletion_summary(rows: Iterable[dict[str, Any]], *, plan: LifecycleProfile, 
     would start to save (the last minimum to end).
 
     Each row has ``storage_class``, ``storage_class_since``, ``created_at``
-    (or ``version_created_at``) and ``size``.
+    (or ``version_created_at``) and ``size``; optionally ``is_current``
+    (default true: the current or replacing version of its file) and
+    ``copied`` (default false: written by a server-side copy).
     """
     prices = prices or list_prices()
     moment = now or datetime.now(timezone.utc)
@@ -247,16 +265,20 @@ def vault_summary(rows: Iterable[dict[str, Any]], *, plan: LifecycleProfile, now
 
 
 # The billed versions of a Vault, grouped so a large Vault reads few rows:
-# same class, Class Entry, creation hour and 128 KiB side. An hour of
-# imprecision is far below the one day of the estimate itself.
+# same class, Class Entry hour, creation hour, 128 KiB side, current-or-
+# replacing role (only those transition) and copy (written straight into its
+# class). An hour of imprecision is far below the one day of the estimate.
 _VAULT_VERSIONS_SQL = """
-    SELECT COALESCE(av.storage_class, 'STANDARD') AS storage_class, av.storage_class_since,
+    SELECT COALESCE(upper(av.storage_class), 'STANDARD') AS storage_class,
+           date_trunc('hour', av.storage_class_since) AS storage_class_since,
            date_trunc('hour', av.created_at) AS created_at,
            CASE WHEN av.size >= %s THEN %s ELSE 0 END AS object_size,
+           COALESCE(av.id IN (f.current_version_id, f.replacing_version_id), false) AS is_current,
+           av.copy_attempt_id IS NOT NULL AS copied,
            count(*) AS count, COALESCE(sum(av.size), 0) AS size
     FROM archive_versions av JOIN files f ON f.id = av.file_id
     WHERE f.vault_id = %s AND av.availability <> 'missing'
-    GROUP BY 1, 2, 3, 4
+    GROUP BY 1, 2, 3, 4, 5, 6
 """
 
 
@@ -275,13 +297,32 @@ def load_vault_summary(connection: Any, vault_id: int, *,
     return {"vault_id": vault_id, **vault_summary(rows, plan=plan, now=moment)}
 
 
-def observed_since_sql(old_class: str, new_class: str, old_since: str, observed_at: str) -> str:
+def observed_since_sql(*, old_class: str, new_class: str, old_since: str, observed_at: str,
+                       created_at: str, size: str, plan: str) -> str:
     """SQL for ``storage_class_since`` after an observation of ``new_class``.
+
+    Every argument is an SQL expression without placeholders (each may be
+    repeated): the recorded class, Class Entry, creation and size of the
+    version, the observed class and instant, and the Vault's ``storage_plan``.
 
     It changes only when the observed class differs from a recorded one, and
     then takes the observation's instant; an unknown earlier class tells
-    nothing about when the version entered the observed one.
+    nothing about when the version entered the observed one. Classes compare
+    case-insensitively.
+
+    A version with no recorded Class Entry (written before #731) observed late
+    in the class its Storage Plan predicts by now (the last transition whose
+    days + 1 have elapsed since ``created_at``; never an object under
+    128 KiB) keeps none: the plan's estimate, ``created_at`` + days + 1,
+    stays closer to the truth than the instant of a late observation.
     """
+    predicted = (
+        f"(SELECT upper(step->>'storage_class')"
+        f" FROM jsonb_array_elements(COALESCE({plan}->'transitions', '[]'::jsonb)) AS step"
+        f" WHERE {created_at} + make_interval(days => (step->>'days')::int + 1) <= {observed_at}"
+        f" ORDER BY (step->>'days')::int DESC LIMIT 1)")
     return (f"CASE WHEN {old_class} IS NOT NULL AND {new_class} IS NOT NULL"
-            f" AND upper({old_class}) <> upper({new_class}) THEN {observed_at}"
-            f" ELSE {old_since} END")
+            f" AND upper({old_class}) <> upper({new_class})"
+            f" AND NOT ({old_since} IS NULL AND {size} >= {SMALL_OBJECT_BYTES}"
+            f" AND upper({new_class}) IS NOT DISTINCT FROM {predicted})"
+            f" THEN {observed_at} ELSE {old_since} END")

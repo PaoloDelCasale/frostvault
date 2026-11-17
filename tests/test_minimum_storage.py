@@ -25,10 +25,10 @@ GIB = 1024 ** 3
 
 
 def entry(storage_class: str | None, since: datetime | None = None, *, created: datetime = UPLOAD,
-          size: int = MIB, plan: LifecycleProfile = DEEP_NOW, now: datetime = NOW,
-          project: bool = True) -> ms.ClassEntry:
+          size: int | None = MIB, plan: LifecycleProfile = DEEP_NOW, now: datetime = NOW,
+          project: bool = True, current: bool = True, copied: bool = False) -> ms.ClassEntry:
     return ms.class_entry(storage_class=storage_class, since=since, created_at=created, size=size,
-                          plan=plan, now=now, project=project)
+                          plan=plan, now=now, project=project, current=current, copied=copied)
 
 
 class ClassEntryTests(unittest.TestCase):
@@ -75,6 +75,40 @@ class ClassEntryTests(unittest.TestCase):
 
     def test_a_listing_observed_now_is_never_projected(self) -> None:
         self.assertEqual(entry("STANDARD", project=False).storage_class, "STANDARD")
+
+    def test_a_superseded_version_never_transitions(self) -> None:
+        # B2: the lifecycle has no noncurrent-version transitions, so a
+        # superseded version stays in the class it was recorded in.
+        superseded = entry("STANDARD", UPLOAD, current=False)
+        self.assertEqual((superseded.storage_class, superseded.since, superseded.estimated,
+                          superseded.expected), ("STANDARD", UPLOAD, False, False))
+        self.assertIsNone(superseded.minimum_until)
+        unrecorded = entry("STANDARD", current=False)
+        self.assertEqual((unrecorded.storage_class, unrecorded.expected), ("STANDARD", False))
+        # The current one (or the one replacing it) is projected as before.
+        self.assertEqual(entry("STANDARD", UPLOAD, current=True).storage_class, "DEEP_ARCHIVE")
+        # A superseded version observed in a colder class keeps that class.
+        deep = entry("DEEP_ARCHIVE", current=False)
+        self.assertEqual((deep.storage_class, deep.since), ("DEEP_ARCHIVE", UPLOAD + timedelta(days=1)))
+
+    def test_a_version_written_straight_into_its_class_entered_it_when_created(self) -> None:
+        # S2: a copy (rename, storage-class change, Vault move) with no
+        # recorded entry was written into its class: created_at, not + days + 1.
+        copied = entry("DEEP_ARCHIVE", copied=True)
+        self.assertEqual((copied.since, copied.estimated), (UPLOAD, True))
+        tiered = entry("GLACIER_IR", created=UPLOAD - timedelta(days=200), plan=TIERED, copied=True)
+        self.assertEqual(tiered.since, UPLOAD - timedelta(days=200))
+        # An object under 128 KiB in a class other than STANDARD: no lifecycle
+        # rule moved it there.
+        small = entry("DEEP_ARCHIVE", size=ms.SMALL_OBJECT_BYTES - 1)
+        self.assertEqual((small.storage_class, small.since, small.estimated), ("DEEP_ARCHIVE", UPLOAD, True))
+        # A large one is still estimated from the plan transition.
+        self.assertEqual(entry("DEEP_ARCHIVE", size=ms.SMALL_OBJECT_BYTES).since, UPLOAD + timedelta(days=1))
+        # An unknown size is not taken for a small object.
+        self.assertEqual(entry("DEEP_ARCHIVE", size=None).since, UPLOAD + timedelta(days=1))
+        # A recorded entry always wins.
+        observed = NOW - timedelta(hours=1)
+        self.assertEqual(entry("DEEP_ARCHIVE", observed, copied=True).since, observed)
 
     def test_the_tiered_plan_expects_the_last_due_step_only(self) -> None:
         created = NOW - timedelta(days=100)
@@ -148,10 +182,38 @@ class VaultSummaryTests(unittest.TestCase):
         self.assertEqual(summary["releases"], [{"month": "2027-05", "count": 55033, "bytes": 223 * GIB}])
         self.assertEqual(summary["estimated_count"], 55033)
 
+    def test_superseded_and_copied_rows_are_not_projected_or_delayed(self) -> None:
+        prices = list_prices("eu-south-1")
+        rows = [
+            # Superseded (B2): recorded Standard, never transitions.
+            {"storage_class": "STANDARD", "storage_class_since": UPLOAD, "created_at": UPLOAD,
+             "object_size": ms.SMALL_OBJECT_BYTES, "is_current": False, "copied": False,
+             "count": 3, "size": 3 * GIB},
+            # Current, same record: projected to Deep Archive.
+            {"storage_class": "STANDARD", "storage_class_since": UPLOAD, "created_at": UPLOAD,
+             "object_size": ms.SMALL_OBJECT_BYTES, "is_current": True, "copied": False,
+             "count": 2, "size": 2 * GIB},
+            # Copied straight into Deep Archive 200 days ago (S2): beyond.
+            {"storage_class": "DEEP_ARCHIVE", "storage_class_since": None,
+             "created_at": NOW - timedelta(days=181), "object_size": ms.SMALL_OBJECT_BYTES,
+             "is_current": True, "copied": True, "count": 1, "size": GIB},
+        ]
+        summary = ms.vault_summary(rows, plan=DEEP_NOW, now=NOW, prices=prices)
+        classes = {c["storage_class"]: c for c in summary["by_storage_class"]}
+        self.assertEqual(classes["STANDARD"]["beyond"], {"count": 3, "bytes": 3 * GIB})
+        self.assertEqual(classes["DEEP_ARCHIVE"]["within"], {"count": 2, "bytes": 2 * GIB})
+        self.assertEqual(classes["DEEP_ARCHIVE"]["beyond"], {"count": 1, "bytes": GIB})
+
     def test_the_observation_sql_moves_the_entry_only_on_a_class_change(self) -> None:
-        sql = ms.observed_since_sql("av.storage_class", "%s", "av.storage_class_since", "now()")
+        sql = ms.observed_since_sql(
+            old_class="av.storage_class", new_class="obs.c", old_since="av.storage_class_since",
+            observed_at="obs.at", created_at="av.created_at", size="av.size", plan="v.storage_plan")
         self.assertIn("av.storage_class IS NOT NULL", sql)
-        self.assertIn("upper(av.storage_class) <> upper(%s)", sql)
+        self.assertIn("upper(av.storage_class) <> upper(obs.c)", sql)
+        # S3: a legacy version (no entry) seen in the predicted class keeps none.
+        self.assertIn("av.storage_class_since IS NULL", sql)
+        self.assertIn("jsonb_array_elements(COALESCE(v.storage_plan->'transitions'", sql)
+        self.assertNotIn("%s", sql)
         self.assertTrue(sql.endswith("ELSE av.storage_class_since END"))
 
 
