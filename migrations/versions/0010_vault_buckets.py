@@ -14,6 +14,8 @@ The column is added with ``vault_prefix`` to fill the pre-existing targets,
 then loses its default: every target inserted afterwards states its layout.
 A ``bucket_root`` target belongs to one Vault only (``vaults_dedicated_target``).
 No dedicated name starts with ``frostvault-system-``, the System Bucket's shape.
+The upload and rename identity triggers build the expected key from the
+target (``vault_key_prefix``): ``''`` for ``bucket_root``.
 ``vault_targets.retention_lock_days`` is the Governance Retention Lock a
 dedicated bucket was created with (#736); NULL means none.
 
@@ -110,6 +112,124 @@ $$;
 CREATE TRIGGER vaults_dedicated_target
     BEFORE INSERT OR UPDATE OF target_id ON vaults
     FOR EACH ROW EXECUTE FUNCTION vaults_dedicated_target();
+
+-- Where a Vault's objects live in its target's bucket: the key prefix the
+-- application builds from the target (app/services/vault_paths.py).
+CREATE FUNCTION vault_key_prefix(p_vault_id bigint) RETURNS text
+LANGUAGE sql STABLE AS $$
+    SELECT CASE t.key_layout WHEN 'bucket_root' THEN ''
+                ELSE 'vaults/' || v.uuid::text || '/' END
+    FROM vaults v JOIN vault_targets t ON t.id = v.target_id
+    WHERE v.id = p_vault_id
+$$;
+
+-- The baseline's upload and rename identities, with the key built from the
+-- Vault Target instead of the fixed vaults/<uuid>/ prefix; otherwise unchanged.
+CREATE OR REPLACE FUNCTION archive_versions_upload_identity() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.upload_attempt_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM upload_attempts a
+        JOIN upload_snapshots s ON s.id = a.snapshot_id
+        WHERE a.id = NEW.upload_attempt_id
+          AND a.outcome = 'landed'
+          AND a.landed_version_id = NEW.provider_version_id
+          AND NEW.object_key = vault_key_prefix(s.vault_id) || s.path
+          AND NEW.size = s.size
+    ) THEN
+        RAISE EXCEPTION 'an uploaded Archive Version is the exact landed identity of its attempt'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION copy_attempts_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM files f
+            JOIN archive_versions cur ON cur.id = f.current_version_id
+            JOIN vaults v ON v.id = f.vault_id
+            JOIN jobs j ON j.id = NEW.job_id AND j.file_id = f.id AND j.vault_id = f.vault_id
+            WHERE f.id = NEW.file_id AND f.vault_id = NEW.vault_id
+              AND j.action = NEW.purpose
+              AND cur.integrity = 'verified'
+              AND cur.object_key = NEW.source_key
+              AND cur.provider_version_id = NEW.source_provider_version_id
+              AND cur.plaintext_sha256 = NEW.plaintext_sha256
+              AND cur.size = NEW.size
+              AND f.replacing_version_id IS NULL
+              AND f.path = NEW.path AND f.path_since = NEW.path_since
+              AND (NEW.purpose <> 'rename'
+                   OR NEW.destination_key = vault_key_prefix(v.id) || f.path)
+        ) THEN
+            RAISE EXCEPTION 'a copy starts from the verified Current of its own Vault File'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM upload_attempts WHERE file_id = NEW.file_id AND settled_at IS NULL
+        ) THEN
+            RAISE EXCEPTION 'a copy never overlaps an unsettled upload'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NEW.send_started_at IS NOT NULL OR NEW.settled_at IS NOT NULL THEN
+            RAISE EXCEPTION 'a copy attempt starts unsent and unsettled'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.settled_at IS NULL
+           OR EXISTS (
+               SELECT 1 FROM copy_multiparts
+               WHERE attempt_id = OLD.id AND closed_at IS NULL
+           )
+           OR EXISTS (
+               SELECT 1 FROM copy_receipts
+               WHERE attempt_id = OLD.id
+                 AND (OLD.outcome <> 'landed'
+                      OR (response ->> 'VersionId') IS DISTINCT FROM OLD.landed_version_id)
+           ) THEN
+            RAISE EXCEPTION 'a copy attempt with open uncertainty is never collected'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF (NEW.id, NEW.vault_id, NEW.file_id, NEW.purpose, NEW.source_key,
+        NEW.source_provider_version_id, NEW.destination_key, NEW.storage_class, NEW.size,
+        NEW.plaintext_sha256, NEW.path, NEW.path_since, NEW.source_root, NEW.root_identity,
+        NEW.provider, NEW.token, NEW.inventory_versions, NEW.inventory_markers, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.vault_id, OLD.file_id, OLD.purpose, OLD.source_key,
+        OLD.source_provider_version_id, OLD.destination_key, OLD.storage_class, OLD.size,
+        OLD.plaintext_sha256, OLD.path, OLD.path_since, OLD.source_root, OLD.root_identity,
+        OLD.provider, OLD.token, OLD.inventory_versions, OLD.inventory_markers, OLD.created_at)
+       OR (NEW.job_id IS NOT NULL AND NEW.job_id IS DISTINCT FROM OLD.job_id
+           AND NOT EXISTS (
+               SELECT 1 FROM jobs WHERE id = NEW.job_id AND file_id = OLD.file_id
+                 AND action = OLD.purpose
+           ))
+       OR (OLD.composite_checksum IS NOT NULL
+           AND NEW.composite_checksum IS DISTINCT FROM OLD.composite_checksum)
+       OR (OLD.send_started_at IS NOT NULL AND (
+           NEW.send_started_at IS DISTINCT FROM OLD.send_started_at
+           OR NEW.composite_checksum IS DISTINCT FROM OLD.composite_checksum))
+       OR (OLD.settled_at IS NOT NULL AND (
+           (NEW.settled_at, NEW.outcome, NEW.no_write_operation, NEW.landed_version_id,
+            NEW.send_started_at)
+           IS DISTINCT FROM
+           (OLD.settled_at, OLD.outcome, OLD.no_write_operation, OLD.landed_version_id,
+            OLD.send_started_at)
+       )) THEN
+        RAISE EXCEPTION 'copy attempt history is immutable'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
 
 CREATE TABLE vault_bucket_provisioning (
     vault_id bigint PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,

@@ -784,9 +784,14 @@ class BaselineSchemaTests(unittest.TestCase):
         self.rejects("UPDATE vaults SET target_id=%s WHERE id=%s", (dedicated, other["id"]),
                      error=psycopg.errors.UniqueViolation)
         # The shared target of older Vaults takes any number of Vaults.
-        self.vault("/sources/managed/d")
+        shared = self.vault("/sources/managed/d")
         self.vault("/sources/managed/e")
         self.assertEqual(first["target_id"], dedicated)
+        # The upload and rename identity triggers take the key prefix from the target.
+        prefixes = self.execute("SELECT vault_key_prefix(%s) AS dedicated, vault_key_prefix(%s) AS shared, "
+                                "(SELECT uuid::text FROM vaults WHERE id=%s) AS uuid",
+                                (first["id"], shared["id"], shared["id"]))[0]
+        self.assertEqual((prefixes["dedicated"], prefixes["shared"]), ("", f"vaults/{prefixes['uuid']}/"))
 
     def test_only_a_provisioning_vault_changes_its_target(self) -> None:
         """#735: a name another account owns is replaced, only before activation."""

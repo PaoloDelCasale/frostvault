@@ -334,9 +334,9 @@ class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
                          [body["id"]])
         self.assertEqual(list(self.s3.buckets), [body["bucket"]["bucket"]])
 
-    def _reauthenticate(self) -> None:
+    def _reauthenticate(self, at: datetime | None = None) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
-            connection.execute("UPDATE sessions SET reauth_at=%s", (datetime.now(timezone.utc),))
+            connection.execute("UPDATE sessions SET reauth_at=%s", (at or datetime.now(timezone.utc),))
 
     def test_the_owner_cancels_a_creation_after_reauthentication(self) -> None:
         """#735 S7: the Vault leaves the catalog; a created bucket is only named."""
@@ -344,6 +344,7 @@ class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
         self.s3.fail["put_bucket_versioning"] = "AccessDenied"
         body = self._create("Travel").json()
         url = f"/api/vaults/{body['id']}/creation/cancel"
+        self._reauthenticate(datetime(2000, 1, 1, tzinfo=timezone.utc))
         refused = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
         self.assertEqual((refused.status_code, refused.json()), (403, {"error": "reauth_required"}))
         self._reauthenticate()
