@@ -116,6 +116,40 @@ class ClassEntryTests(unittest.TestCase):
         self.assertEqual((result.storage_class, result.since), ("GLACIER_IR", created + timedelta(days=91)))
 
 
+class VaultDeletionEntryTests(unittest.TestCase):
+    """The Vault Deletion preview judges each listed version from its Class Entry."""
+
+    def summarize(self, *, catalog_class: str, size: int, copied: bool = False) -> dict:
+        from app.services import vault_deletion
+
+        key = ("vaults/x/a.bin", "v1")
+        inventory = vault_deletion.PrefixInventory(prefix="vaults/x/", versions=[
+            {"key": key[0], "version_id": key[1], "storage_class": "DEEP_ARCHIVE", "size": size,
+             "last_modified": NOW - timedelta(days=200)}])
+        catalog = {key: {"storage_class": catalog_class, "storage_class_since": NOW - timedelta(days=150),
+                         "created_at": NOW - timedelta(days=200), "copied": copied}}
+        plan = LifecycleProfile((LifecycleTransition(30, "DEEP_ARCHIVE"),))
+        return vault_deletion.summarize(inventory, executes_at=NOW + timedelta(days=7), plan=plan,
+                                        catalog=catalog, now=NOW)
+
+    def test_a_class_the_catalog_did_not_record_is_estimated_from_the_plan(self) -> None:
+        # Entered 169 days ago (200 - 30 - 1): 4 days remain after the delay.
+        summary = self.summarize(catalog_class="STANDARD", size=MIB)
+        self.assertEqual((summary["early_deletion_version_count"], summary["early_deletion_estimated_count"]), (1, 1))
+        self.assertEqual(summary["savings_from"], (NOW - timedelta(days=200) + timedelta(days=211)).isoformat())
+
+    def test_a_small_or_copied_version_entered_its_class_when_written(self) -> None:
+        for size, copied in ((ms.SMALL_OBJECT_BYTES - 1, False), (MIB, True)):
+            with self.subTest(size=size, copied=copied):
+                summary = self.summarize(catalog_class="STANDARD", size=size, copied=copied)
+                self.assertEqual(summary["early_deletion_version_count"], 0)
+
+    def test_the_recorded_entry_counts_while_the_catalog_records_the_listed_class(self) -> None:
+        summary = self.summarize(catalog_class="deep_archive", size=MIB)
+        self.assertEqual((summary["early_deletion_version_count"], summary["early_deletion_estimated_count"]), (1, 0))
+        self.assertEqual(summary["savings_from"], (NOW + timedelta(days=30)).isoformat())
+
+
 class CostTests(unittest.TestCase):
     def test_remaining_cost_is_remaining_days_times_size_times_monthly_rate(self) -> None:
         prices = list_prices("eu-south-1")

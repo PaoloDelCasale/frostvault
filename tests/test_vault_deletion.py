@@ -201,15 +201,18 @@ class VaultDeletionTests(VaultDeletionFixture):
         self.assertEqual(summary["savings_from"], (stray_written + timedelta(days=180)).isoformat())
         self.assertGreaterEqual(summary["early_deletion_cost"], without_catalog["early_deletion_cost"])
 
-        # A class the catalog did not record is estimated from the Storage Plan.
+        # A class the catalog did not record is estimated. This object is
+        # under 128 KiB, which no lifecycle rule moves: it was written
+        # straight into Deep Archive 200 days ago and is beyond its minimum
+        # (the plan estimate of larger objects: tests.test_minimum_storage).
         with self.db() as connection:
             connection.execute("UPDATE archive_versions SET storage_class='STANDARD' WHERE object_key=%s", (key[0],))
             connection.execute(
                 """UPDATE vaults SET storage_plan='{"transitions": [{"days": 30, "storage_class": "DEEP_ARCHIVE"}]}'::jsonb
                    WHERE id=2""")
         planned = vault_deletion.preview(self.provider, self.target(), database=self.db, now=now)
-        self.assertEqual((planned["early_deletion_version_count"], planned["early_deletion_estimated_count"]), (2, 2),
-                         "entered 169 days ago (200 - 30 - 1): 4 days remain after the delay")
+        self.assertEqual((planned["early_deletion_version_count"], planned["early_deletion_estimated_count"]), (1, 1),
+                         "only the stray: the small object entered Deep Archive when written")
 
     def test_a_failed_listing_gives_no_preview(self) -> None:
         self.stop()
