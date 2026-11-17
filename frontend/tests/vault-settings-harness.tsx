@@ -62,6 +62,15 @@ export const defaultDuplicateCleanup = {
   minimum_storage: null as null | Record<string, unknown>,
 };
 
+/** Mirror Cleanup off, with the defaults of migration 0017 (#771). */
+export const defaultMirrorCleanup = {
+  ...defaultDuplicateCleanup,
+  grace_days_max: 180,
+  folders: [] as string[],
+  retention_lock: null as null | Record<string, unknown>,
+  cloud_life: { days_after_disappearance: 14, storage_class: "STANDARD", class_from_day: 0, minimum_days: 0, minimum_until_day: null as number | null, beyond_minimum: false },
+};
+
 /** No version in a class with a Minimum Storage Duration (#731). */
 export const defaultMinimumStorage = {
   vault_id: 1,
@@ -134,6 +143,7 @@ export const defaultLifecycle = {
       transitions: [{ days: 30, storage_class: "STANDARD_IA" }, { days: 90, storage_class: "GLACIER_IR" }],
     },
     deep_archive_early: { transitions: [{ days: 0, storage_class: "DEEP_ARCHIVE" }] },
+    recent_backups: { transitions: [{ days: 0, storage_class: "GLACIER_IR" }] },
     archive_tiered: {
       transitions: [
         { days: 30, storage_class: "STANDARD_IA" },
@@ -189,6 +199,9 @@ export function createVaultAccessFetch(
     }
     if (/^\/api\/vaults\/\d+\/duplicate-cleanup$/.test(url) && method === "GET") {
       return jsonResponse(defaultDuplicateCleanup);
+    }
+    if (/^\/api\/vaults\/\d+\/mirror-cleanup$/.test(url) && method === "GET") {
+      return jsonResponse(defaultMirrorCleanup);
     }
     if (/^\/api\/vaults\/\d+\/minimum-storage$/.test(url) && method === "GET") {
       return jsonResponse(defaultMinimumStorage);

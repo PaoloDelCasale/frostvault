@@ -69,6 +69,7 @@ from .services import protection_stop as protection_stop_service
 from .services.runtime_status import scan_waiting, vault_operation_key
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
+from .services import mirror_cleanup as mirror_cleanup_service
 from .services import minimum_storage as minimum_storage_service
 from .services import bucket_metrics as bucket_metrics_service
 from .services import billed_cost as billed_cost_service
@@ -780,6 +781,20 @@ class DuplicateCleanupUpdate(BaseModel):
     cap_files: int | None = Field(default=None, ge=1, le=1_000_000)
     cap_bytes: int | None = Field(default=None, ge=1, le=1024 ** 5)
     # Schedule only duplicates beyond their Minimum Storage Duration (#731).
+    beyond_minimum: bool | None = None
+
+
+class MirrorCleanupUpdate(BaseModel):
+    """Mirror Cleanup settings of one Vault (#771); omitted fields keep their value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    grace_days: int | None = Field(default=None, ge=1, le=180)
+    cap_files: int | None = Field(default=None, ge=1, le=1_000_000)
+    cap_bytes: int | None = Field(default=None, ge=1, le=1024 ** 5)
+    # Folders relative to the Vault root; an empty list is the whole Vault.
+    folders: list[str] | None = Field(default=None, max_length=100)
     beyond_minimum: bool | None = None
 
 
@@ -1749,6 +1764,46 @@ def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, requ
                 connection, vault_id=vault_id, actor=_actor(request), values=values)
     except (LookupError, ValueError) as exc:
         raise _duplicate_cleanup_error(exc) from exc
+
+
+def _mirror_cleanup_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, LookupError):
+        return LocalizedHTTPError(404, "api.mirror_cleanup.not_found")
+    code = getattr(exc, "code", "invalid")
+    if code == "stopped":
+        return LocalizedHTTPError(409, "api.mirror_cleanup.stopped")
+    return LocalizedHTTPError(422, "api.mirror_cleanup.folders" if code == "folders"
+                              else "api.mirror_cleanup.invalid")
+
+
+@app.get("/api/vaults/{vault_id}/mirror-cleanup", response_model=response_model("MirrorCleanupStatus"))
+def mirror_cleanup_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    try:
+        with db() as connection:
+            return mirror_cleanup_service.status(connection, vault_id)
+    except LookupError as exc:
+        raise _mirror_cleanup_error(exc) from exc
+
+
+@app.put("/api/vaults/{vault_id}/mirror-cleanup", response_model=response_model("MirrorCleanupStatus"))
+def update_mirror_cleanup(vault_id: int, action: MirrorCleanupUpdate, request: Request,
+                          user: dict[str, Any] = Depends(current_user)):
+    """Change the Mirror Cleanup of a Vault (#771, ADR-0052).
+
+    A change that could delete more (turning it on, a shorter wait, higher
+    caps, broader folders, no longer waiting for the Minimum Storage Duration)
+    needs a fresh authentication; one that only deletes less never does.
+    """
+    values = action.model_dump(exclude_none=True)
+    if not values:
+        require_recent_reauth(request, user)
+    try:
+        with db() as connection:
+            return mirror_cleanup_service.update_settings(
+                connection, vault_id=vault_id, actor=_actor(request), values=values,
+                require_reauth=lambda: require_recent_reauth(request, user))
+    except (LookupError, ValueError) as exc:
+        raise _mirror_cleanup_error(exc) from exc
 
 
 @app.get("/api/vaults/{vault_id}/minimum-storage", response_model=response_model("MinimumStorageSummary"))

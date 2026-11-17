@@ -15,9 +15,10 @@ def notification_path(vault_id: int | None, params: dict[str, Any]) -> str:
         # Delete Markers on a Vault Bucket with a Retention Lock (#736).
         query["settings"] = "1"
         return "/?" + urlencode(query)
-    if params.get("duplicate_cleanup") and not params.get("group_id"):
+    if (params.get("duplicate_cleanup") or params.get("mirror_cleanup")) and not params.get("group_id"):
         # A capped Automatic Duplicate Cleanup (#726) is confirmed by hand from
-        # the Vault's Cloud-only files, with «Duplicates only».
+        # the Vault's Cloud-only files, with «Duplicates only»; a capped Mirror
+        # Cleanup (#771) from the same files.
         query["state"] = "cloud_only"
         return "/?" + urlencode(query)
     path = params.get("path")

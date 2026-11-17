@@ -36,6 +36,8 @@ export {
   cancelStoppedFolderDeletion,
   fetchDuplicateCleanup,
   updateDuplicateCleanup,
+  fetchMirrorCleanup,
+  updateMirrorCleanup,
   fetchMinimumStorage,
   fetchVaultCloudUsage,
   fetchVaultBilledCost,
@@ -141,6 +143,7 @@ export {
 
 export type {
   DuplicateCleanupStatus,
+  MirrorCleanupStatus,
   MinimumStorageDeletion,
   MinimumStorageSummary,
   VaultCloudUsage,

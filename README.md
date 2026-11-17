@@ -178,15 +178,17 @@ preflight before writing, honors retries and leases, and verifies the exact S3
 VersionId with a full SHA-256 readback. Terminal automatic failures/cancellations
 are not silently requeued for the same observation; retry manually or make a new
 content change. Missing/replaced Source Volumes or Vault roots suspend local work
-without clearing the catalog. SMB deletion never propagates to cloud deletion,
-and Cloud-only Conflicts remain held back.
+without clearing the catalog. SMB deletion never propagates to cloud deletion
+unless the Owner turns on Mirror Cleanup for that Vault (below), and Cloud-only
+Conflicts remain held back.
 
 ## Archive lifecycle and cloud deletion
 
 - Each Vault has one **storage plan** in **Advanced**: Always accessible
   (Standard), Economical instant access (IA30 → GlacierIR90), Tiered archive
   (recommended: IA30 → GlacierIR90 → DeepArchive365), Early Deep Archive (day 0),
-  or Custom (ordered object-age/class chain). Each explains timing and cost.
+  Recent backups (GlacierIR from day 0, for rotating backups kept a few weeks
+  and restored at once), or Custom (ordered object-age/class chain). Each explains timing and cost.
   There are no folder assignments, pins or manual per-file class changes.
 - Plans emit only current-version transitions, never expiration or noncurrent
   rules. AWS requires age 30 for IA and minimum residence in the source class
@@ -241,6 +243,18 @@ and Cloud-only Conflicts remain held back.
   VersionId is captured once, never expanded to new content during execution.
   Local reappearance, changed cloud content or an untrusted/unavailable source
   cancels the request instead of deleting the only cloud copy by mistake.
+- **Mirror Cleanup** (#771, «Elimina dal cloud i file spariti dal server», off by
+  default): once a day it schedules one ordinary seven-day cancellable deletion
+  of the Cloud-only files whose Local Copy was last seen at least N days ago
+  (1–180, default 7), optionally only under listed folders. Unlike the duplicate
+  cleanup these can be the only copy of their content, so the cloud no longer
+  protects against accidental deletion: use it only for data that is already a
+  backup (rotating dumps, exports), never for originals. Files never seen on the
+  server are never taken. Above 5,000 files or 50 GiB per run nothing is
+  scheduled and a Vault Problem opens. A file back on the server, changed or busy
+  is skipped alone at execution. Enabling it, or making it delete more, needs a
+  fresh sign-in; it can also wait for the Minimum Storage Duration. See
+  [ADR-0052](docs/adr/0052-mirror-cleanup.md).
 - **Stop protecting this folder** always keeps local files. Choose **keep cloud**
   or the same delayed cloud deletion. A cloud-backed file present on the server
   blocks the delete choice: choose keep instead. Pending Jobs/scans must finish

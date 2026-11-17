@@ -338,6 +338,7 @@ per-file class changes, expiration or noncurrent-version actions.
 | Economical instant access (`economical`) | Standard-IA at day 30, Glacier Instant Retrieval at day 90. Lower storage cost; retrieval fees and 30/90-day minimum billing. |
 | Tiered archive — recommended (`archive_tiered`) | IA30 → GlacierIR90 → DeepArchive365. Progressively cheaper storage; after day 365 restores take hours and have retrieval fees and 180-day minimum billing. |
 | Early Deep Archive (`deep_archive_early`) | Deep Archive at day 0 (next lifecycle evaluation). Lowest storage cost; hours to recover, retrieval fees, 180-day minimum billing even after early replacement/deletion. |
+| Recent backups (`recent_backups`) | Glacier Instant Retrieval at day 0 (next lifecycle evaluation). For rotating backups kept a few weeks: immediate access, retrieval fees and 90-day minimum billing even after early deletion. |
 | Custom | Ordered `after N days → class` chain, with transition/retrieval fees and minimum-duration billing. |
 
 Days are object ages since upload, not delays between steps. Standard can go

@@ -827,6 +827,14 @@ _DUPLICATE_CLEANUP_RESOLUTION = """
 """
 
 
+# A capped Mirror Cleanup (#771) closes the same way, once its cleanup is off.
+_MIRROR_CLEANUP_RESOLUTION = """
+    n.event='mirror_cleanup_capped' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.mirror_cleanup_enabled
+    )
+"""
+
+
 # A Vault Bucket not created yet (#735) closes once its Vault left
 # provisioning (``vault_buckets`` closes it on activation; this is the net).
 _VAULT_BUCKET_RESOLUTION = """
@@ -880,6 +888,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
         frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
         frozenset({"duplicate_cleanup_capped"}): _DUPLICATE_CLEANUP_RESOLUTION,
+        frozenset({"mirror_cleanup_capped"}): _MIRROR_CLEANUP_RESOLUTION,
         frozenset({"vault_bucket_failed"}): _VAULT_BUCKET_RESOLUTION,
     }
 

@@ -10,6 +10,8 @@ export function problemLink(vaultId: number | null, params: Record<string, unkno
   // Automatic Duplicate Cleanup (#726): a scheduled run is cancelled from its
   // settings; a capped one is confirmed by hand from the Cloud-only files.
   if (params.duplicate_cleanup) return params.group_id ? vaultSettingsUrl(vaultId, "duplicates") : vaultFilesUrl(vaultId, { state: "cloud_only" });
+  // Mirror Cleanup (#771): the same, from its own settings section.
+  if (params.mirror_cleanup) return params.group_id ? vaultSettingsUrl(vaultId, "mirror") : vaultFilesUrl(vaultId, { state: "cloud_only" });
   // Delete Markers on a Vault Bucket with a Retention Lock (#736).
   if (params.retention_lock) return vaultSettingsUrl(vaultId, "retention-lock");
   const path = typeof params.path === "string" ? params.path : "";

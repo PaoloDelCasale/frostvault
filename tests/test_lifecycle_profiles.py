@@ -11,12 +11,13 @@ def plan(*steps):
 
 class StoragePlanValidationTests(unittest.TestCase):
     def test_presets_and_roundtrip(self):
-        self.assertEqual(set(GUIDED_PROFILES), {"standard_only", "economical", "archive_tiered", "deep_archive_early"})
+        self.assertEqual(set(GUIDED_PROFILES), {"standard_only", "economical", "archive_tiered", "deep_archive_early", "recent_backups"})
         for profile in GUIDED_PROFILES.values():
             with self.subTest(profile=profile):
                 self.assertTrue(validate_lifecycle_profile(profile).ok)
                 self.assertEqual(profile_from_json(profile_to_json(profile)), profile)
         self.assertEqual([(t.days, t.storage_class) for t in GUIDED_PROFILES["economical"].transitions], [(30, "STANDARD_IA"), (90, "GLACIER_IR")])
+        self.assertEqual([(t.days, t.storage_class) for t in GUIDED_PROFILES["recent_backups"].transitions], [(0, "GLACIER_IR")])
 
     def test_standard_can_transition_directly_to_archive_early(self):
         for cls in ["GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"]:

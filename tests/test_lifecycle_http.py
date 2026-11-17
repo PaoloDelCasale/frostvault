@@ -38,7 +38,7 @@ class VaultLifecycleHttpTests(unittest.TestCase):
     def test_owner_can_read_and_save_every_plan_without_reauthentication(self):
         body = self.client.get("/api/vault/lifecycle").json()
         self.assertEqual(body["profile"], {"transitions": []})
-        self.assertEqual(len(body["guided_profiles"]), 4)
+        self.assertEqual(len(body["guided_profiles"]), 5)
         self.assertNotIn("policies", body)
         with patch("app.main.s3_client"), patch("app.main.sync_lifecycle_rules_for_bucket") as sync:
             for name, profile in body["guided_profiles"].items():
@@ -46,7 +46,7 @@ class VaultLifecycleHttpTests(unittest.TestCase):
                 self.assertEqual(result.status_code, 200, result.text)
                 self.assertEqual(result.json()["profile"], profile)
                 self.assertFalse(result.json()["sync_pending"])
-            self.assertEqual(sync.call_count, 4)
+            self.assertEqual(sync.call_count, 5)
 
     def test_custom_early_archive_and_source_residence_validation(self):
         with patch("app.main.s3_client"), patch("app.main.sync_lifecycle_rules_for_bucket"):

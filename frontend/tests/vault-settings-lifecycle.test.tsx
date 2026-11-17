@@ -8,7 +8,7 @@ import { createVaultAccessFetch, defaultLifecycle, jsonResponse, loadCatalog, re
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 
 describe("Vault storage plan in its collapsed section", () => {
-  it("offers four explained presets plus custom and saves one whole-Vault plan", async () => {
+  it("offers five explained presets plus custom and saves one whole-Vault plan", async () => {
     const user = userEvent.setup();
     let payload: unknown;
     const fetchImpl = createVaultAccessFetch({
@@ -20,7 +20,7 @@ describe("Vault storage plan in its collapsed section", () => {
     renderVaultAccess({ fetchImpl });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("combobox", { name: "Storage plan" }));
-    expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(5);
+    expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(6);
     await user.click(screen.getByRole("option", { name: /Economical instant access/ }));
     expect(screen.getByText(/Standard-IA at day 30, Glacier Instant Retrieval at day 90:/, { selector: "p" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save plan" }));
@@ -70,7 +70,7 @@ describe("Vault storage plan in its collapsed section", () => {
   it("has timing and cost explanations in both languages and no retired UI strings", () => {
     for (const locale of ["it", "en"] as const) {
       const messages = loadCatalog(locale);
-      for (const name of ["standard_only", "economical", "archive_tiered", "deep_archive_early", "custom"]) {
+      for (const name of ["standard_only", "economical", "archive_tiered", "deep_archive_early", "recent_backups", "custom"]) {
         expect(messages[`folder_settings.plan_${name}`]).toBeTruthy();
         expect(messages[`folder_settings.plan_${name}_help`]).toBeTruthy();
       }
