@@ -2354,12 +2354,25 @@
                   },
                   "waiting": {
                     "type": "integer"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "description": "Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766)."
+                  },
+                  "bytes_per_second": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured."
                   }
                 },
                 "required": [
                   "device",
                   "reading",
-                  "waiting"
+                  "waiting",
+                  "limit",
+                  "bytes_per_second"
                 ]
               }
             },

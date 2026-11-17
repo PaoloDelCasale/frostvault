@@ -502,6 +502,7 @@ class UploadExecution:
             raise RuntimeError("Local file changed since fingerprinting")
         run.snapshot = snapshot
         self._retire_contradicted_fingerprint(run)
+        self._publish_read_fingerprint(run, hashed)
         if payload is not None:
             if payload.data is None:
                 raise RuntimeError("Single-PUT hashing kept no payload")
@@ -558,9 +559,45 @@ class UploadExecution:
             return
         self._retire_fingerprint(run, bytes(row["local_sha256"]))
 
+    def _publish_read_fingerprint(self, run: _Run, hashed: os.stat_result) -> None:
+        """One read for a Local Copy without a fingerprint (#766).
+
+        The Upload Snapshot pass just read the whole file, stable (size and
+        mtime unchanged before and after, ``prepare_upload_snapshot``): its
+        digest and part digests are the Local Copy fingerprint, published
+        before the send with the scan verification's compare-and-swap on the
+        generation and the stat (``publish_local_fingerprint``, no Current
+        match), so a failed send keeps it: it describes the disk, not the
+        cloud. The scan verification then skips that observation. The bytes
+        sent are these: a single PUT sends the payload this pass kept, a
+        multipart send checks every part it reads against these part digests.
+        A snapshot taken from the catalog (#703) read nothing and publishes
+        nothing.
+        """
+        job = run.job
+        row, snapshot, observed = run.extra.get("fingerprint"), run.snapshot, run.observed
+        if (row is None or snapshot is None or observed is None or run.generation is None
+                or row["local_sha256"] is not None or int(row["generation"]) != run.generation
+                or (hashed.st_size, hashed.st_mtime_ns) != (observed.st_size, observed.st_mtime_ns)):
+            return
+        generation = int(run.generation)
+
+        def publish(catalog: Any) -> bool:
+            return bool(catalog.publish_local_fingerprint(
+                job["file_id"], generation=generation,
+                plaintext_sha256=snapshot.plaintext_sha256, size=hashed.st_size,
+                mtime_ns=hashed.st_mtime_ns, parts=_local_parts(snapshot, hashed)))
+
+        if self._db(job, publish):
+            source_devices.upload_fingerprints().add(
+                job["file_id"], generation=generation, size=hashed.st_size,
+                mtime_ns=hashed.st_mtime_ns)
+
     def _retire_fingerprint(self, run: _Run, digest: bytes) -> None:
         observed = run.observed
         assert observed is not None and run.generation is not None
+        # The scan verification must read it again (#766).
+        source_devices.upload_fingerprints().discard(run.job["file_id"])
         self._db(run.job, lambda catalog: catalog.retire_local_fingerprint(
             run.job["file_id"], generation=run.generation, plaintext_sha256=digest,
             size=observed.st_size, mtime_ns=observed.st_mtime_ns))

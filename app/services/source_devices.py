@@ -8,9 +8,11 @@ folder's files mostly sit on one disk. A wrong guess only costs scheduling
 efficiency: the device never decides what is read or published, and looking
 it up never fails an operation.
 
-One process-wide registry bounds the reads in flight on each device,
-``SOURCE_DEVICE_READ_CONCURRENCY`` at a time, in addition to the global limits
-of scan verification and uploads, and shared by both. A slot is held only
+One process-wide registry bounds the reads in flight on each device, in
+addition to the global limits of scan verification and uploads, and shared by
+both: ``SOURCE_DEVICE_READ_CONCURRENCY`` when set, for every device;
+otherwise 1 on a rotational disk and 3 on a solid-state or unknown one, read
+from ``/sys/block/<disk>/queue/rotational`` (#766). A slot is held only
 while the body of a Local Copy is read. Waiting for one runs the caller's
 checkpoint every :data:`RECHECK_SECONDS`, so cancellation, shutdown and claim
 loss still win while queued.
@@ -19,11 +21,16 @@ The optional server priority (``SERVER_PRIORITY_IOWAIT_PERCENT``) samples the
 host's iowait from ``/proc/stat``. Above the threshold for
 :data:`THROTTLE_AFTER_SECONDS` FrostVault slows down: one read per device and
 no new upload Jobs; it recovers after :data:`RECOVER_AFTER_SECONDS` below.
+
+The registry also counts the bytes read under each slot, so the sampler of
+:mod:`throughput` reports the read rate of each device (#766).
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import os
+import re
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -47,6 +54,15 @@ SAMPLE_SECONDS = 2.0
 THROTTLE_AFTER_SECONDS = 10.0
 RECOVER_AFTER_SECONDS = 30.0
 PROC_STAT = "/proc/stat"
+# Default reads per device when SOURCE_DEVICE_READ_CONCURRENCY is unset (#766):
+# beyond one stream a rotational disk seeks more than it reads.
+ROTATIONAL_LIMIT = 1
+SOLID_STATE_LIMIT = 3
+SYS_ROOT = "/sys"
+PROC_MDSTAT = "/proc/mdstat"
+# Local Copies whose fingerprint an upload has just published (#766).
+UPLOAD_FINGERPRINTS_LIMIT = 65536
+UPLOAD_FINGERPRINTS_TTL_SECONDS = 24 * 3600.0
 
 
 # -- Source Device of a path -----------------------------------------------
@@ -106,22 +122,149 @@ class DeviceResolver:
             self._folders.clear()
 
 
+# -- Rotational or solid-state ------------------------------------------------
+
+_ARRAY_DISK = re.compile(r"disk([0-9]+)")
+
+
+class RotationalProbe:
+    """Whether the disk behind a device key is rotational (#766).
+
+    ``dev:<st_dev>`` is followed through ``<sys>/dev/block/<major>:<minor>``,
+    from a partition to its disk, and through the ``slaves`` of a dm/md
+    device (rotational when any member is). ``location:diskN`` (an Unraid
+    array disk) reads ``<sys>/block/mdNp1`` (``mdN`` on older releases), then
+    the member named by ``rdevName.N`` in ``/proc/mdstat``. Anything else, a
+    pool such as ``cache`` or a FUSE ``st_dev``, is unknown: None. Never
+    raises; answers are cached per key.
+    """
+
+    def __init__(self, *, sys_root: str = SYS_ROOT, mdstat: str = PROC_MDSTAT):
+        self._sys, self._mdstat = os.fspath(sys_root), os.fspath(mdstat)
+        self._lock = threading.Lock()
+        self._known: dict[str, bool | None] = {}
+
+    def rotational(self, device: str | None) -> bool | None:
+        if not device:
+            return None
+        with self._lock:
+            if device in self._known:
+                return self._known[device]
+        try:
+            answer = self._lookup(device)
+        except Exception:  # A broken sysfs never stops a read.
+            answer = None
+        with self._lock:
+            if len(self._known) >= DIRECTORY_CACHE_SIZE:
+                self._known.clear()
+            self._known[device] = answer
+        return answer
+
+    def _lookup(self, device: str) -> bool | None:
+        kind, _, name = device.partition(":")
+        if kind == "dev":
+            number = int(name)
+            path = os.path.join(self._sys, "dev", "block", f"{os.major(number)}:{os.minor(number)}")
+            return self._block(path) if os.path.exists(path) else None
+        if kind == "location":
+            match = _ARRAY_DISK.fullmatch(name)
+            if match is None:
+                return None
+            index = match.group(1)
+            for candidate in (f"md{index}p1", f"md{index}"):
+                path = os.path.join(self._sys, "block", candidate)
+                if os.path.exists(path):
+                    answer = self._block(path)
+                    if answer is not None:
+                        return answer
+            member = self._mdstat_member(index)
+            if member:
+                path = os.path.join(self._sys, "block", member)
+                if os.path.exists(path):
+                    return self._block(path)
+        return None
+
+    def _block(self, path: str, depth: int = 0) -> bool | None:
+        if depth > 8:
+            return None
+        real = os.path.realpath(path)
+        if os.path.exists(os.path.join(real, "partition")):
+            real = os.path.dirname(real)
+        slaves = os.path.join(real, "slaves")
+        members = sorted(os.listdir(slaves)) if os.path.isdir(slaves) else []
+        if members:
+            answers = [self._block(os.path.join(slaves, member), depth + 1) for member in members]
+            if any(answer is True for answer in answers):
+                return True
+            return False if all(answer is False for answer in answers) else None
+        try:
+            with open(os.path.join(real, "queue", "rotational"), encoding="ascii") as handle:
+                value = handle.read(8).strip()
+        except (OSError, ValueError):
+            return None
+        return {"1": True, "0": False}.get(value)
+
+    def _mdstat_member(self, index: str) -> str | None:
+        try:
+            with open(self._mdstat, encoding="ascii", errors="replace") as handle:
+                text = handle.read(65536)
+        except OSError:
+            return None
+        for line in text.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == f"rdevName.{index}":
+                value = value.strip()
+                # A bare kernel name only, never a path.
+                return value if value and "/" not in value and value not in {".", ".."} else None
+        return None
+
+
+def _per_device(limit: int | Callable[..., int]) -> Callable[[str | None], int]:
+    """A limit that may or may not depend on the device, as ``f(device)``."""
+    if not callable(limit):
+        value = int(limit)
+        return lambda device=None: value
+    try:
+        parameters = inspect.signature(limit).parameters.values()
+    except (TypeError, ValueError):
+        return lambda device=None: limit()
+    takes = any(parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD,
+                                   parameter.VAR_POSITIONAL) for parameter in parameters)
+    return (lambda device=None: limit(device)) if takes else (lambda device=None: limit())
+
+
 # -- Per-device read slots --------------------------------------------------
+
+# The device whose slot the current thread holds, for :func:`note_read`.
+_current = threading.local()
 
 class DeviceSlots:
     """Reads in flight per device; one shared instance per process."""
 
-    def __init__(self, limit: int | Callable[[], int]):
-        self._limit = limit if callable(limit) else (lambda value=int(limit): value)
+    def __init__(self, limit: int | Callable[..., int]):
+        # ``limit(device)`` or ``limit()``: reads allowed on that device.
+        self._limit = _per_device(limit)
         self._condition = threading.Condition()
         self._reading: Counter[str] = Counter()
         self._waiting: Counter[str] = Counter()
+        # Bytes read under a slot since start, per device (#766).
+        self._read_bytes: Counter[str] = Counter()
 
-    def limit(self) -> int:
+    def limit(self, device: str | None = None) -> int:
         try:
-            return max(1, int(self._limit()))
+            return max(1, int(self._limit(device)))
         except Exception:  # A broken setting never stops a read.
             return 1
+
+    def note_read(self, device: str, size: int) -> None:
+        if size > 0:
+            with self._condition:
+                self._read_bytes[device] += int(size)
+
+    def read_totals(self) -> dict[str, int]:
+        """Bytes read per device since start (monotone counters)."""
+        with self._condition:
+            return dict(self._read_bytes)
 
     def load(self, device: str) -> int:
         """Reads running plus reads waiting on ``device``."""
@@ -143,7 +286,7 @@ class DeviceSlots:
                 if check is not None:
                     check()
                 with self._condition:
-                    if self._reading[device] < self.limit():
+                    if self._reading[device] < self.limit(device):
                         self._reading[device] += 1
                         acquired = True
                         break
@@ -153,9 +296,12 @@ class DeviceSlots:
                 self._waiting[device] -= 1
                 if not self._waiting[device]:
                     del self._waiting[device]
+        previous = getattr(_current, "entry", None)
+        _current.entry = (self, device)
         try:
             yield
         finally:
+            _current.entry = previous
             with self._condition:
                 if acquired:
                     self._reading[device] -= 1
@@ -163,12 +309,89 @@ class DeviceSlots:
                         del self._reading[device]
                 self._condition.notify_all()
 
-    def snapshot(self) -> list[dict[str, Any]]:
-        """Bounded per-device counts for the runtime status (observability)."""
+    def snapshot(self, rates: Mapping[str, int | None] | None = None) -> list[dict[str, Any]]:
+        """Bounded per-device counts for the runtime status (observability).
+
+        A device is listed while it has reads running or waiting, or a
+        measured read rate above zero (``rates``, from :mod:`throughput`).
+        """
+        rates = rates or {}
         with self._condition:
-            devices = sorted(set(self._reading) | set(self._waiting))
-            return [{"device": device.split(":", 1)[-1], "reading": self._reading[device],
-                     "waiting": self._waiting[device]} for device in devices[:32]]
+            active = set(self._reading) | set(self._waiting)
+            devices = sorted(active | {device for device, rate in rates.items() if rate})
+            counts = [(device, self._reading[device], self._waiting[device])
+                      for device in devices[:32]]
+        # The limit may read sysfs: never under the mutex.
+        return [{"device": device.split(":", 1)[-1], "reading": reading, "waiting": waiting,
+                 "limit": self.limit(device), "bytes_per_second": rates.get(device)}
+                for device, reading, waiting in counts]
+
+
+def note_read(size: int) -> None:
+    """Count ``size`` bytes read under the slot the current thread holds.
+
+    Called from the read loops of the scan verification, the Upload Snapshot
+    pass and the send; a read outside any slot is not counted.
+    """
+    entry = getattr(_current, "entry", None)
+    if entry is not None:
+        slots_, device = entry
+        slots_.note_read(device, size)
+
+
+# -- Local Copies an upload has just fingerprinted ------------------------------
+
+class UploadFingerprints:
+    """Observations whose fingerprint an upload's whole read published (#766).
+
+    Keyed by (file id, generation, size, mtime): the scan verification skips
+    a row of its listing only for that very observation, whose digest the
+    same compare-and-swap as its own already published. An entry is used by
+    one skip (a later listing of the same observation means its fingerprint
+    was cleared since: it is read) and dropped when the upload retires the
+    fingerprint. Process-local and bounded; forgetting one only costs a read.
+    """
+
+    def __init__(self, *, ttl: float = UPLOAD_FINGERPRINTS_TTL_SECONDS,
+                 limit: int = UPLOAD_FINGERPRINTS_LIMIT,
+                 clock: Callable[[], float] = time.monotonic):
+        self._ttl, self._limit, self._clock = float(ttl), max(1, int(limit)), clock
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple[str, int, int, int], float] = OrderedDict()
+
+    @staticmethod
+    def _key(file_id: Any, generation: Any, size: Any, mtime_ns: Any) -> tuple[str, int, int, int] | None:
+        try:
+            return str(file_id), int(generation), int(size), int(mtime_ns)
+        except (TypeError, ValueError):
+            return None
+
+    def add(self, file_id: Any, *, generation: Any, size: Any, mtime_ns: Any) -> None:
+        key = self._key(file_id, generation, size, mtime_ns)
+        if key is None:
+            return
+        with self._lock:
+            self._entries[key] = self._clock()
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._limit:
+                self._entries.popitem(last=False)
+
+    def discard(self, file_id: Any) -> None:
+        """Forget every observation of ``file_id`` (its fingerprint was retired)."""
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == str(file_id)]:
+                del self._entries[key]
+
+    def claim(self, row: Mapping[str, Any]) -> bool:
+        """Whether the scan row ``row`` is an observation an upload fingerprinted;
+        True once per publication."""
+        key = self._key(row.get("vault_file_id"), row.get("generation"),
+                        row.get("size"), row.get("mtime_ns"))
+        if key is None:
+            return False
+        with self._lock:
+            added = self._entries.pop(key, None)
+        return added is not None and self._clock() - added < self._ttl
 
 
 # -- Local Copies the scan just read ----------------------------------------
@@ -234,7 +457,6 @@ def rotate_claims(jobs: Iterable[Mapping[str, Any]], *,
     """
     remaining = list(jobs)
     picked: Counter[str] = Counter()
-    limit = slots.limit()
     while remaining:
         uploads = 0
         while uploads < len(remaining) and _is_upload(remaining[uploads]):
@@ -249,7 +471,7 @@ def rotate_claims(jobs: Iterable[Mapping[str, Any]], *,
                     choice = index
                     break
                 device = _safe_device(device_of, job)
-                if device is None or slots.load(device) + picked[device] < limit:
+                if device is None or slots.load(device) + picked[device] < slots.limit(device):
                     choice = index
                     break
         job = remaining.pop(choice or 0)
@@ -271,7 +493,7 @@ def _safe_device(device_of: Callable[[Mapping[str, Any]], str | None],
 
 
 def interleave_by_device(items: Iterable[Any], *, device_of: Callable[[Any], str],
-                         busy: Callable[[str], int], limit: Callable[[], int],
+                         busy: Callable[[str], int], limit: Callable[..., int],
                          lookahead: int = 8192, fill: int = 256) -> Iterator[tuple[str, Any] | None]:
     """Feed scan reads round-robin across devices (#713).
 
@@ -279,10 +501,11 @@ def interleave_by_device(items: Iterable[Any], *, device_of: Callable[[Any], str
     ``fill`` more per step, so the first read starts at once) and yields
     ``(device, item)`` from the device after the last one served whose
     ``busy(device)`` (reads this scan has submitted and not finished) is below
-    ``limit()``, so a busy disk never starves the others. Yields None when
+    ``limit(device)`` (or ``limit()``), so a busy disk never starves the others. Yields None when
     every buffered device is at its limit: the caller waits for a read to
     finish, then resumes the generator.
     """
+    limit_of = _per_device(limit)
     source = iter(items)
     queues: OrderedDict[str, list[Any]] = OrderedDict()
     buffered = 0
@@ -305,8 +528,7 @@ def interleave_by_device(items: Iterable[Any], *, device_of: Callable[[Any], str
         if last in queues:
             start = devices.index(last) + 1
             devices = devices[start:] + devices[:start]
-        cap = limit()
-        device = next((name for name in devices if busy(name) < cap), None)
+        device = next((name for name in devices if busy(name) < limit_of(name)), None)
         if device is None:
             yield None
             continue
@@ -446,6 +668,8 @@ def _read_proc_stat() -> str:
 _lock = threading.Lock()
 _resolver = DeviceResolver()
 _hot = HotFiles()
+_probe = RotationalProbe()
+_upload_fingerprints = UploadFingerprints()
 _slots: DeviceSlots | None = None
 _priority: ServerPriority | None = None
 
@@ -455,8 +679,26 @@ def _settings() -> Any:
     return settings
 
 
-def configured_limit() -> int:
-    return max(1, min(16, int(getattr(_settings(), "source_device_read_concurrency", 3) or 3)))
+def explicit_limit() -> int | None:
+    """``SOURCE_DEVICE_READ_CONCURRENCY`` when set: it applies to every device."""
+    value = getattr(_settings(), "source_device_read_concurrency", None)
+    return None if value is None else max(1, min(16, int(value)))
+
+
+def rotational(device: str | None) -> bool | None:
+    return _probe.rotational(device)
+
+
+def configured_limit(device: str | None = None) -> int:
+    """Reads in flight allowed on ``device`` (#766).
+
+    The setting wins for every device; otherwise 1 on a rotational disk and 3
+    on a solid-state or unknown one (also for ``device=None``).
+    """
+    explicit = explicit_limit()
+    if explicit is not None:
+        return explicit
+    return ROTATIONAL_LIMIT if rotational(device) is True else SOLID_STATE_LIMIT
 
 
 def server_priority() -> ServerPriority:
@@ -481,8 +723,8 @@ def throttled_if_started() -> bool:
     return bool(priority is not None and priority.throttled)
 
 
-def _current_limit() -> int:
-    return 1 if throttled() else configured_limit()
+def _current_limit(device: str | None = None) -> int:
+    return 1 if throttled() else configured_limit(device)
 
 
 def slots() -> DeviceSlots:
@@ -491,6 +733,13 @@ def slots() -> DeviceSlots:
         if _slots is None:
             _slots = DeviceSlots(_current_limit)
         return _slots
+
+
+def read_totals() -> dict[str, int]:
+    """Bytes read per device since start; empty before any read slot."""
+    with _lock:
+        current = _slots
+    return current.read_totals() if current is not None else {}
 
 
 def _wake() -> None:
@@ -502,6 +751,10 @@ def _wake() -> None:
 
 def hot_files() -> HotFiles:
     return _hot
+
+
+def upload_fingerprints() -> UploadFingerprints:
+    return _upload_fingerprints
 
 
 def device_of(path: Any) -> str:
@@ -534,20 +787,24 @@ def reading(path: Any, check: Callable[[], None] | None = None) -> Iterator[None
 def status() -> dict[str, Any]:
     """Installation-wide read scheduling state for ``GET /api/stats``."""
     priority = server_priority().status()
+    from .throughput import METER
     return {
         "server_priority_enabled": priority["enabled"],
         "server_priority_throttled": priority["throttled"],
         "server_priority_throttled_since": priority["since"],
+        # Of a device with no known type; each device carries its own (#766).
         "source_device_read_limit": slots().limit(),
-        "source_devices": slots().snapshot(),
+        "source_devices": slots().snapshot(METER.device_rates()),
     }
 
 
-def reset_for_tests(*, limit: int | None = None, threshold: float | None = None) -> None:
+def reset_for_tests(*, limit: int | None = None, threshold: float | None = None,
+                    sys_root: str | None = None, mdstat: str | None = None) -> None:
     """Fresh registry; explicit values replace the configured ones."""
-    global _slots, _priority, _resolver, _hot
+    global _slots, _priority, _resolver, _hot, _probe, _upload_fingerprints
     with _lock:
-        _resolver, _hot = DeviceResolver(), HotFiles()
+        _resolver, _hot, _upload_fingerprints = DeviceResolver(), HotFiles(), UploadFingerprints()
+        _probe = RotationalProbe(sys_root=sys_root or SYS_ROOT, mdstat=mdstat or PROC_MDSTAT)
         _priority = ServerPriority(threshold) if threshold is not None else None
         _slots = (DeviceSlots(lambda: 1 if (_priority is not None and _priority.throttled) else limit)
                   if limit is not None else None)

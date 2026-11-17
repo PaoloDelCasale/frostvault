@@ -1942,7 +1942,9 @@ def _hash_local_copy(
 
     The outcome is applied by the scan thread: ``hashed`` with its update,
     ``absent`` (no longer a regular file), ``unreadable`` (an OSError, named by
-    its path) or ``unattributed`` (changed while read, or not a regular file).
+    its path), ``unattributed`` (changed while read, or not a regular file) or
+    ``fingerprinted`` (an upload's whole read of this very observation already
+    published its fingerprint, #766: nothing is read again).
     The read holds a slot of the file's Source Device (#713), shared with
     uploads; waiting for it stops at shutdown or when the scan is closed.
     """
@@ -1950,7 +1952,15 @@ def _hash_local_copy(
         if shutdown_state.requested or (cancelled is not None and cancelled.is_set()):
             raise WorkerStopping("Scan read cancelled while waiting for its device")
 
+    def chunk(size: int) -> None:
+        source_devices.note_read(size)
+        if on_read is not None:
+            on_read(size)
+
+    fingerprinted = source_devices.upload_fingerprints()
     try:
+        if fingerprinted.claim(row):
+            return "fingerprinted", None
         local_path = safe_local_path(str(root), row["path"])
         if not local_path.is_file():
             return "absent", None
@@ -1960,9 +1970,12 @@ def _hash_local_copy(
         with source_devices.slots().reading(
             device or source_devices.device_of(local_path), waiting,
         ):
+            # An upload may have read it while this read waited for its slot.
+            if fingerprinted.claim(row):
+                return "fingerprinted", None
             digest, stat_result = hash_stable_regular_file(
                 local_path, should_stop=lambda: shutdown_state.requested, parts=parts,
-                **({"on_chunk": on_read} if on_read is not None else {}),
+                on_chunk=chunk,
             )
     except WorkerStopping:
         raise

@@ -20,6 +20,10 @@ running scan moving. A Vault with work that should
 move and no progress for :data:`STOPPED_SECONDS` has no expected finish: it is
 shown stopped since its last progress instead.
 
+The same sampler records the bytes read from each Source Device under its
+read slots (#766), whose instant rate ``GET /api/stats`` reports per device
+(``runtime.source_devices[].bytes_per_second``).
+
 Each sample reads bounded SQL aggregates only: the held upload Jobs and those
 completed since the previous sample, through their partial indexes. Never
 files or Job rows.
@@ -124,10 +128,13 @@ class ThroughputMeter:
         self._started: tuple[float, float] | None = None
         # The installation's last progress, any Vault (#759).
         self._moved: tuple[float, float] | None = None
+        # (monotonic seconds, bytes read) per Source Device (#766).
+        self._devices: dict[str, deque] = {}
 
     def reset(self) -> None:
         with self._lock:
             self._vaults.clear()
+            self._devices.clear()
             self._total = _Series()
             self._cut = None
             self._started = None
@@ -200,6 +207,32 @@ class ThroughputMeter:
             total.verification_bytes += moved["verification"]
             total.samples.append((mono, wall, total.upload_bytes, total.upload_files,
                                   total.verification_bytes))
+
+    def record_devices(self, *, mono: float, totals: dict[str, int]) -> None:
+        """Add one sample of the bytes read per Source Device (#766)."""
+        with self._lock:
+            for device, total in totals.items():
+                series = self._devices.get(device)
+                if series is None:
+                    if len(self._devices) >= 64:
+                        continue  # Bounded: a device first seen beyond it waits.
+                    series = self._devices[device] = deque(
+                        maxlen=int(INSTANT_SECONDS * 2 // SAMPLE_SECONDS) + 2)
+                series.append((mono, int(total)))
+
+    def device_rates(self, *, mono: float | None = None) -> dict[str, int | None]:
+        """The instant read rate of each sampled device, None when unmeasured."""
+        mono = time.monotonic() if mono is None else mono
+        with self._lock:
+            devices = {device: list(series) for device, series in self._devices.items()}
+        rates: dict[str, int | None] = {}
+        for device, samples in devices.items():
+            rate = None
+            if len(samples) >= 2 and mono - samples[-1][0] <= STALE_SECONDS:
+                rate = _speed(samples, 1, window=INSTANT_SECONDS, min_span=INSTANT_MIN_SECONDS,
+                              trim_idle=False)
+            rates[device] = None if rate is None else round(max(0.0, rate))
+        return rates
 
     def stopped_since(self, vault_id: int, *, working: bool, mono: float,
                       in_line: bool = False) -> str | None:
@@ -430,9 +463,12 @@ def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None
     if held_back is None:
         from .source_devices import throttled_if_started
         held_back = throttled_if_started()
-    meter.record(mono=time.monotonic() if mono is None else mono, wall=now.timestamp(),
+    mono = time.monotonic() if mono is None else mono
+    meter.record(mono=mono, wall=now.timestamp(),
                  cut=cut, uploads=uploads, verification=verification, scans=scans,
                  held_back=held_back)
+    from .source_devices import read_totals
+    meter.record_devices(mono=mono, totals=read_totals())
 
 
 METER = ThroughputMeter()

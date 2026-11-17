@@ -24,6 +24,8 @@ from typing import Any, Callable
 
 from s3transfer.utils import ChunksizeAdjuster
 
+from . import source_devices
+
 MIB = 1024 * 1024
 # Bytes asked of one read() of a Local Copy (#713): fewer, larger requests
 # through a FUSE union and fewer seeks on an HDD shared by several readers.
@@ -363,6 +365,7 @@ def prepare_upload_snapshot(source: Path, check_active: Callable[[], None], *,
                     raise RuntimeError("Local file changed since fingerprinting")
                 part.update(chunk)
                 plaintext.update(chunk)
+                source_devices.note_read(len(chunk))
                 if captured is not None:
                     captured.write(chunk)
                 size += len(chunk)

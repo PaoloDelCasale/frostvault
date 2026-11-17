@@ -28,6 +28,13 @@ def is_placeholder(value: str, *current_values: str) -> bool:
     }
 
 
+def source_device_read_concurrency_from_env(environ: Any) -> int | None:
+    """``SOURCE_DEVICE_READ_CONCURRENCY`` (1-16), or None when unset or empty:
+    the limit is then chosen per Source Device (#766)."""
+    value = (environ.get("SOURCE_DEVICE_READ_CONCURRENCY") or "").strip()
+    return max(1, min(16, int(value))) if value else None
+
+
 @dataclass(frozen=True)
 class Settings:
     # Optional PostgreSQL libpq DSN/URI; empty uses the PG* environment.
@@ -85,11 +92,11 @@ class Settings:
         1, min(32, int(os.getenv("SCAN_HASH_CONCURRENCY", "4")))
     )
     # Reads of Local Copies in flight per Source Device (#713, ADR-0046),
-    # shared by scan verification and uploads, on top of their own limits:
-    # beyond 2-3 streams an HDD seeks more than it reads.
-    source_device_read_concurrency: int = max(
-        1, min(16, int(os.getenv("SOURCE_DEVICE_READ_CONCURRENCY", "3") or "3"))
-    )
+    # shared by scan verification and uploads, on top of their own limits.
+    # Unset (None): 1 on a rotational disk, 3 on a solid-state or unknown one
+    # (#766); set, it applies to every device.
+    source_device_read_concurrency: int | None = field(
+        default_factory=lambda: source_device_read_concurrency_from_env(os.environ))
     # Opt-in server priority (#713): above this host iowait percentage for
     # 10 s, one read per device and no new uploads until 30 s below. 0 = off.
     server_priority_iowait_percent: int = max(
