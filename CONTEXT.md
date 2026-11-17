@@ -11,6 +11,40 @@ An isolated archive owned by the Owner as one policy and storage namespace.
 "Folder" always means a directory inside a Vault, never the Vault itself.
 _Avoid_: Bucket, folder, protected folder (cartella protetta), account
 
+**Vault Bucket**:
+The cloud bucket that holds one Vault's content. FrostVault creates a
+dedicated one for every new Vault, with its content at the bucket root; a Vault
+keeps its bucket for life, and only an older Vault may share a bucket under a
+per-Vault prefix.
+_Avoid_: Target, Namespace, Shared bucket
+
+**System Bucket**:
+The installation's own bucket for metadata backups (and the billing export),
+separate from every Vault Bucket and the cloud location named by the Recovery Kit.
+_Avoid_: Backup bucket, Vault Bucket
+
+**Retention Lock**:
+An optional Governance-mode minimum retention, chosen only when a Vault is
+created, during which no Archive Version of its Vault Bucket can be deleted, not
+even by FrostVault. Deletions that meet it are deferred to the lock's end, never
+failed.
+_Avoid_: Object Lock compliance, Immutability, WORM
+
+**Minimum Storage Duration**:
+The days a storage class bills an Archive Version for once it enters that class,
+counted from its Class Entry, whether or not it is deleted earlier.
+_Avoid_: Retention, Early deletion fee
+
+**Class Entry**:
+When an Archive Version entered its current storage class: observed, or
+estimated from the Storage Plan until a change is observed.
+_Avoid_: Upload date, LastModified
+
+**Billed Cost**:
+The Vault's actual AWS charges, read from the installation's billing export, as
+opposed to a Cost Estimate.
+_Avoid_: Cost Estimate, Real price
+
 **Storage Plan**:
 The one Vault-wide schedule of progressively colder cloud storage classes,
 chosen for access time and cost without expiring cloud content. The Owner can
