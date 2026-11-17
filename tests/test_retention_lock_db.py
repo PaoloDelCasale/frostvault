@@ -707,7 +707,7 @@ class ClaimClearsRetainedTests(RetentionLockFixture):
         self.assertEqual(row["retained_count"], 1)
         with self.db() as connection:
             claimed = vault_deletion.claim_due(
-                connection, now=datetime.now(timezone.utc) + timedelta(days=2))
+                connection, now=datetime.now(timezone.utc) + timedelta(days=DAYS + 1))
         self.assertEqual(claimed, [2])
         [row] = self.rows("SELECT status, retained_count, retained_until FROM vault_deletions WHERE vault_id=2")
         self.assertEqual((row["status"], row["retained_count"], row["retained_until"]), ("running", None, None))
