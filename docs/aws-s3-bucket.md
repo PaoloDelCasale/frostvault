@@ -172,10 +172,14 @@ early. Every FrostVault deletion waits for the lock instead of failing:
 
 - **Superseded versions** (a verified replacement, a rename or Vault move that
   copies a file and deletes its source): the old version is handed over to
-  the `retained_versions` table and the background loop deletes it, by exact
-  VersionId, from its RetainUntilDate (checked hourly, a refused attempt
-  retried after a day). The Vault settings show how many versions wait and
-  until when.
+  the `retained_versions` table as a **Retained Version** and the background
+  loop deletes it, by exact VersionId, from its RetainUntilDate (checked
+  hourly, `DeleteObjects` in batches of 1000; a key being uploaded or copied
+  waits). A failed attempt is retried after an hour when transient, after a
+  day otherwise; three failures in a row open a Problem. The Vault settings
+  show how many versions wait, until when, and the last failure. After a
+  metadata restore, a superseded locked version no table names any more is
+  adopted by the Reconnect or the weekly audit (#749).
 - **Delayed Cloud Deletion** («Delete from cloud») and **Automatic Duplicate
   Cleanup**: a file still locked when the seven-day delay ends is not deleted;
   its Job waits again, «deletable from» its date, and the group runs again
@@ -197,18 +201,32 @@ listing) plus the bucket's default days: S3 computes the default retention from
 the moment the version is written, so the estimate matches up to seconds. A
 version whose estimate is still ahead is not sent to S3 at all. When S3 refuses
 a DELETE anyway (`AccessDenied`), FrostVault reads the exact version's
-`GetObjectRetention` and waits for that observed date. Lifecycle transitions
+`GetObjectRetention` and waits for that observed date (a date up to five
+minutes past still counts, for clock skew; the retry is at least an hour
+later). If S3 refuses `GetObjectRetention` the version waits an hour and the
+Vault gets a Problem: grant `s3:GetObjectRetention` (a locked Vault Bucket is
+created only once FrostVault can read a retention). Lifecycle transitions
 are not affected by Object Lock.
 
 **Delete Markers.** FrostVault deletes only by exact VersionId and never
-creates a Delete Marker. On a bucket with a Retention Lock the weekly audit
-reports any Delete Marker as a Problem: someone deleted with the bucket's keys
+creates a Delete Marker. On a bucket with a Retention Lock the catalog audit
+(weekly by default, `AUDIT_INTERVAL_SECONDS`) reports any Delete Marker as a
+Problem, so one can stay unnoticed for up to that interval: someone deleted with the bucket's keys
 without a version, and the lock kept the data hidden behind the marker. Check
 who used the keys, then delete the marker version (for example from the AWS
 console) to make the file visible again.
 
 Locked versions are billed until they are deleted: superseded or deleted
-files cost storage for up to the chosen days.
+files cost storage for up to the chosen days. A rename or Vault move copies
+each file and hands the source over as a Retained Version, so the moved files
+take twice their storage until the lock of the sources ends.
+
+The default retention is applied by S3 when a version is written:
+`PutBucketObjectLockConfiguration` (used once, at creation) and any later
+change of the bucket's default made outside FrostVault affect only versions
+uploaded afterwards. Existing versions keep their RetainUntilDate, and
+FrostVault keeps estimating with the days chosen at creation, then waits for
+the observed date whenever S3 refuses a DELETE.
 
 ### IAM for FrostVault-created buckets
 

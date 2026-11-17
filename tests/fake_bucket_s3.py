@@ -146,6 +146,12 @@ class FakeBucketS3:
             "get_object_lock_configuration", Bucket, "lock",
             "ObjectLockConfigurationNotFoundError")}
 
+    def get_object_retention(self, Bucket: str, Key: str, VersionId: str | None = None) -> dict:
+        # The bucket holds no objects: S3 says the key is absent when the
+        # caller may read retentions (``fail`` makes it refuse).
+        self._bucket("get_object_retention", Bucket)
+        raise client_error("NoSuchKey", "GetObjectRetention")
+
 
 def fake_vault_buckets(test: Any, *, foreign: set[str] | None = None,
                        settle_seconds: int = 0) -> FakeBucketS3:

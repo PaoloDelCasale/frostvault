@@ -1066,6 +1066,7 @@ class ArchiveCatalog:
         storage_class: str | None = None,
         created_at: Any | None = None,
         upload_attempt_id: str | None = None,
+        class_entry_recorded: bool = True,
     ) -> str:
         """Record the uploaded object as this file's one replacement in progress.
 
@@ -1078,6 +1079,9 @@ class ArchiveCatalog:
         refuses any key, size or VersionId other than the attempt's.
         A version written straight into ``storage_class`` enters it when it
         is created: that is its Class Entry (``storage_class_since``, #731).
+        ``class_entry_recorded=False`` (a version adopted from a listing after
+        a metadata restore, #743) leaves the Class Entry unrecorded, so it is
+        estimated from ``created_at`` and the Storage Plan.
         """
         if not provider_version_id:
             raise ValueError("A provider VersionId is required")
@@ -1108,7 +1112,8 @@ class ArchiveCatalog:
             """,
             (
                 vault_file_id, object_key, provider_version_id, size,
-                storage_class, storage_class, stamp, stamp, stamp, upload_attempt_id, stamp,
+                storage_class, storage_class if class_entry_recorded else None,
+                stamp, stamp, stamp, upload_attempt_id, stamp,
             ),
         ).fetchone()
         if row is None:

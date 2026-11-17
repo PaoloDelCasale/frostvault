@@ -219,6 +219,20 @@ class VerifyBucketTests(unittest.TestCase):
         stored["lock"]["Rule"]["DefaultRetention"]["Days"] = 30
         self.assertFalse(buckets.verify_bucket(self.s3, locked).ok)
 
+    def test_a_locked_bucket_needs_permission_to_read_a_retention(self):
+        locked = spec("frostvault-locked-abcd1234", lock=buckets.RetentionLock(days=90))
+        buckets.provision_bucket(self.s3, locked)
+        checks = {check.code: check.ok for check in buckets.verify_bucket(self.s3, locked).checks}
+        self.assertTrue(checks["bucket.retention_read"])
+        self.s3.fail["get_object_retention"] = "AccessDenied"
+        verification = buckets.verify_bucket(self.s3, locked)
+        self.assertFalse(verification.ok)
+        self.assertIn("s3:GetObjectRetention", verification.failure_message())
+        # A bucket without a lock reads no retention.
+        calls = len(self.s3.calls)
+        buckets.verify_bucket(self.s3, spec())
+        self.assertNotIn("get_object_retention", [op for op, _ in self.s3.calls[calls:]])
+
     def test_verification_never_changes_the_bucket(self):
         before = len(self.s3.mutating_calls())
         buckets.verify_bucket(self.s3, spec())

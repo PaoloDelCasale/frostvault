@@ -40,7 +40,8 @@ Lock a frozen candidate may still be locked. It is not deleted (FrostVault has
 no bypass) but handed over, by exact key and VersionId, to
 ``retained_versions`` with its RetainUntilDate: the estimate (``created_at``
 plus the bucket default days) when it is still ahead, or the observed
-retention when S3 refuses the DELETE. Its candidate is recorded as handled in
+retention when S3 refuses the DELETE (an hour later when S3 refuses to read
+it, with a Problem, #749). Its candidate is recorded as handled in
 the same fenced unit, so the batch completes, the Job never fails and the file
 is not held for months; the background sweep deletes the version after that
 date. Every listing check accepts the exact retained versions of its keys.
@@ -313,9 +314,9 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         current_listing = _listing(client, bucket, keys)
         _require_known(current_listing, allowed | held, keep)
         if version in current_listing[object_key]["versions"]:
-            until = _locked_until(w, job, pinned, batch, keep, client, row, days)
+            until, unreadable = _locked_until(w, job, pinned, batch, keep, client, row, days)
             if until is not None:
-                _hand_over(w, job, batch, row, until)
+                _hand_over(w, job, batch, row, until, unreadable=unreadable)
                 held.add((object_key, version))
                 observed = current_listing
                 continue
@@ -363,22 +364,24 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
 
 def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
                   keep: tuple[str, str], client: Any, row: dict[str, Any],
-                  days: int | None) -> datetime | None:
+                  days: int | None) -> tuple[datetime | None, bool]:
     """Delete one frozen candidate, or say until when a Retention Lock keeps it.
 
     Without a lock this is the exact DELETE. With one, a candidate whose
     estimated RetainUntilDate is still ahead is not sent at all; otherwise the
     DELETE is sent, and a refusal is explained by the version's observed
-    retention (#736). A refusal a Retention Lock does not explain propagates.
+    retention (#736). A retention S3 refuses to read defers it an hour; the
+    second value says so (#749). A refusal a Retention Lock does not explain
+    propagates.
     """
     object_key, version = str(row["object_key"]), str(row["provider_version_id"])
     if not days:
         _delete_fenced(w, job, pinned, batch, keep, client, object_key, version)
-        return None
+        return None, False
     now = datetime.now(timezone.utc)
     until = retention_lock.locked_at(row["created_at"], days, now)
     if until is not None:
-        return until
+        return until, False
     try:
         _delete_fenced(w, job, pinned, batch, keep, client, object_key, version)
     except ClientError as exc:
@@ -387,17 +390,22 @@ def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: di
                 client, bucket=pinned["bucket"], key=object_key, version_id=version,
                 code=retention_lock.error_code(exc), now=now)
         except retention_lock.VersionGone:
-            return None
+            return None, False
+        except retention_lock.RetentionUnreadable as unreadable:
+            return unreadable.until, True
         except Exception:
             until = None
         if until is None:
             raise
-    return until
+    return until, False
 
 
 def _hand_over(w: Any, job: dict[str, Any], batch: dict[str, Any], row: dict[str, Any],
-               until: datetime) -> None:
-    """Hand a locked candidate to ``retained_versions`` and record it handled (#736)."""
+               until: datetime, *, unreadable: bool = False) -> None:
+    """Hand a locked candidate to ``retained_versions`` and record it handled (#736).
+
+    ``unreadable``: S3 refused ``GetObjectRetention``; the Vault gets a Problem (#749).
+    """
     def record(catalog: Any) -> None:
         connection = catalog.connection
         live = connection.execute(
@@ -414,6 +422,8 @@ def _hand_over(w: Any, job: dict[str, Any], batch: dict[str, Any], row: dict[str
             """UPDATE cleanup_candidates SET deleted_at=now()
                WHERE batch_id=%s AND archive_version_id=%s AND deleted_at IS NULL""",
             (batch["id"], str(row["id"])))
+        if unreadable:
+            retention_lock.report_unreadable(connection, int(job["vault_id"]))
 
     w._upload_catalog_unit(job, record, shared=True)
 

@@ -5319,13 +5319,45 @@
                     "string",
                     "null"
                   ]
+                },
+                "failed_count": {
+                  "type": "number",
+                  "description": "Retained Versions whose last deletion failed (#749)."
+                },
+                "failed_attempts": {
+                  "type": "number",
+                  "description": "The most consecutive failed deletions of one of them."
+                },
+                "last_error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The S3 error code of the most recent failure."
+                },
+                "last_attempt_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "next_attempt_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "count",
                 "bytes",
                 "deletable_from",
-                "deletable_until"
+                "deletable_until",
+                "failed_count",
+                "failed_attempts",
+                "last_error",
+                "last_attempt_at",
+                "next_attempt_at"
               ]
             },
             {

@@ -267,6 +267,9 @@ def verify_bucket(client: Any, spec: BucketSpec, *, extra_lifecycle_rules: bool 
                   require_tags: bool = True) -> BucketVerification:
     """The baseline plus Object Ownership and the spec's lifecycle, tags and lock.
 
+    With a Retention Lock it also checks that FrostVault may read a version's
+    retention (``bucket.retention_read``, #749).
+
     By default the lifecycle must be exactly the spec's rules (Vault Buckets,
     #735) and the spec's tags must be present. ``extra_lifecycle_rules``
     accepts rules the Owner added next to the spec's, which must still be
@@ -280,6 +283,8 @@ def verify_bucket(client: Any, spec: BucketSpec, *, extra_lifecycle_rules: bool 
         if require_tags:
             checks.append(_tags_check(client, spec))
         checks.append(_retention_lock_check(client, spec))
+        if spec.retention_lock is not None:
+            checks.append(_retention_read_check(client, spec))
     return BucketVerification(bucket=spec.name, region=spec.region, checks=tuple(checks))
 
 
@@ -446,6 +451,21 @@ def _tags_check(client: Any, spec: BucketSpec) -> BucketCheck:
         "bucket.tags", present,
         "The frostvault tags are present" if present else "The frostvault tags are missing",
     )
+
+
+def _retention_read_check(client: Any, spec: BucketSpec) -> BucketCheck:
+    """A locked bucket needs ``s3:GetObjectRetention`` (#749).
+
+    Without it a DELETE refused by the lock cannot be explained, so a Vault
+    with a Retention Lock is not created until FrostVault can read one.
+    """
+    from .retention_lock import probe_retention_read
+
+    refused = probe_retention_read(client, spec.name)
+    return BucketCheck(
+        "bucket.retention_read", refused is None,
+        "FrostVault can read the retention of a version" if refused is None
+        else f"S3 refused s3:GetObjectRetention ({refused})")
 
 
 def _retention_lock_check(client: Any, spec: BucketSpec) -> BucketCheck:

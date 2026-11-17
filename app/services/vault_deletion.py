@@ -27,7 +27,8 @@ Retention Lock (#736, ADR-0050): in a Vault Bucket with a Governance Retention
 Lock a version is locked until its RetainUntilDate and FrostVault has no
 bypass. A version whose estimated date (``LastModified`` plus the bucket
 default days) is still ahead is not sent; a refused DELETE is explained by the
-version's observed retention. When only such locked versions are left, the
+version's observed retention (a retention S3 refuses to read waits an hour,
+with a Problem, #749). When only such locked versions are left, the
 run is not a failure: the request goes back to ``pending`` with
 ``retained_count`` versions «deletable from» ``retained_until`` (the latest
 date), runs again from the earliest one (at most once a day) and removes the
@@ -529,7 +530,11 @@ def retry(connection: Any, *, vault_id: int, actor: str) -> dict[str, Any]:
 
 
 def claim_due(connection: Any, *, now: datetime) -> list[int]:
-    """Claim every elapsed pending request and every stale running one."""
+    """Claim every elapsed pending request and every stale running one.
+
+    The locked versions a previous run left (``retained_until``/``retained_count``)
+    are cleared: this run lists the bucket again and records its own (#749).
+    """
     stale = now - timedelta(seconds=STALE_RUN_SECONDS)
     rows = connection.execute(
         """SELECT d.vault_id FROM vault_deletions d
@@ -541,7 +546,8 @@ def claim_due(connection: Any, *, now: datetime) -> list[int]:
     if ids:
         connection.execute(
             """UPDATE vault_deletions SET status='running', heartbeat_at=%s,
-                   attempts=attempts + 1, proven_empty_at=NULL
+                   attempts=attempts + 1, proven_empty_at=NULL,
+                   retained_until=NULL, retained_count=NULL
                WHERE vault_id = ANY(%s::bigint[])""", (now, ids))
     return ids
 
@@ -554,6 +560,8 @@ class _Progress:
     bytes: int = 0
     # Versions a Retention Lock keeps, by (key, VersionId): until when (#736).
     locked: dict[tuple[str, str], datetime] = field(default_factory=dict)
+    # S3 refused GetObjectRetention for one of them (#749).
+    unreadable: bool = False
 
 
 def _heartbeat(database: Database, vault_id: int) -> None:
@@ -567,12 +575,14 @@ def _heartbeat(database: Database, vault_id: int) -> None:
 
 
 def _delete_batch(client: Any, bucket: str, prefix: str, items: list[dict[str, Any]],
-                  *, locked: dict[tuple[str, str], datetime] | None = None) -> set[tuple[str, str]]:
+                  *, locked: dict[tuple[str, str], datetime] | None = None,
+                  progress: _Progress | None = None) -> set[tuple[str, str]]:
     """Delete ``items`` by exact VersionId; returns what a Retention Lock refused.
 
     With ``locked`` (a Vault with a Retention Lock) a refused version whose
     observed retention is still ahead is recorded there instead of failing the
-    run (#736); any other refusal fails it.
+    run (#736); one whose retention S3 refuses to read is recorded an hour
+    ahead and noted in ``progress`` (#749); any other refusal fails it.
     """
     refused: set[tuple[str, str]] = set()
     for offset in range(0, len(items), _DELETE_BATCH):
@@ -594,6 +604,10 @@ def _delete_batch(client: Any, bucket: str, prefix: str, items: list[dict[str, A
                     code=str(error.get("Code") or ""), now=moment) if key and version else None
             except retention_lock.VersionGone:
                 continue
+            except retention_lock.RetentionUnreadable as exc:
+                until = exc.until
+                if progress is not None:
+                    progress.unreadable = True
             if until is None:
                 raise VaultDeletionError("The provider refused to delete some versions")
             locked[(key, version)] = until  # type: ignore[index]
@@ -625,7 +639,8 @@ def _delete_prefix(client: Any, database: Database, *, vault_id: int, bucket: st
                 else:
                     progress.locked[(version["key"], version["version_id"])] = until
         refused = _delete_batch(client, bucket, prefix, sendable + markers,
-                                locked=progress.locked if retention_lock_days else None)
+                                locked=progress.locked if retention_lock_days else None,
+                                progress=progress)
         deleted = [v for v in sendable if (v["key"], v["version_id"]) not in refused]
         progress.versions += len(deleted)
         progress.markers += len(markers)
@@ -748,6 +763,8 @@ def _record_deferral(database: Database, *, vault_id: int, progress: _Progress) 
         # A deferral is not a failure: an earlier failure's Problem closes.
         set_problem(connection, key=f"vault_deletion:{vault_id}", event=PROBLEM_EVENT,
                     vault_id=vault_id, active=False)
+        if progress.unreadable:
+            retention_lock.report_unreadable(connection, vault_id)
 
 
 def _only_locked(leftover: PrefixInventory, progress: _Progress) -> bool:

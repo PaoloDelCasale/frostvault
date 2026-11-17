@@ -30,6 +30,10 @@ even by FrostVault. Deletions that meet it are deferred to the lock's end, never
 failed.
 _Avoid_: Object Lock compliance, Immutability, WORM
 
+**Retained Version**:
+A superseded Archive Version kept in the cloud only because its Retention Lock has not ended; FrostVault deletes it by exact version once the lock ends.
+_Avoid_: Orphan, Leftover
+
 **Minimum Storage Duration**:
 The days a storage class bills an Archive Version for once it enters that class,
 counted from its Class Entry, whether or not it is deleted earlier.

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { fetchRetentionLock, type RetentionLockStatus } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
 
 /**
  * The Vault's Governance Retention Lock (#736, ADR-0050): read-only, fixed
  * at creation, and the superseded versions it still holds back, deleted by
- * FrostVault from their RetainUntilDate.
+ * FrostVault from their RetainUntilDate. Versions whose deletion failed say
+ * so, with the last error and the next attempt (#749).
  */
 export function RetentionLockPanel({ vaultId }: { vaultId: number }) {
   const { t, locale } = useI18n();
@@ -37,5 +38,12 @@ export function RetentionLockPanel({ vaultId }: { vaultId: number }) {
         from: formatUtcDate(retained.deletable_from, locale), until: formatUtcDate(retained.deletable_until, locale),
       })}</p>
       : <p data-testid="retention-lock-retained-none">{t("retention_lock.retained_none")}</p>}
+    {retained && retained.failed_count > 0
+      ? <p role="alert" className="text-destructive" data-testid="retention-lock-failed">{t("retention_lock.failed", {
+        count: retained.failed_count, count_shown: formatGroupedCount(retained.failed_count, locale),
+        error: retained.last_error ?? "—", attempts: retained.failed_attempts,
+        next: formatDateTime(retained.next_attempt_at, locale),
+      })}</p>
+      : null}
   </div>;
 }

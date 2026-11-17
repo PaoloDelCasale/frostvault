@@ -8,7 +8,10 @@ a Problem: FrostVault deletes only by exact VersionId and never creates one,
 so a marker is a DELETE without VersionId by someone else (a stolen key, a
 script) that the lock turned into a hidden, still present version. The
 versions a Retention Lock holds back for deletion (``retained_versions``) are
-known, never counted as missing in the catalog.
+known, never counted as missing in the catalog. A superseded locked version
+no table names any more (written after the metadata backup a catalog was
+restored from) is adopted as a Retained Version, with database writes only
+(``retention_lock.adopt_orphans``, #749).
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ from .catalog_incidents import (
 from .directory_aggregates import invalidate_for_archive_version_ids
 from .job_admission import TERMINAL_JOB_STATUSES
 from .minimum_storage import observed_since_sql
-from .retention_lock import report_delete_markers, retained_versions
+from .retention_lock import adopt_orphans, report_delete_markers, retained_versions
 
 _OBSERVED_SINCE = observed_since_sql(
     old_class="av.storage_class", new_class="obs.storage_class",
@@ -164,6 +167,10 @@ def audit_vault_catalog(
 
     if vault.get("s3_retention_lock_days"):
         seen |= retained_versions(connection, int(vault["id"]))
+        seen |= adopt_orphans(
+            connection, vault_id=int(vault["id"]), days=vault["s3_retention_lock_days"],
+            prefix=_object_prefix(vault), versions=cloud_versions.values(),
+            marker_keys={key for key, _ in cloud_markers})
         report_delete_markers(connection, vault, cloud_markers)
     for key in cloud_versions:
         if key not in seen:

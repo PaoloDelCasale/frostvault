@@ -1472,7 +1472,9 @@ def scan_cloud(
       counted in ``report`` and nothing else: never recorded as a version,
       attributed to a file by its path, promoted, or deleted. The only
       exception is the first Reconnect after a metadata restore, which reads
-      and adopts newer cloud content (``_reconcile_restored_cloud``).
+      and adopts newer cloud content (``_reconcile_restored_cloud``) and, in
+      a Vault with a Retention Lock, adopts the superseded locked versions
+      as Retained Versions (#749).
 
     Provider listings stay outside write transactions. Returns the number of
     known versions the listing showed.
@@ -1489,6 +1491,11 @@ def scan_cloud(
     latest: dict[str, dict[str, Any]] = {}
     markers = 0
     invalid_keys = False
+    # The whole listing, kept only to adopt orphaned Retained Versions after a
+    # metadata restore of a Vault with a Retention Lock (#749).
+    adopt = reconnect and bool(vault.get("s3_retention_lock_days"))
+    entries: list[dict[str, Any]] = []
+    marker_keys: set[str] = set()
     for page in paginator.paginate(**kwargs):
         shutdown_state.checkpoint()
         for item in page.get("Versions", []):
@@ -1505,7 +1512,11 @@ def scan_cloud(
             ))
             if reconnect:
                 _note_latest_listed_version(latest, item)
+            if adopt:
+                entries.append(item)
         markers += len(page.get("DeleteMarkers", []))
+        if adopt:
+            marker_keys.update(str(marker["Key"]) for marker in page.get("DeleteMarkers", []))
         if reconnect:
             for marker in page.get("DeleteMarkers", []):
                 _note_latest_listed_version(latest, {**marker, "_delete_marker": True})
@@ -1561,7 +1572,8 @@ def scan_cloud(
     # A metadata restore is reconciled before the missing transition: a
     # version the cloud replaced after the backup is superseded, not lost.
     restoring = (
-        _reconcile_restored_cloud(vault, scan_id, latest, prefix=prefix)
+        _reconcile_restored_cloud(vault, scan_id, latest, prefix=prefix,
+                                  entries=entries, marker_keys=marker_keys)
         if reconnect else False
     )
     # An unrecognised key or a truncated listing is not evidence that
@@ -1607,6 +1619,7 @@ def _note_latest_listed_version(latest: dict[str, dict[str, Any]], item: dict[st
 
 def _reconcile_restored_cloud(
     vault: dict[str, Any], scan_id: str, latest: dict[str, dict[str, Any]], *, prefix: str,
+    entries: list[dict[str, Any]] | None = None, marker_keys: set[str] | None = None,
 ) -> bool:
     """First Reconnect after a manual metadata restore: catch up the cloud.
 
@@ -1621,7 +1634,13 @@ def _reconcile_restored_cloud(
       Cloud-only or Cloud-only Conflict like for any known file;
     - that version becomes the file's replacement in progress and then
       Current only after its exact VersionId has been read and hashed
-      (read-back proof), and the file is counted in the restore notice;
+      (read-back proof), and the file is counted in the restore notice. Its
+      ``created_at`` is its ``LastModified`` and its Class Entry is left
+      unrecorded (estimated), never the reconnect's time (#743);
+    - with a Retention Lock, a superseded version written after the backup
+      that no table names any more becomes a Retained Version, deletable
+      from its ``LastModified`` plus the bucket default days
+      (``retention_lock.adopt_orphans``, database writes only, #749);
     - a superseded version the complete listing no longer shows was removed
       by the Current Snapshot cleanup after the backup: it is closed with
       that proof, never reported missing (#639).
@@ -1705,9 +1724,12 @@ def _reconcile_restored_cloud(
                     catalog.abandon_replacement(
                         file_id, archive_version_id=str(replacing),
                     )
+                # Written when S3 says, not now: its Retention Lock estimate
+                # and Minimum Storage Duration start then (#743, #749).
                 archive_version_id = catalog.begin_replacement(
                     file_id, object_key=str(item["Key"]), provider_version_id=version_id,
                     size=size, storage_class=storage_class,
+                    created_at=item.get("LastModified"), class_entry_recorded=False,
                 )
             catalog.record_verification_evidence(
                 archive_version_id, method="read_back", fallback=None, egress_bytes=size,
@@ -1745,6 +1767,10 @@ def _reconcile_restored_cloud(
     if not _cloud_scan_still_current(vault, scan_id):
         raise RuntimeError("Reconnect scan superseded")
     with db() as connection:
+        if entries:
+            retention_lock_service.adopt_orphans(
+                connection, vault_id=vault_id, days=vault.get("s3_retention_lock_days"),
+                prefix=prefix, versions=entries, marker_keys=marker_keys or set())
         closed = ArchiveCatalog(connection).close_absent_superseded_versions(
             vault_id=vault_id, scan_id=scan_id, provider=provider_identity(client),
             source_root=str(vault["source_root"]), root_identity=vault.get("root_identity"),
@@ -5383,11 +5409,12 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                         deleted.append(item)
                     else:
                         failed.append((item, message))
+            unreadable = False
             if lock_days and failed:
                 # A version still locked cannot have been deleted: wait for
                 # its observed RetainUntilDate instead of failing (#736).
-                failed = _locked_purge_members(client, str(job["s3_bucket"]), failed,
-                                               deleted, locked)
+                failed, unreadable = _locked_purge_members(client, str(job["s3_bucket"]), failed,
+                                                           deleted, locked)
             stamp = now_iso()
             with owned_connection(db()) as connection:
                 cloud_deletion_service.lock_vault_for_totals(
@@ -5399,6 +5426,9 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 cloud_deletion_service.record_failed(
                     connection, failures=failed, at=stamp, actor=actor,
                 )
+                if unreadable:
+                    # GetObjectRetention was refused: deferred, with a Problem (#749).
+                    retention_lock_service.report_unreadable(connection, vault_id)
                 if locked:
                     # Their grants go now; they stay claimed until the end.
                     cloud_deletion_service.revoke_grants(
@@ -5430,30 +5460,35 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
 def _locked_purge_members(
     client: Any, bucket: str, failed: list[tuple[dict[str, Any], str]],
     deleted: list[dict[str, Any]], locked: dict[int, datetime],
-) -> list[tuple[dict[str, Any], str]]:
+) -> tuple[list[tuple[dict[str, Any], str]], bool]:
     """Split refused members of a locked Vault: still locked, gone, or failed (#736).
 
-    Only the version's observed retention decides: a version locked until a
-    later date waits (``locked``), one that is gone was deleted, anything else
-    stays a failure.
+    Only the version's observed retention decides (``locked_until``: 5 minutes
+    of clock skew, at least an hour): a version locked until a later date
+    waits (``locked``), one that is gone was deleted, anything else stays a
+    failure. A retention S3 refuses to read waits an hour too; the second
+    value says so, for its Problem (#749).
     """
     moment = datetime.now(timezone.utc)
     still_failed: list[tuple[dict[str, Any], str]] = []
+    unreadable = False
     for item, message in failed:
         try:
-            until = retention_lock_service.observed_until(
+            until = retention_lock_service.locked_until(
                 client, bucket=bucket, key=str(item["object_key"]),
-                version_id=str(item["provider_version_id"]))
+                version_id=str(item["provider_version_id"]), now=moment)
         except retention_lock_service.VersionGone:
             deleted.append(item)
             continue
+        except retention_lock_service.RetentionUnreadable as exc:
+            until, unreadable = exc.until, True
         except Exception:
             until = None
-        if until is not None and until > moment:
+        if until is not None:
             locked[int(item["id"])] = until
         else:
             still_failed.append((item, message))
-    return still_failed
+    return still_failed, unreadable
 
 
 @retry_database_unit
