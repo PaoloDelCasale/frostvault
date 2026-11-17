@@ -73,6 +73,12 @@
         "arn:aws:s3:::frostvault-*",
         "arn:aws:s3:::frostvault-*/*"
       ]
+    },
+    {
+      "Sid": "NeverDeleteTheSystemBucket",
+      "Effect": "Deny",
+      "Action": "s3:DeleteBucket",
+      "Resource": "arn:aws:s3:::frostvault-system-*"
     }
   ]
 }
