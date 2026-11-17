@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
+import { fetchBillingExport, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
@@ -15,8 +15,9 @@ import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
 import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
-import { formatBytes, formatMoney } from "@/pages/archive/format";
-import { vaultFilesUrl } from "@/router";
+import { billedMoney } from "@/components/BilledCost";
+import { formatBytes, formatMonth, formatMoney } from "@/pages/archive/format";
+import { systemUrl, vaultFilesUrl } from "@/router";
 
 const STATS_REFRESH_MS = 60_000;
 type SortKey = "name" | "state" | "protected" | "local" | "cloud" | "cost" | "problems";
@@ -83,6 +84,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
   const [deleting, setDeleting] = useState<GeneralVault | null>(null);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
+  // The AWS bill of the newest month, when the billing export is read (#738).
+  const billing = useQuery({ queryKey: ["billing-export"], queryFn: fetchBillingExport, retry: false });
+  const billed = billing.data?.state === "ok" ? billing.data.periods[0] : undefined;
   const queryClient = useQueryClient();
   const [retrying, setRetrying] = useState<number | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -178,8 +182,11 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
           detail={problems ? <a href="/problems" className="font-semibold text-ink underline">{t("overview.tile_problems_link")}</a> : t("overview.tile_problems_none")} />
         <Tile testId="tile-cost" icon={<Euro className="size-4" />} label={t("overview.tile_cost", { month: overview?.month ?? "—" })}
           value={overview ? money(overview.monthly_estimate) : "—"}
-          detail={overview ? <span title={t("essential.estimate_caveat")}>{overview.previous_month_delta === null ? t("essential.no_comparison")
-            : t("essential.month_delta", { cost: money(overview.previous_month_delta, true) })}</span> : null} />
+          detail={<>{overview ? <span title={t("essential.estimate_caveat")}>{overview.previous_month_delta === null ? t("essential.no_comparison")
+            : t("essential.month_delta", { cost: money(overview.previous_month_delta, true) })}</span> : null}
+          {billed ? <span className="block" data-testid="tile-cost-billed">{t("billed_cost.overview_billed", { month: formatMonth(billed.period, locale), cost: billedMoney(billed.total, billing.data?.currency, locale) })}</span>
+            : billing.data && billing.data.state !== "unavailable" && billing.data.state !== "checking"
+              ? <a href={systemUrl("billing-export")} className="block font-semibold text-ink underline" data-testid="tile-cost-setup">{t(billing.data.state === "error" ? "billed_cost.status_link" : "billed_cost.setup_link")}</a> : null}</>} />
       </section>
 
       <section className="grid min-w-0 gap-2" aria-labelledby="overview-vaults">

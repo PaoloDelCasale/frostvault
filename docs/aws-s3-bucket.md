@@ -169,6 +169,10 @@ apart from its one CloudWatch statement:
 | CloudWatch (`"*"`) | `cloudwatch:GetMetricStatistics`: the daily [Vault Bucket sizes](#vault-bucket-sizes-from-cloudwatch). CloudWatch actions take no resource ARN |
 | Deny | `s3:BypassGovernanceRetention`, always |
 
+The same `s3:ListBucket` and `s3:GetObject` let FrostVault read the AWS billing
+export under `billing/cur/` in the System Bucket ([billed-cost.md](billed-cost.md));
+no Cost Explorer (`ce:*`) permission is used.
+
 FrostVault never holds `s3:BypassGovernanceRetention`, and this policy never
 grants `s3:DeleteBucket`: a Vault Bucket outlives its Vault until #739. Unlike
 the shared archive bucket, whose settings the application only reads,

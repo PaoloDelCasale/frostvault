@@ -6,6 +6,7 @@ import { useI18n } from "@/i18n";
 import { RecoveryKitSection } from "./RecoveryKitSection";
 import { MetadataBackupsSection } from "./MetadataBackupsSection";
 import { SourceVolumesSection } from "./SourceVolumesSection";
+import { BillingExportSection } from "./BillingExportSection";
 
 /** Same heading pattern as the kit, backup and source-volume sections. */
 function SystemSection({ id, title, summary, children }: { id: string; title: string; summary: string; children: ReactNode }) {
@@ -32,6 +33,7 @@ export function GeneralPage({ overview }: { overview?: Overview }) {
     <RecoveryKitSection />
     <MetadataBackupsSection />
     <SourceVolumesSection />
+    <BillingExportSection />
     <SystemSection id="email" title={t("system.email_title")} summary={t("system.email_summary")}>
       {overview?.email_configured === false
         ? <p role="status" data-testid="email-not-configured">{t("system.email_off")}</p>

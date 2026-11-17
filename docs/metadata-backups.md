@@ -116,6 +116,10 @@ A shared bucket of an installation from before Vault Buckets no longer receives 
   credentials variable is set; an instance role alone is not probed: set
   `AWS_PROFILE` or `METADATA_BACKUP_BUCKET` in that case.
 
+The System Bucket also receives the AWS billing export the Owner may set up
+under `billing/cur/` ([billed-cost.md](billed-cost.md)); its bucket policy for
+`bcm-data-exports.amazonaws.com` does not affect these checks.
+
 The General page names the System Bucket next to the metadata backups and in the
 Recovery Kit panel. Setting `METADATA_BACKUP_BUCKET` later switches new backups
 to it; a bucket FrostVault created stays in AWS with its backups.
@@ -139,6 +143,8 @@ involved. An operator-supplied `METADATA_BACKUP_BUCKET` outside `frostvault-*`
 needs `s3:GetBucketLocation`, `s3:GetBucketVersioning`,
 `s3:GetBucketPublicAccessBlock`, `s3:GetEncryptionConfiguration`, `s3:PutObject`
 and `s3:GetObject` on that bucket instead; FrostVault never configures it.
+To read the billing export there (#738), also grant `s3:ListBucket` on that
+bucket: see [billed-cost.md](billed-cost.md#iam-for-frostvault).
 
 ### Upgrading to the System Bucket
 

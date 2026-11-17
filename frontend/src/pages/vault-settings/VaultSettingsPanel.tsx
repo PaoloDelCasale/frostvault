@@ -15,6 +15,7 @@ import { CloudUsagePanel } from "./CloudUsagePanel";
 import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { MinimumStoragePanel } from "./MinimumStoragePanel";
+import { BilledCostPanel } from "./BilledCostPanel";
 import { RetentionPanel } from "./RetentionPanel";
 import { UploadVerificationPanel } from "./UploadVerificationPanel";
 import { errorMessage } from "@/lib/errorMessage";
@@ -112,6 +113,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     </SettingsSection>
     <SettingsSection id="usage" highlighted={highlight === "usage"} title={t("cloud_usage.title")} summary={t("cloud_usage.summary")}>
       <CloudUsagePanel vaultId={vaultId} />
+    </SettingsSection>
+    <SettingsSection id="billed-cost" highlighted={highlight === "billed-cost"} title={t("billed_cost.title")} summary={t("billed_cost.summary")}
+      more={<><p>{t("billed_cost.how")}</p><p>{t("billed_cost.lag")}</p></>}>
+      <BilledCostPanel vaultId={vaultId} />
     </SettingsSection>
     <SettingsSection id="minimum" highlighted={highlight === "minimum"} title={t("minimum_storage.title")} summary={t("minimum_storage.summary")}
       more={<><p>{t("minimum_storage.how")}</p><p>{t("minimum_storage.small_objects")}</p></>}>

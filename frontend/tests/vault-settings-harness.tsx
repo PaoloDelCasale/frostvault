@@ -89,6 +89,40 @@ export const defaultCloudUsage = {
   measured: { status: "shared_bucket" } as Record<string, unknown>,
 };
 
+/** No billing export yet (#738): only the Cost Estimate and the setup link. */
+export const defaultVaultBilledCost = {
+  state: "not_configured",
+  bucket: "frostvault-system-k3x9q0ab",
+  prefix: "billing/cur/",
+  checked_at: "2026-11-17T10:00:00+00:00",
+  next_check_at: "2026-11-17T16:00:00+00:00",
+  read_at: null as string | null,
+  exported_at: null as string | null,
+  data_through: null as string | null,
+  currency: null as string | null,
+  error: null as string | null,
+  vault_id: 1,
+  vault_bucket: "frostvault-foto-ab12cd34",
+  shared: false,
+  periods: [] as { period: string; total: number; categories: Record<string, number> }[],
+  estimate: { monthly: 1.2345, currency: "EUR", pricing_effective_at: "2026-10-01" },
+};
+
+/** The System page's view of the same state (#738). */
+export const defaultBillingExport = {
+  state: "not_configured",
+  bucket: "frostvault-system-k3x9q0ab",
+  prefix: "billing/cur/",
+  checked_at: "2026-11-17T10:00:00+00:00",
+  next_check_at: "2026-11-17T16:00:00+00:00",
+  read_at: null as string | null,
+  exported_at: null as string | null,
+  data_through: null as string | null,
+  currency: null as string | null,
+  error: null as string | null,
+  periods: [] as unknown[],
+};
+
 export const defaultLifecycle = {
   profile: { transitions: [] as { days: number; storage_class: string }[] },
   guided_profiles: {
@@ -158,6 +192,9 @@ export function createVaultAccessFetch(
     }
     if (/^\/api\/vaults\/\d+\/cloud-usage$/.test(url) && method === "GET") {
       return jsonResponse(defaultCloudUsage);
+    }
+    if (/^\/api\/vaults\/\d+\/billed-cost$/.test(url) && method === "GET") {
+      return jsonResponse(defaultVaultBilledCost);
     }
     if (url === "/api/vault/move") {
       return jsonResponse({ vault_id: 1, targets: [] });

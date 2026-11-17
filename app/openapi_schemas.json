@@ -4664,6 +4664,423 @@
         "measured"
       ],
       "description": "A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket."
+    },
+    "BillingExportStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure.",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "unavailable",
+            "checking",
+            "not_configured",
+            "waiting",
+            "ok",
+            "error"
+          ],
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error)."
+        },
+        "bucket": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The System Bucket the export is delivered to."
+        },
+        "prefix": {
+          "type": "string",
+          "description": "The S3 path prefix of the export in the System Bucket."
+        },
+        "checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_check_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When FrostVault last read the export (only when ok)."
+        },
+        "exported_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When AWS delivered the Manifest.json that was read."
+        },
+        "data_through": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The newest usage end in the export, never after exported_at."
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The billing currency (ISO 4217)."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "periods": {
+          "type": "array",
+          "description": "Billing periods read, newest first; empty unless state is ok.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "period": {
+                "type": "string",
+                "description": "YYYY-MM"
+              },
+              "total": {
+                "type": "number"
+              },
+              "vaults": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "vault_id": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "categories": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Billed amounts by category, in the billing currency; every category is present.",
+                      "properties": {
+                        "storage": {
+                          "type": "number"
+                        },
+                        "requests": {
+                          "type": "number"
+                        },
+                        "transitions": {
+                          "type": "number"
+                        },
+                        "retrievals": {
+                          "type": "number"
+                        },
+                        "data_transfer": {
+                          "type": "number"
+                        },
+                        "other": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "storage",
+                        "requests",
+                        "transitions",
+                        "retrievals",
+                        "data_transfer",
+                        "other"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "vault_id",
+                    "name",
+                    "bucket",
+                    "total",
+                    "categories"
+                  ]
+                }
+              },
+              "installation": {
+                "type": "array",
+                "description": "The System Bucket and shared buckets of older Vaults: not attributed to one Vault.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "shared"
+                      ]
+                    },
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "categories": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Billed amounts by category, in the billing currency; every category is present.",
+                      "properties": {
+                        "storage": {
+                          "type": "number"
+                        },
+                        "requests": {
+                          "type": "number"
+                        },
+                        "transitions": {
+                          "type": "number"
+                        },
+                        "retrievals": {
+                          "type": "number"
+                        },
+                        "data_transfer": {
+                          "type": "number"
+                        },
+                        "other": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "storage",
+                        "requests",
+                        "transitions",
+                        "retrievals",
+                        "data_transfer",
+                        "other"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "role",
+                    "bucket",
+                    "total",
+                    "categories"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "period",
+              "total",
+              "vaults",
+              "installation"
+            ]
+          }
+        }
+      },
+      "required": [
+        "state",
+        "bucket",
+        "prefix",
+        "checked_at",
+        "next_check_at",
+        "read_at",
+        "exported_at",
+        "data_through",
+        "currency",
+        "error",
+        "periods"
+      ]
+    },
+    "VaultBilledCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A Vault's Billed Cost from the billing export (#738), next to its Cost Estimate.",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "unavailable",
+            "checking",
+            "not_configured",
+            "waiting",
+            "ok",
+            "error"
+          ],
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error)."
+        },
+        "bucket": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The System Bucket the export is delivered to."
+        },
+        "prefix": {
+          "type": "string",
+          "description": "The S3 path prefix of the export in the System Bucket."
+        },
+        "checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_check_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When FrostVault last read the export (only when ok)."
+        },
+        "exported_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When AWS delivered the Manifest.json that was read."
+        },
+        "data_through": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The newest usage end in the export, never after exported_at."
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The billing currency (ISO 4217)."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_bucket": {
+          "type": "string"
+        },
+        "shared": {
+          "type": "boolean",
+          "description": "The Vault is in a shared bucket: periods are the whole bucket's, for every Vault in it."
+        },
+        "periods": {
+          "type": "array",
+          "description": "Newest first; empty unless state is ok.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "period": {
+                "type": "string",
+                "description": "YYYY-MM"
+              },
+              "total": {
+                "type": "number"
+              },
+              "categories": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Billed amounts by category, in the billing currency; every category is present.",
+                "properties": {
+                  "storage": {
+                    "type": "number"
+                  },
+                  "requests": {
+                    "type": "number"
+                  },
+                  "transitions": {
+                    "type": "number"
+                  },
+                  "retrievals": {
+                    "type": "number"
+                  },
+                  "data_transfer": {
+                    "type": "number"
+                  },
+                  "other": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "storage",
+                  "requests",
+                  "transitions",
+                  "retrievals",
+                  "data_transfer",
+                  "other"
+                ]
+              }
+            },
+            "required": [
+              "period",
+              "total",
+              "categories"
+            ]
+          }
+        },
+        "estimate": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "This month's Cost Estimate from AWS list prices, never an AWS bill.",
+          "properties": {
+            "monthly": {
+              "type": "number"
+            },
+            "currency": {
+              "type": "string"
+            },
+            "pricing_effective_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "monthly",
+            "currency",
+            "pricing_effective_at"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "bucket",
+        "prefix",
+        "checked_at",
+        "next_check_at",
+        "read_at",
+        "exported_at",
+        "data_through",
+        "currency",
+        "error",
+        "vault_id",
+        "vault_bucket",
+        "shared",
+        "periods",
+        "estimate"
+      ]
     }
   }
 }

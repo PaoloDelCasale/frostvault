@@ -69,6 +69,7 @@ from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import minimum_storage as minimum_storage_service
 from .services import bucket_metrics as bucket_metrics_service
+from .services import billed_cost as billed_cost_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
 from .oidc import (
@@ -1719,6 +1720,24 @@ def vault_cloud_usage(vault_id: int, _: dict[str, Any] = Depends(current_user)):
             return bucket_metrics_service.vault_usage(connection, vault_id)
     except LookupError as exc:
         raise LocalizedHTTPError(404, "api.cloud_usage.not_found") from exc
+
+
+@app.get("/api/vaults/{vault_id}/billed-cost", response_model=response_model("VaultBilledCost"))
+def vault_billed_cost(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    """The Vault's Billed Cost from the billing export (#738), by billing
+    period and category, with the export's status; never a Cost Explorer call."""
+    try:
+        with db() as connection:
+            return billed_cost_service.vault_view(connection, vault_id)
+    except LookupError as exc:
+        raise LocalizedHTTPError(404, "api.billed_cost.not_found") from exc
+
+
+@app.get("/api/billing-export", response_model=response_model("BillingExportStatus"))
+def billing_export_status(_: dict[str, Any] = Depends(current_user)):
+    """The billing export's status and every known bucket's Billed Cost (#738)."""
+    with db() as connection:
+        return billed_cost_service.installation_view(connection)
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

@@ -39,6 +39,11 @@ export function vaultSettingsUrl(vaultId: number, section?: string): string {
   return `/vaults/${vaultId}/settings${section ? `#${section}` : ""}`;
 }
 
+/** The System page; `section` names a section to scroll to (`#billing-export`). */
+export function systemUrl(section?: string): string {
+  return `/system${section ? `#${section}` : ""}`;
+}
+
 /**
  * Translate a pre-#512 address (`/?vault_id=…`, `/general`) to its current
  * route. Email and stored links keep working; `null` means already current.

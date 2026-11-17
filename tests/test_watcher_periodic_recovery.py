@@ -87,6 +87,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 (storage, "ensure_system_bucket_once"),
                 (storage, "ensure_vault_buckets_once"),
                 (storage, "read_bucket_metrics_once"),
+                (storage, "read_billed_cost_once"),
                 (storage, "observe_queue_stall"),
                 (storage.health_service, "mark_worker_heartbeat"),
             ):
@@ -110,12 +111,12 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected <= cycles[2][1], "missed files must not need a restart")
             self.assertEqual(cycles[2][0], [v["id"] for v in vaults] * 2)
             # The Vault Deletion (#717), Automatic Duplicate Cleanup (#726),
-            # System Bucket (#734), Vault Bucket (#735) and CloudWatch size (#737)
-            # polls have their own cadence and coverage.
+            # System Bucket (#734), Vault Bucket (#735), CloudWatch size (#737)
+            # and Billed Cost (#738) polls have their own cadence and coverage.
             self.assertEqual([call.args[0] for call in submit.call_args_list
                               if call.args[0] not in {"vault_deletion", "duplicate_cleanup",
                                                       "system_bucket", "vault_buckets",
-                                                      "bucket_metrics"}],
+                                                      "bucket_metrics", "billed_cost"}],
                              ["scan", "scan"])
             queries = [call.args[0] for call in connection.execute.call_args_list]
             self.assertTrue(any("v.lifecycle='active'" in sql for sql in queries))

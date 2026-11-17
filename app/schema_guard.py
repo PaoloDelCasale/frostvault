@@ -30,7 +30,7 @@ SCHEMA_REVISIONS = (
     "0001_baseline", "0002_file_ownership", "0003_job_admitted_generation",
     "0004_local_part_digests", "0005_vault_deletions", "0006_duplicate_cleanup",
     "0007_duplicate_cleanup_totals", "0008_system_bucket", "0009_class_entry",
-    "0010_vault_buckets", "0011_bucket_metrics",
+    "0010_vault_buckets", "0011_bucket_metrics", "0012_billed_cost",
 )
 SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 
