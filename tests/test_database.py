@@ -47,7 +47,8 @@ BASELINE_TABLES = {
     "metadata_restore_vaults", "metadata_restore_updates",
 }
 # Tables added by later linear revisions of the chain.
-HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_bucket_provisioning"}
+HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_bucket_provisioning",
+                                 "vault_bucket_metric_days", "vault_bucket_metric_reads"}
 
 
 def _tables(path: Path) -> set[str]:
@@ -377,6 +378,21 @@ class StartupGuardTests(_GuardFixture):
         self.assertEqual(dict(target), {"bucket": "shared", "key_layout": "vault_prefix",
                                         "retention_lock_days": None})
         self.assertEqual((vault["lifecycle"], pending["n"]), ("active", 0))
+
+    def test_catalog_of_the_previous_revision_gets_no_invented_bucket_metrics(self) -> None:
+        """#737: the CloudWatch sizes start empty; nothing is backfilled."""
+        _migrate_to(self.dsn, "0010_vault_buckets")
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region, key_layout) "
+            "VALUES (1, 's3', 'frostvault-docs-ab12cd34', 'eu-south-1', 'bucket_root')",
+            "INSERT INTO vaults(id, target_id, name, source_root) VALUES (1, 1, 'Docs', '/sources/docs')")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            counts = connection.execute(
+                "SELECT (SELECT COUNT(*) FROM vault_bucket_metric_days) AS days, "
+                "(SELECT COUNT(*) FROM vault_bucket_metric_reads) AS reads").fetchone()
+        self.assertEqual(dict(counts), {"days": 0, "reads": 0})
 
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
@@ -821,6 +837,29 @@ class BaselineSchemaTests(unittest.TestCase):
         self.execute("UPDATE vaults SET lifecycle = 'active' WHERE id = %s", (vault["id"],))
         self.rejects("UPDATE vaults SET target_id = %s WHERE id = %s", (third, vault["id"]))
         self.rejects("UPDATE vaults SET lifecycle = 'provisioning' WHERE id = %s", (vault["id"],))
+
+    def test_bucket_metrics_rows(self) -> None:
+        """#737: one row per Vault and day; an outcome names its error code only on failure."""
+        vault = self.vault()
+        day = ("INSERT INTO vault_bucket_metric_days(vault_id, day, storage_bytes, object_count, read_at) "
+               "VALUES (%s, %s, %s::jsonb, %s, now())")
+        self.execute(day, (vault["id"], "2026-11-15", '{"DeepArchiveStorage": 10}', 3))
+        self.execute(day, (vault["id"], "2026-11-16", '{}', None))
+        self.rejects(day, (vault["id"], "2026-11-16", '{}', 1), error=psycopg.errors.UniqueViolation)
+        self.rejects(day, (vault["id"], "2026-11-17", '[]', 1), error=psycopg.errors.CheckViolation)
+        self.rejects(day, (vault["id"], "2026-11-17", '{}', -1), error=psycopg.errors.CheckViolation)
+        read = ("INSERT INTO vault_bucket_metric_reads(vault_id, attempted_at, outcome, error_code) "
+                "VALUES (%s, now(), %s, %s)")
+        for outcome, code in (("ok", "AccessDenied"), ("access_denied", None), ("failed", " "),
+                              ("unknown", None)):
+            with self.subTest(outcome=outcome, code=code):
+                self.rejects(read, (vault["id"], outcome, code), error=psycopg.errors.CheckViolation)
+        self.execute(read, (vault["id"], "access_denied", "AccessDenied"))
+        # The rows go with their Vault.
+        self.execute("DELETE FROM vaults WHERE id = %s", (vault["id"],))
+        self.assertEqual(self.execute(
+            "SELECT (SELECT COUNT(*) FROM vault_bucket_metric_days) "
+            "+ (SELECT COUNT(*) FROM vault_bucket_metric_reads) AS n")[0]["n"], 0)
 
     def test_vault_lifecycle_combinations(self) -> None:
         vault = self.vault()

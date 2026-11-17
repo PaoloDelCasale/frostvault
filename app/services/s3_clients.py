@@ -115,6 +115,16 @@ def s3_client(*, region: str, preflight: bool = False, non_idempotent: bool = Fa
         return client
 
 
+def new_service_client(service: str, *, region: str, config: Config) -> Any:
+    """A new private client for another AWS service (CloudWatch, #737).
+
+    Built on its own Session under the same lock as the S3 clients; it is not
+    cached, and the caller closes it when done.
+    """
+    with _lock:
+        return boto3.session.Session().client(service, region_name=region, config=config)
+
+
 def shutdown_s3_clients() -> None:
     """Close this process's clients only; call after all users have drained."""
     with _lock:

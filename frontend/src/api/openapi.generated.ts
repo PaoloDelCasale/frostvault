@@ -1123,6 +1123,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/cloud-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Cloud Usage
+         * @description A Vault's cloud usage (#737): the catalog's Cost Estimate by storage
+         *     class next to the bytes and objects CloudWatch measured in its Vault
+         *     Bucket once a day. Reads only the catalog, never AWS.
+         */
+        get: operations["vault_cloud_usage_api_vaults__vault_id__cloud_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/creation/cancel": {
         parameters: {
             query?: never;
@@ -2817,6 +2839,72 @@ export interface components {
             stage: "reserved" | "created" | "configured" | "verified" | null;
             /** @enum {string} */
             state: "creating" | "failed" | "settling" | "ready";
+            vault_id: number;
+        };
+        /** @description A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket. */
+        VaultCloudUsage: {
+            bucket: string;
+            dedicated_bucket: boolean;
+            /** @description The catalog's available versions by class with a Cost Estimate from AWS list prices. */
+            estimate: {
+                by_storage_class: {
+                    bytes: number;
+                    monthly_cost: number;
+                    storage_class: string;
+                    versions: number;
+                }[];
+                bytes: number;
+                currency: string;
+                monthly_cost: number;
+                pricing_effective_at: string;
+                region: string;
+                versions: number;
+            };
+            /** @description Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737). */
+            measured: {
+                by_storage_class?: {
+                    /** @description The objects' own bytes in this class. */
+                    bytes: number;
+                    overhead: {
+                        /** @description The storage class whose price AWS applies to these bytes. */
+                        billed_as: string;
+                        bytes: number;
+                        /** @enum {string} */
+                        kind: "object_overhead" | "size_overhead" | "staging";
+                        /** @description The CloudWatch StorageType dimension value. */
+                        storage_type: string;
+                    }[];
+                    /** @description Bytes AWS bills on top of the objects of this class. */
+                    overhead_bytes: number;
+                    storage_class: string;
+                }[];
+                bytes?: number;
+                /** @description UTC day of the newest data point. */
+                day?: string;
+                /** @description Saved daily totals, newest first. */
+                history?: {
+                    bytes: number;
+                    day: string;
+                    object_count: number | null;
+                    overhead_bytes: number;
+                }[];
+                last_read?: {
+                    attempted_at: string;
+                    error_code: string | null;
+                    /** @enum {string} */
+                    outcome: "ok" | "no_data" | "access_denied" | "failed";
+                } | null;
+                next_read_after?: string | null;
+                object_count?: number | null;
+                overhead_bytes?: number;
+                read_at?: string;
+                /**
+                 * @description available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.
+                 * @enum {string}
+                 */
+                status: "available" | "pending" | "no_data" | "access_denied" | "failed" | "shared_bucket" | "provisioning";
+            };
+            region: string;
             vault_id: number;
         };
         VaultCreateRequest: {
@@ -4982,6 +5070,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultBucketStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_cloud_usage_api_vaults__vault_id__cloud_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultCloudUsage"];
                 };
             };
             /** @description Validation Error */

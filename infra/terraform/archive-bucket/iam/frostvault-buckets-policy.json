@@ -53,6 +53,12 @@
       "Resource": "arn:aws:s3:::frostvault-*/*"
     },
     {
+      "Sid": "ReadVaultBucketSizesFromCloudWatch",
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricStatistics",
+      "Resource": "*"
+    },
+    {
       "Sid": "NeverBypassGovernanceRetention",
       "Effect": "Deny",
       "Action": "s3:BypassGovernanceRetention",

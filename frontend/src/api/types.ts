@@ -102,6 +102,7 @@ export type UploadReconciliationResponse = components["schemas"]["UploadReconcil
 export type UploadRemediation = components["schemas"]["UploadRemediation"];
 export type ValidationError = components["schemas"]["ValidationError"];
 export type VaultBucketStatus = components["schemas"]["VaultBucketStatus"];
+export type VaultCloudUsage = components["schemas"]["VaultCloudUsage"];
 export type VaultCreateRequest = components["schemas"]["VaultCreateRequest"];
 export type VaultCreateResponse = components["schemas"]["VaultCreateResponse"];
 export type VaultCreationCancelled = components["schemas"]["VaultCreationCancelled"];

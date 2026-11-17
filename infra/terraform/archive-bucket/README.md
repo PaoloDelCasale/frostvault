@@ -47,6 +47,11 @@ role. It is everything FrostVault needs in the buckets it creates, scoped to
 - delete object versions (the accepted single-identity deletion model in the
   project README: Cloud Deletion, Duplicate Cleanup, Vault Deletion).
 
+- read the daily size metrics of the Vault Buckets with
+  `cloudwatch:GetMetricStatistics` (#737). CloudWatch actions take no
+  resource, so this one statement is on `"*"`; it grants no other CloudWatch
+  action (`GetMetricData` is always billed and never used).
+
 It explicitly denies `s3:BypassGovernanceRetention` and never allows
 `s3:DeleteBucket`: deleting a Vault Bucket belongs to #739.
 

@@ -711,6 +711,11 @@ Vault and the System Bucket for metadata backups: attach
 scoped to `arn:aws:s3:::frostvault-*`, which covers the operations above in those
 buckets and never grants `s3:BypassGovernanceRetention` or `s3:DeleteBucket` (see
 [buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
+Its one statement on `"*"` is `cloudwatch:GetMetricStatistics`: once a day
+FrostVault reads the bytes per storage class and the object count of every
+Vault Bucket from CloudWatch, shown on the Vault page next to the catalog's
+estimate ([CloudWatch sizes](docs/aws-s3-bucket.md#vault-bucket-sizes-from-cloudwatch)).
+Without it the Vault page shows a note and only the estimate.
 
 An installation from before Vault Buckets keeps its shared bucket for its older
 Vaults (objects under `vaults/<uuid>/`); the Terraform baseline in

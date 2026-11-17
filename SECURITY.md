@@ -24,7 +24,10 @@ allow time for validation and a coordinated fix before disclosure.
   FrostVault creates itself (a Vault Bucket for every new Vault, the System
   Bucket for metadata backups) need only
   `infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json`, scoped to
-  `arn:aws:s3:::frostvault-*` and `arn:aws:s3:::frostvault-*/*`; never grant
+  `arn:aws:s3:::frostvault-*` and `arn:aws:s3:::frostvault-*/*`, plus
+  `cloudwatch:GetMetricStatistics` on `"*"` (CloudWatch actions take no resource;
+  it only reads the daily size metrics of the Vault Buckets, never
+  `cloudwatch:GetMetricData`, which is always billed); never grant
   `s3:BypassGovernanceRetention`, and keep `s3:DeleteBucket` out of it. A
   shared bucket from before Vault Buckets keeps
   `iam/archive-operator-policy.json`, scoped to that bucket.

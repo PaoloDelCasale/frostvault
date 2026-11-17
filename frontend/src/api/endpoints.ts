@@ -13,6 +13,7 @@ import type {
   MetadataBackupVerification,
   MinimumStorageSummary,
   RecoveryKitStatus,
+  VaultCloudUsage,
   StopProtectionPayload,
   StopProtectionStatus,
   VaultDeletionPreview,
@@ -498,6 +499,11 @@ export function updateDuplicateCleanup(vaultId: number, payload: DuplicateCleanu
 /** Minimum Storage Duration of the Vault's versions (#731): a list-price estimate. */
 export function fetchMinimumStorage(vaultId: number): Promise<MinimumStorageSummary> {
   return apiRequest<MinimumStorageSummary>(`/api/vaults/${vaultId}/minimum-storage`);
+}
+
+/** The catalog's Cost Estimate next to the CloudWatch sizes of the Vault Bucket (#737). */
+export function fetchVaultCloudUsage(vaultId: number): Promise<VaultCloudUsage> {
+  return apiRequest<VaultCloudUsage>(`/api/vaults/${vaultId}/cloud-usage`);
 }
 
 /** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */
