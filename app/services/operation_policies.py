@@ -429,7 +429,7 @@ def queue_auto_uploads(
           )
         ORDER BY lower(f.path)
         """,
-        (vault_id, during_scan, retry_failed_only, retry_failed_only),
+        (vault_id, during_scan, vault_id, retry_failed_only, retry_failed_only),
     ).fetchall()
     queued = 0
     timestamp = current.isoformat()

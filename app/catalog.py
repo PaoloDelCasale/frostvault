@@ -215,6 +215,16 @@ def _within_rename_window(left: Any, right: Any) -> bool:
     return abs(start - end) <= AUTO_RENAME_WINDOW
 
 
+# A Local Copy a rename may have moved (#621): fingerprinted, regular, gone
+# and not held. Exactly the predicate of files_rename_missing_size_idx (#759),
+# so PostgreSQL answers each lookup from that small partial index.
+def _rename_source_sql(alias: str) -> str:
+    return f"""{alias}.local_presence='missing'
+              AND {alias}.local_file_type='regular'
+              AND {alias}.local_sha256 IS NOT NULL
+              AND {alias}.held_version_id IS NULL"""
+
+
 def awaiting_rename_analysis_sql(alias: str) -> str:
     """A new Local Copy that may be a Local Copy renamed without a scan (#621).
 
@@ -222,20 +232,30 @@ def awaiting_rename_analysis_sql(alias: str) -> str:
     size of a fingerprinted Local Copy that went missing within the rename
     window. Its digest must decide whether it is that file before any
     automatic upload treats it as a new Vault File (ADR-0001).
+
+    The fragment holds one ``%s`` placeholder, the Vault id of the statement,
+    for the short-circuit (#759). The statement must already restrict
+    ``{alias}.vault_id`` to that same id: across Vaults the short-circuit
+    would be wrong without any error: an uncorrelated EXISTS that PostgreSQL
+    evaluates once per statement, in the same snapshot as the rest. A Vault
+    without any rename source skips the per-file analysis entirely; otherwise
+    each lookup is a probe into ``files_rename_missing_size_idx``.
     """
     window = int(AUTO_RENAME_WINDOW.total_seconds())
     return f"""(
         {alias}.local_sha256 IS NULL
         AND {alias}.cloud_since IS NULL
         AND {alias}.held_version_id IS NULL
+        AND EXISTS (
+            SELECT 1 FROM files any_source
+            WHERE any_source.vault_id=%s
+              AND {_rename_source_sql("any_source")}
+        )
         AND NOT EXISTS (SELECT 1 FROM jobs own WHERE own.file_id={alias}.id)
         AND EXISTS (
             SELECT 1 FROM files source
             WHERE source.vault_id={alias}.vault_id AND source.id<>{alias}.id
-              AND source.local_presence='missing'
-              AND source.local_file_type='regular'
-              AND source.local_sha256 IS NOT NULL
-              AND source.held_version_id IS NULL
+              AND {_rename_source_sql("source")}
               AND source.local_size={alias}.local_size
               AND source.local_observed_at
                   BETWEEN {alias}.local_observed_at - interval '{window} seconds'
@@ -675,7 +695,7 @@ class ArchiveCatalog:
               AND (f.held_version_id IS NOT NULL OR {awaiting_rename_analysis_sql("f")})
             ORDER BY f.path
             """,
-            (vault_id,),
+            (vault_id, vault_id),
         ).fetchall()
         return [
             {
