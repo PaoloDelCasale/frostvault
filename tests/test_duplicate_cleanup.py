@@ -26,6 +26,7 @@ from app.services.cloud_deletion import load_vault_health, observation_is_unconf
 from app.sessions import create_session, csrf_token_for
 from tests.owner_fixtures import insert_owner
 from tests.postgres import database_dsn
+from tests.test_cloud_deletion_safety import simulated_mount
 from tests.test_cloud_deletion_selection import SelectionFixture
 
 PHOTO = b"photo-bytes-726"
@@ -444,6 +445,56 @@ class CountTests(DuplicateCleanupFixture):
                           outcome["unseen_count"]), ("none", 0, 0, 1))
         self.assertEqual(self.count("SELECT 1 FROM jobs WHERE action='cloud-purge'"), 0)
         self.assertEqual(self.status()["last_outcome"]["unseen_count"], 1)
+
+
+class NestedMountTests(DuplicateCleanupFixture):
+    """#753: a mount nested under the root, even a bind of the same filesystem
+    (simulated through the descriptor mount-ID seam), proves no absence: in
+    the preview, the automatic cleanup and «Delete from cloud»."""
+
+    def test_the_preview_and_the_count_prove_nothing(self) -> None:
+        self.moved("photo.jpg", PHOTO)
+        self.configure()
+        self.assertEqual(self.status()["current"]["count"], 1)
+        with simulated_mount(self.source / "old"):
+            with self.assertRaisesRegex(cloud_deletion.CloudDeletionError, "Nested mount"):
+                self.preview(listing=cloud_deletion.ListingFilter(), duplicates_only=True)
+            with self.assertRaisesRegex(cloud_deletion.CloudDeletionError, "Nested mount"):
+                self.preview(paths=["old/photo.jpg"])
+            status = self.status()
+        self.assertEqual((status["current"], status["waiting"], status["ready"], status["unseen"]),
+                         (None, None, None, None))
+
+    def test_the_automatic_cleanup_schedules_nothing(self) -> None:
+        self.moved("photo.jpg", PHOTO)
+        self.configure()
+        with simulated_mount(self.source / "old"):
+            outcome = self.run_cleanup()
+        self.assertEqual(outcome["outcome"], "skipped")
+        self.assertEqual(self.rows("SELECT id FROM jobs WHERE action='cloud-purge'"), [])
+
+    def test_delete_from_cloud_is_refused_and_a_scheduled_group_is_cancelled(self) -> None:
+        photo = self.current(self.moved("photo.jpg", PHOTO))
+        with simulated_mount(self.source / "old"):
+            with self.assertRaisesRegex(cloud_deletion.CloudDeletionError, "Nested mount"):
+                self.schedule(paths=["old/photo.jpg"])
+        self.assertEqual(self.rows("SELECT id FROM jobs WHERE action='cloud-purge'"), [])
+        manual = self.schedule(paths=["old/photo.jpg"])
+        with simulated_mount(self.source / "old"):
+            self.run_purge(manual.job_ids[0])
+        self.assertEqual(self.statuses(manual.group_id), ["cancelled"])
+        self.assertEqual(self.provider.deleted, [])
+        self.assertTrue(photo)
+
+    def test_a_mount_appearing_before_execution_cancels_an_automatic_group(self) -> None:
+        self.moved("photo.jpg", PHOTO)
+        self.configure()
+        outcome = self.run_cleanup(utcnow() - timedelta(days=8))  # its seven days have passed
+        self.assertEqual(outcome["file_count"], 1)
+        with simulated_mount(self.source / "old"):
+            self.drain(outcome["group_id"])
+        self.assertEqual(self.statuses(outcome["group_id"]), ["cancelled"])
+        self.assertEqual(self.provider.deleted, [])
 
 
 class MinimumStorageTests(DuplicateCleanupFixture):

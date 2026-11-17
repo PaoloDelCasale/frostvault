@@ -46,7 +46,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from . import retention_lock, source_layout, vault_relocation
+from . import retention_lock, source_identity, source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .vault_paths import object_prefix
 from .component_health import load_vault_health
@@ -188,6 +188,9 @@ def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
 
     ENOENT below a verified existing parent proves absence. Permission errors,
     replaced roots, missing mounts, symlinks and nested mounts are not absence.
+    A nested mount is any directory whose descriptor is on another mount than
+    the root (its kernel mount ID differs), so a bind mount of the same
+    filesystem counts too; an unreadable mount ID is not absence either (#753).
     No local file (even an unsupported entry) can authorize a cloud deletion.
     """
     _present_paths(vault, paths, first_only=True)
@@ -221,6 +224,7 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
                 or vault_relocation.opened_root_identity(root) != vault["root_identity"]):
             raise CloudDeletionError("Vault root identity changed")
         root_device = os.fstat(root).st_dev
+        root_mount = source_layout.descriptor_mount_id(root)
         for path in paths:
             relative = PurePosixPath(path)
             if not path or relative.is_absolute() or ".." in relative.parts or str(relative) != path:
@@ -234,8 +238,11 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
                     except FileNotFoundError:
                         break
                     children.append(child)
+                    # Compare descriptors, never a /proc path: mountinfo lists
+                    # no /proc/self/fd/N, and re-reading it per directory cost
+                    # most of the check (#753).
                     if (os.fstat(child).st_dev != root_device
-                            or source_layout.path_is_mount(f"/proc/self/fd/{child}")):
+                            or source_layout.descriptor_mount_id(child) != root_mount):
                         raise CloudDeletionError("Nested mount prevents confirming absence")
                     parent = child
                 else:
@@ -254,7 +261,8 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
             raise CloudDeletionError("Vault root changed during absence check")
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
             raise CloudDeletionError("Source Volume changed during absence check")
-    except (OSError, vault_relocation.VaultRelocationError) as exc:
+    except (OSError, vault_relocation.VaultRelocationError,
+            source_identity.MountIdentityError) as exc:
         raise CloudDeletionError("Local absence cannot be confirmed") from exc
     finally:
         for descriptor in reversed(descriptors):

@@ -9,6 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +35,11 @@ _runtime_mount_state: dict[str, dict[str, object]] = {}
 _known_volume_aliases: set[str] = set()
 _identity_enforcement_ready = False
 _expected_identities: dict[str, tuple[str, str]] = {}
+# One decoded mountinfo per path-walking operation (#753): the set of mount
+# points or the error reading it, filled on first use inside the scope.
+_mount_points_scope: ContextVar[list[frozenset[str] | Exception] | None] = ContextVar(
+    "frostvault_mount_points_scope", default=None,
+)
 
 
 class SourcesLayoutError(Exception):
@@ -75,9 +83,45 @@ def path_is_mount(path: Path | str) -> bool:
     """
     target = os.path.normpath(os.path.abspath(os.fspath(path)))
     try:
-        return target in source_identity.mount_points()
+        return target in _mount_points()
     except source_identity.MountIdentityError:
         return False
+
+
+def _mount_points() -> frozenset[str]:
+    scope = _mount_points_scope.get()
+    if scope is None:
+        return source_identity.mount_points()
+    if not scope:
+        try:
+            scope.append(source_identity.mount_points())
+        except source_identity.MountIdentityError as exc:
+            scope.append(exc)
+    if isinstance(scope[0], Exception):
+        raise scope[0]
+    return scope[0]
+
+
+@contextmanager
+def mount_points_once() -> Iterator[None]:
+    """Read and decode mountinfo at most once for every ``path_is_mount`` within.
+
+    Path-walking callers check each ancestor of a path; without this scope
+    each probe re-reads ``/proc/self/mountinfo`` (#753). The snapshot lives
+    only for the operation, so a later operation sees later mounts.
+    """
+    token = _mount_points_scope.set([])
+    try:
+        yield
+    finally:
+        _mount_points_scope.reset(token)
+
+
+def descriptor_mount_id(fd: int) -> int:
+    """Mount-identity probe seam for an open descriptor — mockable on CI hosts
+    that cannot create a nested bind mount (#753). Raises
+    ``source_identity.MountIdentityError`` when it cannot be read."""
+    return source_identity.descriptor_mount_id(fd)
 
 
 def path_is_writable(path: Path | str) -> bool:

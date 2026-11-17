@@ -8,11 +8,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 FINGERPRINT_VERSION = "linux-mountinfo-v1"
 MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+FDINFO_DIR = Path("/proc/self/fdinfo")
+_FDINFO_MOUNT_ID = re.compile(r"mnt_id:[ \t]*([0-9]+)[ \t]*")
 
 # Virtual/container filesystems do not provide an operator-volume identity.
 _UNSUPPORTED_FILESYSTEMS = {
@@ -108,6 +111,30 @@ def parse_mountinfo(text: str) -> tuple[MountInfo, ...]:
 
 def read_mountinfo_text() -> str:
     return MOUNTINFO_PATH.read_text(encoding="utf-8")
+
+
+def mount_id_from_fdinfo(text: str) -> int:
+    """The ``mnt_id`` of a ``/proc/self/fdinfo/<fd>`` text; exactly one, or raise."""
+    lines = [line for line in text.splitlines() if line.startswith("mnt_id:")]
+    match = _FDINFO_MOUNT_ID.fullmatch(lines[0]) if len(lines) == 1 else None
+    if match is None:
+        raise MountIdentityError("descriptor mount identity is not interpretable")
+    return int(match.group(1))
+
+
+def descriptor_mount_id(fd: int) -> int:
+    """The kernel mount ID of an open descriptor (#753).
+
+    Read from ``/proc/self/fdinfo/<fd>`` because ``os.statx`` (``STATX_MNT_ID``)
+    is unavailable in Python 3.12. Two descriptors with different mount IDs
+    are on different mounts, even a bind mount of the same filesystem, which
+    ``st_dev`` cannot tell apart. Unreadable or malformed metadata raises.
+    """
+    try:
+        text = (FDINFO_DIR / str(int(fd))).read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise MountIdentityError("descriptor mount identity is unreadable") from exc
+    return mount_id_from_fdinfo(text)
 
 
 def mount_points(*, text: str | None = None) -> frozenset[str]:
