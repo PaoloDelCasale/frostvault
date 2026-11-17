@@ -395,6 +395,7 @@
   "general.metadata_backups_outcome_pending": "In corso",
   "general.metadata_backups_outcome_unknown": "Non disponibile",
   "general.metadata_backups_failure_reason": "Motivo del fallimento",
+  "general.metadata_backups_remote_cleanup_failed": "Pulizia dei backup vecchi nel bucket di sistema non riuscita (riprova al prossimo backup)",
   "general.metadata_backups_download": "Scarica artefatto",
   "general.metadata_backups_downloading": "Preparazione download…",
   "general.metadata_backups_download_error": "Impossibile scaricare l’artefatto del backup dei metadati.",

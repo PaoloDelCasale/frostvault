@@ -395,6 +395,7 @@
   "general.metadata_backups_outcome_pending": "In progress",
   "general.metadata_backups_outcome_unknown": "Unavailable",
   "general.metadata_backups_failure_reason": "Failure reason",
+  "general.metadata_backups_remote_cleanup_failed": "Cleanup of older backups in the System Bucket failed (retried at the next backup)",
   "general.metadata_backups_download": "Download artifact",
   "general.metadata_backups_downloading": "Preparing download…",
   "general.metadata_backups_download_error": "The metadata backup artifact could not be downloaded.",

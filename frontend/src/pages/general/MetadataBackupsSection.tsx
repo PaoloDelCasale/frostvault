@@ -447,7 +447,9 @@ export function MetadataBackupsSection() {
 
                     {run.error_message ? (
                       <p className="mt-4 break-words rounded-[10px] border border-line bg-canvas p-3 text-sm">
-                        <strong>{t("general.metadata_backups_failure_reason")}: </strong>
+                        <strong>{t(run.status.toLowerCase() === "succeeded"
+                          ? "general.metadata_backups_remote_cleanup_failed"
+                          : "general.metadata_backups_failure_reason")}: </strong>
                         {run.error_message}
                       </p>
                     ) : null}
