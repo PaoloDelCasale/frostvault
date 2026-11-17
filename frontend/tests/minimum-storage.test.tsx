@@ -1,4 +1,5 @@
 import { cleanup, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resetApiClientForTests } from "@/api";
@@ -25,9 +26,12 @@ const summary = {
 // what it still bills and when it is released, as a list-price estimate.
 describe("Minimum storage duration on the Vault page", () => {
   it("shows per class within and beyond, the remaining minimum cost and the month-by-month release", async () => {
-    renderVaultAccess({ fetchImpl: createVaultAccessFetch({ [`GET ${URL}`]: () => jsonResponse(summary) }, { locale: "it" }) });
+    const { fetchMock } = renderVaultAccess({ fetchImpl: createVaultAccessFetch({ [`GET ${URL}`]: () => jsonResponse(summary) }, { locale: "it" }) });
     const section = (await screen.findByRole("heading", { name: "Durata minima di archiviazione", level: 2 })).closest("section")!;
     expect(section).toHaveAttribute("id", "minimum");
+    // Read only once its section is opened: the summary reads every version.
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith(URL))).toBe(false);
+    await userEvent.setup().click(within(section).getByText("Mostra il riepilogo"));
     const row = await within(section).findByTestId("minimum-storage-DEEP_ARCHIVE");
     expect(plain(row.textContent)).toContain("Deep Archive");
     expect(plain(row.textContent)).toContain("180 giorni");
@@ -39,10 +43,23 @@ describe("Minimum storage duration on the Vault page", () => {
     expect(plain(within(section).getByTestId("minimum-storage-releases").textContent)).toContain("maggio 2027: 55.033 versioni · 223,0 GiB");
     expect(within(section).getByTestId("minimum-storage-estimated")).toHaveTextContent("Per 55.033 versioni la data di ingresso nella classe è stimata dal piano di archiviazione.");
     expect(within(section).getByTestId("minimum-storage-disclaimer")).toHaveTextContent(/Stime dai listini pubblici AWS \(eu-south-1/);
+    // N4: IA and Glacier Instant Retrieval bill at least 128 KB per object.
+    expect(within(section).getByTestId("minimum-storage-disclaimer")).toHaveTextContent(/almeno 128 KB per oggetto/);
+  });
+
+  it("never reads «~< 0,01 €»: an amount under a cent keeps only its «<»", async () => {
+    const tiny = { ...summary, remaining_cost: 0.004, by_storage_class: [{ ...summary.by_storage_class[0], remaining_cost: 0.004 }] };
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({ [`GET ${URL}`]: () => jsonResponse(tiny) }, { locale: "it" }) });
+    await userEvent.setup().click(await screen.findByText("Mostra il riepilogo"));
+    const row = await screen.findByTestId("minimum-storage-DEEP_ARCHIVE");
+    expect(plain(row.textContent)).toContain("< 0,01 €");
+    expect(plain(row.textContent)).not.toContain("~");
+    expect(plain(screen.getByTestId("minimum-storage-cost").textContent)).toContain("Costo minimo ancora da pagare: < 0,01 €.");
   });
 
   it("says when no version is in a class with a minimum, still as an estimate", async () => {
     renderVaultAccess();
+    await userEvent.setup().click(await screen.findByText("Show the summary"));
     expect(await screen.findByTestId("minimum-storage-none")).toHaveTextContent("No version is in a class with a minimum duration.");
     expect(screen.getByTestId("minimum-storage-disclaimer")).toHaveTextContent(/not from your AWS bill/);
   });
@@ -52,8 +69,12 @@ describe("Minimum storage duration on the Vault page", () => {
       const messages = loadCatalog(locale);
       for (const key of ["title", "summary", "how", "small_objects", "none", "col_class", "col_minimum", "col_within", "col_beyond", "col_cost",
         "days_one", "days_other", "amount_one", "amount_other", "remaining_cost", "no_remaining", "releases_title", "release",
-        "estimated_versions_one", "estimated_versions_other", "disclaimer", "list_price"]) {
+        "estimated_versions_one", "estimated_versions_other", "disclaimer", "list_price", "open",
+        "estimated_entry_one", "estimated_entry_other", "estimated_entry_versions_one", "estimated_entry_versions_other"]) {
         expect(messages[`minimum_storage.${key}`], `${locale} ${key}`).toBeTruthy();
+      }
+      for (const key of ["details.expected_class", "details.expected_class_help", "details.minimum_until", "details.estimated"]) {
+        expect(messages[key], `${locale} ${key}`).toBeTruthy();
       }
     }
   });

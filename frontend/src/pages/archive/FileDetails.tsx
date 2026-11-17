@@ -10,7 +10,7 @@ import { StorageBadge } from "@/components/StorageBadge";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { VerificationEvidence } from "./VerificationEvidence";
 import { itemStateBadge } from "./protectionLabel";
-import { formatBytes, formatDate, formatDateTime, recoveryTimeKey } from "./format";
+import { formatBytes, formatDateTime, formatUtcDate, recoveryTimeKey } from "./format";
 import { recoveryTimeline } from "./recoveryLabel";
 import type { Target } from "./RecoverSelection";
 import { errorMessage } from "@/lib/errorMessage";
@@ -44,6 +44,8 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   const version = (data.data?.versions as FileVersionsResponse | undefined)?.items[0];
   const reconciliation = data.data?.versions.reconciliation;
   const storage = version?.storage_class ?? item?.storage_class;
+  const expected = version?.expected_storage_class && version.expected_storage_class.toUpperCase() !== (storage ?? "STANDARD").toUpperCase()
+    ? version.expected_storage_class : null;
   async function perform(fn: () => Promise<unknown>) {
     if (busy) return;
     setBusy(true); setError("");
@@ -71,9 +73,14 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
               <Fact label={t("essential.modified")}>{formatDateTime(item.modified_at)}</Fact>
               <Fact label={t("essential.last_verified")}>{formatDateTime(version?.verified_at)}</Fact>
               <Fact label={t("essential.cloud_class")}>{storage ? <StorageBadge storage={storage === "DEEP_ARCHIVE" ? "deep-archive" : storage.startsWith("GLACIER") ? "glacier" : "standard"} label={t(`storage.${storage}`)} /> : "—"}</Fact>
+              {/* A due lifecycle transition not observed yet: the class the plan expects (#731). */}
+              {expected && <Fact label={t("details.expected_class")}>
+                <span data-testid="expected-storage-class">{t(`storage.${expected}`)}</span>
+                <span className="block text-xs text-muted">{t("details.expected_class_help")}</span>
+              </Fact>}
               {/* Minimum Storage Duration from the Class Entry (#731). */}
               {version?.minimum_storage_until && <Fact label={t("details.minimum_until")}>
-                <span data-testid="minimum-storage-until">{formatDate(version.minimum_storage_until)}{version.storage_class_since_estimated ? ` (${t("details.estimated")})` : ""}</span>
+                <span data-testid="minimum-storage-until">{formatUtcDate(version.minimum_storage_until)}{version.storage_class_since_estimated ? ` (${t("details.estimated")})` : ""}</span>
               </Fact>}
               {Boolean(item.cloud_exists) && storage && <Fact label={t("details.recovery_time")}>{recovery?.tier ? recoveryTimeline({ tier: recovery.tier, ready_by: recovery.ready_by }, t).join(" · ") : t(recoveryTimeKey(storage))}</Fact>}
             </dl>

@@ -44,6 +44,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const [stop, setStop] = useState(false);
   const [reconnect, setReconnect] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [minimumOpened, setMinimumOpened] = useState(false);
   const [autoSaved, flashAutoSaved] = useSavedFlash();
   const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
   const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
@@ -110,7 +111,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     </SettingsSection>
     <SettingsSection id="minimum" highlighted={highlight === "minimum"} title={t("minimum_storage.title")} summary={t("minimum_storage.summary")}
       more={<><p>{t("minimum_storage.how")}</p><p>{t("minimum_storage.small_objects")}</p></>}>
-      <MinimumStoragePanel vaultId={vaultId} />
+      {/* Read only once opened: the summary reads every version of the Vault (#731). */}
+      <details className="rounded-card border border-line" onToggle={(event) => { if (event.currentTarget.open) setMinimumOpened(true); }}>
+        <summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("minimum_storage.open")}</summary>
+        <div className="border-t border-line p-3">{minimumOpened && <MinimumStoragePanel vaultId={vaultId} />}</div></details>
     </SettingsSection>
     <SettingsSection id="danger" highlighted={highlight === "danger"} danger title={t("settings.danger_title")} summary={t("settings.danger_summary")}>
       {vault && !stopped && <div className="grid gap-2 border-b border-line pb-4">

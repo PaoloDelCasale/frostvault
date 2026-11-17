@@ -96,6 +96,17 @@ export function formatDate(value: unknown, locale?: string): string {
   return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", ...(dateOnly ? { timeZone: "UTC" } : {}) });
 }
 
+/**
+ * A calendar date read in UTC, like the month-by-month release (`2027-05`):
+ * the end of a Minimum Storage Duration falls on the same day everywhere (#731).
+ */
+export function formatUtcDate(value: unknown, locale?: string): string {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", timeZone: "UTC" });
+}
+
 export type MoneyOptions = { currency?: string; locale?: string; signed?: boolean };
 
 /**
@@ -114,6 +125,15 @@ export function formatMoney(value: number | string | null | undefined, { currenc
     money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: signed ? "exceptZero" : "auto" });
   }
   return !signed && amount > 0 && amount < 0.01 ? `< ${money.format(0.01)}` : money.format(amount);
+}
+
+/**
+ * An estimated amount: «~3,42 €». An amount already shown as «< 0,01 €» gets
+ * no «~», which would read «~< 0,01 €» (#731).
+ */
+export function formatApproxMoney(value: number | string | null | undefined, options: MoneyOptions = {}): string {
+  const money = formatMoney(value, options);
+  return money === "—" || money.startsWith("<") ? money : `~${money}`;
 }
 
 /** A euro amount (see {@link formatMoney}). */

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { fetchMinimumStorage, type MinimumStorageSummary } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDate, formatGroupedCount, formatMonth, formatMoney } from "@/pages/archive/format";
+import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatMonth } from "@/pages/archive/format";
 
 /**
  * Minimum Storage Duration of the Vault's versions (#731): per storage class,
  * the versions within and beyond it, what the minimum still bills and, month
  * by month, when the versions within it are released. List-price estimates.
+ * Mounted only once its section is opened: the summary reads every version.
  */
 export function MinimumStoragePanel({ vaultId }: { vaultId: number }) {
   const { t, locale } = useI18n();
@@ -27,7 +28,7 @@ export function MinimumStoragePanel({ vaultId }: { vaultId: number }) {
   if (!summary) return <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>;
   const classes = (summary.by_storage_class ?? []).filter((entry) => entry.minimum_days > 0);
   const amount = (count: number, bytes: number) => t("minimum_storage.amount", { count, count_shown: formatGroupedCount(count, locale), bytes: formatBytes(bytes, locale) });
-  const money = (value: number) => formatMoney(value, { currency: summary.currency, locale });
+  const money = (value: number) => formatApproxMoney(value, { currency: summary.currency, locale });
   return <div className="grid gap-3 text-sm" data-testid="minimum-storage">
     {classes.length === 0 ? <p data-testid="minimum-storage-none">{t("minimum_storage.none")}</p> : <>
       <div className="overflow-x-auto"><table className="w-full">
@@ -43,7 +44,7 @@ export function MinimumStoragePanel({ vaultId }: { vaultId: number }) {
           <td className="py-1 pr-2 text-right tabular-nums">{t("minimum_storage.days", { count: entry.minimum_days })}</td>
           <td className="py-1 pr-2 text-right tabular-nums">{amount(entry.within.count, entry.within.bytes)}</td>
           <td className="py-1 pr-2 text-right tabular-nums">{amount(entry.beyond.count, entry.beyond.bytes)}</td>
-          <td className="py-1 text-right tabular-nums">{entry.within.count > 0 ? `~${money(entry.remaining_cost)}` : "—"}</td>
+          <td className="py-1 text-right tabular-nums">{entry.within.count > 0 ? money(entry.remaining_cost) : "—"}</td>
         </tr>)}</tbody>
       </table></div>
       <p className="font-semibold" data-testid="minimum-storage-cost">{summary.remaining_cost > 0

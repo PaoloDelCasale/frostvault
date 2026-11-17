@@ -194,6 +194,20 @@ describe("«Delete from cloud?» minimum storage duration line (#731)", () => {
     });
   }
 
+  it("shows an amount under a cent without «~» and the savings date in UTC", () => {
+    document.documentElement.lang = "it";
+    const messages = catalog("it");
+    const tr = (key: string, params?: Record<string, string | number>) => translate(messages, key, params, "it");
+    // 01:30 in UTC+2 is still 15 May in UTC, the time zone of the release months.
+    render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
+      preview={preview({ minimum_storage: { ...minimum, remaining_cost: 0.004, savings_from: "2027-05-16T01:30:00+02:00" } })}
+      t={tr} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+    const line = (screen.getByTestId("cloud-purge-minimum").textContent ?? "").replace(/[\u00a0\u202f]/g, " ");
+    expect(line).toContain("AWS addebita comunque i giorni mancanti (< 0,01 €).");
+    expect(line).not.toContain("~");
+    expect(line).toContain("Il risparmio parte dal 15 mag 2027.");
+  });
+
   it("shows nothing when every file is beyond its minimum", () => {
     render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
       preview={preview({ minimum_storage: { ...minimum, count: 0, bytes: 0, remaining_cost: 0, savings_from: null, estimated_count: 0, by_storage_class: [] } })}

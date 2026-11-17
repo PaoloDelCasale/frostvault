@@ -67,6 +67,15 @@ describe("Vault Deletion of a Tombstone (#717)", () => {
     expect(line).toHaveTextContent("Estimate from AWS list prices, not from your bill.");
   });
 
+  it("names estimated entries as versions, not files", async () => {
+    setup({ previewReply: { body: { ...preview, early_deletion_version_count: 1200, early_deletion_byte_count: 2 * 1024 ** 3,
+      savings_from: "2027-05-15T10:00:00+00:00", early_deletion_estimated_count: 1200,
+      by_storage_class: preview.by_storage_class.map((entry) => ({ ...entry, early_deletion_byte_count: entry.early_deletion_version_count ? 2 * 1024 ** 3 : 0 })) } } });
+    const line = await screen.findByTestId("vault-deletion-minimum");
+    expect(line).toHaveTextContent("Class entry estimated from the storage plan for 1,200 versions.");
+    expect(line).not.toHaveTextContent(/1,200 files/);
+  });
+
   it("shows no minimum duration line for a preview stored before it", async () => {
     setup();
     await screen.findByTestId("vault-deletion-preview");
