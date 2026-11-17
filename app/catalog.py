@@ -234,7 +234,9 @@ def awaiting_rename_analysis_sql(alias: str) -> str:
     automatic upload treats it as a new Vault File (ADR-0001).
 
     The fragment holds one ``%s`` placeholder, the Vault id of the statement,
-    for the short-circuit (#759): an uncorrelated EXISTS that PostgreSQL
+    for the short-circuit (#759). The statement must already restrict
+    ``{alias}.vault_id`` to that same id: across Vaults the short-circuit
+    would be wrong without any error: an uncorrelated EXISTS that PostgreSQL
     evaluates once per statement, in the same snapshot as the rest. A Vault
     without any rename source skips the per-file analysis entirely; otherwise
     each lookup is a probe into ``files_rename_missing_size_idx``.
