@@ -65,6 +65,10 @@ class ObjectStore(Protocol):
 
     def delete_key(self, key: str) -> None: ...
 
+    def list_versions(self, prefix: str) -> list[tuple[str, str]]: ...
+
+    def delete_version(self, key: str, version_id: str) -> None: ...
+
 
 class Boto3ObjectStore:
     """S3 ObjectStore adapter scoped to one bucket."""
@@ -104,6 +108,18 @@ class Boto3ObjectStore:
 
     def delete_key(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)
+
+    def list_versions(self, prefix: str) -> list[tuple[str, str]]:
+        """Every (key, VersionId) under ``prefix``, Delete Markers included."""
+        versions: list[tuple[str, str]] = []
+        paginator = self._client.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            for item in (page.get("Versions") or []) + (page.get("DeleteMarkers") or []):
+                versions.append((item["Key"], item["VersionId"]))
+        return versions
+
+    def delete_version(self, key: str, version_id: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key, VersionId=version_id)
 
 
 def off_host_backup_configured(settings_obj: Settings | Any | None = None, *,
@@ -398,6 +414,69 @@ def rotate_local_retention(backup_dir: str | Path, keep: int) -> list[Path]:
         sidecar.unlink(missing_ok=True)
         removed.append(path)
     return removed
+
+
+_ARTIFACT_SUFFIX = ".bak.enc"
+_SIDECAR_SUFFIX = ".sha256"
+
+
+def rotate_remote_retention(
+    object_store: ObjectStore,
+    keep: int,
+    *,
+    protected_keys: set[str] | frozenset[str] = frozenset(),
+    prefix: str = S3_BACKUP_PREFIX,
+) -> list[str]:
+    """Keep the ``keep`` newest backups under ``prefix`` in the System Bucket (#742).
+
+    Older backup artifacts and their sidecars are deleted by exact key, every
+    version (Delete Markers included) by VersionId: the bucket is versioned.
+    Only direct children of ``system/backups/`` named like a backup artifact
+    are considered; ``protected_keys`` (the backup just written, the newest
+    recorded success) are never deleted. Returns the deleted artifact keys.
+    """
+    if keep < 0:
+        raise BackupError("Backup retention must be >= 0")
+    normalized = _normalize_prefix(prefix)
+    if not normalized.startswith(S3_BACKUP_PREFIX):
+        return []
+    versions_by_artifact: dict[str, list[tuple[str, str]]] = {}
+    for key, version_id in object_store.list_versions(normalized):
+        artifact = key[:-len(_SIDECAR_SUFFIX)] if key.endswith(_SIDECAR_SUFFIX) else key
+        name = artifact[len(normalized):]
+        if (not artifact.startswith(normalized) or not name or "/" in name
+                or not name.endswith(_ARTIFACT_SUFFIX)):
+            continue
+        versions_by_artifact.setdefault(artifact, []).append((key, version_id))
+    newest_first = sorted(versions_by_artifact, reverse=True)
+    deleted: list[str] = []
+    for artifact in newest_first[keep:]:
+        if artifact in protected_keys:
+            continue
+        for key, version_id in versions_by_artifact[artifact]:
+            object_store.delete_version(key, version_id)
+        deleted.append(artifact)
+    return deleted
+
+
+def _safe_error_code(exc: BaseException) -> str:
+    """The provider's error code only, never its message (#742)."""
+    from botocore.exceptions import ClientError
+
+    from .bucket_provisioning import error_code
+
+    if isinstance(exc, ClientError):
+        return error_code(exc)
+    return type(exc).__name__
+
+
+def _newest_succeeded_s3_key(connection: Any) -> str | None:
+    row = connection.execute(
+        "SELECT s3_key FROM metadata_backup_runs "
+        "WHERE status IN ('succeeded', 'verified') AND s3_key IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["s3_key"] if row else None
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -878,6 +957,7 @@ def run_metadata_backup(
             database_dsn=database_dsn,
         )
         s3_key = s3_bucket = None
+        retention_error = None
         # After the local artifact: a refused System Bucket still leaves it on disk.
         if isinstance(object_store, ResolvedObjectStore):
             if object_store.error is not None:
@@ -889,6 +969,20 @@ def run_metadata_backup(
             )
             s3_key = stored["key"]
             s3_bucket = getattr(object_store, "bucket", None)
+            # Remote retention (#742): a failure never fails this backup; it is
+            # recorded on the run (error code only) and retried next run.
+            protected = {s3_key}
+            newest = _newest_succeeded_s3_key(connection) if connection is not None else None
+            if newest:
+                protected.add(newest)
+            try:
+                rotate_remote_retention(object_store, keep,
+                                        protected_keys=protected, prefix=s3_prefix)
+            except Exception as exc:  # noqa: BLE001 - external storage boundary
+                retention_error = (
+                    f"Backup stored; remote retention failed ({_safe_error_code(exc)}), "
+                    "retried at the next backup"
+                )
         rotate_local_retention(backup_dir, keep=keep)
         result = {
             "ok": True,
@@ -915,6 +1009,7 @@ def run_metadata_backup(
                 s3_key=s3_key,
                 s3_bucket=s3_bucket,
                 size_bytes=artifact["size_bytes"],
+                error_message=retention_error,
             )
         return result
     except Exception as exc:

@@ -166,6 +166,12 @@ class RecordingObjectStore:
     def delete_key(self, key: str) -> None:
         self.objects.pop(key, None)
 
+    def list_versions(self, prefix: str) -> list[tuple[str, str]]:
+        return [(key, "null") for key in self.list_keys(prefix)]
+
+    def delete_version(self, key: str, version_id: str) -> None:
+        self.objects.pop(key, None)
+
 
 class ObjectStoreBackupTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -205,6 +211,105 @@ class ObjectStoreBackupTests(unittest.TestCase):
             self.store.objects[digest_key].decode("utf-8").strip(),
             artifact["digest_sha256"],
         )
+
+
+class VersionedObjectStore(RecordingObjectStore):
+    """A versioned bucket: every put adds a version, deletes go by VersionId."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.versions: dict[str, list[str]] = {}
+        self.list_error: Exception | None = None
+
+    def put_bytes(self, key: str, body: bytes) -> None:
+        super().put_bytes(key, body)
+        self.versions.setdefault(key, []).append(f"v{len(self.versions.get(key, [])) + 1}")
+
+    def list_versions(self, prefix: str) -> list[tuple[str, str]]:
+        if self.list_error is not None:
+            raise self.list_error
+        return [(key, version) for key, versions in sorted(self.versions.items())
+                if key.startswith(prefix) for version in versions]
+
+    def delete_version(self, key: str, version_id: str) -> None:
+        self.versions[key].remove(version_id)
+        if not self.versions[key]:
+            del self.versions[key]
+
+
+class RemoteRetentionTests(unittest.TestCase):
+    """#742: the System Bucket keeps METADATA_BACKUP_RETENTION backups."""
+
+    def setUp(self) -> None:
+        self.store = VersionedObjectStore()
+        for day in range(1, 6):
+            key = f"system/backups/2026010{day}T000000Z-postgresql-scheduled.bak.enc"
+            self.store.put_bytes(key, b"old")
+            self.store.put_bytes(key, b"rewritten")  # a second version
+            self.store.put_bytes(key + ".sha256", b"digest")
+        for key in ("billing/cur/report.csv.gz", "system/other.bak.enc",
+                    "system/backups/nested/20260101T000000Z-postgresql-x.bak.enc",
+                    "system/backups/notes.txt"):
+            self.store.put_bytes(key, b"not a backup")
+
+    def _backups(self) -> list[str]:
+        return sorted(key for key in self.store.versions
+                      if key.startswith("system/backups/2026"))
+
+    def test_keeps_the_newest_and_deletes_every_version_of_older_ones(self) -> None:
+        deleted = metadata_backups.rotate_remote_retention(self.store, 2)
+        self.assertEqual(deleted, [
+            f"system/backups/2026010{day}T000000Z-postgresql-scheduled.bak.enc"
+            for day in (3, 2, 1)])
+        kept = [f"system/backups/2026010{day}T000000Z-postgresql-scheduled.bak.enc"
+                for day in (4, 5)]
+        self.assertEqual(self._backups(), [name for key in kept
+                                           for name in (key, key + ".sha256")])
+        self.assertEqual(self.store.versions[kept[0]], ["v1", "v2"])
+
+    def test_never_touches_other_prefixes_or_names(self) -> None:
+        metadata_backups.rotate_remote_retention(self.store, 0)
+        for key in ("billing/cur/report.csv.gz", "system/other.bak.enc",
+                    "system/backups/nested/20260101T000000Z-postgresql-x.bak.enc",
+                    "system/backups/notes.txt"):
+            self.assertIn(key, self.store.versions)
+
+    def test_protected_backups_are_never_deleted(self) -> None:
+        oldest = "system/backups/20260101T000000Z-postgresql-scheduled.bak.enc"
+        metadata_backups.rotate_remote_retention(self.store, 1, protected_keys={oldest})
+        self.assertIn(oldest, self.store.versions)
+        self.assertIn(oldest + ".sha256", self.store.versions)
+        self.assertNotIn(oldest.replace("0101", "0102"), self.store.versions)
+
+    def test_a_retention_failure_does_not_fail_the_backup(self) -> None:
+        from botocore.exceptions import ClientError
+
+        self.store.list_error = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "secret-ish detail"}},
+            "ListObjectVersions")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "20260106T000000Z-postgresql-manual.bak.enc"
+            path.write_bytes(b"ciphertext")
+            artifact = {
+                "path": path, "filename": path.name, "backend": "postgresql",
+                "digest_sha256": hashlib.sha256(b"ciphertext").hexdigest(),
+                "database_sha256": "d", "reason": "manual",
+                "created_at": "2026-01-06T00:00:00+00:00", "size_bytes": 10,
+            }
+            with patch.object(metadata_backups, "create_metadata_backup",
+                              return_value=artifact), \
+                 patch.object(metadata_backups, "_newest_succeeded_s3_key",
+                              return_value=None), \
+                 patch.object(metadata_backups, "record_backup_run") as record:
+                result = metadata_backups.run_metadata_backup(
+                    object(), reason="manual", backup_dir=tmp,
+                    config_snapshot={}, object_store=self.store, retention=2)
+        self.assertTrue(result["ok"])
+        kwargs = record.call_args.kwargs
+        self.assertEqual(kwargs["status"], "succeeded")
+        self.assertIn("(AccessDenied)", kwargs["error_message"])
+        self.assertNotIn("secret-ish", kwargs["error_message"])
+        self.assertIn(f"system/backups/{path.name}", self.store.versions)
 
 
 class IsolatedRestoreVerificationTests(unittest.TestCase):
@@ -498,6 +603,7 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
         self.assertEqual((run["s3_bucket"], run["s3_key"]),
                          ("frostvault-system-abcd1234", result["s3_key"]))
         self.assertTrue(run["s3_key"].startswith("system/backups/"))
+        self.assertIsNone(run["error_message"])  # remote retention applied (#742)
 
     def test_a_refused_system_bucket_is_a_recorded_notified_failure(self) -> None:
         refusal = metadata_backups.ObjectStoreUnavailableError(

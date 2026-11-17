@@ -57,8 +57,16 @@ Copies live in `METADATA_BACKUP_DIR` (default `/data/backups`) and off-host unde
 `system/backups/` in the [System Bucket](#system-bucket). Ciphertext SHA-256
 sidecars accompany them. Local rotation
 keeps `METADATA_BACKUP_RETENTION` artifacts (default 14), deleting older local
-artifacts/sidecars only after success. `metadata_backup_runs` records local-only,
-off-host and failed outcomes; `s3_key` and `s3_bucket` prove attempted off-host
+artifacts/sidecars only after success. After a successful upload the System
+Bucket keeps the same number of newest backups (#742): older backup artifacts
+and their sidecars directly under `system/backups/` are deleted by exact key,
+every version (and Delete Marker) by its VersionId, since the bucket is
+versioned. Nothing else in the bucket (for example `billing/`) is touched, nor
+the backup just written or the newest recorded success, nor backups left in an
+older shared bucket. A failed remote deletion never fails the backup: the run
+stays succeeded with the S3 error code only (for example
+`remote retention failed (AccessDenied)`) and the next backup retries.
+`metadata_backup_runs` records local-only, off-host and failed outcomes; `s3_key` and `s3_bucket` prove attempted off-host
 delivery, not just the presence of a local file (`s3_bucket` is empty for runs
 made before the System Bucket). Failed runs surface Owner notifications and
 internal-error problems/metrics.
@@ -133,8 +141,9 @@ pairs for Block Public Access, versioning, encryption, lifecycle, tagging,
 Object Ownership (`s3:Get/PutBucketOwnershipControls`) and Object Lock
 (`s3:Get/PutBucketObjectLockConfiguration`, used only for a Vault Bucket's
 Governance Retention Lock, never on the System Bucket), and the object
-operations of Vault Buckets (#735; for metadata backups `s3:PutObject` and
-`s3:GetObject`), listed in
+operations of Vault Buckets (#735; for metadata backups `s3:PutObject`,
+`s3:GetObject`, and for their retention `s3:ListBucketVersions`,
+`s3:DeleteObject` and `s3:DeleteObjectVersion`), listed in
 [aws-s3-bucket.md](aws-s3-bucket.md#iam-for-frostvault-created-buckets). It
 explicitly denies `s3:BypassGovernanceRetention`: FrostVault never has it. Its
 `s3:DeleteBucket` serves only Vault Deletion (#739); the System Bucket is never deleted. Ownership of a new bucket is decided by the `CreateBucket`
@@ -142,7 +151,10 @@ error codes alone, so no `sts:GetCallerIdentity` or `ExpectedBucketOwner` is
 involved. An operator-supplied `METADATA_BACKUP_BUCKET` outside `frostvault-*`
 needs `s3:GetBucketLocation`, `s3:GetBucketVersioning`,
 `s3:GetBucketPublicAccessBlock`, `s3:GetEncryptionConfiguration`, `s3:PutObject`
-and `s3:GetObject` on that bucket instead; FrostVault never configures it.
+and `s3:GetObject` on that bucket instead, plus `s3:ListBucketVersions` on the
+bucket and `s3:DeleteObject`/`s3:DeleteObjectVersion` on
+`<bucket>/system/backups/*` for the remote retention; FrostVault never
+configures it.
 To read the billing export there (#738), also grant `s3:ListBucket` on that
 bucket: see [billed-cost.md](billed-cost.md#iam-for-frostvault).
 
