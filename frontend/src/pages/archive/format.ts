@@ -61,6 +61,21 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat(pageLocale()).format(value);
 }
 
+/** A decimal number with exactly ``digits`` fraction digits: «13,2». */
+export function formatDecimal(value: number, digits = 1, locale?: string): string {
+  return new Intl.NumberFormat(locale ?? pageLocale(), { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+}
+
+/** A time of day in the page language, with the weekday when asked: «06:30» / «mer 06:30». */
+export function formatTimeOfDay(date: Date, { weekday = false, locale }: { weekday?: boolean; locale?: string } = {}): string {
+  return date.toLocaleString(locale ?? pageLocale(), { hour: "2-digit", minute: "2-digit", ...(weekday ? { weekday: "short" } : {}) });
+}
+
+/** A day of the month in the page language: «19 novembre». */
+export function formatDayMonth(date: Date, locale?: string): string {
+  return date.toLocaleDateString(locale ?? pageLocale(), { day: "numeric", month: "long" });
+}
+
 /**
  * A count always grouped, four-digit ones too: «1.900» / «1,900» (#729, #731).
  * Italian leaves four digits ungrouped by default.

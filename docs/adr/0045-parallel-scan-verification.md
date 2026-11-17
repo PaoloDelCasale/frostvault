@@ -122,11 +122,12 @@ At the end of the walk the same split is logged once, with the files seen and
 their rate. The production entrypoint sets the GIL switch interval to 1 ms
 (default 5 ms): the walk releases the GIL at every filesystem call and,
 behind the upload workers' Python work, waited up to 5 ms for each one.
-Since #711 the verification phase also reports its pace in bytes once it has
-run a minute (`runtime.verify_bytes_per_minute`), and the Vault header shows
-the scan as its phases in order (reading folders, verifying fingerprints,
-finishing), each with its state, progress bar where a total is known, and
-time left.
+Since #711 the Vault header shows the scan as its phases in order (reading
+folders, verifying fingerprints, finishing), each with its state and a
+progress bar where a total is known. Since #755 the verification's speed is
+measured, like the upload's, by an in-memory sampler of the bytes read
+(`runtime.verify_bytes_done`), and the Vault shows one Expected Finish for
+uploading and verifying instead of a time left for each.
 
 **An unchanged fingerprinted file is opened, not read (#709, 2026-11-16).**
 Accepted by the Owner. With #707 fixed, the same Vault walked ~2,000 files per

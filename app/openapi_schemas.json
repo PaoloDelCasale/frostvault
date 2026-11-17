@@ -2276,12 +2276,6 @@
                 "null"
               ]
             },
-            "verify_bytes_per_minute": {
-              "type": [
-                "number",
-                "null"
-              ]
-            },
             "last_error_source_cause": {
               "type": [
                 "string",
@@ -3152,8 +3146,18 @@
             "null"
           ]
         },
-        "rate": {
-          "$ref": "#/components/schemas/UploadActivityRate"
+        "throughput": {
+          "$ref": "#/components/schemas/UploadThroughput"
+        },
+        "expected_finish": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/ExpectedFinish"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3163,7 +3167,146 @@
         "verifying",
         "awaiting_admission_files",
         "next_stable_at",
-        "rate"
+        "throughput",
+        "expected_finish"
+      ]
+    },
+    "UploadThroughput": {
+      "type": "object",
+      "description": "Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured.",
+      "properties": {
+        "sample_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "instant_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "average_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "history_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "upload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bytes_per_second": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "files_per_second": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "average_bytes_per_second": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "bytes_per_second",
+            "files_per_second",
+            "average_bytes_per_second"
+          ]
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bytes_per_second": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "average_bytes_per_second": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "bytes_per_second",
+            "average_bytes_per_second"
+          ]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "upload_bytes_per_second": {
+                "type": "number",
+                "minimum": 0
+              },
+              "verification_bytes_per_second": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "at",
+              "upload_bytes_per_second",
+              "verification_bytes_per_second"
+            ]
+          }
+        }
+      },
+      "required": [
+        "sample_seconds",
+        "instant_seconds",
+        "average_seconds",
+        "history_seconds",
+        "upload",
+        "verification",
+        "history"
+      ]
+    },
+    "ExpectedFinish": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The later of the active phases at their average speed, and the phase that limits it (#755).",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limited_by": {
+          "type": "string",
+          "enum": [
+            "upload",
+            "verification"
+          ]
+        }
+      },
+      "required": [
+        "at",
+        "seconds",
+        "limited_by"
       ]
     },
     "UploadActivityResponse": {
@@ -3515,36 +3658,6 @@
         "oidc_provider_name"
       ],
       "additionalProperties": true
-    },
-    "UploadActivityRate": {
-      "type": "object",
-      "properties": {
-        "window_seconds": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "files": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "bytes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "bytes_per_minute": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        }
-      },
-      "required": [
-        "window_seconds",
-        "files",
-        "bytes",
-        "bytes_per_minute"
-      ]
     },
     "VaultDeletionPreview": {
       "type": "object",

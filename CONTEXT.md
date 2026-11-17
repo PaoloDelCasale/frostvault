@@ -295,6 +295,13 @@ server's disks are very busy: one read per Source Device and no new uploads
 until the load drops. A queue held back this way is not a Stalled Queue.
 _Avoid_: Quiet hours, Throttle window
 
+**Expected Finish**:
+The time of day a Vault's work is expected to end: the later of its upload to
+the cloud and its reading from the disk (fingerprint verification), each at its
+average speed over the last five minutes, named with the phase that limits it.
+With one phase active, that phase. Unknown until an active phase is measured.
+_Avoid_: ETA, Time left, Remaining time
+
 **Cost Estimate**:
 An approximate storage or restore cost computed from the AWS list prices bundled
 for the configured region. Prices are not editable and are never an AWS bill.

@@ -7,9 +7,3 @@ export function formatRemaining(minutes: number, t: Translate): string {
     ? t("vault.scan.remaining_hours", { count: Math.round(whole / 6) / 10 })
     : t("vault.scan.remaining_minutes", { count: whole });
 }
-
-/** Minutes to move ``bytes`` at ``bytesPerMinute``, or null without a measured pace. */
-export function minutesLeft(bytes: number, bytesPerMinute: number | null | undefined): number | null {
-  const rate = Number(bytesPerMinute ?? 0);
-  return rate > 0 && bytes > 0 ? bytes / rate : null;
-}

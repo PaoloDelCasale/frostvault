@@ -43,17 +43,15 @@ describe("ScanStatus (#691, #711)", () => {
     expect(screen.queryByTestId("scan-last-failed")).toBeNull();
   });
 
-  it("estimates the verification time left from its byte pace (#711)", () => {
+  it("leaves the verification's speed and time to the Vault's one expected finish (#755)", () => {
     render(<ScanStatus t={t} runtime={{
       scanning: true, scan_phase: "verification",
       verify_files_total: 22425, verify_files_done: 4495,
       verify_bytes_total: 78.5 * 1024 ** 3, verify_bytes_done: 25.3 * 1024 ** 3,
-      verify_bytes_per_minute: 1.064 * 1024 ** 3,
     }} />);
     const line = screen.getByTestId("scan-verification").textContent ?? "";
-    expect(line).toContain("vault.scan.verification_detail_rate");
-    // 53.2 GiB left at about 1.06 GiB per minute: 50 minutes.
-    expect(line).toContain('vault.scan.remaining_minutes {\\"count\\":50}');
+    expect(line).toContain("vault.scan.verification_detail ");
+    expect(line).not.toContain("remaining");
   });
 
   it("presents an older source error below the running scan, with its cause translated", () => {

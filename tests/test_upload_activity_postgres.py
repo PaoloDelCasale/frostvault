@@ -1,6 +1,9 @@
 """Read-only aggregate parity and scale against disposable PostgreSQL16 in CI."""
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import unittest
+from app.services import throughput
+from app.services.throughput import ThroughputMeter
 from app.services.operation_policies import OperationPolicy, auto_upload_path_is_included, set_policy
 from app.services.upload_activity import _eligibility_sql, upload_activity
 from tests import test_protection_states as fixtures
@@ -117,15 +120,9 @@ class UploadActivityPostgresTests(unittest.TestCase):
             updated_at,finished_at,total_bytes) VALUES (%s,%s,'upload',%s,to_timestamp(%s),
             to_timestamp(%s),to_timestamp(%s),%s)""", (vault_id, file_id, status, at, at, at, total))
 
-    def test_rate_is_measured_on_recent_completions_and_paused_vaults_stay_apart(self):
-        """#711: bytes finished in the last 15 minutes, over the span since the first."""
+    def test_paused_vaults_stay_apart_from_the_totals(self):
         seed_vault(self.connection, vault_id=10, name='Paused', source_root='/paused')
         self.connection.execute("UPDATE vaults SET paused=true WHERE id=10")
-        for minutes_ago in (10, 6, 2):
-            self.finished(9, minutes_ago, 1_000_000)
-        self.finished(9, 20, 50_000_000)  # outside the window
-        self.finished(9, 1, 70_000_000, status='failed')  # not an upload that landed
-        self.finished(10, 3, 1_000_000)
         for index in range(5):
             self.connection.execute("""INSERT INTO files(vault_id,path,path_since) VALUES (10,%s,%s)""",
                                     (f'paused-{index}', NOW.isoformat()))
@@ -134,17 +131,34 @@ class UploadActivityPostgresTests(unittest.TestCase):
                                 (NOW.isoformat(), NOW.isoformat()))
         result = upload_activity(self.connection, now=NOW)
         by_id = {row['vault_id']: row for row in result['vaults']}
-        # 3 MB over the 10 minutes since the first completion.
-        self.assertEqual(by_id[9]['rate'], {'window_seconds': 900, 'files': 3, 'bytes': 3_000_000,
-                                            'bytes_per_minute': 300_000})
         self.assertFalse(by_id[9]['paused'])
         self.assertTrue(by_id[10]['paused'])
         self.assertEqual(by_id[10]['queued']['files'], 5)
-        # Too few completions for a pace, and a Paused Vault is outside the totals.
-        self.assertIsNone(by_id[10]['rate']['bytes_per_minute'])
         self.assertEqual(result['global']['queued']['files'], 0)
-        self.assertEqual(result['global']['rate']['bytes_per_minute'], 300_000)
-        self.assertEqual(result['global']['rate']['files'], 3)
+
+    def test_speed_samples_count_sent_bytes_and_settle_each_completion_once(self):
+        """#755: held Jobs' sent bytes plus completions, through bounded aggregates."""
+        @contextmanager
+        def connect():
+            yield self.connection
+        self.job('transfer', 'uploading', transferred=5)
+        self.job('verify', 'verifying', transferred=100)  # clamped to its 12 bytes
+        self.job('reconcile', 'uploading', transferred=12, reconcile=True)  # sends nothing
+        self.job('queue', 'queued', transferred=7)
+        self.finished(9, 2, 50_000_000)  # before the sampler started
+        self.finished(9, 5 / 60, 1_000_000)
+        self.finished(9, 3 / 60, 70_000_000, status='failed')
+        meter = ThroughputMeter()
+        throughput.sample(connect, meter=meter, now=NOW, mono=0.0)
+        self.finished(9, -1 / 60, 2_000_000)
+        throughput.sample(connect, meter=meter, now=NOW + timedelta(seconds=2), mono=2.0)
+        # Both completions are now settled; the raw sum does not move.
+        throughput.sample(connect, meter=meter, now=NOW + timedelta(seconds=20), mono=20.0)
+        samples = list(meter._vaults[9].samples)
+        self.assertEqual([sample[2] for sample in samples], [0, 2_000_000, 2_000_000])
+        self.assertEqual([sample[3] for sample in samples], [0, 1, 1])
+        self.assertEqual(meter._vaults[9].raw_bytes, 3_000_000 + 17)
+        self.assertEqual(meter._vaults[9].settled_files, 2)
 
     def test_postgres_regex_path_rules_match_real_admission_rules(self):
         paths = ['a.jpg', 'photos/a.jpg', 'photos/sub/a.jpg', 'a/b/c', 'x/a/b/c/y',

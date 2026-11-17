@@ -9,7 +9,9 @@ import type { UploadActivitySummary } from "@/api/types";
 import { formatBytes } from "@/pages/archive/format";
 import { vaultFilesUrl } from "@/router";
 import { errorMessage } from "@/lib/errorMessage";
-import { uploadBacklog, uploadPace, useUploadActivity } from "@/api/uploadActivity";
+import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
+import { SpeedSparkline } from "@/components/SpeedSparkline";
+import { expectedFinishShort, expectedFinishText, instantUploadSpeed, phaseSpeeds } from "@/lib/throughput";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
@@ -20,7 +22,8 @@ function Summary({ activity, observedAt, t, paused = false }: {
   activity: UploadActivitySummary; observedAt: string; t: Translate; paused?: boolean;
 }) {
   const remaining = activity.next_stable_at ? Date.parse(activity.next_stable_at) - Date.parse(observedAt) : NaN;
-  const pace = paused ? null : uploadPace(activity, t);
+  const speeds = paused ? null : phaseSpeeds("upload", activity.throughput, t);
+  const finish = paused ? null : activity.expected_finish;
   return <>
     {admitting(activity) && <p className="text-sm" role="status">{t("activity.bulk_admission", {
       processed: activity.bulk_admission?.processed_files ?? 0,
@@ -39,9 +42,15 @@ function Summary({ activity, observedAt, t, paused = false }: {
       ? t("activity.stable_in", { minutes: Math.max(1, Math.ceil(remaining / 60_000)) })
       : t("activity.waiting_observation")}</p>}
     {activity.awaiting_admission_files > 0 && <p className="mt-1 text-xs text-muted">{t("activity.admission", { count: activity.awaiting_admission_files })}</p>}
-    {paused ? <p className="mt-1 text-sm font-semibold" data-testid="activity-paused">{t("activity.paused")}</p>
-      : pace ? <p className="mt-1 text-sm font-semibold" data-testid="activity-rate">{t("activity.rate", pace)}</p>
-      : (activity.queued.files > 0 || activity.uploading.files > 0) && <p className="mt-1 text-xs text-muted">{t("activity.rate_unknown")}</p>}
+    {paused ? <p className="mt-1 text-sm font-semibold" data-testid="activity-paused">{t("activity.paused")}</p> : <>
+      {/* One expected finish with the phase that limits it (#755). */}
+      {finish && <p className="mt-1 text-sm font-semibold" data-testid="activity-finish">{expectedFinishText(finish, t)}</p>}
+      {speeds ? <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <p className="text-sm" data-testid="activity-rate"><span className="font-semibold">{t("estimate.upload_label")}</span>: {speeds}</p>
+        <SpeedSparkline throughput={activity.throughput} phase="upload" t={t} />
+      </div>
+        : (activity.queued.files > 0 || activity.uploading.files > 0) && <p className="mt-1 text-xs text-muted">{t("activity.rate_unknown")}</p>}
+    </>}
   </>;
 }
 
@@ -77,16 +86,24 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
   const others = data.vaults?.filter((vault) => vault !== selected && !vault.paused && busy(vault)) ?? [];
   const pausedOthers = paused.filter((vault) => vault !== selected);
   const pausedFiles = paused.reduce((sum, vault) => sum + uploadBacklog(vault).files, 0);
-  const pace = uploadPace(data.global, t);
+  const speed = instantUploadSpeed(data.global.throughput, t);
+  const finish = data.global.expected_finish;
   // Server priority (#713): uploads held back while the server's disks are busy.
   const serverBusy = data.server_priority?.throttled === true;
+  const counted = { count: files, size: formatBytes(bytes) };
   const label = files > 0
-    ? pace ? t("activity.indicator_rate", { count: files, size: formatBytes(bytes), ...pace })
-      : t("activity.indicator", { count: files, size: formatBytes(bytes) })
+    ? speed && finish ? t("activity.indicator_finish", { ...counted, speed, time: expectedFinishShort(finish) })
+      : speed ? t("activity.indicator_speed", { ...counted, speed })
+      : t("activity.indicator", counted)
     : busy(data.global) ? t("activity.preparing") : t("activity.paused_only", { count: pausedFiles });
+  // What the indicator counts and over which windows its speed is measured (#755).
+  const windows = data.global.throughput;
+  const help = t("activity.current_work", {
+    seconds: windows?.instant_seconds ?? 20, minutes: Math.round((windows?.average_seconds ?? 300) / 60),
+  });
   return <>
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setNotice(""); }} align="end" label={t("activity.heading")} className="w-[min(26rem,calc(100vw-1rem))] p-4"
-      trigger={<button type="button" data-testid="upload-indicator" aria-label={label} title={label}
+      trigger={<button type="button" data-testid="upload-indicator" aria-label={label} title={`${label}\n${help}`}
         className={buttonVariants({ variant: "secondary", className: "min-w-11 gap-2 px-3" })}>
         <ArrowUpFromLine className={files > 0 ? "size-4 animate-pulse text-green motion-reduce:animate-none" : "size-4 text-muted"} aria-hidden="true" />
         <span className="hidden tabular-nums lg:inline">{label}</span>
@@ -121,7 +138,7 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
             <Summary activity={vault} observedAt={data.observed_at} t={t} paused />
           </li>)}</ul>
         </details>}
-        <p className="text-xs text-muted">{t("activity.current_work")}</p>
+        <p className="text-xs text-muted">{help}</p>
       </section>
     </Popover>
     <ConfirmDialog open={confirm} onOpenChange={(next) => { if (!cancelling) setConfirm(next); }} title={t("activity.cancel_pending")} description={t("activity.cancel_pending_confirm")}

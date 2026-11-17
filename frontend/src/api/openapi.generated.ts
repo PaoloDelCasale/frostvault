@@ -4,6 +4,153 @@
  */
 
 export interface paths {
+    "/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Login Page */
+        get: operations["login_page_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login */
+        post: operations["login_api_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Logout */
+        post: operations["logout_api_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reauth
+         * @description Emergency Password Reauthentication with an isolated durable backoff.
+         *
+         *     Accepted only from loopback and the LAN CIDRs; elsewhere the Owner steps
+         *     up through the provider (see ``/auth/oidc/reauth``). Its account/IP
+         *     counters deliberately use namespaced keys so a Reauthentication success
+         *     cannot reset sign-in or OIDC-related throttling state.
+         */
+        post: operations["reauth_api_reauth_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oidc/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Oidc Reauth
+         * @description OIDC step-up: force a fresh provider login with ``prompt=login``.
+         */
+        get: operations["oidc_reauth_auth_oidc_reauth_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oidc/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Oidc Login */
+        get: operations["oidc_login_auth_oidc_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Oidc Callback */
+        get: operations["oidc_callback_auth_oidc_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vaults/new": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vault Create Page */
+        get: operations["vault_create_page_vaults_new_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -13,6 +160,432 @@ export interface paths {
         };
         /** Index */
         get: operations["index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Me */
+        get: operations["me_api_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/login/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Login Options
+         * @description Public sign-in choices for the login page: no secrets, no Session.
+         */
+        get: operations["login_options_api_login_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/i18n/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** I18N Catalog */
+        get: operations["i18n_catalog_api_i18n_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/locale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Locale */
+        put: operations["update_locale_api_locale_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Vault */
+        post: operations["pause_vault_api_vaults__vault_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Vault */
+        post: operations["resume_vault_api_vaults__vault_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Vaults */
+        get: operations["list_vaults_api_vaults_get"];
+        put?: never;
+        /**
+         * Create Owner Vault
+         * @description Create a Vault from the UI, the only way Vaults are created (#412).
+         *
+         *     The server generates the plaintext storage identity and creates the
+         *     Vault's own Vault Bucket (#735): the Vault is active only once the bucket
+         *     is created and verified. ``bucket`` reports that; when it failed the Vault
+         *     stays ``provisioning``, FrostVault retries in the background and the Owner
+         *     may retry at once. Adoption binds any free directory of a custom Source
+         *     Volume in place and, once active, starts an asynchronous local scan.
+         *     ``retention_lock_days`` gives the bucket a Governance Retention Lock
+         *     (#736, ADR-0050), fixed for the Vault's life.
+         */
+        post: operations["create_owner_vault_api_vaults_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/bucket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Bucket Status
+         * @description The Vault's bucket and, while it is being created, the creation state (#735).
+         */
+        get: operations["vault_bucket_status_api_vaults__vault_id__bucket_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/retention-lock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Retention Lock
+         * @description The Vault's Retention Lock and the superseded versions it holds back (#736).
+         *
+         *     ``days`` is null for a Vault without one. ``retained`` counts the versions
+         *     waiting for their RetainUntilDate before FrostVault deletes them.
+         */
+        get: operations["vault_retention_lock_api_vaults__vault_id__retention_lock_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/bucket/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Vault Bucket
+         * @description Retry the creation of a provisioning Vault's bucket now (#735).
+         *
+         *     Idempotent: the same saved name, configuration applied again, then
+         *     verified. A Vault whose bucket is ready is returned unchanged.
+         */
+        post: operations["retry_vault_bucket_api_vaults__vault_id__bucket_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/creation/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Vault Creation
+         * @description Cancel the creation of a Vault whose bucket is not ready yet (#735).
+         *
+         *     Only while the Vault is ``provisioning``: it leaves the catalog and its
+         *     root is released. A bucket FrostVault already created is NOT deleted (it
+         *     has no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the
+         *     Owner can remove it by hand, and the audit record keeps them.
+         */
+        post: operations["cancel_vault_creation_api_vaults__vault_id__creation_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/stop-protection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stop Protection Status */
+        get: operations["stop_protection_status_api_vaults__vault_id__stop_protection_get"];
+        put?: never;
+        /** Stop Folder Protection */
+        post: operations["stop_folder_protection_api_vaults__vault_id__stop_protection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/stop-protection/cancel-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Stopped Folder Deletion */
+        post: operations["cancel_stopped_folder_deletion_api_vaults__vault_id__stop_protection_cancel_deletion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vault Deletion Status */
+        get: operations["vault_deletion_status_api_vaults__vault_id__vault_deletion_get"];
+        put?: never;
+        /**
+         * Request Vault Deletion
+         * @description Delete a Vault Tombstone after the seven-day delay (#717, ADR-0047).
+         *
+         *     The confirmation lists the prefix again: a request is recorded only with
+         *     a preview that a live listing has just produced.
+         */
+        post: operations["request_vault_deletion_api_vaults__vault_id__vault_deletion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vault Deletion Preview */
+        get: operations["vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Vault Deletion */
+        post: operations["cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/vault-deletion/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Vault Deletion */
+        post: operations["retry_vault_deletion_api_vaults__vault_id__vault_deletion_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/duplicate-cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Duplicate Cleanup Status */
+        get: operations["duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get"];
+        /**
+         * Update Duplicate Cleanup
+         * @description Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
+         *
+         *     Turning it on or changing its grace period or cap needs a fresh
+         *     authentication; turning it off never does, nor does making it wait for
+         *     the Minimum Storage Duration (#731), since both only delete less.
+         */
+        put: operations["update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/minimum-storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Minimum Storage Summary
+         * @description Minimum Storage Duration of a Vault's versions (#731): per storage class,
+         *     those within and beyond it, what the minimum still bills and, month by
+         *     month, when the versions within it are released. A list-price estimate.
+         */
+        get: operations["minimum_storage_summary_api_vaults__vault_id__minimum_storage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/cloud-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Cloud Usage
+         * @description A Vault's cloud usage (#737): the catalog's Cost Estimate by storage
+         *     class next to the bytes and objects CloudWatch measured in its Vault
+         *     Bucket once a day. Reads only the catalog, never AWS.
+         */
+        get: operations["vault_cloud_usage_api_vaults__vault_id__cloud_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/billed-cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Billed Cost
+         * @description The Vault's Billed Cost from the billing export (#738), by billing
+         *     period and category, with the export's status; never a Cost Explorer call.
+         */
+        get: operations["vault_billed_cost_api_vaults__vault_id__billed_cost_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -41,73 +614,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/catalog/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Catalog Events Stream
-         * @description Authenticated SSE stream of coalesced catalog invalidation signals.
-         *
-         *     The payload carries only Vault identity, monotonic revision, affected
-         *     domains, and an optional retention gap flag — never filesystem paths.
-         *     Pass ``subscribe=false`` for a finite catch-up response used by tests and
-         *     bounded recovery probes. Open streams observe the durable journal so
-         *     multi-process writers are visible without client idle polling.
-         *
-         *     Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
-         *     it is excluded from the JsonObjectResponse OpenAPI contract suite.
-         */
-        get: operations["catalog_events_stream_api_catalog_events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/catalog/revision": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Catalog Revision Snapshot
-         * @description One-shot catch-up for focus/online recovery without holding a stream.
-         */
-        get: operations["catalog_revision_snapshot_api_catalog_revision_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud-deletion": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Cloud Deletion Settings */
-        get: operations["cloud_deletion_settings_api_cloud_deletion_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud-deletion/preview": {
+    "/api/vaults/select": {
         parameters: {
             query?: never;
             header?: never;
@@ -116,25 +623,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Preview Cloud Deletion */
-        post: operations["preview_cloud_deletion_api_cloud_deletion_preview_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud-purge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cloud Purge */
-        post: operations["cloud_purge_api_cloud_purge_post"];
+        /** Select Vault */
+        post: operations["select_vault_api_vaults_select_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -161,26 +651,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/cloud-only-conflict/replace": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Replace Cloud Only Copy
-         * @description Confirm that new content replaces the only cloud copy at its path.
-         */
-        post: operations["replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/files/detail": {
         parameters: {
             query?: never;
@@ -190,23 +660,6 @@ export interface paths {
         };
         /** File Detail */
         get: operations["file_detail_api_files_detail_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/files/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** File Job History */
-        get: operations["file_job_history_api_files_jobs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -235,34 +688,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/versions": {
+    "/api/upload-activity": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** File Versions */
-        get: operations["file_versions_api_files_versions_get"];
+        /** Upload Activity Overview */
+        get: operations["upload_activity_overview_api_upload_activity_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/free-space": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Free Space */
-        post: operations["free_space_api_free_space_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -286,32 +722,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/general/cost-estimates/storage": {
+    "/api/problems": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /** Storage Cost Estimate */
-        post: operations["storage_cost_estimate_api_general_cost_estimates_storage_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/general/metadata-backups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Metadata Backups */
-        get: operations["list_metadata_backups_api_general_metadata_backups_get"];
+        /** Open Problems */
+        get: operations["open_problems_api_problems_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -320,252 +739,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/general/metadata-backups/download/{run_id}": {
+    "/api/stats": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Download Metadata Backup */
-        get: operations["download_metadata_backup_api_general_metadata_backups_download__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/general/metadata-backups/run": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Run Metadata Backup */
-        post: operations["run_metadata_backup_api_general_metadata_backups_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/general/source-volumes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * General Source Volumes
-         * @description Operator inventory of discovered Source Volumes (issue #148).
-         */
-        get: operations["general_source_volumes_api_general_source_volumes_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/general/vaults": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** General Vaults */
-        get: operations["general_vaults_api_general_vaults_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/i18n/catalog": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** I18N Catalog */
-        get: operations["i18n_catalog_api_i18n_catalog_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/job-groups/{group_id}/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Job Group Detail
-         * @description Newest-first keyset page of one group's Jobs, scoped to this Vault.
-         */
-        get: operations["job_group_detail_api_job_groups__group_id__jobs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Jobs
-         * @description At most 50 recent Jobs and 50 complete group summaries, never all members.
-         *
-         *     Action, active and exact-file filters select groups before the bounded cut;
-         *     their summaries still account for every member in this Vault. The cursor
-         *     pages summaries only; individual members use the group-detail endpoint.
-         */
-        get: operations["jobs_api_jobs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/jobs/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Job */
-        post: operations["cancel_job_api_jobs_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/jobs/{job_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Job Detail */
-        get: operations["job_detail_api_jobs__job_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/locale": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Update Locale */
-        put: operations["update_locale_api_locale_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Login */
-        post: operations["login_api_login_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/login/options": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Login Options
-         * @description Public sign-in choices for the login page: no secrets, no Session.
-         */
-        get: operations["login_options_api_login_options_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Logout */
-        post: operations["logout_api_logout_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Me */
-        get: operations["me_api_me_get"];
+        /** Stats */
+        get: operations["stats_api_stats_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -638,99 +820,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/problems": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Open Problems */
-        get: operations["open_problems_api_problems_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/reauth": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Reauth
-         * @description Emergency Password Reauthentication with an isolated durable backoff.
-         *
-         *     Accepted only from loopback and the LAN CIDRs; elsewhere the Owner steps
-         *     up through the provider (see ``/auth/oidc/reauth``). Its account/IP
-         *     counters deliberately use namespaced keys so a Reauthentication success
-         *     cannot reset sign-in or OIDC-related throttling state.
-         */
-        post: operations["reauth_api_reauth_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/recover": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Recover */
-        post: operations["recover_api_recover_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/recover/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Approve Recover */
-        post: operations["approve_recover_api_recover_approve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/recover/estimate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Recover Estimate */
-        post: operations["recover_estimate_api_recover_estimate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/recovery-kit": {
         parameters: {
             query?: never;
@@ -740,6 +829,23 @@ export interface paths {
         };
         /** Recovery Kit Status */
         get: operations["recovery_kit_status_api_recovery_kit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recovery-kit/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Recovery Kit */
+        get: operations["download_recovery_kit_api_recovery_kit_download_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -765,15 +871,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/recovery-kit/download": {
+    "/api/general/metadata-backups": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Download Recovery Kit */
-        get: operations["download_recovery_kit_api_recovery_kit_download_get"];
+        /** List Metadata Backups */
+        get: operations["list_metadata_backups_api_general_metadata_backups_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/metadata-backups/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Metadata Backup */
+        post: operations["run_metadata_backup_api_general_metadata_backups_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/metadata-backups/download/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Metadata Backup */
+        get: operations["download_metadata_backup_api_general_metadata_backups_download__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Jobs
+         * @description At most 50 recent Jobs and 50 complete group summaries, never all members.
+         *
+         *     Action, active and exact-file filters select groups before the bounded cut;
+         *     their summaries still account for every member in this Vault. The cursor
+         *     pages summaries only; individual members use the group-detail endpoint.
+         */
+        get: operations["jobs_api_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/job-groups/{group_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Job Group Detail
+         * @description Newest-first keyset page of one group's Jobs, scoped to this Vault.
+         */
+        get: operations["job_group_detail_api_job_groups__group_id__jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Detail */
+        get: operations["job_detail_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File Job History */
+        get: operations["file_job_history_api_files_jobs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -799,7 +1017,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/source-volumes/{volume_alias}/browse": {
+    "/api/catalog/revision": {
         parameters: {
             query?: never;
             header?: never;
@@ -807,13 +1025,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Browse Source Volume
-         * @description Lazy directory browser for choosing a Vault root on a Source Volume.
-         *
-         *     ``reconnect_vault_id`` treats that Vault's own root as free: Reconnect may
-         *     accept the same folder again (#656).
+         * Catalog Revision Snapshot
+         * @description One-shot catch-up for focus/online recovery without holding a stream.
          */
-        get: operations["browse_source_volume_api_source_volumes__volume_alias__browse_get"];
+        get: operations["catalog_revision_snapshot_api_catalog_revision_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -822,17 +1037,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/stats": {
+    "/api/catalog/events": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Stats */
-        get: operations["stats_api_stats_get"];
+        /**
+         * Catalog Events Stream
+         * @description Authenticated SSE stream of coalesced catalog invalidation signals.
+         *
+         *     The payload carries only Vault identity, monotonic revision, affected
+         *     domains, and an optional retention gap flag — never filesystem paths.
+         *     Pass ``subscribe=false`` for a finite catch-up response used by tests and
+         *     bounded recovery probes. Open streams observe the durable journal so
+         *     multi-process writers are visible without client idle polling.
+         *
+         *     Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
+         *     it is excluded from the JsonObjectResponse OpenAPI contract suite.
+         */
+        get: operations["catalog_events_stream_api_catalog_events_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** File Versions */
+        get: operations["file_versions_api_files_versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recover/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Recover Estimate */
+        post: operations["recover_estimate_api_recover_estimate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -856,23 +1117,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/upload-activity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Upload Activity Overview */
-        get: operations["upload_activity_overview_api_upload_activity_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/upload/admissions/{group_id}": {
         parameters: {
             query?: never;
@@ -884,56 +1128,6 @@ export interface paths {
         get: operations["upload_admission_status_api_upload_admissions__group_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/upload/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel Upload
-         * @description Backward-compatible endpoint for clients using the old upload route.
-         */
-        post: operations["cancel_upload_api_upload_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/upload/cancel-pending": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel Pending Uploads
-         * @description Cancel the uploads of the selected Vault (or one folder) that have not begun.
-         *
-         *     One call replaces thousands of per-file cancels after a burst or a moved
-         *     folder (issue #493). An empty ``path`` means the whole Vault; a folder
-         *     matches itself and its descendants only (``foo`` never matches ``foobar``).
-         *     Only uploads that never started are cancelled: running or verifying ones,
-         *     reconcile-only attempts, jobs with a started or recorded send and jobs of a
-         *     remediation episode are left to their own cancel and Resume, so an ambiguous
-         *     send is never closed for good by a bulk action. A cancelled upload, manual or
-         *     automatic, is not re-queued automatically until the file's content changes,
-         *     like a single cancel (#618).
-         */
-        post: operations["cancel_pending_uploads_api_upload_cancel_pending_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -984,6 +1178,316 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/cloud-only-conflict/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace Cloud Only Copy
+         * @description Confirm that new content replaces the only cloud copy at its path.
+         */
+        post: operations["replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upload/cancel-pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Pending Uploads
+         * @description Cancel the uploads of the selected Vault (or one folder) that have not begun.
+         *
+         *     One call replaces thousands of per-file cancels after a burst or a moved
+         *     folder (issue #493). An empty ``path`` means the whole Vault; a folder
+         *     matches itself and its descendants only (``foo`` never matches ``foobar``).
+         *     Only uploads that never started are cancelled: running or verifying ones,
+         *     reconcile-only attempts, jobs with a started or recorded send and jobs of a
+         *     remediation episode are left to their own cancel and Resume, so an ambiguous
+         *     send is never closed for good by a bulk action. A cancelled upload, manual or
+         *     automatic, is not re-queued automatically until the file's content changes,
+         *     like a single cancel (#618).
+         */
+        post: operations["cancel_pending_uploads_api_upload_cancel_pending_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Job */
+        post: operations["cancel_job_api_jobs_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upload/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Upload
+         * @description Backward-compatible endpoint for clients using the old upload route.
+         */
+        post: operations["cancel_upload_api_upload_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Recover */
+        post: operations["recover_api_recover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/recover/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Recover */
+        post: operations["approve_recover_api_recover_approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/free-space": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Free Space */
+        post: operations["free_space_api_free_space_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cloud Deletion Settings */
+        get: operations["cloud_deletion_settings_api_cloud_deletion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud-deletion/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Cloud Deletion */
+        post: operations["preview_cloud_deletion_api_cloud_deletion_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud-purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cloud Purge */
+        post: operations["cloud_purge_api_cloud_purge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/source-volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * General Source Volumes
+         * @description Operator inventory of discovered Source Volumes (issue #148).
+         */
+        get: operations["general_source_volumes_api_general_source_volumes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/source-volumes/{volume_alias}/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Browse Source Volume
+         * @description Lazy directory browser for choosing a Vault root on a Source Volume.
+         *
+         *     ``reconnect_vault_id`` treats that Vault's own root as free: Reconnect may
+         *     accept the same folder again (#656).
+         */
+        get: operations["browse_source_volume_api_source_volumes__volume_alias__browse_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/general/vaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** General Vaults */
+        get: operations["general_vaults_api_general_vaults_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconnect Vault Root
+         * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
+         */
+        post: operations["reconnect_vault_root_api_vaults__vault_id__reconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/operation-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Own Vault Operation Policy */
+        get: operations["own_vault_operation_policy_api_vault_operation_policy_get"];
+        /** Update Vault Operation Policy */
+        put: operations["update_vault_operation_policy_api_vault_operation_policy_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/operation-policy/globs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit Vault Operation Glob
+         * @description Add or remove one include/exclude glob against the stored policy (#754).
+         *
+         *     Adding a glob already present changes nothing; removing one that is no
+         *     longer there is refused with 409, so a stale view cannot replace the list.
+         */
+        post: operations["edit_vault_operation_glob_api_vault_operation_policy_globs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vault/excluded-folders": {
         parameters: {
             query?: never;
@@ -999,6 +1503,50 @@ export interface paths {
          *     inside one it lists the level's entries, never catalogued nor fingerprinted.
          */
         get: operations["vault_excluded_folders_api_vault_excluded_folders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/item": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Item Exclusion
+         * @description Which rules exclude one item, and its own rule (#754).
+         */
+        get: operations["vault_item_exclusion_api_vault_exclusions_item_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/inclusion-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Inclusion Preview
+         * @description What «Include again» would upload, counted from disk now (#754).
+         *
+         *     Only when the item's own rule is what excludes it: the counts honour the
+         *     policy without that rule and stop after a time budget (``complete`` false
+         *     means a minimum). Otherwise only the broader rules are returned.
+         */
+        get: operations["vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1053,62 +1601,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/inclusion-preview": {
+    "/api/vault/operation-policy/preview-globs": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Vault Inclusion Preview
-         * @description What «Include again» would upload, counted from disk now (#754).
-         *
-         *     Only when the item's own rule is what excludes it: the counts honour the
-         *     policy without that rule and stop after a time budget (``complete`` false
-         *     means a minimum). Otherwise only the broader rules are returned.
-         */
-        get: operations["vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get"];
+        get?: never;
         put?: never;
-        post?: never;
+        /** Preview Vault Operation Globs */
+        post: operations["preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/item": {
+    "/api/general/cost-estimates/storage": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Vault Item Exclusion
-         * @description Which rules exclude one item, and its own rule (#754).
-         */
-        get: operations["vault_item_exclusion_api_vault_exclusions_item_get"];
+        get?: never;
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/lifecycle": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Own Vault Lifecycle */
-        get: operations["own_vault_lifecycle_api_vault_lifecycle_get"];
-        /** Update Vault Storage Plan */
-        put: operations["update_vault_storage_plan_api_vault_lifecycle_put"];
-        post?: never;
+        /** Storage Cost Estimate */
+        post: operations["storage_cost_estimate_api_general_cost_estimates_storage_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1133,523 +1653,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/operation-policy": {
+    "/api/vault/lifecycle": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Own Vault Operation Policy */
-        get: operations["own_vault_operation_policy_api_vault_operation_policy_get"];
-        /** Update Vault Operation Policy */
-        put: operations["update_vault_operation_policy_api_vault_operation_policy_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/operation-policy/globs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Edit Vault Operation Glob
-         * @description Add or remove one include/exclude glob against the stored policy (#754).
-         *
-         *     Adding a glob already present changes nothing; removing one that is no
-         *     longer there is refused with 409, so a stale view cannot replace the list.
-         */
-        post: operations["edit_vault_operation_glob_api_vault_operation_policy_globs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vault/operation-policy/preview-globs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Preview Vault Operation Globs */
-        post: operations["preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Vaults */
-        get: operations["list_vaults_api_vaults_get"];
-        put?: never;
-        /**
-         * Create Owner Vault
-         * @description Create a Vault from the UI, the only way Vaults are created (#412).
-         *
-         *     The server generates the plaintext storage identity and creates the
-         *     Vault's own Vault Bucket (#735): the Vault is active only once the bucket
-         *     is created and verified. ``bucket`` reports that; when it failed the Vault
-         *     stays ``provisioning``, FrostVault retries in the background and the Owner
-         *     may retry at once. Adoption binds any free directory of a custom Source
-         *     Volume in place and, once active, starts an asynchronous local scan.
-         *     ``retention_lock_days`` gives the bucket a Governance Retention Lock
-         *     (#736, ADR-0050), fixed for the Vault's life.
-         */
-        post: operations["create_owner_vault_api_vaults_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/select": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Select Vault */
-        post: operations["select_vault_api_vaults_select_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/billed-cost": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Vault Billed Cost
-         * @description The Vault's Billed Cost from the billing export (#738), by billing
-         *     period and category, with the export's status; never a Cost Explorer call.
-         */
-        get: operations["vault_billed_cost_api_vaults__vault_id__billed_cost_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/bucket": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Vault Bucket Status
-         * @description The Vault's bucket and, while it is being created, the creation state (#735).
-         */
-        get: operations["vault_bucket_status_api_vaults__vault_id__bucket_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/bucket/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Retry Vault Bucket
-         * @description Retry the creation of a provisioning Vault's bucket now (#735).
-         *
-         *     Idempotent: the same saved name, configuration applied again, then
-         *     verified. A Vault whose bucket is ready is returned unchanged.
-         */
-        post: operations["retry_vault_bucket_api_vaults__vault_id__bucket_retry_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/cloud-usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Vault Cloud Usage
-         * @description A Vault's cloud usage (#737): the catalog's Cost Estimate by storage
-         *     class next to the bytes and objects CloudWatch measured in its Vault
-         *     Bucket once a day. Reads only the catalog, never AWS.
-         */
-        get: operations["vault_cloud_usage_api_vaults__vault_id__cloud_usage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/creation/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel Vault Creation
-         * @description Cancel the creation of a Vault whose bucket is not ready yet (#735).
-         *
-         *     Only while the Vault is ``provisioning``: it leaves the catalog and its
-         *     root is released. A bucket FrostVault already created is NOT deleted (it
-         *     has no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the
-         *     Owner can remove it by hand, and the audit record keeps them.
-         */
-        post: operations["cancel_vault_creation_api_vaults__vault_id__creation_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/duplicate-cleanup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Duplicate Cleanup Status */
-        get: operations["duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get"];
-        /**
-         * Update Duplicate Cleanup
-         * @description Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
-         *
-         *     Turning it on or changing its grace period or cap needs a fresh
-         *     authentication; turning it off never does, nor does making it wait for
-         *     the Minimum Storage Duration (#731), since both only delete less.
-         */
-        put: operations["update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/minimum-storage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Minimum Storage Summary
-         * @description Minimum Storage Duration of a Vault's versions (#731): per storage class,
-         *     those within and beyond it, what the minimum still bills and, month by
-         *     month, when the versions within it are released. A list-price estimate.
-         */
-        get: operations["minimum_storage_summary_api_vaults__vault_id__minimum_storage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/pause": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Pause Vault */
-        post: operations["pause_vault_api_vaults__vault_id__pause_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/reconnect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Reconnect Vault Root
-         * @description Accept this folder/mount for this Vault only; mandatory cloud/local scan.
-         */
-        post: operations["reconnect_vault_root_api_vaults__vault_id__reconnect_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Resume Vault */
-        post: operations["resume_vault_api_vaults__vault_id__resume_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/retention-lock": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Vault Retention Lock
-         * @description The Vault's Retention Lock and the superseded versions it holds back (#736).
-         *
-         *     ``days`` is null for a Vault without one. ``retained`` counts the versions
-         *     waiting for their RetainUntilDate before FrostVault deletes them.
-         */
-        get: operations["vault_retention_lock_api_vaults__vault_id__retention_lock_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/stop-protection": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stop Protection Status */
-        get: operations["stop_protection_status_api_vaults__vault_id__stop_protection_get"];
-        put?: never;
-        /** Stop Folder Protection */
-        post: operations["stop_folder_protection_api_vaults__vault_id__stop_protection_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/stop-protection/cancel-deletion": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Stopped Folder Deletion */
-        post: operations["cancel_stopped_folder_deletion_api_vaults__vault_id__stop_protection_cancel_deletion_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/vault-deletion": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Vault Deletion Status */
-        get: operations["vault_deletion_status_api_vaults__vault_id__vault_deletion_get"];
-        put?: never;
-        /**
-         * Request Vault Deletion
-         * @description Delete a Vault Tombstone after the seven-day delay (#717, ADR-0047).
-         *
-         *     The confirmation lists the prefix again: a request is recorded only with
-         *     a preview that a live listing has just produced.
-         */
-        post: operations["request_vault_deletion_api_vaults__vault_id__vault_deletion_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/vault-deletion/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel Vault Deletion */
-        post: operations["cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/vault-deletion/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Vault Deletion Preview */
-        get: operations["vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/vaults/{vault_id}/vault-deletion/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Retry Vault Deletion */
-        post: operations["retry_vault_deletion_api_vaults__vault_id__vault_deletion_retry_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/assets/{asset_path}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Spa Asset
-         * @description Serve hashed Vite build assets with long-lived immutable caching.
-         */
-        get: operations["spa_asset_assets__asset_path__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Oidc Callback */
-        get: operations["oidc_callback_auth_oidc_callback_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Oidc Login */
-        get: operations["oidc_login_auth_oidc_login_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/oidc/reauth": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Oidc Reauth
-         * @description OIDC step-up: force a fresh provider login with ``prompt=login``.
-         */
-        get: operations["oidc_reauth_auth_oidc_reauth_get"];
-        put?: never;
+        /** Own Vault Lifecycle */
+        get: operations["own_vault_lifecycle_api_vault_lifecycle_get"];
+        /** Update Vault Storage Plan */
+        put: operations["update_vault_storage_plan_api_vault_lifecycle_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1669,43 +1683,6 @@ export interface paths {
          * @description Process liveness probe — does not inspect dependencies.
          */
         get: operations["health_health_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Login Page */
-        get: operations["login_page_login_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/metrics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Metrics
-         * @description Prometheus exposition; disabled without METRICS_TOKEN, Bearer-only when set.
-         */
-        get: operations["metrics_metrics_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1734,15 +1711,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/vaults/new": {
+    "/metrics": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Vault Create Page */
-        get: operations["vault_create_page_vaults_new_get"];
+        /**
+         * Metrics
+         * @description Prometheus exposition; disabled without METRICS_TOKEN, Bearer-only when set.
+         */
+        get: operations["metrics_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Spa Asset
+         * @description Serve hashed Vite build assets with long-lived immutable caching.
+         */
+        get: operations["spa_asset_assets__asset_path__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1775,58 +1775,30 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        ApiErrorResponse: {
-            detail: string;
-            message: string;
-            /** @constant */
-            message_key: "api.invalid_path";
-        };
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
-        ArchiveVersionItem: {
-            availability?: string | null;
-            availability_checked_at?: string | null;
-            created_at?: string | null;
-            /** @description The colder class the Storage Plan expects by now, while the transition is not observed yet. */
-            expected_storage_class?: string | null;
-            id: string;
-            integrity?: string | null;
-            /** @description When the Minimum Storage Duration of the class ends; null for a class without one. */
-            minimum_storage_until?: string | null;
-            not_selectable_reason?: string | null;
-            object_key?: string | null;
-            provider_version_id?: string | null;
-            recoverable: boolean;
-            /**
-             * @description Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.
-             * @enum {string}
-             */
-            role: "current" | "pending";
-            size?: number | null;
-            storage_class?: string | null;
-            /** @description Class Entry: when the version entered storage_class (or expected_storage_class). */
-            storage_class_since?: string | null;
-            /** @description The Class Entry is estimated from created_at and the Storage Plan, not recorded. */
-            storage_class_since_estimated?: boolean;
-            /** @enum {string|null} */
-            upload_verification_requested?: "s3_checksum" | "read_back" | null;
-            verification_egress_bytes?: number | null;
-            verification_fallback_reason?: string | null;
-            /** @enum {string|null} */
-            verification_method?: "s3_checksum" | "read_back" | null;
-            verified_at?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        AuthMethod: string | null;
         /** @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure. */
         BillingExportStatus: {
+            /**
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
+             * @enum {string}
+             */
+            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
             /** @description The System Bucket the export is delivered to. */
             bucket: string | null;
+            /** @description The S3 path prefix of the export in the System Bucket. */
+            prefix: string;
             checked_at: string | null;
-            /** @description The billing currency (ISO 4217). */
-            currency: string | null;
+            next_check_at: string | null;
+            /** @description When FrostVault last read the export (only when ok). */
+            read_at: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
+            exported_at: string | null;
             /** @description The newest usage end in the export, never after exported_at. */
             data_through: string | null;
+            /** @description The billing currency (ISO 4217). */
+            currency: string | null;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
             /**
              * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
              * @enum {string|null}
@@ -1834,88 +1806,68 @@ export interface components {
             error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
             /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
             error_detail: string | null;
-            /** @description When AWS delivered the newest manifest that was read. */
-            exported_at: string | null;
-            next_check_at: string | null;
             /** @description Billing periods read, newest first; empty unless state is ok. */
             periods: {
-                /** @description The System Bucket and shared buckets of older Vaults: not attributed to one Vault. */
-                installation: {
-                    bucket: string;
-                    /** @description Billed amounts by category, in the billing currency; every category is present. */
-                    categories: {
-                        /** @description Credits, refunds and discounts of the bucket (negative). */
-                        credits: number;
-                        data_transfer: number;
-                        other: number;
-                        requests: number;
-                        retrievals: number;
-                        storage: number;
-                        transitions: number;
-                    };
-                    /** @enum {string} */
-                    role: "system" | "shared";
-                    total: number;
-                }[];
                 /** @description YYYY-MM */
                 period: string;
                 /** @description Every row of the period: Vaults and installation. */
                 total: number;
-                vaults: {
-                    bucket: string;
-                    /** @description Billed amounts by category, in the billing currency; every category is present. */
-                    categories: {
-                        /** @description Credits, refunds and discounts of the bucket (negative). */
-                        credits: number;
-                        data_transfer: number;
-                        other: number;
-                        requests: number;
-                        retrievals: number;
-                        storage: number;
-                        transitions: number;
-                    };
-                    name: string | null;
-                    total: number;
-                    vault_id: number;
-                }[];
                 /** @description The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill. */
                 vaults_total: number;
+                vaults: {
+                    vault_id: number;
+                    name: string | null;
+                    bucket: string;
+                    total: number;
+                    /** @description Billed amounts by category, in the billing currency; every category is present. */
+                    categories: {
+                        storage: number;
+                        requests: number;
+                        transitions: number;
+                        retrievals: number;
+                        data_transfer: number;
+                        other: number;
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
+                    };
+                }[];
+                /** @description The System Bucket and shared buckets of older Vaults: not attributed to one Vault. */
+                installation: {
+                    /** @enum {string} */
+                    role: "system" | "shared";
+                    bucket: string;
+                    total: number;
+                    /** @description Billed amounts by category, in the billing currency; every category is present. */
+                    categories: {
+                        storage: number;
+                        requests: number;
+                        transitions: number;
+                        retrievals: number;
+                        data_transfer: number;
+                        other: number;
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
+                    };
+                }[];
             }[];
-            /** @description The S3 path prefix of the export in the System Bucket. */
-            prefix: string;
-            /** @description When FrostVault last read the export (only when ok). */
-            read_at: string | null;
-            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
-            stale: boolean;
-            /**
-             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
-             * @enum {string}
-             */
-            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
-        };
-        BulkUploadAdmissionActivity: {
-            admitted_files: number;
-            processed_files: number;
-            requests: number;
-            selected_files: number;
         };
         BulkUploadAdmissionResponse: {
-            admitted_count: number;
             group_id: string;
-            /** @enum {string} */
-            origin: "manual";
+            vault_id: number;
             path: string;
-            processed_count: number;
-            reason: string | null;
-            requested_at: string;
-            selected_count: number;
             /** @enum {string} */
             status: "pending" | "completed" | "cancelled" | "invalidated";
-            total_bytes: number;
+            reason: string | null;
+            requested_at: string;
             updated_at: string;
-            vault_id: number;
+            /** @enum {string} */
+            origin: "manual";
             /** @enum {string} */
             verification_mode: "s3_checksum" | "read_back";
+            selected_count: number;
+            processed_count: number;
+            admitted_count: number;
+            total_bytes: number;
         };
         CatalogRevisionResponse: {
             changed: boolean;
@@ -1956,25 +1908,25 @@ export interface components {
             eligible_bytes: number;
             eligible_count: number;
             fingerprint: string;
-            minimum_storage?: components["schemas"]["MinimumStorageDeletion"] | null;
             /** @enum {string} */
             mode: "exact" | "selection";
             no_local_copy_bytes: number;
             no_local_copy_count: number;
             object_count: number;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
             skipped: {
-                conflict?: number;
-                no_exact_version?: number;
-                not_verified?: number;
-                pending_cleanup?: number;
-                pending_work?: number;
                 present_locally?: number;
+                pending_work?: number;
+                pending_cleanup?: number;
+                conflict?: number;
+                not_verified?: number;
+                no_exact_version?: number;
             } & {
                 [key: string]: number;
             };
             skipped_count: number;
             version_count: number;
+            minimum_storage?: components["schemas"]["MinimumStorageDeletion"] | null;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -1987,23 +1939,23 @@ export interface components {
          *     eligible files (#723). ``duplicates_only`` keeps only Cloud Duplicates.
          */
         CloudDeletionPreviewRequest: {
-            /** Directories */
-            directories?: string[] | null;
-            /**
-             * Duplicates Only
-             * @default false
-             */
-            duplicates_only: boolean;
+            /** Path */
+            path?: string | null;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
-            listing?: components["schemas"]["CloudDeletionListing"] | null;
-            /** Path */
-            path?: string | null;
             /** Paths */
             paths?: string[] | null;
+            /** Directories */
+            directories?: string[] | null;
+            listing?: components["schemas"]["CloudDeletionListing"] | null;
+            /**
+             * Duplicates Only
+             * @default false
+             */
+            duplicates_only: boolean;
         };
         CloudDeletionSettings: {
             /** @constant */
@@ -2014,172 +1966,122 @@ export interface components {
             /** Path */
             path: string;
         };
-        CloudPurgePayload: {
-            confirmation: string;
-            is_directory?: boolean;
-            path: string;
-            reason: string;
-        };
         /** CloudPurgeRequest */
         CloudPurgeRequest: {
-            /** Confirmation */
-            confirmation: string;
-            /** Directories */
-            directories?: string[] | null;
-            /**
-             * Duplicates Only
-             * @default false
-             */
-            duplicates_only: boolean;
-            /** Fingerprint */
-            fingerprint?: string | null;
+            /** Path */
+            path?: string | null;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
-            listing?: components["schemas"]["CloudDeletionListing"] | null;
-            /** Path */
-            path?: string | null;
             /** Paths */
             paths?: string[] | null;
+            /** Directories */
+            directories?: string[] | null;
+            listing?: components["schemas"]["CloudDeletionListing"] | null;
+            /**
+             * Duplicates Only
+             * @default false
+             */
+            duplicates_only: boolean;
+            /** Confirmation */
+            confirmation: string;
             /** Reason */
             reason: string;
-        };
-        /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
-        DirectoryListItem: {
-            available_actions?: {
-                [key: string]: number;
-            };
-            cloud_size?: number;
-            item_count: number;
-            last_known_at?: string | null;
-            last_known_states?: {
-                [key: string]: number;
-            };
-            local_size?: number;
-            name: string;
-            path: string;
-            state: string;
-            state_counts?: {
-                [key: string]: number;
-            };
-            storage_class?: string | null;
-            storage_class_count?: number;
-            total_size: number;
-            /** @constant */
-            type: "directory";
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description An entry read from disk inside an Excluded Folder: not catalogued, not protected. */
-        DiskListingEntry: {
-            modified_at: string;
-            name: string;
-            path: string;
-            size: number | null;
-            /** @enum {string} */
-            type: "file" | "directory";
-        } & {
-            [key: string]: unknown;
+            /** Fingerprint */
+            fingerprint?: string | null;
         };
         DuplicateCleanupStatus: {
-            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
-            beyond_minimum: boolean;
-            cap_bytes: number;
-            cap_files: number;
-            current: {
-                bytes: number;
-                count: number;
-            } | null;
             enabled: boolean;
             grace_days: number;
-            grace_days_max: number;
+            cap_files: number;
+            cap_bytes: number;
             grace_days_min: number;
-            /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
-            held: {
-                bytes: number;
-                count: number;
-            } | null;
+            grace_days_max: number;
+            last_run_at: string | null;
+            next_run_at: string | null;
             last_outcome: {
-                at: string;
-                byte_count?: number;
-                file_count?: number;
-                group_id?: string;
-                held_bytes?: number;
-                held_count?: number;
-                minimum_bytes?: number;
-                minimum_cost?: number;
-                minimum_count?: number;
                 /** @enum {string} */
                 outcome: "scheduled" | "none" | "capped" | "skipped";
+                at: string;
+                file_count?: number;
+                byte_count?: number;
+                group_id?: string;
                 run_after?: string;
-                savings_from?: string | null;
-                unseen_count?: number;
-                waiting_bytes?: number;
                 waiting_count?: number;
+                waiting_bytes?: number;
+                unseen_count?: number;
+                held_count?: number;
+                held_bytes?: number;
+                minimum_count?: number;
+                minimum_bytes?: number;
+                minimum_cost?: number;
+                savings_from?: string | null;
             } | null;
-            last_run_at: string | null;
-            minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
-            next_run_at: string | null;
             pending: {
-                byte_count: number;
-                cancellable: boolean;
-                file_count: number;
                 group_id: string;
+                file_count: number;
+                byte_count: number;
                 run_after: string | null;
+                cancellable: boolean;
             }[];
-            ready: {
-                bytes: number;
+            current: {
                 count: number;
-            } | null;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
-            totals: {
-                deleted_bytes: number;
-                deleted_count: number;
-                last_deleted_at: string | null;
-            } | null;
-            unseen: {
                 bytes: number;
-                count: number;
             } | null;
             waiting: {
-                bytes: number;
                 count: number;
-                earliest_deletion_at: string | null;
+                bytes: number;
                 first_eligible_at: string | null;
+                earliest_deletion_at: string | null;
             } | null;
+            ready: {
+                count: number;
+                bytes: number;
+            } | null;
+            unseen: {
+                count: number;
+                bytes: number;
+            } | null;
+            totals: {
+                deleted_count: number;
+                deleted_bytes: number;
+                last_deleted_at: string | null;
+            } | null;
+            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
+            beyond_minimum: boolean;
+            /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
+            held: {
+                count: number;
+                bytes: number;
+            } | null;
+            minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
         };
         /**
          * DuplicateCleanupUpdate
          * @description Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value.
          */
         DuplicateCleanupUpdate: {
-            /** Beyond Minimum */
-            beyond_minimum?: boolean | null;
-            /** Cap Bytes */
-            cap_bytes?: number | null;
-            /** Cap Files */
-            cap_files?: number | null;
             /** Enabled */
             enabled?: boolean | null;
             /** Grace Days */
             grace_days?: number | null;
-        };
-        ExcludedFolder: {
-            name: string;
-            path: string;
-            rule: string;
-        } & {
-            [key: string]: unknown;
+            /** Cap Files */
+            cap_files?: number | null;
+            /** Cap Bytes */
+            cap_bytes?: number | null;
+            /** Beyond Minimum */
+            beyond_minimum?: boolean | null;
         };
         /** @description One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder. */
         ExcludedFolderListing: {
             directory: string;
-            entries: components["schemas"]["DiskListingEntry"][];
             /** @description The folder rule that covers this directory; null outside an Excluded Folder. */
             excluded_by: string | null;
             folders: components["schemas"]["ExcludedFolder"][];
+            entries: components["schemas"]["DiskListingEntry"][];
             total_entries: number;
             truncated: boolean;
         } & {
@@ -2187,94 +2089,39 @@ export interface components {
         };
         /** FileAction */
         FileAction: {
-            /** Archive Version Id */
-            archive_version_id?: string | null;
+            /** Path */
+            path: string;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
-            /** Path */
-            path: string;
-            /** Restore Days */
-            restore_days?: number | null;
+            /** Archive Version Id */
+            archive_version_id?: string | null;
             /** Restore Tier */
             restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
         };
         FileJobHistoryResponse: {
             items: components["schemas"]["JobRecord"][];
             next_before_id: number | null;
         };
-        /**
-         * @description Job / file-operation types (issue #67).
-         * @enum {string}
-         */
-        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
-        FileOperationPayload: {
-            archive_version_id?: string;
-            is_directory?: boolean;
-            path: string;
-            restore_days?: number;
-            restore_tier?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        FileOperationResponse: {
-            archive_version_id?: string | null;
-            estimated_cost_eur?: number | null;
-            estimated_hours?: number | null;
-            group_id: string;
-            item_count?: number;
-            job_ids?: number[];
-            message?: string;
-            message_key?: string;
-            preview?: components["schemas"]["CloudDeletionPreview"];
-            restore_days?: number | null;
-            restore_tier?: string | null;
-            total_bytes?: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped. */
-        FileRecovery: {
-            /** @description A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable. */
-            active: boolean;
-            days: number | null;
-            /** @description End of the readable restored copy. */
-            expires_at: string | null;
-            /** @description Request instant plus the tier's restore hours; an estimate. */
-            ready_by: string | null;
-            requested_at: string | null;
-            /** @enum {string} */
-            state: "queued" | "awaiting_approval" | "waiting_for_cloud" | "ready" | "downloading";
-            /** @enum {string|null} */
-            tier: "Expedited" | "Standard" | "Bulk" | null;
-        } & {
-            [key: string]: unknown;
-        };
         FileVersionsResponse: {
+            reconciliation?: components["schemas"]["UploadReconciliation"];
+            remediations?: components["schemas"]["UploadRemediation"][];
             default_archive_version_id: string | null;
             default_restore_days: number;
             default_restore_tier: string;
             items: components["schemas"]["ArchiveVersionItem"][];
             path: string;
-            reconciliation?: components["schemas"]["UploadReconciliation"];
             recoverable_count: number;
-            remediations?: components["schemas"]["UploadRemediation"][];
             supported_restore_tiers: string[];
         } & {
             [key: string]: unknown;
         };
-        FilesQuery: {
-            directory?: string;
-            page?: number;
-            page_size?: number;
-            q?: string;
-            state?: string;
-        } & {
-            [key: string]: unknown;
-        };
         FilesResponse: {
+            manual_upload?: boolean;
             /**
              * @description Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).
              * @enum {string}
@@ -2282,7 +2129,6 @@ export interface components {
             aggregate_status?: "ready" | "loading" | "stale";
             directory: string;
             items: components["schemas"]["ArchiveListItem"][];
-            manual_upload?: boolean;
             mode: string;
             page: number;
             total: number;
@@ -2290,57 +2136,32 @@ export interface components {
             [key: string]: unknown;
         };
         GeneralOverview: {
-            cloud_preflight?: {
-                next_probe_at: string | null;
-                remediation: string | null;
-                /** @enum {string} */
-                status: "unknown" | "ready" | "blocked";
-            };
-            currency?: string;
-            dac_override?: boolean;
-            email_configured?: boolean;
-            last_verified_backup?: string | null;
-            metadata_backup_verification?: components["schemas"]["MetadataBackupVerification"];
-            month?: string;
-            monthly_estimate?: number;
-            open_problem_count?: number;
-            previous_month_delta?: number | null;
-            pricing_effective_at?: string;
-            runs_as_root?: boolean;
             vaults?: {
                 id: number;
-                /** @enum {string} */
-                lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-                monthly_estimate: number;
                 name: string;
+                monthly_estimate: number;
                 open_problem_count: number;
                 uuid: string;
+                /** @enum {string} */
+                lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
             }[];
-        };
-        GeneralVault: {
-            bucket_provisioning?: components["schemas"]["VaultBucketStatus"] | null;
-            dedicated_bucket?: boolean;
-            id: number;
-            /** @enum {string} */
-            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            name: string;
-            paused?: boolean;
-            retention_lock_days?: number | null;
-            root_released_at?: string | null;
-            s3_bucket?: string;
-            s3_prefix: string;
-            s3_region?: string;
-            source_root: string;
-            uuid: string;
-            /** @enum {string|null} */
-            vault_deletion_status?: "pending" | "running" | "failed" | null;
-        };
-        GeneralVaultReconnectPayload: {
-            reason: string;
-            relative_path: string;
-            volume_alias: string;
-        } & {
-            [key: string]: unknown;
+            open_problem_count?: number;
+            monthly_estimate?: number;
+            month?: string;
+            currency?: string;
+            pricing_effective_at?: string;
+            previous_month_delta?: number | null;
+            email_configured?: boolean;
+            runs_as_root?: boolean;
+            dac_override?: boolean;
+            cloud_preflight?: {
+                /** @enum {string} */
+                status: "unknown" | "ready" | "blocked";
+                remediation: string | null;
+                next_probe_at: string | null;
+            };
+            last_verified_backup?: string | null;
+            metadata_backup_verification?: components["schemas"]["MetadataBackupVerification"];
         };
         GeneralVaultReconnectResponse: {
             full_scan_required: boolean;
@@ -2358,12 +2179,12 @@ export interface components {
         };
         /** GlobPreviewRequest */
         GlobPreviewRequest: {
-            /** Exclude Globs */
-            exclude_globs?: string[];
-            /** Include Globs */
-            include_globs?: string[];
             /** Paths */
             paths?: string[];
+            /** Include Globs */
+            include_globs?: string[];
+            /** Exclude Globs */
+            exclude_globs?: string[];
         };
         GlobPreviewResponse: {
             excluded: string[];
@@ -2392,57 +2213,26 @@ export interface components {
         };
         /** JobCancelAction */
         JobCancelAction: {
-            /** Action */
-            action: string;
             /** Group Id */
             group_id: string;
-        };
-        JobCancelPayload: {
+            /** Action */
             action: string;
-            group_id: string;
-        } & {
-            [key: string]: unknown;
         };
         JobCancelResponse: {
+            stopped_admissions?: number;
             cancelled_count: number;
             message: string;
             message_key?: string;
-            stopped_admissions?: number;
-        } & {
-            [key: string]: unknown;
-        };
-        JobGroup: {
-            action: components["schemas"]["FileOperationAction"] | string;
-            cancelled_count: number;
-            completed_count: number;
-            estimated_cost_eur?: number | null;
-            estimated_hours?: number | null;
-            failed_count: number;
-            id: string;
-            item_count: number;
-            message?: string | null;
-            message_key?: string | null;
-            path: string;
-            pending_until?: string | null;
-            percent: number;
-            /** @description Expected end of the cloud restore: requested_at plus estimated_hours. */
-            ready_by?: string | null;
-            requested_at?: string | null;
-            resolved_failed_count?: number;
-            restore_days?: number | null;
-            restore_tier?: string | null;
-            status: components["schemas"]["JobStatus"];
-            total_bytes: number;
-            transferred_bytes: number;
-            unresolved_failed_count?: number;
-            updated_at?: string;
         } & {
             [key: string]: unknown;
         };
         JobRecord: {
+            remediation?: components["schemas"]["UploadRemediation"] | null;
+            remediation_rejection?: string | null;
+            archive_version_id?: string | null;
+            upload_reconcile_only?: boolean;
             action: components["schemas"]["FileOperationAction"] | string;
             approved_at?: string | null;
-            archive_version_id?: string | null;
             estimated_cost_eur?: number | null;
             estimated_hours?: number | null;
             group_id?: string | null;
@@ -2453,8 +2243,6 @@ export interface components {
             message_params?: unknown;
             path: string;
             pending_until?: string | null;
-            remediation?: components["schemas"]["UploadRemediation"] | null;
-            remediation_rejection?: string | null;
             requested_at?: string;
             restore_days?: number | null;
             restore_tier?: string | null;
@@ -2462,16 +2250,14 @@ export interface components {
             total_bytes?: number | null;
             transferred_bytes?: number | null;
             updated_at?: string;
-            upload_reconcile_only?: boolean;
         } & {
             [key: string]: unknown;
         };
-        JobStatus: string;
         JobsResponse: {
+            next_groups_before_id?: number | null;
             groups: components["schemas"]["JobGroup"][];
             items: components["schemas"]["JobRecord"][];
             locale?: string;
-            next_groups_before_id?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -2481,12 +2267,6 @@ export interface components {
          */
         JsonObjectResponse: {
             [key: string]: unknown;
-        };
-        LifecycleGuidedProfile: {
-            transitions: components["schemas"]["LifecycleTransition"][];
-        };
-        LifecycleProfile: {
-            transitions: components["schemas"]["LifecycleTransition"][];
         };
         /** LifecycleProfileSelection */
         LifecycleProfileSelection: {
@@ -2503,15 +2283,9 @@ export interface components {
             guided_profiles: {
                 [key: string]: components["schemas"]["LifecycleGuidedProfile"];
             };
+            warnings?: string[];
             profile: components["schemas"]["LifecycleProfile"];
             sync_pending?: boolean;
-            warnings?: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        LifecycleTransition: {
-            days: number;
-            storage_class: string;
         } & {
             [key: string]: unknown;
         };
@@ -2556,30 +2330,8 @@ export interface components {
             locale: string;
             locales: string[];
             session_version: number;
-            stopped_vault?: components["schemas"]["MeStoppedVault"] | null;
             vault: components["schemas"]["MeVault"] | null;
-        } & {
-            [key: string]: unknown;
-        };
-        MeStoppedVault: {
-            id: number;
-            /** @enum {string} */
-            lifecycle: "stopping" | "tombstone";
-            name: string;
-            root_released: boolean;
-            root_released_at?: string | null;
-            /** Format: uuid */
-            uuid: string;
-        } & {
-            [key: string]: unknown;
-        };
-        MeVault: {
-            cloud_deletion_enabled: boolean;
-            delete_enabled: boolean;
-            id: number;
-            name: string;
-            /** Format: uuid */
-            uuid: string;
+            stopped_vault?: components["schemas"]["MeStoppedVault"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -2588,100 +2340,39 @@ export interface components {
             /** Reason */
             reason: string;
         };
-        MetadataBackupVerification: {
-            automatic: boolean;
-            last_verified: {
-                created_at: string | null;
-                id: number;
-                verified_at: string | null;
-            } | null;
-            latest: {
-                created_at: string | null;
-                id: number;
-                verified_at: string | null;
-            } | null;
-            next_verification_at: string | null;
-            pending_run_id: number | null;
-        };
-        /** @description Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731). */
-        MinimumStorageDeletion: {
-            by_storage_class: {
-                bytes: number;
-                count: number;
-                minimum_days: number;
-                remaining_cost: number;
-                storage_class: string;
-            }[];
-            bytes: number;
-            count: number;
-            currency: string;
-            disclaimer?: string | null;
-            /** @description How many of them have an estimated Class Entry. */
-            estimated_count: number;
-            evaluated_at: string;
-            pricing_effective_at: string;
-            region: string;
-            remaining_cost: number;
-            /** @description When the last Minimum Storage Duration of these files ends: deleting from then saves. */
-            savings_from: string | null;
-        };
         /** @description Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices. */
         MinimumStorageSummary: {
+            vault_id: number;
             by_storage_class: {
-                /** @description Versions beyond it, or in a class without one. */
-                beyond: {
-                    bytes: number;
-                    count: number;
-                };
-                estimated_count: number;
-                minimum_days: number;
-                remaining_cost: number;
                 storage_class: string;
+                minimum_days: number;
                 /** @description Versions still within the Minimum Storage Duration. */
                 within: {
-                    bytes: number;
                     count: number;
+                    bytes: number;
                 };
-            }[];
-            currency: string;
-            disclaimer?: string | null;
-            /** @description Versions with a minimum whose Class Entry is estimated from the Storage Plan. */
-            estimated_count: number;
-            evaluated_at: string;
-            pricing_effective_at: string;
-            region: string;
-            /** @description Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends. */
-            releases: {
-                bytes: number;
-                count: number;
-                month: string;
+                /** @description Versions beyond it, or in a class without one. */
+                beyond: {
+                    count: number;
+                    bytes: number;
+                };
+                remaining_cost: number;
+                estimated_count: number;
             }[];
             remaining_cost: number;
-            vault_id: number;
-        };
-        NotificationItem: {
-            body: string;
-            body_key: string | null;
-            created_at: string;
-            dedupe_key: string | null;
-            event: string;
-            id: number;
-            in_app_enabled: boolean;
-            job_id: number | null;
-            message_params: {
-                [key: string]: unknown;
-            };
-            /** @enum {string|null} */
-            problem_status: "open" | "resolved" | null;
-            read: boolean;
-            read_at: string | null;
-            resolved_at: string | null;
-            /** @enum {string|null} */
-            resolving?: "scan" | null;
-            title: string;
-            title_key: string | null;
-            user_id: number;
-            vault_id: number | null;
+            /** @description Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends. */
+            releases: {
+                month: string;
+                count: number;
+                bytes: number;
+            }[];
+            /** @description Versions with a minimum whose Class Entry is estimated from the Storage Plan. */
+            estimated_count: number;
+            currency: string;
+            pricing_effective_at: string;
+            region: string;
+            disclaimer?: string | null;
+            evaluated_at: string;
         };
         /** NotificationReadAction */
         NotificationReadAction: {
@@ -2689,30 +2380,30 @@ export interface components {
             notification_id: number;
         };
         NotificationsResponse: {
+            items: components["schemas"]["NotificationItem"][];
+            unread_count: number;
+            open_problem_count: number;
             email_configured: boolean;
             has_more: boolean;
-            items: components["schemas"]["NotificationItem"][];
-            open_problem_count: number;
-            unread_count: number;
         };
         OperationPolicy: {
-            auto_upload: boolean;
-            /** @enum {string} */
-            effective_upload_verification?: "s3_checksum" | "read_back";
-            exclude_globs: string[];
-            /** @description Fixed noise exclusions applied to every Vault; read only. */
-            fixed_exclude_globs?: string[];
-            /** @enum {string} */
-            global_upload_verification?: "s3_checksum" | "read_back";
-            include_globs: string[];
-            /** @enum {integer|null} */
-            local_release_after_days: 90 | 180 | 365 | 730 | null;
-            stability_seconds: number;
             /**
              * @description Override for new upload admissions; null inherits deployment default.
              * @enum {string|null}
              */
             upload_verification?: "s3_checksum" | "read_back" | null;
+            /** @enum {string} */
+            global_upload_verification?: "s3_checksum" | "read_back";
+            /** @enum {string} */
+            effective_upload_verification?: "s3_checksum" | "read_back";
+            auto_upload: boolean;
+            exclude_globs: string[];
+            include_globs: string[];
+            /** @enum {integer|null} */
+            local_release_after_days: 90 | 180 | 365 | 730 | null;
+            stability_seconds: number;
+            /** @description Fixed noise exclusions applied to every Vault; read only. */
+            fixed_exclude_globs?: string[];
         } & {
             [key: string]: unknown;
         };
@@ -2722,15 +2413,15 @@ export interface components {
          */
         OperationPolicyGlobEdit: {
             /**
-             * Action
-             * @enum {string}
-             */
-            action: "add" | "remove";
-            /**
              * Field
              * @enum {string}
              */
             field: "include_globs" | "exclude_globs";
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "add" | "remove";
             /** Glob */
             glob: string;
         };
@@ -2744,10 +2435,8 @@ export interface components {
              * @default true
              */
             auto_upload: boolean;
-            /** Exclude Globs */
-            exclude_globs?: string[];
-            /** Include Globs */
-            include_globs?: string[];
+            /** Upload Verification */
+            upload_verification?: ("s3_checksum" | "read_back") | null;
             /** Local Release After Days */
             local_release_after_days?: (90 | 180 | 365 | 730) | null;
             /**
@@ -2755,8 +2444,10 @@ export interface components {
              * @default 300
              */
             stability_seconds: number;
-            /** Upload Verification */
-            upload_verification?: ("s3_checksum" | "read_back") | null;
+            /** Include Globs */
+            include_globs?: string[];
+            /** Exclude Globs */
+            exclude_globs?: string[];
         };
         /** PendingUploadCancelAction */
         PendingUploadCancelAction: {
@@ -2778,22 +2469,22 @@ export interface components {
         };
         /** RecoverEstimateRequest */
         RecoverEstimateRequest: {
-            /** Archive Version Id */
-            archive_version_id?: string | null;
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
             /**
              * Path
              * @default
              */
             path: string;
-            /** Restore Days */
-            restore_days?: number | null;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Archive Version Id */
+            archive_version_id?: string | null;
             /** Restore Tier */
             restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
             /** Selection */
             selection?: components["schemas"]["RecoverySelectionItem"][] | null;
         };
@@ -2810,22 +2501,22 @@ export interface components {
         };
         /** RecoverRequest */
         RecoverRequest: {
-            /** Archive Version Id */
-            archive_version_id?: string | null;
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
             /**
              * Path
              * @default
              */
             path: string;
-            /** Restore Days */
-            restore_days?: number | null;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Archive Version Id */
+            archive_version_id?: string | null;
             /** Restore Tier */
             restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
             /** Selection */
             selection?: components["schemas"]["RecoverySelectionItem"][] | null;
         };
@@ -2835,84 +2526,57 @@ export interface components {
             fingerprint: string;
         };
         RecoveryKitStatus: {
-            acknowledged_at: string | null;
-            /** @description A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734). */
-            awaiting_backup?: boolean;
             configured: boolean;
-            custody_acknowledged: boolean;
             fingerprint: string | null;
-            metadata_restore: {
-                backup_created_at: string;
-                updated_files: number;
-            } | null;
             /** @description The current System Bucket (#734), ready or not; null while there is none. */
             system_bucket?: {
                 name: string;
+                region: string;
                 /** @enum {string} */
                 origin: "configured" | "created";
                 ready: boolean;
-                region: string;
+            } | null;
+            /** @description A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734). */
+            awaiting_backup?: boolean;
+            custody_acknowledged: boolean;
+            acknowledged_at: string | null;
+            metadata_restore: {
+                backup_created_at: string;
+                updated_files: number;
             } | null;
         } & {
             [key: string]: unknown;
         };
         /** RecoverySelectionItem */
         RecoverySelectionItem: {
+            /** Path */
+            path: string;
             /**
              * Is Directory
              * @default false
              */
             is_directory: boolean;
-            /** Path */
-            path: string;
-        };
-        RestoreEstimate: {
-            assumptions?: {
-                [key: string]: unknown;
-            };
-            days: number;
-            estimated_cost_eur: number;
-            estimated_hours: number;
-            pricing_effective_at?: string | null;
-            pricing_note?: string;
-            region: string;
-            restore_object_irreversible?: boolean;
-            tier: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier. */
-        RetentionLockPreview: {
-            days: number;
-            locked_bytes: number;
-            locked_count: number;
-            /** @description When the first of them can be deleted. */
-            locked_from: string | null;
-            /** @description When the last of them can be deleted. */
-            locked_until: string | null;
-            /** @enum {string} */
-            mode: "GOVERNANCE";
         };
         /** @description A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate. */
         RetentionLockStatus: {
+            vault_id: number;
             days: number | null;
             /** @enum {string|null} */
             mode: "GOVERNANCE" | null;
             retained: {
-                bytes: number;
                 count: number;
+                bytes: number;
                 deletable_from: string | null;
                 deletable_until: string | null;
-                /** @description The most consecutive failed deletions of one of them. */
-                failed_attempts: number;
                 /** @description Retained Versions whose last deletion failed (#749). */
                 failed_count: number;
-                last_attempt_at: string | null;
+                /** @description The most consecutive failed deletions of one of them. */
+                failed_attempts: number;
                 /** @description The S3 error code of the most recent failure. */
                 last_error: string | null;
+                last_attempt_at: string | null;
                 next_attempt_at: string | null;
             } | null;
-            vault_id: number;
         };
         RetryFailedUploadsResponse: {
             item_count: number;
@@ -2927,6 +2591,814 @@ export interface components {
             items: components["schemas"]["SourceDirectoryEntry"][];
             relative_path: string;
             volume_alias: string;
+        } & {
+            [key: string]: unknown;
+        };
+        SourceVolumeInventoryResponse: {
+            items: components["schemas"]["SourceVolumeInventoryItem"][];
+        } & {
+            [key: string]: unknown;
+        };
+        StatsResponse: {
+            manual_upload?: boolean;
+            protection_state?: string | null;
+            last_known_states?: {
+                [key: string]: number;
+            };
+            active_jobs: number;
+            delete_enabled: boolean;
+            runtime: {
+                last_error?: string | null;
+                scanning?: boolean;
+                scan_phase?: string | null;
+                verify_files_total?: number | null;
+                verify_files_done?: number | null;
+                verify_bytes_total?: number | null;
+                verify_bytes_done?: number | null;
+                traversal_files_seen?: number | null;
+                traversal_files_per_minute?: number | null;
+                traversal_files_expected?: number | null;
+                last_error_source_cause?: string | null;
+                traversal_lock_wait_seconds?: number | null;
+                traversal_probe_seconds?: number | null;
+                traversal_write_seconds?: number | null;
+                last_error_source?: string | null;
+                last_error_source_at?: string | null;
+                server_priority_enabled?: boolean;
+                server_priority_throttled?: boolean;
+                server_priority_throttled_since?: string | null;
+                source_device_read_limit?: number;
+                source_devices?: {
+                    device: string;
+                    reading: number;
+                    waiting: number;
+                }[];
+            } & {
+                [key: string]: unknown;
+            };
+            states: {
+                [key: string]: number;
+            };
+            storage: {
+                cloud_bytes: number;
+                local_bytes: number;
+            } & {
+                [key: string]: unknown;
+            };
+            source_volume: {
+                alias: string | null;
+                health: string;
+                local_operations_allowed: boolean;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** StopProtectionRequest */
+        StopProtectionRequest: {
+            /** Cloud Disposition */
+            cloud_disposition: string;
+            /** Confirmation */
+            confirmation: string;
+            /** Reason */
+            reason: string;
+        };
+        StopProtectionStatus: {
+            vault_id: number;
+            vault_name: string;
+            stopped: boolean;
+            root_released: boolean;
+            /** @enum {string} */
+            cloud_disposition: "keep" | "delete";
+            group_id: string | null;
+            cancellable: boolean;
+            pending_until: string | null;
+            local_files_blocking_cloud_delete: number;
+            jobs: {
+                id: number;
+                status: string;
+                pending_until: string | null;
+            }[];
+        };
+        /**
+         * StorageEstimateRequest
+         * @description Monthly storage estimate for an explicit size or a Vault's cloud data.
+         */
+        StorageEstimateRequest: {
+            /** Size Bytes */
+            size_bytes?: number | null;
+            /** Vault Id */
+            vault_id?: number | null;
+            /**
+             * Storage Class
+             * @default STANDARD
+             */
+            storage_class: string;
+        };
+        StorageEstimateResponse: {
+            assumptions: {
+                [key: string]: unknown;
+            };
+            currency: string;
+            estimated_cost_eur: number;
+            estimated_hours: number | null;
+            /** @constant */
+            kind: "storage_month";
+            pricing_effective_at: string;
+            region: string;
+            size_bytes: number;
+            storage_class: string;
+            tier: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** UploadAction */
+        UploadAction: {
+            /** Path */
+            path: string;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Archive Version Id */
+            archive_version_id?: string | null;
+            /** Restore Tier */
+            restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
+            /** Request Id */
+            request_id?: string | null;
+        };
+        UploadActivityResponse: {
+            observed_at: string;
+            global: components["schemas"]["UploadActivitySummary"];
+            vaults: (components["schemas"]["UploadActivitySummary"] & {
+                vault_id: number;
+                vault_name: string;
+                paused: boolean;
+            })[];
+            server_priority?: {
+                throttled: boolean;
+                since: string | null;
+            };
+        };
+        /** UploadReconciliationAction */
+        UploadReconciliationAction: {
+            /** Path */
+            path: string;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Remediation Id */
+            remediation_id?: string | null;
+        };
+        UploadReconciliationResponse: {
+            job_id: number;
+            group_id: string;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
+        };
+        /** @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737). */
+        VaultBilledCost: {
+            /**
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
+             * @enum {string}
+             */
+            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
+            /** @description The System Bucket the export is delivered to. */
+            bucket: string | null;
+            /** @description The S3 path prefix of the export in the System Bucket. */
+            prefix: string;
+            checked_at: string | null;
+            next_check_at: string | null;
+            /** @description When FrostVault last read the export (only when ok). */
+            read_at: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
+            exported_at: string | null;
+            /** @description The newest usage end in the export, never after exported_at. */
+            data_through: string | null;
+            /** @description The billing currency (ISO 4217). */
+            currency: string | null;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
+            /**
+             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
+             * @enum {string|null}
+             */
+            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
+            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_detail: string | null;
+            vault_id: number;
+            vault_bucket: string;
+            /** @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export. */
+            shared: boolean;
+            /** @description Newest first; empty unless state is ok, and for a shared bucket. */
+            periods: {
+                /** @description YYYY-MM */
+                period: string;
+                total: number;
+                /** @description Billed amounts by category, in the billing currency; every category is present. */
+                categories: {
+                    storage: number;
+                    requests: number;
+                    transitions: number;
+                    retrievals: number;
+                    data_transfer: number;
+                    other: number;
+                    /** @description Credits, refunds and discounts of the bucket (negative). */
+                    credits: number;
+                };
+            }[];
+        };
+        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification). */
+        VaultBucketStatus: {
+            vault_id: number;
+            bucket: string;
+            region: string;
+            dedicated: boolean;
+            /** @enum {string} */
+            state: "creating" | "failed" | "settling" | "ready";
+            /** @enum {string|null} */
+            stage: "reserved" | "created" | "configured" | "verified" | null;
+            attempts: number;
+            last_attempt_at: string | null;
+            error: string | null;
+            retention_lock_days: number | null;
+            /** @description When a verified bucket's Vault becomes active (settling only). */
+            active_at: string | null;
+            /** @description Seconds until active_at, never negative (settling only). */
+            active_in_seconds: number | null;
+        };
+        /** @description A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket. */
+        VaultCloudUsage: {
+            vault_id: number;
+            bucket: string;
+            region: string;
+            dedicated_bucket: boolean;
+            /** @description The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices. */
+            estimate: {
+                versions: number;
+                bytes: number;
+                monthly_cost: number;
+                currency: string;
+                region: string;
+                pricing_effective_at: string;
+                by_storage_class: {
+                    storage_class: string;
+                    versions: number;
+                    bytes: number;
+                    monthly_cost: number;
+                }[];
+            };
+            /** @description Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737). */
+            measured: {
+                /**
+                 * @description available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.
+                 * @enum {string}
+                 */
+                status: "available" | "pending" | "no_data" | "access_denied" | "failed" | "shared_bucket" | "provisioning";
+                last_read?: {
+                    attempted_at: string;
+                    /** @enum {string} */
+                    outcome: "ok" | "no_data" | "access_denied" | "failed";
+                    error_code: string | null;
+                } | null;
+                /** @description When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome. */
+                next_read_after?: string | null;
+                /** @description Saved daily totals, newest first. */
+                history?: {
+                    day: string;
+                    bytes: number;
+                    overhead_bytes: number;
+                    object_count: number | null;
+                }[];
+                /** @description UTC day of the newest data point. */
+                day?: string;
+                read_at?: string;
+                object_count?: number | null;
+                bytes?: number;
+                overhead_bytes?: number;
+                by_storage_class?: {
+                    storage_class: string;
+                    /** @description The objects' own bytes in this class. */
+                    bytes: number;
+                    /** @description Bytes AWS bills on top of the objects of this class. */
+                    overhead_bytes: number;
+                    overhead: {
+                        /** @description The CloudWatch StorageType dimension value. */
+                        storage_type: string;
+                        /** @enum {string} */
+                        kind: "object_overhead" | "size_overhead" | "staging";
+                        /** @description The storage class whose price AWS applies to these bytes. */
+                        billed_as: string;
+                        bytes: number;
+                    }[];
+                }[];
+            };
+        };
+        VaultCreateResponse: {
+            creation_mode?: components["schemas"]["VaultCreationMode"];
+            id: number;
+            name: string;
+            uuid: string;
+            /** @enum {string} */
+            lifecycle: "provisioning" | "active";
+            bucket: components["schemas"]["VaultBucketStatus"];
+        };
+        /** @description A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible). */
+        VaultCreationCancelled: {
+            vault_id: number;
+            vault_name: string;
+            bucket: string;
+            region: string;
+            /** @enum {string} */
+            bucket_left: "created" | "possible";
+        };
+        VaultDeletionPreview: {
+            prefix: string;
+            object_count: number;
+            version_count: number;
+            delete_marker_count: number;
+            multipart_upload_count: number;
+            byte_count: number;
+            by_storage_class: {
+                storage_class: string;
+                version_count: number;
+                byte_count: number;
+                early_deletion_cost: number;
+                early_deletion_version_count: number;
+                minimum_days: number;
+                early_deletion_byte_count?: number;
+            }[];
+            early_deletion_cost: number;
+            currency: string;
+            pricing_effective_at: string;
+            region: string;
+            executes_at: string;
+            delay_seconds: number;
+            early_deletion_version_count?: number;
+            early_deletion_byte_count?: number;
+            savings_from?: string | null;
+            early_deletion_estimated_count?: number;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
+        };
+        /** VaultDeletionRequest */
+        VaultDeletionRequest: {
+            /** Confirmation */
+            confirmation: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Delete Bucket
+             * @default false
+             */
+            delete_bucket: boolean;
+        };
+        VaultDeletionStatus: {
+            vault_id: number;
+            vault_name: string;
+            /** @enum {string} */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+            deletable: boolean;
+            local_files: number;
+            request: {
+                /** @enum {string} */
+                status: "pending" | "running" | "failed";
+                requested_at: string;
+                pending_until: string;
+                reason: string;
+                attempts: number;
+                failed_at: string | null;
+                failure: {
+                    [key: string]: unknown;
+                } | null;
+                preview: components["schemas"]["VaultDeletionPreview"];
+                cancellable: boolean;
+                retryable: boolean;
+                /** @description Locked versions left after a run (#736): the request waits for them. */
+                retained_count?: number | null;
+                /** @description When the last of them can be deleted. */
+                retained_until?: string | null;
+                /** @description When the deletion runs again for them. */
+                next_attempt_at?: string | null;
+                /** @description The Owner asked to delete the empty Vault Bucket too (#739). */
+                delete_bucket?: boolean;
+            } | null;
+        };
+        VaultInclusionPreview: {
+            path: string;
+            is_directory: boolean;
+            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            own_rule: string | null;
+            own_rule_present: boolean;
+            excluded: boolean;
+            /** @description Other exclude globs that exclude the item. */
+            rules: string[];
+            /** @description Fixed noise exclusions that match the item. */
+            fixed: string[];
+            /** @description The include globs do not match the item. */
+            not_included: boolean;
+            includable: boolean;
+            /** @description Removing the rule makes the Vault look inside the folder again with a full scan. */
+            folder_rule: boolean;
+            files: number | null;
+            bytes: number | null;
+            /** @description False when the disk walk stopped at its time budget: the counts are a minimum. */
+            complete: boolean | null;
+            estimate: components["schemas"]["StorageEstimateResponse"] | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * VaultItemExclusion
+         * @description Exclude one Vault file or folder by its own rule (#754).
+         */
+        VaultItemExclusion: {
+            /** Path */
+            path: string;
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+        };
+        VaultItemExclusionStatus: {
+            path: string;
+            is_directory: boolean;
+            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            own_rule: string | null;
+            own_rule_present: boolean;
+            excluded: boolean;
+            /** @description Other exclude globs that exclude the item. */
+            rules: string[];
+            /** @description Fixed noise exclusions that match the item. */
+            fixed: string[];
+            /** @description The include globs do not match the item. */
+            not_included: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        VaultMovePreview: {
+            vault_id: number;
+            targets: components["schemas"]["VaultMoveEstimate"][];
+        };
+        /** VaultMoveRequest */
+        VaultMoveRequest: {
+            /** Vault Id */
+            vault_id: number;
+            /** Target Class */
+            target_class: string;
+            /**
+             * Acknowledge Costs
+             * @default false
+             */
+            acknowledge_costs: boolean;
+        };
+        VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
+            group_id: string;
+            job_ids: number[];
+            item_count: number;
+        };
+        VaultPauseResponse: {
+            id: number;
+            paused: boolean;
+            message: string;
+            message_key: string;
+        };
+        /**
+         * VaultReconnect
+         * @description Explicitly accept a Source Volume and directory for an existing Vault.
+         */
+        VaultReconnect: {
+            /** Volume Alias */
+            volume_alias: string;
+            /**
+             * Relative Path
+             * @default
+             */
+            relative_path: string;
+            /** Reason */
+            reason: string;
+        };
+        VaultSelectResponse: {
+            vault_id: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** VaultSelection */
+        VaultSelection: {
+            /** Vault Id */
+            vault_id: number;
+        };
+        /**
+         * VaultSelfServiceCreate
+         * @description Self-service vault creation payload (issues #7, #6, and #150).
+         *
+         *     Labels are accepted. Adoption adds a
+         *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
+         *     filesystem path or S3 identity.
+         */
+        VaultSelfServiceCreate: {
+            /** Name */
+            name: string;
+            /**
+             * Creation Mode
+             * @default empty
+             */
+            creation_mode: string;
+            /** Volume Alias */
+            volume_alias?: string | null;
+            /** Relative Path */
+            relative_path?: string | null;
+            /** Retention Lock Days */
+            retention_lock_days?: (30 | 90 | 180 | 365) | null;
+        };
+        VaultsResponse: {
+            items: components["schemas"]["VaultListItem"][];
+        } & {
+            [key: string]: unknown;
+        };
+        VaultMoveEstimate: {
+            target_class: string;
+            eligible_count: number;
+            total_bytes: number;
+            skipped: {
+                [key: string]: number;
+            };
+            minimum_days: number;
+            estimated_monthly_eur: number;
+            estimated_retrieval_eur: number;
+            pricing_effective_at: string;
+            region: string;
+            assumptions: string;
+        };
+        NotificationItem: {
+            id: number;
+            user_id: number;
+            vault_id: number | null;
+            job_id: number | null;
+            event: string;
+            title: string;
+            body: string;
+            title_key: string | null;
+            body_key: string | null;
+            message_params: {
+                [key: string]: unknown;
+            };
+            in_app_enabled: boolean;
+            dedupe_key: string | null;
+            created_at: string;
+            read: boolean;
+            read_at: string | null;
+            /** @enum {string|null} */
+            problem_status: "open" | "resolved" | null;
+            resolved_at: string | null;
+            /** @enum {string|null} */
+            resolving?: "scan" | null;
+        };
+        GeneralVault: {
+            paused?: boolean;
+            id: number;
+            name: string;
+            root_released_at?: string | null;
+            s3_bucket?: string;
+            s3_prefix: string;
+            source_root: string;
+            uuid: string;
+            /** @enum {string} */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+            /** @enum {string|null} */
+            vault_deletion_status?: "pending" | "running" | "failed" | null;
+            s3_region?: string;
+            dedicated_bucket?: boolean;
+            bucket_provisioning?: components["schemas"]["VaultBucketStatus"] | null;
+            retention_lock_days?: number | null;
+        };
+        GeneralVaultReconnectPayload: {
+            reason: string;
+            relative_path: string;
+            volume_alias: string;
+        } & {
+            [key: string]: unknown;
+        };
+        ApiErrorResponse: {
+            detail: string;
+            message: string;
+            /** @constant */
+            message_key: "api.invalid_path";
+        };
+        ArchiveVersionItem: {
+            /** @enum {string|null} */
+            upload_verification_requested?: "s3_checksum" | "read_back" | null;
+            /** @enum {string|null} */
+            verification_method?: "s3_checksum" | "read_back" | null;
+            verification_fallback_reason?: string | null;
+            verification_egress_bytes?: number | null;
+            created_at?: string | null;
+            id: string;
+            object_key?: string | null;
+            recoverable: boolean;
+            size?: number | null;
+            storage_class?: string | null;
+            verified_at?: string | null;
+            provider_version_id?: string | null;
+            integrity?: string | null;
+            availability?: string | null;
+            /**
+             * @description Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.
+             * @enum {string}
+             */
+            role: "current" | "pending";
+            availability_checked_at?: string | null;
+            not_selectable_reason?: string | null;
+            /** @description Class Entry: when the version entered storage_class (or expected_storage_class). */
+            storage_class_since?: string | null;
+            /** @description The Class Entry is estimated from created_at and the Storage Plan, not recorded. */
+            storage_class_since_estimated?: boolean;
+            /** @description The colder class the Storage Plan expects by now, while the transition is not observed yet. */
+            expected_storage_class?: string | null;
+            /** @description When the Minimum Storage Duration of the class ends; null for a class without one. */
+            minimum_storage_until?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        AuthMethod: string | null;
+        CloudPurgePayload: {
+            confirmation: string;
+            is_directory?: boolean;
+            path: string;
+            reason: string;
+        };
+        /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
+        DirectoryListItem: {
+            last_known_states?: {
+                [key: string]: number;
+            };
+            last_known_at?: string | null;
+            available_actions?: {
+                [key: string]: number;
+            };
+            cloud_size?: number;
+            item_count: number;
+            local_size?: number;
+            name: string;
+            path: string;
+            state: string;
+            state_counts?: {
+                [key: string]: number;
+            };
+            storage_class?: string | null;
+            storage_class_count?: number;
+            total_size: number;
+            /** @constant */
+            type: "directory";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Job / file-operation types (issue #67).
+         * @enum {string}
+         */
+        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
+        FileOperationPayload: {
+            archive_version_id?: string;
+            is_directory?: boolean;
+            path: string;
+            restore_days?: number;
+            restore_tier?: string;
+        } & {
+            [key: string]: unknown;
+        };
+        FileOperationResponse: {
+            archive_version_id?: string | null;
+            estimated_cost_eur?: number | null;
+            estimated_hours?: number | null;
+            group_id: string;
+            item_count?: number;
+            job_ids?: number[];
+            message?: string;
+            message_key?: string;
+            preview?: components["schemas"]["CloudDeletionPreview"];
+            restore_days?: number | null;
+            restore_tier?: string | null;
+            total_bytes?: number;
+        } & {
+            [key: string]: unknown;
+        };
+        UploadRemediation: {
+            id: string;
+            /** @enum {string} */
+            state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
+            phase: string;
+            reason: string | null;
+            remedy: string;
+            retry_count: number;
+            due_at: string;
+            can_resume: boolean;
+            current_job_id: number | null;
+            resolved_by_job_id: number | null;
+            resolved_at: string | null;
+            archive_version_id: string | null;
+            original_job_ids: number[];
+        };
+        UploadReconciliation: {
+            pending: boolean;
+            can_resume: boolean;
+            /** @description Bounded reconciliation reason, not an integrity outcome */
+            reason: string | null;
+            remedy: string | null;
+        };
+        FilesQuery: {
+            directory?: string;
+            page?: number;
+            page_size?: number;
+            q?: string;
+            state?: string;
+        } & {
+            [key: string]: unknown;
+        };
+        JobCancelPayload: {
+            action: string;
+            group_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        JobGroup: {
+            action: components["schemas"]["FileOperationAction"] | string;
+            cancelled_count: number;
+            completed_count: number;
+            estimated_cost_eur?: number | null;
+            estimated_hours?: number | null;
+            failed_count: number;
+            resolved_failed_count?: number;
+            unresolved_failed_count?: number;
+            id: string;
+            item_count: number;
+            message?: string | null;
+            message_key?: string | null;
+            path: string;
+            pending_until?: string | null;
+            percent: number;
+            restore_days?: number | null;
+            restore_tier?: string | null;
+            status: components["schemas"]["JobStatus"];
+            total_bytes: number;
+            transferred_bytes: number;
+            updated_at?: string;
+            requested_at?: string | null;
+            /** @description Expected end of the cloud restore: requested_at plus estimated_hours. */
+            ready_by?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        JobStatus: string;
+        LifecycleGuidedProfile: {
+            transitions: components["schemas"]["LifecycleTransition"][];
+        };
+        LifecycleProfile: {
+            transitions: components["schemas"]["LifecycleTransition"][];
+        };
+        LifecycleTransition: {
+            days: number;
+            storage_class: string;
+        } & {
+            [key: string]: unknown;
+        };
+        MeVault: {
+            cloud_deletion_enabled: boolean;
+            delete_enabled: boolean;
+            id: number;
+            name: string;
+            /** Format: uuid */
+            uuid: string;
+        } & {
+            [key: string]: unknown;
+        };
+        RestoreEstimate: {
+            assumptions?: {
+                [key: string]: unknown;
+            };
+            days: number;
+            estimated_cost_eur: number;
+            estimated_hours: number;
+            pricing_effective_at?: string | null;
+            pricing_note?: string;
+            region: string;
+            restore_object_irreversible?: boolean;
+            tier: string;
         } & {
             [key: string]: unknown;
         };
@@ -2957,63 +3429,93 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        SourceVolumeInventoryResponse: {
-            items: components["schemas"]["SourceVolumeInventoryItem"][];
+        VaultCreateRequest: {
+            creation_mode?: components["schemas"]["VaultCreationMode"];
+            name: string;
+            relative_path?: string;
+            volume_alias?: string;
+            /**
+             * @description The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards.
+             * @enum {number|null}
+             */
+            retention_lock_days?: 30 | 90 | 180 | 365 | null;
+        };
+        /** @enum {string} */
+        VaultCreationMode: "empty" | "adopt";
+        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
+        VaultFileListItem: {
+            /** @enum {string|null} */
+            upload_verification_requested?: "s3_checksum" | "read_back" | null;
+            /** @enum {string|null} */
+            verification_method?: "s3_checksum" | "read_back" | null;
+            verification_fallback_reason?: string | null;
+            verification_egress_bytes?: number | null;
+            last_known_state?: string;
+            last_known_at?: string | null;
+            previous_snapshot_protected?: boolean;
+            availability?: string | null;
+            cleanup_eligible?: boolean;
+            cloud_exists?: number | boolean;
+            cloud_size?: number | null;
+            integrity?: string | null;
+            local_exists?: number | boolean;
+            local_file_type?: string | null;
+            local_size?: number | null;
+            name: string;
+            path: string;
+            recover_eligible?: boolean;
+            state: string;
+            storage_class?: string | null;
+            /** @constant */
+            type: "file";
+            upload_eligible?: boolean;
+            modified_at?: string | null;
+            vault_id?: number;
+            vault_name?: string;
+            cloud_only_conflict?: boolean;
+            /** @description The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed. */
+            in_excluded_folder?: boolean;
+            id?: string;
+            /** @description Explicit Current Snapshot reference; null when the file has none. */
+            current_version_id?: string | null;
+            /** @description Explicit replacement in progress; never recoverable. */
+            pending_version_id?: string | null;
+            /** @description Current exists, is verified and available. */
+            recoverable?: boolean;
+            reconciliation_block?: string | null;
+            /**
+             * @description Exact cleanup of superseded versions.
+             * @enum {string|null}
+             */
+            cleanup?: "waiting" | "in_progress" | "blocked" | null;
+            recovery?: components["schemas"]["FileRecovery"] | null;
         } & {
             [key: string]: unknown;
         };
-        StatsResponse: {
-            active_jobs: number;
-            delete_enabled: boolean;
-            last_known_states?: {
-                [key: string]: number;
-            };
-            manual_upload?: boolean;
-            protection_state?: string | null;
-            runtime: {
-                last_error?: string | null;
-                last_error_source?: string | null;
-                last_error_source_at?: string | null;
-                last_error_source_cause?: string | null;
-                scan_phase?: string | null;
-                scanning?: boolean;
-                server_priority_enabled?: boolean;
-                server_priority_throttled?: boolean;
-                server_priority_throttled_since?: string | null;
-                source_device_read_limit?: number;
-                source_devices?: {
-                    device: string;
-                    reading: number;
-                    waiting: number;
-                }[];
-                traversal_files_expected?: number | null;
-                traversal_files_per_minute?: number | null;
-                traversal_files_seen?: number | null;
-                traversal_lock_wait_seconds?: number | null;
-                traversal_probe_seconds?: number | null;
-                traversal_write_seconds?: number | null;
-                verify_bytes_done?: number | null;
-                verify_bytes_per_minute?: number | null;
-                verify_bytes_total?: number | null;
-                verify_files_done?: number | null;
-                verify_files_total?: number | null;
-            } & {
-                [key: string]: unknown;
-            };
-            source_volume: {
-                alias: string | null;
-                health: string;
-                local_operations_allowed: boolean;
-            };
-            states: {
-                [key: string]: number;
-            };
-            storage: {
-                cloud_bytes: number;
-                local_bytes: number;
-            } & {
-                [key: string]: unknown;
-            };
+        VaultListItem: {
+            paused?: boolean;
+            id: number;
+            name: string;
+            uuid: string;
+            /** @enum {string} */
+            lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+        } & {
+            [key: string]: unknown;
+        };
+        VaultSelectRequest: {
+            vault_id: number;
+        } & {
+            [key: string]: unknown;
+        };
+        MeStoppedVault: {
+            id: number;
+            /** @enum {string} */
+            lifecycle: "stopping" | "tombstone";
+            name: string;
+            root_released: boolean;
+            root_released_at?: string | null;
+            /** Format: uuid */
+            uuid: string;
         } & {
             [key: string]: unknown;
         };
@@ -3023,617 +3525,137 @@ export interface components {
             confirmation: string;
             reason: string;
         };
-        /** StopProtectionRequest */
-        StopProtectionRequest: {
-            /** Cloud Disposition */
-            cloud_disposition: string;
-            /** Confirmation */
-            confirmation: string;
-            /** Reason */
-            reason: string;
-        };
-        StopProtectionStatus: {
-            cancellable: boolean;
-            /** @enum {string} */
-            cloud_disposition: "keep" | "delete";
-            group_id: string | null;
-            jobs: {
-                id: number;
-                pending_until: string | null;
-                status: string;
-            }[];
-            local_files_blocking_cloud_delete: number;
-            pending_until: string | null;
-            root_released: boolean;
-            stopped: boolean;
-            vault_id: number;
-            vault_name: string;
-        };
-        /**
-         * StorageEstimateRequest
-         * @description Monthly storage estimate for an explicit size or a Vault's cloud data.
-         */
-        StorageEstimateRequest: {
-            /** Size Bytes */
-            size_bytes?: number | null;
-            /**
-             * Storage Class
-             * @default STANDARD
-             */
-            storage_class: string;
-            /** Vault Id */
-            vault_id?: number | null;
-        };
-        StorageEstimateResponse: {
-            assumptions: {
-                [key: string]: unknown;
-            };
-            currency: string;
-            estimated_cost_eur: number;
-            estimated_hours: number | null;
-            /** @constant */
-            kind: "storage_month";
-            pricing_effective_at: string;
-            region: string;
-            size_bytes: number;
-            storage_class: string;
-            tier: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /** UploadAction */
-        UploadAction: {
-            /** Archive Version Id */
-            archive_version_id?: string | null;
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /** Path */
-            path: string;
-            /** Request Id */
-            request_id?: string | null;
-            /** Restore Days */
-            restore_days?: number | null;
-            /** Restore Tier */
-            restore_tier?: string | null;
-        };
-        UploadActivityRate: {
-            bytes: number;
-            bytes_per_minute: number | null;
-            files: number;
-            window_seconds: number;
-        };
-        UploadActivityResponse: {
-            global: components["schemas"]["UploadActivitySummary"];
-            observed_at: string;
-            server_priority?: {
-                since: string | null;
-                throttled: boolean;
-            };
-            vaults: (components["schemas"]["UploadActivitySummary"] & {
-                paused: boolean;
-                vault_id: number;
-                vault_name: string;
-            })[];
+        BulkUploadAdmissionActivity: {
+            requests: number;
+            selected_files: number;
+            processed_files: number;
+            admitted_files: number;
         };
         UploadActivityStage: {
-            bytes: number;
             files: number;
+            bytes: number;
             transferred_bytes: number;
         };
         UploadActivitySummary: {
-            awaiting_admission_files: number;
-            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
-            next_stable_at: string | null;
-            queued: components["schemas"]["UploadActivityStage"];
-            rate: components["schemas"]["UploadActivityRate"];
             stability_wait: components["schemas"]["UploadActivityStage"];
+            queued: components["schemas"]["UploadActivityStage"];
             uploading: components["schemas"]["UploadActivityStage"];
             verifying: components["schemas"]["UploadActivityStage"];
+            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
+            awaiting_admission_files: number;
+            next_stable_at: string | null;
+            throughput: components["schemas"]["UploadThroughput"];
+            expected_finish: components["schemas"]["ExpectedFinish"] | null;
         };
-        UploadReconciliation: {
-            can_resume: boolean;
-            pending: boolean;
-            /** @description Bounded reconciliation reason, not an integrity outcome */
-            reason: string | null;
-            remedy: string | null;
-        };
-        /** UploadReconciliationAction */
-        UploadReconciliationAction: {
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /** Path */
-            path: string;
-            /** Remediation Id */
-            remediation_id?: string | null;
-        };
-        UploadReconciliationResponse: {
-            group_id: string;
-            job_id: number;
-        };
-        UploadRemediation: {
-            archive_version_id: string | null;
-            can_resume: boolean;
-            current_job_id: number | null;
-            due_at: string;
-            id: string;
-            original_job_ids: number[];
-            phase: string;
-            reason: string | null;
-            remedy: string;
-            resolved_at: string | null;
-            resolved_by_job_id: number | null;
-            retry_count: number;
-            /** @enum {string} */
-            state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
-        };
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-        };
-        /** @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737). */
-        VaultBilledCost: {
-            /** @description The System Bucket the export is delivered to. */
-            bucket: string | null;
-            checked_at: string | null;
-            /** @description The billing currency (ISO 4217). */
-            currency: string | null;
-            /** @description The newest usage end in the export, never after exported_at. */
-            data_through: string | null;
-            /**
-             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
-             * @enum {string|null}
-             */
-            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
-            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
-            error_detail: string | null;
-            /** @description When AWS delivered the newest manifest that was read. */
-            exported_at: string | null;
-            next_check_at: string | null;
-            /** @description Newest first; empty unless state is ok, and for a shared bucket. */
-            periods: {
-                /** @description Billed amounts by category, in the billing currency; every category is present. */
-                categories: {
-                    /** @description Credits, refunds and discounts of the bucket (negative). */
-                    credits: number;
-                    data_transfer: number;
-                    other: number;
-                    requests: number;
-                    retrievals: number;
-                    storage: number;
-                    transitions: number;
-                };
-                /** @description YYYY-MM */
-                period: string;
-                total: number;
-            }[];
-            /** @description The S3 path prefix of the export in the System Bucket. */
-            prefix: string;
-            /** @description When FrostVault last read the export (only when ok). */
-            read_at: string | null;
-            /** @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export. */
-            shared: boolean;
-            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
-            stale: boolean;
-            /**
-             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
-             * @enum {string}
-             */
-            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
-            vault_bucket: string;
-            vault_id: number;
-        };
-        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification). */
-        VaultBucketStatus: {
-            /** @description When a verified bucket's Vault becomes active (settling only). */
-            active_at: string | null;
-            /** @description Seconds until active_at, never negative (settling only). */
-            active_in_seconds: number | null;
-            attempts: number;
-            bucket: string;
-            dedicated: boolean;
-            error: string | null;
-            last_attempt_at: string | null;
-            region: string;
-            retention_lock_days: number | null;
-            /** @enum {string|null} */
-            stage: "reserved" | "created" | "configured" | "verified" | null;
-            /** @enum {string} */
-            state: "creating" | "failed" | "settling" | "ready";
-            vault_id: number;
-        };
-        /** @description A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket. */
-        VaultCloudUsage: {
-            bucket: string;
-            dedicated_bucket: boolean;
-            /** @description The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices. */
-            estimate: {
-                by_storage_class: {
-                    bytes: number;
-                    monthly_cost: number;
-                    storage_class: string;
-                    versions: number;
-                }[];
-                bytes: number;
-                currency: string;
-                monthly_cost: number;
-                pricing_effective_at: string;
-                region: string;
-                versions: number;
+        /** @description Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured. */
+        UploadThroughput: {
+            sample_seconds: number;
+            instant_seconds: number;
+            average_seconds: number;
+            history_seconds: number;
+            upload: {
+                bytes_per_second: number | null;
+                files_per_second: number | null;
+                average_bytes_per_second: number | null;
             };
-            /** @description Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737). */
-            measured: {
-                by_storage_class?: {
-                    /** @description The objects' own bytes in this class. */
-                    bytes: number;
-                    overhead: {
-                        /** @description The storage class whose price AWS applies to these bytes. */
-                        billed_as: string;
-                        bytes: number;
-                        /** @enum {string} */
-                        kind: "object_overhead" | "size_overhead" | "staging";
-                        /** @description The CloudWatch StorageType dimension value. */
-                        storage_type: string;
-                    }[];
-                    /** @description Bytes AWS bills on top of the objects of this class. */
-                    overhead_bytes: number;
-                    storage_class: string;
-                }[];
-                bytes?: number;
-                /** @description UTC day of the newest data point. */
-                day?: string;
-                /** @description Saved daily totals, newest first. */
-                history?: {
-                    bytes: number;
-                    day: string;
-                    object_count: number | null;
-                    overhead_bytes: number;
-                }[];
-                last_read?: {
-                    attempted_at: string;
-                    error_code: string | null;
-                    /** @enum {string} */
-                    outcome: "ok" | "no_data" | "access_denied" | "failed";
-                } | null;
-                /** @description When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome. */
-                next_read_after?: string | null;
-                object_count?: number | null;
-                overhead_bytes?: number;
-                read_at?: string;
-                /**
-                 * @description available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.
-                 * @enum {string}
-                 */
-                status: "available" | "pending" | "no_data" | "access_denied" | "failed" | "shared_bucket" | "provisioning";
+            verification: {
+                bytes_per_second: number | null;
+                average_bytes_per_second: number | null;
             };
-            region: string;
-            vault_id: number;
-        };
-        VaultCreateRequest: {
-            creation_mode?: components["schemas"]["VaultCreationMode"];
-            name: string;
-            relative_path?: string;
-            /**
-             * @description The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards.
-             * @enum {number|null}
-             */
-            retention_lock_days?: 30 | 90 | 180 | 365 | null;
-            volume_alias?: string;
-        };
-        VaultCreateResponse: {
-            bucket: components["schemas"]["VaultBucketStatus"];
-            creation_mode?: components["schemas"]["VaultCreationMode"];
-            id: number;
-            /** @enum {string} */
-            lifecycle: "provisioning" | "active";
-            name: string;
-            uuid: string;
-        };
-        /** @description A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible). */
-        VaultCreationCancelled: {
-            bucket: string;
-            /** @enum {string} */
-            bucket_left: "created" | "possible";
-            region: string;
-            vault_id: number;
-            vault_name: string;
-        };
-        /** @enum {string} */
-        VaultCreationMode: "empty" | "adopt";
-        VaultDeletionPreview: {
-            by_storage_class: {
-                byte_count: number;
-                early_deletion_byte_count?: number;
-                early_deletion_cost: number;
-                early_deletion_version_count: number;
-                minimum_days: number;
-                storage_class: string;
-                version_count: number;
+            history: {
+                at: string;
+                upload_bytes_per_second: number;
+                verification_bytes_per_second: number;
             }[];
-            byte_count: number;
-            currency: string;
-            delay_seconds: number;
-            delete_marker_count: number;
-            early_deletion_byte_count?: number;
-            early_deletion_cost: number;
-            early_deletion_estimated_count?: number;
-            early_deletion_version_count?: number;
-            executes_at: string;
-            multipart_upload_count: number;
-            object_count: number;
-            prefix: string;
-            pricing_effective_at: string;
-            region: string;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
-            savings_from?: string | null;
-            version_count: number;
         };
-        /** VaultDeletionRequest */
-        VaultDeletionRequest: {
-            /** Confirmation */
-            confirmation: string;
-            /**
-             * Delete Bucket
-             * @default false
-             */
-            delete_bucket: boolean;
-            /** Reason */
-            reason: string;
-        };
-        VaultDeletionStatus: {
-            deletable: boolean;
+        /** @description The later of the active phases at their average speed, and the phase that limits it (#755). */
+        ExpectedFinish: {
+            at: string;
+            seconds: number;
             /** @enum {string} */
-            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            local_files: number;
-            request: {
-                attempts: number;
-                cancellable: boolean;
-                /** @description The Owner asked to delete the empty Vault Bucket too (#739). */
-                delete_bucket?: boolean;
-                failed_at: string | null;
-                failure: {
-                    [key: string]: unknown;
-                } | null;
-                /** @description When the deletion runs again for them. */
-                next_attempt_at?: string | null;
-                pending_until: string;
-                preview: components["schemas"]["VaultDeletionPreview"];
-                reason: string;
-                requested_at: string;
-                /** @description Locked versions left after a run (#736): the request waits for them. */
-                retained_count?: number | null;
-                /** @description When the last of them can be deleted. */
-                retained_until?: string | null;
-                retryable: boolean;
-                /** @enum {string} */
-                status: "pending" | "running" | "failed";
+            limited_by: "upload" | "verification";
+        };
+        MetadataBackupVerification: {
+            last_verified: {
+                id: number;
+                created_at: string | null;
+                verified_at: string | null;
             } | null;
-            vault_id: number;
-            vault_name: string;
+            latest: {
+                id: number;
+                created_at: string | null;
+                verified_at: string | null;
+            } | null;
+            pending_run_id: number | null;
+            automatic: boolean;
+            next_verification_at: string | null;
         };
-        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
-        VaultFileListItem: {
-            availability?: string | null;
-            /**
-             * @description Exact cleanup of superseded versions.
-             * @enum {string|null}
-             */
-            cleanup?: "waiting" | "in_progress" | "blocked" | null;
-            cleanup_eligible?: boolean;
-            cloud_exists?: number | boolean;
-            cloud_only_conflict?: boolean;
-            cloud_size?: number | null;
-            /** @description Explicit Current Snapshot reference; null when the file has none. */
-            current_version_id?: string | null;
-            id?: string;
-            /** @description The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed. */
-            in_excluded_folder?: boolean;
-            integrity?: string | null;
-            last_known_at?: string | null;
-            last_known_state?: string;
-            local_exists?: number | boolean;
-            local_file_type?: string | null;
-            local_size?: number | null;
-            modified_at?: string | null;
-            name: string;
-            path: string;
-            /** @description Explicit replacement in progress; never recoverable. */
-            pending_version_id?: string | null;
-            previous_snapshot_protected?: boolean;
-            reconciliation_block?: string | null;
-            recover_eligible?: boolean;
-            /** @description Current exists, is verified and available. */
-            recoverable?: boolean;
-            recovery?: components["schemas"]["FileRecovery"] | null;
-            state: string;
-            storage_class?: string | null;
-            /** @constant */
-            type: "file";
-            upload_eligible?: boolean;
-            /** @enum {string|null} */
-            upload_verification_requested?: "s3_checksum" | "read_back" | null;
-            vault_id?: number;
-            vault_name?: string;
-            verification_egress_bytes?: number | null;
-            verification_fallback_reason?: string | null;
-            /** @enum {string|null} */
-            verification_method?: "s3_checksum" | "read_back" | null;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultInclusionPreview: {
-            bytes: number | null;
-            /** @description False when the disk walk stopped at its time budget: the counts are a minimum. */
-            complete: boolean | null;
-            estimate: components["schemas"]["StorageEstimateResponse"] | null;
-            excluded: boolean;
-            files: number | null;
-            /** @description Fixed noise exclusions that match the item. */
-            fixed: string[];
-            /** @description Removing the rule makes the Vault look inside the folder again with a full scan. */
-            folder_rule: boolean;
-            includable: boolean;
-            is_directory: boolean;
-            /** @description The include globs do not match the item. */
-            not_included: boolean;
-            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
-            own_rule: string | null;
-            own_rule_present: boolean;
-            path: string;
-            /** @description Other exclude globs that exclude the item. */
-            rules: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * VaultItemExclusion
-         * @description Exclude one Vault file or folder by its own rule (#754).
-         */
-        VaultItemExclusion: {
-            /**
-             * Is Directory
-             * @default false
-             */
-            is_directory: boolean;
-            /** Path */
-            path: string;
-        };
-        VaultItemExclusionStatus: {
-            excluded: boolean;
-            /** @description Fixed noise exclusions that match the item. */
-            fixed: string[];
-            is_directory: boolean;
-            /** @description The include globs do not match the item. */
-            not_included: boolean;
-            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
-            own_rule: string | null;
-            own_rule_present: boolean;
-            path: string;
-            /** @description Other exclude globs that exclude the item. */
-            rules: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        VaultListItem: {
-            id: number;
+        /** @description Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped. */
+        FileRecovery: {
             /** @enum {string} */
-            lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            name: string;
-            paused?: boolean;
-            uuid: string;
+            state: "queued" | "awaiting_approval" | "waiting_for_cloud" | "ready" | "downloading";
+            /** @description A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable. */
+            active: boolean;
+            /** @enum {string|null} */
+            tier: "Expedited" | "Standard" | "Bulk" | null;
+            days: number | null;
+            requested_at: string | null;
+            /** @description Request instant plus the tier's restore hours; an estimate. */
+            ready_by: string | null;
+            /** @description End of the readable restored copy. */
+            expires_at: string | null;
         } & {
             [key: string]: unknown;
         };
-        VaultMoveEstimate: {
-            assumptions: string;
-            eligible_count: number;
-            estimated_monthly_eur: number;
-            estimated_retrieval_eur: number;
-            minimum_days: number;
+        /** @description Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731). */
+        MinimumStorageDeletion: {
+            count: number;
+            bytes: number;
+            remaining_cost: number;
+            /** @description When the last Minimum Storage Duration of these files ends: deleting from then saves. */
+            savings_from: string | null;
+            /** @description How many of them have an estimated Class Entry. */
+            estimated_count: number;
+            by_storage_class: {
+                storage_class: string;
+                minimum_days: number;
+                count: number;
+                bytes: number;
+                remaining_cost: number;
+            }[];
+            currency: string;
             pricing_effective_at: string;
             region: string;
-            skipped: {
-                [key: string]: number;
-            };
-            target_class: string;
-            total_bytes: number;
+            disclaimer?: string | null;
+            evaluated_at: string;
         };
-        VaultMovePreview: {
-            targets: components["schemas"]["VaultMoveEstimate"][];
-            vault_id: number;
+        /** @description Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier. */
+        RetentionLockPreview: {
+            days: number;
+            /** @enum {string} */
+            mode: "GOVERNANCE";
+            locked_count: number;
+            locked_bytes: number;
+            /** @description When the first of them can be deleted. */
+            locked_from: string | null;
+            /** @description When the last of them can be deleted. */
+            locked_until: string | null;
         };
-        /** VaultMoveRequest */
-        VaultMoveRequest: {
-            /**
-             * Acknowledge Costs
-             * @default false
-             */
-            acknowledge_costs: boolean;
-            /** Target Class */
-            target_class: string;
-            /** Vault Id */
-            vault_id: number;
-        };
-        VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
-            group_id: string;
-            item_count: number;
-            job_ids: number[];
-        };
-        VaultPauseResponse: {
-            id: number;
-            message: string;
-            message_key: string;
-            paused: boolean;
-        };
-        /**
-         * VaultReconnect
-         * @description Explicitly accept a Source Volume and directory for an existing Vault.
-         */
-        VaultReconnect: {
-            /** Reason */
-            reason: string;
-            /**
-             * Relative Path
-             * @default
-             */
-            relative_path: string;
-            /** Volume Alias */
-            volume_alias: string;
-        };
-        VaultSelectRequest: {
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
-        };
-        VaultSelectResponse: {
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** VaultSelection */
-        VaultSelection: {
-            /** Vault Id */
-            vault_id: number;
-        };
-        /**
-         * VaultSelfServiceCreate
-         * @description Self-service vault creation payload (issues #7, #6, and #150).
-         *
-         *     Labels are accepted. Adoption adds a
-         *     constrained ``volume_alias`` + ``relative_path`` pair — never an absolute
-         *     filesystem path or S3 identity.
-         */
-        VaultSelfServiceCreate: {
-            /**
-             * Creation Mode
-             * @default empty
-             */
-            creation_mode: string;
-            /** Name */
+        ExcludedFolder: {
             name: string;
-            /** Relative Path */
-            relative_path?: string | null;
-            /** Retention Lock Days */
-            retention_lock_days?: (30 | 90 | 180 | 365) | null;
-            /** Volume Alias */
-            volume_alias?: string | null;
+            path: string;
+            rule: string;
+        } & {
+            [key: string]: unknown;
         };
-        VaultsResponse: {
-            items: components["schemas"]["VaultListItem"][];
+        /** @description An entry read from disk inside an Excluded Folder: not catalogued, not protected. */
+        DiskListingEntry: {
+            name: string;
+            path: string;
+            /** @enum {string} */
+            type: "file" | "directory";
+            size: number | null;
+            modified_at: string;
         } & {
             [key: string]: unknown;
         };
@@ -3646,6 +3668,226 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    login_page_login_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    login_api_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+        };
+    };
+    reauth_api_reauth_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReauthRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oidc_reauth_auth_oidc_reauth_get: {
+        parameters: {
+            query?: {
+                return_to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oidc_login_auth_oidc_login_get: {
+        parameters: {
+            query?: {
+                return_to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oidc_callback_auth_oidc_callback_get: {
+        parameters: {
+            query: {
+                state: string;
+                code: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_create_page_vaults_new_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     index__get: {
         parameters: {
             query?: never;
@@ -3666,7 +3908,7 @@ export interface operations {
             };
         };
     };
-    billing_export_status_api_billing_export_get: {
+    me_api_me_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -3681,79 +3923,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BillingExportStatus"];
+                    "application/json": components["schemas"]["MeResponse"];
                 };
             };
         };
     };
-    catalog_events_stream_api_catalog_events_get: {
-        parameters: {
-            query?: {
-                after_revision?: number;
-                subscribe?: boolean;
-                vault_id?: number | null;
-            };
-            header?: {
-                "Last-Event-ID"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Server-Sent Events stream of Vault-scoped catalog invalidation signals (text/event-stream) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": string;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    catalog_revision_snapshot_api_catalog_revision_get: {
-        parameters: {
-            query?: {
-                after_revision?: number;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CatalogRevisionResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cloud_deletion_settings_api_cloud_deletion_get: {
+    login_options_api_login_options_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -3768,492 +3943,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CloudDeletionSettings"];
-                };
-            };
-        };
-    };
-    preview_cloud_deletion_api_cloud_deletion_preview_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CloudDeletionPreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CloudDeletionPreview"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cloud_purge_api_cloud_purge_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CloudPurgeRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_files_api_files_get: {
-        parameters: {
-            query?: {
-                q?: string;
-                state?: string;
-                directory?: string;
-                page?: number;
-                page_size?: number;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FilesResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CloudOnlyReplacementAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    file_detail_api_files_detail_get: {
-        parameters: {
-            query: {
-                path: string;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ArchiveListItem"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    file_job_history_api_files_jobs_get: {
-        parameters: {
-            query: {
-                path: string;
-                before_id?: number | null;
-                limit?: number;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FileJobHistoryResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    search_all_files_api_files_search_get: {
-        parameters: {
-            query?: {
-                q?: string;
-                state?: string;
-                page?: number;
-                page_size?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FilesResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    file_versions_api_files_versions_get: {
-        parameters: {
-            query: {
-                path: string;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FileVersionsResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    free_space_api_free_space_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FileAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    general_overview_api_general_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GeneralOverview"];
-                };
-            };
-        };
-    };
-    storage_cost_estimate_api_general_cost_estimates_storage_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StorageEstimateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StorageEstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_metadata_backups_api_general_metadata_backups_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    download_metadata_backup_api_general_metadata_backups_download__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Raw metadata backup artifact */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    run_metadata_backup_api_general_metadata_backups_run_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MetadataBackupRunAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    general_source_volumes_api_general_source_volumes_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceVolumeInventoryResponse"];
-                };
-            };
-        };
-    };
-    general_vaults_api_general_vaults_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GeneralVaultsResponse"];
+                    "application/json": components["schemas"]["LoginOptionsResponse"];
                 };
             };
         };
@@ -4276,144 +3966,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["I18nCatalogResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    job_group_detail_api_job_groups__group_id__jobs_get: {
-        parameters: {
-            query?: {
-                before_id?: number | null;
-                limit?: number;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path: {
-                group_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FileJobHistoryResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    jobs_api_jobs_get: {
-        parameters: {
-            query?: {
-                action?: string[] | null;
-                active_only?: boolean;
-                path?: string | null;
-                groups_before_id?: number | null;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobsResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    cancel_job_api_jobs_cancel_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["JobCancelAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobCancelResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    job_detail_api_jobs__job_id__get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path: {
-                job_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobRecord"];
                 };
             };
             /** @description Validation Error */
@@ -4460,478 +4012,12 @@ export interface operations {
             };
         };
     };
-    login_api_login_post: {
+    pause_vault_api_vaults__vault_id__pause_post: {
         parameters: {
             query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    login_options_api_login_options_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LoginOptionsResponse"];
-                };
-            };
-        };
-    };
-    logout_api_logout_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    me_api_me_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MeResponse"];
-                };
-            };
-        };
-    };
-    list_notifications_api_notifications_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                status?: "all" | "unread" | "read";
-                before_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NotificationsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mark_notification_read_api_notifications_read_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NotificationReadAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mark_all_notifications_read_api_notifications_read_all_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-        };
-    };
-    open_problems_api_problems_get: {
-        parameters: {
-            query?: {
-                page?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NotificationsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reauth_api_reauth_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReauthRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    recover_api_recover_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoverRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    approve_recover_api_recover_approve_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoverApproveAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    recover_estimate_api_recover_estimate_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoverEstimateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecoverEstimateResponse"];
-                };
-            };
-            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        detail: string;
-                    };
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    recovery_kit_status_api_recovery_kit_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecoveryKitStatus"];
-                };
-            };
-        };
-    };
-    acknowledge_recovery_kit_api_recovery_kit_custody_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecoveryKitCustody"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecoveryKitStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    download_recovery_kit_api_recovery_kit_download_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Secret-bearing installation Recovery Kit (never cache) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-        };
-    };
-    start_scan_api_scan_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ScanResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    browse_source_volume_api_source_volumes__volume_alias__browse_get: {
-        parameters: {
-            query?: {
-                path?: string;
-                reconnect_vault_id?: number | null;
-            };
             header?: never;
             path: {
-                volume_alias: string;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -4943,7 +4029,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SourceDirectoryBrowseResponse"];
+                    "application/json": components["schemas"]["VaultPauseResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4957,100 +4043,12 @@ export interface operations {
             };
         };
     };
-    stats_api_stats_get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StatsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upload_api_upload_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UploadAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    upload_activity_overview_api_upload_activity_get: {
+    resume_vault_api_vaults__vault_id__resume_post: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadActivityResponse"];
-                };
-            };
-        };
-    };
-    upload_admission_status_api_upload_admissions__group_id__get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
             path: {
-                group_id: string;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -5062,579 +4060,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BulkUploadAdmissionResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_upload_api_upload_cancel_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GroupCancelAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobCancelResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_pending_uploads_api_upload_cancel_pending_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PendingUploadCancelAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobCancelResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    reconcile_upload_api_upload_reconcile_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UploadReconciliationAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadReconciliationResponse"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    retry_failed_uploads_api_upload_retry_failed_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RetryFailedUploadsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    vault_excluded_folders_api_vault_excluded_folders_get: {
-        parameters: {
-            query?: {
-                directory?: string;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExcludedFolderListing"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    exclude_vault_item_api_vault_exclusions_exclude_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultItemExclusion"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationPolicy"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    include_vault_item_api_vault_exclusions_include_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultItemExclusion"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationPolicy"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get: {
-        parameters: {
-            query: {
-                path: string;
-                is_directory?: boolean;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultInclusionPreview"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    vault_item_exclusion_api_vault_exclusions_item_get: {
-        parameters: {
-            query: {
-                path: string;
-                is_directory?: boolean;
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultItemExclusionStatus"];
-                };
-            };
-            /** @description The logical path is empty, absolute, or traverses outside the Vault */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
-                };
-            };
-        };
-    };
-    own_vault_lifecycle_api_vault_lifecycle_get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LifecycleResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_vault_storage_plan_api_vault_lifecycle_put: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LifecycleProfileSelection"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LifecycleResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_vault_move_api_vault_move_get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultMovePreview"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    move_vault_api_vault_move_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultMoveRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultMoveResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    own_vault_operation_policy_api_vault_operation_policy_get: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationPolicy"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_vault_operation_policy_api_vault_operation_policy_put: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OperationPolicyUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationPolicy"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    edit_vault_operation_glob_api_vault_operation_policy_globs_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OperationPolicyGlobEdit"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationPolicy"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GlobPreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GlobPreviewResponse"];
+                    "application/json": components["schemas"]["VaultPauseResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5701,70 +4127,6 @@ export interface operations {
             };
         };
     };
-    select_vault_api_vaults_select_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultSelection"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultSelectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    vault_billed_cost_api_vaults__vault_id__billed_cost_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultBilledCost"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     vault_bucket_status_api_vaults__vault_id__bucket_get: {
         parameters: {
             query?: never;
@@ -5783,6 +4145,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultBucketStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_retention_lock_api_vaults__vault_id__retention_lock_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionLockStatus"];
                 };
             };
             /** @description Validation Error */
@@ -5827,37 +4220,6 @@ export interface operations {
             };
         };
     };
-    vault_cloud_usage_api_vaults__vault_id__cloud_usage_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultCloudUsage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     cancel_vault_creation_api_vaults__vault_id__creation_cancel_post: {
         parameters: {
             query?: never;
@@ -5876,231 +4238,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultCreationCancelled"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DuplicateCleanupUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    minimum_storage_summary_api_vaults__vault_id__minimum_storage_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MinimumStorageSummary"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    pause_vault_api_vaults__vault_id__pause_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultPauseResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reconnect_vault_root_api_vaults__vault_id__reconnect_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultReconnect"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GeneralVaultReconnectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    resume_vault_api_vaults__vault_id__resume_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultPauseResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    vault_retention_lock_api_vaults__vault_id__retention_lock_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RetentionLockStatus"];
                 };
             };
             /** @description Validation Error */
@@ -6277,37 +4414,6 @@ export interface operations {
             };
         };
     };
-    cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vault_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultDeletionStatus"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     vault_deletion_preview_api_vaults__vault_id__vault_deletion_preview_get: {
         parameters: {
             query?: never;
@@ -6326,6 +4432,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultDeletionPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_vault_deletion_api_vaults__vault_id__vault_deletion_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultDeletionStatus"];
                 };
             };
             /** @description Validation Error */
@@ -6370,12 +4507,12 @@ export interface operations {
             };
         };
     };
-    spa_asset_assets__asset_path__get: {
+    duplicate_cleanup_status_api_vaults__vault_id__duplicate_cleanup_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                asset_path: string;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -6387,7 +4524,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
                 };
             };
             /** @description Validation Error */
@@ -6401,11 +4538,228 @@ export interface operations {
             };
         };
     };
-    oidc_callback_auth_oidc_callback_get: {
+    update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DuplicateCleanupUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateCleanupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    minimum_storage_summary_api_vaults__vault_id__minimum_storage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MinimumStorageSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_cloud_usage_api_vaults__vault_id__cloud_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultCloudUsage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_billed_cost_api_vaults__vault_id__billed_cost_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultBilledCost"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    billing_export_status_api_billing_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingExportStatus"];
+                };
+            };
+        };
+    };
+    select_vault_api_vaults_select_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultSelectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_api_files_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                state?: string;
+                directory?: string;
+                page?: number;
+                page_size?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilesResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    file_detail_api_files_detail_get: {
         parameters: {
             query: {
-                state: string;
-                code: string;
+                path: string;
+                vault_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -6419,7 +4773,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ArchiveListItem"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    search_all_files_api_files_search_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                state?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilesResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6433,10 +4821,50 @@ export interface operations {
             };
         };
     };
-    oidc_login_auth_oidc_login_get: {
+    upload_activity_overview_api_upload_activity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadActivityResponse"];
+                };
+            };
+        };
+    };
+    general_overview_api_general_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralOverview"];
+                };
+            };
+        };
+    };
+    open_problems_api_problems_get: {
         parameters: {
             query?: {
-                return_to?: string | null;
+                page?: number;
             };
             header?: never;
             path?: never;
@@ -6450,7 +4878,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["NotificationsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6464,10 +4892,10 @@ export interface operations {
             };
         };
     };
-    oidc_reauth_auth_oidc_reauth_get: {
+    stats_api_stats_get: {
         parameters: {
             query?: {
-                return_to?: string | null;
+                vault_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -6481,7 +4909,1610 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StatsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notifications_api_notifications_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                status?: "all" | "unread" | "read";
+                before_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_notification_read_api_notifications_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationReadAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_all_notifications_read_api_notifications_read_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+        };
+    };
+    recovery_kit_status_api_recovery_kit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryKitStatus"];
+                };
+            };
+        };
+    };
+    download_recovery_kit_api_recovery_kit_download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Secret-bearing installation Recovery Kit (never cache) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    acknowledge_recovery_kit_api_recovery_kit_custody_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryKitCustody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryKitStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_metadata_backups_api_general_metadata_backups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+        };
+    };
+    run_metadata_backup_api_general_metadata_backups_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetadataBackupRunAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_metadata_backup_api_general_metadata_backups_download__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw metadata backup artifact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    jobs_api_jobs_get: {
+        parameters: {
+            query?: {
+                action?: string[] | null;
+                active_only?: boolean;
+                path?: string | null;
+                groups_before_id?: number | null;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobsResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    job_group_detail_api_job_groups__group_id__jobs_get: {
+        parameters: {
+            query?: {
+                before_id?: number | null;
+                limit?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileJobHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_detail_api_jobs__job_id__get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    file_job_history_api_files_jobs_get: {
+        parameters: {
+            query: {
+                path: string;
+                before_id?: number | null;
+                limit?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileJobHistoryResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    start_scan_api_scan_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    catalog_revision_snapshot_api_catalog_revision_get: {
+        parameters: {
+            query?: {
+                after_revision?: number;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    catalog_events_stream_api_catalog_events_get: {
+        parameters: {
+            query?: {
+                after_revision?: number;
+                subscribe?: boolean;
+                vault_id?: number | null;
+            };
+            header?: {
+                "Last-Event-ID"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events stream of Vault-scoped catalog invalidation signals (text/event-stream) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    file_versions_api_files_versions_get: {
+        parameters: {
+            query: {
+                path: string;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileVersionsResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    recover_estimate_api_recover_estimate_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoverEstimateResponse"];
+                };
+            };
+            /** @description The requested Vault-scoped resource is absent, stale, or foreign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    upload_api_upload_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    upload_admission_status_api_upload_admissions__group_id__get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkUploadAdmissionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_upload_api_upload_reconcile_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadReconciliationAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadReconciliationResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    retry_failed_uploads_api_upload_retry_failed_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryFailedUploadsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudOnlyReplacementAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_pending_uploads_api_upload_cancel_pending_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PendingUploadCancelAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_job_api_jobs_cancel_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobCancelAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_upload_api_upload_cancel_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupCancelAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCancelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recover_api_recover_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_recover_api_recover_approve_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverApproveAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    free_space_api_free_space_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    cloud_deletion_settings_api_cloud_deletion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudDeletionSettings"];
+                };
+            };
+        };
+    };
+    preview_cloud_deletion_api_cloud_deletion_preview_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudDeletionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudDeletionPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cloud_purge_api_cloud_purge_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonObjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    general_source_volumes_api_general_source_volumes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceVolumeInventoryResponse"];
+                };
+            };
+        };
+    };
+    browse_source_volume_api_source_volumes__volume_alias__browse_get: {
+        parameters: {
+            query?: {
+                path?: string;
+                reconnect_vault_id?: number | null;
+            };
+            header?: never;
+            path: {
+                volume_alias: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceDirectoryBrowseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    general_vaults_api_general_vaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralVaultsResponse"];
+                };
+            };
+        };
+    };
+    reconnect_vault_root_api_vaults__vault_id__reconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultReconnect"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralVaultReconnectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    own_vault_operation_policy_api_vault_operation_policy_get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_vault_operation_policy_api_vault_operation_policy_put: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationPolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_vault_operation_glob_api_vault_operation_policy_globs_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationPolicyGlobEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_excluded_folders_api_vault_excluded_folders_get: {
+        parameters: {
+            query?: {
+                directory?: string;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExcludedFolderListing"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    vault_item_exclusion_api_vault_exclusions_item_get: {
+        parameters: {
+            query: {
+                path: string;
+                is_directory?: boolean;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultItemExclusionStatus"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get: {
+        parameters: {
+            query: {
+                path: string;
+                is_directory?: boolean;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultInclusionPreview"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    exclude_vault_item_api_vault_exclusions_exclude_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultItemExclusion"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    include_vault_item_api_vault_exclusions_include_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultItemExclusion"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlobPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlobPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    storage_cost_estimate_api_general_cost_estimates_storage_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageEstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_vault_move_api_vault_move_get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultMovePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_vault_api_vault_move_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultMoveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultMoveResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    own_vault_lifecycle_api_vault_lifecycle_get: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LifecycleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_vault_storage_plan_api_vault_lifecycle_put: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LifecycleProfileSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LifecycleResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6515,7 +6546,7 @@ export interface operations {
             };
         };
     };
-    login_page_login_get: {
+    ready_ready_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -6530,7 +6561,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["JsonObjectResponse"];
                 };
             };
         };
@@ -6569,31 +6600,13 @@ export interface operations {
             };
         };
     };
-    ready_ready_get: {
+    spa_asset_assets__asset_path__get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
-                };
+            path: {
+                asset_path: string;
             };
-        };
-    };
-    vault_create_page_vaults_new_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -6605,6 +6618,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
