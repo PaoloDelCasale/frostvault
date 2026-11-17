@@ -172,17 +172,19 @@ def _candidate(volume: source_layout.SourceVolume, relative_path: str) -> tuple[
 
     current = safe_target
     volume_root = Path(volume_root_text)
-    while current != volume_root:
-        if source_layout.path_is_mount(current):
-            raise VaultRelocationError(
-                "different_volume", "Destination crosses a nested mount"
-            )
-        parent = current.parent
-        if parent == current:
-            raise VaultRelocationError(
-                "inaccessible", "Destination is inaccessible or outside the Source Volume"
-            )
-        current = parent
+    with source_layout.mount_points_once():
+        while current != volume_root:
+            if source_layout.path_is_mount(current):
+                raise VaultRelocationError(
+                    "different_volume", "Destination crosses a nested mount"
+                )
+            parent = current.parent
+            if parent == current:
+                raise VaultRelocationError(
+                    "inaccessible",
+                    "Destination is inaccessible or outside the Source Volume",
+                )
+            current = parent
     if not os.access(
         safe_target, os.R_OK | os.X_OK
     ) or not source_layout.path_is_writable(safe_target):
@@ -295,7 +297,9 @@ def _own_managed_destination(
             raise VaultRelocationError(
                 "managed_missing", "Managed folder missing or not a real directory",
             )
-    if source_layout.path_is_mount(managed) or source_layout.path_is_mount(own):
+    with source_layout.mount_points_once():
+        nested = source_layout.path_is_mount(managed) or source_layout.path_is_mount(own)
+    if nested:
         raise VaultRelocationError("different_volume", "Destination crosses a nested mount")
     if not os.access(own, os.R_OK | os.X_OK) or not source_layout.path_is_writable(own):
         raise VaultRelocationError(

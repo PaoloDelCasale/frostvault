@@ -187,16 +187,17 @@ def _assert_no_nested_mount(volume: source_layout.SourceVolume, target: Path) ->
     """Reject candidates that cross a mount nested under the Source Volume."""
     volume_root = Path(volume.path).resolve()
     current = target.resolve()
-    while current != volume_root:
-        if source_layout.path_is_mount(current):
-            raise SourceDirectoryError(
-                "nested_mount",
-                "Adoption cannot cross a nested mount point",
-            )
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+    with source_layout.mount_points_once():
+        while current != volume_root:
+            if source_layout.path_is_mount(current):
+                raise SourceDirectoryError(
+                    "nested_mount",
+                    "Adoption cannot cross a nested mount point",
+                )
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
 
 
 def _assert_root_access(target: Path) -> None:
