@@ -147,16 +147,20 @@ class FakeBucketS3:
             "ObjectLockConfigurationNotFoundError")}
 
 
-def fake_vault_buckets(test: Any, *, foreign: set[str] | None = None) -> FakeBucketS3:
+def fake_vault_buckets(test: Any, *, foreign: set[str] | None = None,
+                       settle_seconds: int = 0) -> FakeBucketS3:
     """Create every Vault Bucket of ``test`` in one in-memory S3 (#735).
 
-    Patches the client ``vault_buckets`` opens by default; the patch ends
-    with the test.
+    Patches the client ``vault_buckets`` opens by default and, since an
+    in-memory bucket has no versioning to propagate, the wait between the
+    verification and the activation (``settle_seconds``, 0 by default: a
+    verified Vault is active at once). The patches end with the test.
     """
     from unittest.mock import patch
 
     fake = FakeBucketS3(foreign=foreign)
-    patcher = patch("app.services.vault_buckets._default_client", return_value=fake)
-    patcher.start()
-    test.addCleanup(patcher.stop)
+    for patcher in (patch("app.services.vault_buckets._default_client", return_value=fake),
+                    patch("app.services.vault_buckets.VERSIONING_SETTLE_SECONDS", settle_seconds)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
     return fake

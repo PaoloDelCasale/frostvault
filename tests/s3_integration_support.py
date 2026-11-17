@@ -81,7 +81,8 @@ def prepare_plain_vault(
         connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
         region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
         target_id = connection.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', %s, %s) RETURNING id",
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', %s, %s, 'vault_prefix') RETURNING id",
             (bucket, region),
         ).fetchone()["id"]
         vault_uuid = connection.execute(

@@ -74,8 +74,8 @@ def _seed(paths: dict[str, Path]) -> dict:
             ("E2E Owner", password_hash),
         )
         target_id = connection.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) "
-            "VALUES ('s3', 'e2e-bucket', 'eu-south-1') RETURNING id"
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', 'e2e-bucket', 'eu-south-1', 'vault_prefix') RETURNING id"
         ).fetchone()["id"]
 
         def vault(uuid: str, name: str, root: Path) -> int:
@@ -265,7 +265,8 @@ def _native_fixture_runtime():
     test sources root as mounted (no arbitrary child gets mount status). Treat
     seeding as the latest maintenance pass so the fake provider is not audited
     and does not race the UI scenarios. A Vault created from the UI gets its
-    Vault Bucket (#735) in an in-memory S3. Real maintenance/S3 has separate CI
+    Vault Bucket (#735) in an in-memory S3, with no versioning to propagate, so
+    it is active as soon as it is verified. Real maintenance/S3 has separate CI
     jobs.
     """
     from app import storage
@@ -285,7 +286,8 @@ def _native_fixture_runtime():
     vault_bucket_s3 = FakeBucketS3()
     with patch.object(source_layout, "path_is_mount", fixture_mount), patch.object(
         storage, "persisted_maintenance_ages", fixture_maintenance_ages,
-    ), patch.object(vault_buckets, "_default_client", lambda region: vault_bucket_s3):
+    ), patch.object(vault_buckets, "_default_client", lambda region: vault_bucket_s3), \
+            patch.object(vault_buckets, "VERSIONING_SETTLE_SECONDS", 0):
         yield
 
 

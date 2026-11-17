@@ -92,8 +92,10 @@ FrostVault creates and verifies its own buckets
 - a **Vault Bucket** for every new Vault, `frostvault-<slug>-<8 random [a-z0-9]>`
   in `AWS_DEFAULT_REGION`. The slug is the Vault name in lowercase ASCII
   (accents dropped, other characters become `-`), at most 40 characters; a
-  name with no letter or digit becomes `vault`, and `system` becomes
-  `system-vault`. The Vault's files are at the bucket **root**: the key of a
+  name with no letter or digit becomes `vault`, and a slug that is `system` or
+  starts with `system-` gets the prefix `vault-` (`vault-system`,
+  `vault-system-photos`, still at most 40 characters): no Vault Bucket name
+  starts with `frostvault-system-`, the System Bucket's shape. The Vault's files are at the bucket **root**: the key of a
   file is its relative path;
 - the **System Bucket** for metadata backups, `frostvault-system-<8 random [a-z0-9]>`
   in `AWS_DEFAULT_REGION`, unless `METADATA_BACKUP_BUCKET` names an
@@ -120,12 +122,30 @@ Every such bucket gets, and is then verified to have:
   The System Bucket never has one.
 
 A new Vault is `provisioning` until its bucket is created, configured and
-verified; only then is it `active` and selectable. The Vault creation page shows
-the progress; when a step fails the Vault stays saved and provisioning, the page
+verified, and then for 15 more minutes: AWS recommends waiting 15 minutes after
+enabling versioning on a new bucket before writing objects to it
+([S3 versioning](https://docs.aws.amazon.com/AmazonS3/latest/userguide/manage-versioning-examples.html)),
+so FrostVault records when the verification passed and the background loop
+activates the Vault once that time has elapsed (checked every minute, after a
+restart too). Only then is it `active` and selectable. The Vault creation page
+and the Overview show the progress and, after the verification, "active in about
+N minutes"; when a step fails the Vault stays saved and provisioning, the page
 and the Overview show the failing step and the S3 error code, a Problem opens
 (the bucket may already exist in the account without being in use), and
 FrostVault retries every 15 minutes, after a restart too. **Retry now** retries
-at once, for example after an IAM fix. FrostVault writes a Vault Bucket's whole
+at once, for example after an IAM fix. A failure FrostVault did not expect is
+recorded as `internal error (<type>)`, never with its message. An S3 error
+names the step it happened in: the bucket creation, configuration or
+verification.
+
+**Cancel creation** removes a Vault that is still `provisioning` from the
+catalog, after reauthentication, and releases its folder (an empty managed
+folder is removed; an adopted folder and local files are never touched). A
+bucket FrostVault already created is **not** deleted (the policy has no
+`s3:DeleteBucket`): the outcome and the audit record (`vault.creation_cancelled`)
+name it, and say whether it was created or only possibly reached AWS, so the
+Owner can check and remove it by hand. The bucket's `frostvault:vault` tag
+still names the cancelled Vault's UUID. FrostVault writes a Vault Bucket's whole
 lifecycle only at its creation and when the Vault's Storage Plan changes (or the
 lifecycle no longer matches it); the rest of the configuration only at creation.
 

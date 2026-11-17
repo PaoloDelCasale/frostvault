@@ -2,16 +2,18 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
+import { fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { VaultDeletionDialog } from "@/components/VaultDeletionDialog";
+import { VaultCreationCancel } from "@/components/VaultCreationCancel";
 import { buttonVariants } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
+import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatMoney } from "@/pages/archive/format";
 import { vaultFilesUrl } from "@/router";
@@ -84,6 +86,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const queryClient = useQueryClient();
   const [retrying, setRetrying] = useState<number | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [cancelledCreation, setCancelledCreation] = useState<VaultCreationCancelled | null>(null);
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: ["vault-stats", vault.id],
     queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
@@ -211,6 +214,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
       </section>
     </>}
 
+    {cancelledCreation ? <p className="rounded-card border border-line bg-surface p-3 text-sm break-words" role="status" data-testid="overview-creation-cancelled">
+      {cancelledMessage(cancelledCreation, t)}</p> : null}
+
     {/* A Vault Bucket Problem links here (#735): it opens on #creating. */}
     {creating.length > 0 && <details id="creating" open className="rounded-card border border-line bg-surface p-3" data-testid="overview-creating">
       <summary className="flex min-h-11 cursor-pointer items-center gap-2 font-semibold"><Hourglass className="size-4 text-muted" aria-hidden="true" />{t("overview.creating", { count: creating.length })}</summary>
@@ -219,13 +225,21 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
       <ul className="grid">{creating.map((vault) => {
         const bucket = vault.bucket_provisioning;
         const failed = bucket?.state === "failed";
+        const settling = bucket?.state === "settling";
+        const badge = failed ? t("overview.creating_failed")
+          : settling ? t("overview.creating_settling", { count: minutesLeft(bucket) })
+            : t("overview.creating_pending");
         return <li key={vault.id} className="grid min-w-0 gap-1 border-t border-line py-2" data-testid="overview-creating-vault">
           <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <span className="flex min-w-0 flex-wrap items-center gap-2"><span className="min-w-0 break-words">{vault.name}</span>
               <span className={cn("w-fit rounded-full border px-2 py-1 text-xs font-bold", failed ? "border-destructive text-destructive" : "border-line")}>
-                {t(failed ? "overview.creating_failed" : "overview.creating_pending")}</span></span>
-            <button type="button" className={buttonVariants({ variant: "secondary", size: "sm" })} disabled={retrying !== null}
-              onClick={() => void retryBucket(vault.id)}>{t("ui.vault_create.bucket_retry")}</button>
+                {badge}</span></span>
+            <span className="flex flex-wrap items-center gap-2">
+              {!settling ? <button type="button" className={buttonVariants({ variant: "secondary", size: "sm" })} disabled={retrying !== null}
+                onClick={() => void retryBucket(vault.id)}>{t("ui.vault_create.bucket_retry")}</button> : null}
+              <VaultCreationCancel vaultId={vault.id} vaultName={vault.name} bucket={bucket?.bucket ?? vault.s3_bucket ?? ""} size="sm"
+                disabled={retrying !== null} onCancelled={(outcome) => { setCancelledCreation(outcome); void general.refetch(); }} />
+            </span>
           </span>
           {bucket && failed ? <span className="text-sm break-words text-muted">{t("ui.vault_create.bucket_failed", { bucket: bucket.bucket, error: bucket.error ?? "" })}</span> : null}
         </li>;

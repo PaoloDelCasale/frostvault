@@ -23,6 +23,7 @@ class PreflightCheck:
     remediation: str | None = None
     # Catalog key of the full localized readiness text, for failures the UI
     # translates (the key's English text is what the readiness gate stores).
+    # Its only parameter is ``bucket``, the bucket of the result.
     message_key: str | None = None
 
 
@@ -48,7 +49,10 @@ def preflight_failure_message(result: PreflightResult) -> str:
 
 
 def failure_message_key(result: PreflightResult) -> str | None:
-    """Catalog key when the only failed check has a localized readiness text."""
+    """Catalog key when the only failed check has a localized readiness text.
+
+    Its text names the bucket: translate it with ``bucket=result.bucket``.
+    """
     failed = [check for check in result.checks if check.status == "fail"]
     return failed[0].message_key if len(failed) == 1 else None
 
@@ -121,7 +125,7 @@ def _head_bucket_failure(client: Any, bucket: str, exc: ClientError) -> Prefligh
         return PreflightCheck(
             code="bucket.exists",
             status="fail",
-            message="The S3 bucket of a Vault does not exist",
+            message=f"The S3 bucket {bucket} of a Vault does not exist",
             remediation=(
                 "Check AWS_DEFAULT_REGION and the AWS account, and that nobody "
                 "deleted the Vault's bucket; FrostVault never recreates it"

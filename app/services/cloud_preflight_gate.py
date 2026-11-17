@@ -6,6 +6,7 @@ is outside replayable DB units; publication retries retain the probe outcome.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -22,21 +23,45 @@ AUTH_REMEDIATION = "S3 access was refused. Check AWS credentials and required bu
 
 
 # Readiness failures whose stored remediation is the English text of a catalog
-# key. The state row keeps that text; readers localize it per viewer.
+# key. The state row keeps that text; readers localize it per viewer. The text
+# names the bucket ({bucket}): the stored English text gives it back.
 LOCALIZED_REMEDIATION_KEYS = (BUCKET_NOT_FOUND_KEY,)
+_PARAMETER = re.compile(r"\{(bucket)\}")
+_BUCKET_VALUE = r"[A-Za-z0-9._-]+"
+
+
+def _english_pattern(key: str) -> re.Pattern[str]:
+    template = translate(key, locale="en")
+    parts = _PARAMETER.split(template)
+    # Even positions are literal text, odd ones the parameter names.
+    return re.compile("".join(
+        re.escape(part) if index % 2 == 0 else f"(?P<{part}>{_BUCKET_VALUE})"
+        for index, part in enumerate(parts)))
+
+
+def remediation_match(remediation: str | None) -> tuple[str, dict[str, str]] | None:
+    """Catalog key and parameters whose English text is this stored remediation."""
+    if not remediation:
+        return None
+    for key in LOCALIZED_REMEDIATION_KEYS:
+        match = _english_pattern(key).fullmatch(remediation)
+        if match:
+            return key, match.groupdict()
+    return None
 
 
 def remediation_key(remediation: str | None) -> str | None:
     """Catalog key whose English text is exactly this stored remediation."""
-    if not remediation:
-        return None
-    return next((key for key in LOCALIZED_REMEDIATION_KEYS
-                 if translate(key, locale="en") == remediation), None)
+    match = remediation_match(remediation)
+    return match[0] if match else None
 
 
 def localized_snapshot(state: dict[str, Any], locale: str | None) -> dict[str, Any]:
-    key = remediation_key(state.get("remediation"))
-    return {**state, "remediation": translate(key, locale=locale)} if key else state
+    match = remediation_match(state.get("remediation"))
+    if not match:
+        return state
+    key, params = match
+    return {**state, "remediation": translate(key, locale=locale, **params)}
 
 
 class CloudPreflightBlocked(RuntimeError):
@@ -103,9 +128,11 @@ def is_readiness_error(error: BaseException) -> bool:
 
 def _problem_params(remediation: str | None) -> dict[str, str]:
     params = {'remediation': remediation or ''}
-    key = remediation_key(remediation)
-    if key:
-        params['remediation_key'] = key
+    match = remediation_match(remediation)
+    if match:
+        params['remediation_key'] = match[0]
+        # The key's parameters (the bucket) let each reader localize it.
+        params.update(match[1])
     return params
 
 

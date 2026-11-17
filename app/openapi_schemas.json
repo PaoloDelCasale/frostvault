@@ -4281,7 +4281,7 @@
     "VaultBucketStatus": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation.",
+      "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification).",
       "properties": {
         "vault_id": {
           "type": "number"
@@ -4300,6 +4300,7 @@
           "enum": [
             "creating",
             "failed",
+            "settling",
             "ready"
           ]
         },
@@ -4312,6 +4313,7 @@
             "reserved",
             "created",
             "configured",
+            "verified",
             null
           ]
         },
@@ -4335,6 +4337,20 @@
             "number",
             "null"
           ]
+        },
+        "active_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When a verified bucket's Vault becomes active (settling only)."
+        },
+        "active_in_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Seconds until active_at, never negative (settling only)."
         }
       },
       "required": [
@@ -4347,7 +4363,42 @@
         "attempts",
         "last_attempt_at",
         "error",
-        "retention_lock_days"
+        "retention_lock_days",
+        "active_at",
+        "active_in_seconds"
+      ]
+    },
+    "VaultCreationCancelled": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible).",
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_name": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "bucket_left": {
+          "type": "string",
+          "enum": [
+            "created",
+            "possible"
+          ]
+        }
+      },
+      "required": [
+        "vault_id",
+        "vault_name",
+        "bucket",
+        "region",
+        "bucket_left"
       ]
     }
   }

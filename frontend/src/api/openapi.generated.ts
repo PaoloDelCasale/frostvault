@@ -1123,6 +1123,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/creation/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Vault Creation
+         * @description Cancel the creation of a Vault whose bucket is not ready yet (#735).
+         *
+         *     Only while the Vault is ``provisioning``: it leaves the catalog and its
+         *     root is released. A bucket FrostVault already created is NOT deleted (it
+         *     has no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the
+         *     Owner can remove it by hand, and the audit record keeps them.
+         */
+        post: operations["cancel_vault_creation_api_vaults__vault_id__creation_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/duplicate-cleanup": {
         parameters: {
             query?: never;
@@ -2775,8 +2800,12 @@ export interface components {
             /** Error Type */
             type: string;
         };
-        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation. */
+        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification). */
         VaultBucketStatus: {
+            /** @description When a verified bucket's Vault becomes active (settling only). */
+            active_at: string | null;
+            /** @description Seconds until active_at, never negative (settling only). */
+            active_in_seconds: number | null;
             attempts: number;
             bucket: string;
             dedicated: boolean;
@@ -2785,9 +2814,9 @@ export interface components {
             region: string;
             retention_lock_days: number | null;
             /** @enum {string|null} */
-            stage: "reserved" | "created" | "configured" | null;
+            stage: "reserved" | "created" | "configured" | "verified" | null;
             /** @enum {string} */
-            state: "creating" | "failed" | "ready";
+            state: "creating" | "failed" | "settling" | "ready";
             vault_id: number;
         };
         VaultCreateRequest: {
@@ -2804,6 +2833,15 @@ export interface components {
             lifecycle: "provisioning" | "active";
             name: string;
             uuid: string;
+        };
+        /** @description A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible). */
+        VaultCreationCancelled: {
+            bucket: string;
+            /** @enum {string} */
+            bucket_left: "created" | "possible";
+            region: string;
+            vault_id: number;
+            vault_name: string;
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
@@ -4944,6 +4982,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultBucketStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_vault_creation_api_vaults__vault_id__creation_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultCreationCancelled"];
                 };
             };
             /** @description Validation Error */

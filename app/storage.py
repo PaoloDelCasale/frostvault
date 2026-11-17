@@ -616,8 +616,9 @@ def _validate_cloud_bucket(bucket: Any, region: str) -> None:
         key = failure_message_key(result)
         # Keyed failures store the English catalog text, so the readiness gate
         # can localize it for each viewer (cloud_preflight_gate.remediation_key).
+        # Every message names the bucket: since #735 each Vault has its own.
         raise cloud_preflight_gate.ReadinessFailure(
-            translate(key, locale="en") if key
+            translate(key, locale="en", bucket=bucket) if key
             else f"S3 bucket {bucket} preflight failed: " + preflight_failure_message(result)
         )
 
@@ -2622,6 +2623,9 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         # still ready. A persisted scan_required row is intentionally allowed:
         # that scan is the recovery operation which must clear the suspension.
         vault = _current_scan_vault(vault)
+        # A new Vault's bucket is not ready yet (#735): nothing to scan for.
+        if vault.get("lifecycle") == "provisioning":
+            return {"suspended": 1}
         if protection_stop_service.local_work_suspended(vault):
             return {"suspended": 1}
         if (
@@ -7634,8 +7638,10 @@ def _run_scheduled_metadata_backup_once() -> None:
 
 # While FrostVault's System Bucket is not created yet, try again this often.
 SYSTEM_BUCKET_POLL_SECONDS = 15 * 60
-# Unfinished Vault Bucket creations (#735) are retried this often.
-VAULT_BUCKET_POLL_SECONDS = 15 * 60
+# Unfinished Vault Bucket creations (#735) are looked at this often: each
+# failed one is retried RETRY_SECONDS after its last attempt, and a verified
+# one becomes active once its versioning has settled (a minute's precision).
+VAULT_BUCKET_POLL_SECONDS = 60
 
 
 def ensure_system_bucket_once() -> None:
@@ -7661,23 +7667,53 @@ def ensure_system_bucket_once() -> None:
 
 
 def ensure_vault_buckets_once() -> None:
-    """Resume every unfinished Vault Bucket creation (#735).
+    """Resume every due Vault Bucket creation (#735).
 
     A creation interrupted by a restart, or failed (IAM, network), continues
     on its saved name; each failure stays recorded on its Vault with a
-    Problem. A Vault that becomes active gets its first scan.
+    Problem. A verified Vault becomes active once its versioning has settled
+    and gets its first scan on its own scan thread, never on this
+    single-worker maintenance pool, where a full scan of a large adopted
+    folder would hold every other maintenance task for hours.
     """
     from .services import vault_buckets
 
+    errors: list[Exception] = []
+
+    def failed(vault_id: int, exc: Exception) -> None:
+        errors.append(exc)
+        _report_worker_error("vault_buckets", exc, vault_id)
+
     try:
-        states = vault_buckets.resume_all()
+        states = vault_buckets.resume_all(on_error=failed)
     except Exception as exc:
         _report_worker_error("vault_buckets", exc)
         return
-    _note_worker_ok("vault_buckets")
+    if not errors:
+        _note_worker_ok("vault_buckets")
     for state in states:
         if state["state"] == "ready" and not shutdown_state.requested:
-            scan_vault({"id": state["vault_id"]})
+            submit_first_scan(int(state["vault_id"]))
+
+
+def submit_first_scan(vault_id: int) -> None:
+    """Scan a Vault that just became active, on its own scan thread (#735).
+
+    The per-Vault pool of the paired watcher scans: drained at shutdown, and
+    scans of one Vault take turns. A scan already running or a stopping
+    process leaves it to the periodic scan.
+    """
+    try:
+        future = _submit_watcher_scan({"id": int(vault_id)})
+    except WorkerStopping:
+        return
+
+    def reported(done: Future[Any]) -> None:
+        exc = None if done.cancelled() else done.exception()
+        if exc is not None and not isinstance(exc, WorkerStopping):
+            _report_worker_error("source_scan", exc, int(vault_id))
+
+    future.add_done_callback(reported)
 
 
 def _verify_latest_metadata_backup_once() -> None:

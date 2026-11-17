@@ -67,7 +67,8 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
                         patch.object(source_layout, "path_is_mount", return_value=False)):
             patcher.start(); self.addCleanup(patcher.stop)
         with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'bucket', 'eu-south-1')")
+            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
             connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root, lifecycle)
                 VALUES (7, %s, (SELECT id FROM vault_targets), 'Photos', %s, 'reconnect_required')""",
                 (own_uuid, str(sources / "managed" / own_uuid)))

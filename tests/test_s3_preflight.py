@@ -161,7 +161,7 @@ class BucketPreflightTests(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertEqual([c.code for c in result.checks], ["bucket.exists"])
                 self.assertEqual(failure_message_key(result), BUCKET_NOT_FOUND_KEY)
-                self.assertIn("does not exist", message)
+                self.assertIn("The S3 bucket my-archive-bucket of a Vault does not exist", message)
                 for setting in ("AWS_DEFAULT_REGION", "never recreates it"):
                     self.assertIn(setting, message)
                 self.assertNotIn("VAULT_S3_BUCKET", message)
@@ -197,8 +197,10 @@ class BucketPreflightTests(unittest.TestCase):
             settings.aws_region = "eu-south-1"
             with self.assertRaises(RuntimeError) as raised:
                 _validate_cloud_vault({"s3_bucket": "my-archive-bucket"})
-        self.assertEqual(str(raised.exception), translate(BUCKET_NOT_FOUND_KEY, locale="en"))
-        self.assertIn("does not exist", str(raised.exception))
+        self.assertEqual(str(raised.exception),
+                         translate(BUCKET_NOT_FOUND_KEY, locale="en", bucket="my-archive-bucket"))
+        # Every Vault has its own bucket (#735): the message names it.
+        self.assertIn("the bucket my-archive-bucket of a Vault does not exist", str(raised.exception))
         self.assertNotIn("s3:HeadBucket", str(raised.exception))
 
     def test_wrong_region_fails(self):

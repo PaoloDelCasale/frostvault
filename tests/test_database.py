@@ -612,8 +612,8 @@ class BaselineSchemaTests(unittest.TestCase):
     def target_id(self) -> int:
         existing = self.execute("SELECT id FROM vault_targets WHERE bucket = 'bucket'")
         return (existing or self.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) "
-            "VALUES ('s3', 'bucket', 'eu-south-1') RETURNING id"
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix') RETURNING id"
         ))[0]["id"]
 
     def vault(self, root: str = "/sources/managed/a", **values) -> dict:
@@ -736,12 +736,13 @@ class BaselineSchemaTests(unittest.TestCase):
         self.rejects("UPDATE vault_targets SET bucket = 'other'")
         self.rejects("DELETE FROM vault_targets")
         other = self.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) "
-            "VALUES ('s3', 'other', 'eu-south-1') RETURNING id"
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', 'other', 'eu-south-1', 'vault_prefix') RETURNING id"
         )[0]["id"]
         self.rejects("UPDATE vaults SET target_id = %s WHERE id = %s", (other, vault["id"]))
         self.rejects("UPDATE vaults SET uuid = %s WHERE id = %s", (uuid.uuid4(), vault["id"]))
-        self.rejects("INSERT INTO vault_targets(provider, bucket, region) VALUES ('gcs', 'b', 'r')")
+        self.rejects("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+                     "VALUES ('gcs', 'b', 'r', 'vault_prefix')")
 
     def test_vault_bucket_targets(self) -> None:
         """#735: a dedicated target is a frostvault-<slug>-<8> bucket, never the System Bucket."""
@@ -751,6 +752,7 @@ class BaselineSchemaTests(unittest.TestCase):
         self.execute(insert, ("frostvault-docs-ab12cd35", "bucket_root", 180))
         for bucket, layout, days in (
                 ("frostvault-system-ab12cd34", "bucket_root", None),
+                ("frostvault-system-photos-ab12cd34", "bucket_root", None),
                 ("frostvault-Photos-ab12cd34", "bucket_root", None),
                 ("other-photos-ab12cd34", "bucket_root", None),
                 ("frostvault-photos-ab12", "bucket_root", None),
@@ -760,9 +762,31 @@ class BaselineSchemaTests(unittest.TestCase):
                 ("shared", "unknown", None)):
             with self.subTest(bucket=bucket, layout=layout, days=days):
                 self.rejects(insert, (bucket, layout, days), error=psycopg.errors.CheckViolation)
-        self.assertEqual(self.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'legacy', 'r') "
-            "RETURNING key_layout")[0]["key_layout"], "vault_prefix")
+        self.execute(insert, ("frostvault-vault-system-ab12cd36", "bucket_root", None))
+        # The default only filled the targets that existed before 0010.
+        self.rejects("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'legacy', 'r')",
+                     error=psycopg.errors.NotNullViolation)
+        layout = self.execute(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name='vault_targets' AND column_name='key_layout'")[0]
+        self.assertIsNone(layout["column_default"])
+
+    def test_a_vault_bucket_target_belongs_to_one_vault(self) -> None:
+        """#735: two Vaults never share a bucket_root target; a shared bucket stays shared."""
+        dedicated = self.execute(
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', 'frostvault-docs-aaaaaaaa', 'eu-south-1', 'bucket_root') RETURNING id")[0]["id"]
+        first = self.vault("/sources/managed/a", target_id=dedicated, lifecycle="provisioning")
+        self.rejects("INSERT INTO vaults(name, source_root, target_id, lifecycle) "
+                     "VALUES ('Other', '/sources/managed/b', %s, 'provisioning')", (dedicated,),
+                     error=psycopg.errors.UniqueViolation)
+        other = self.vault("/sources/managed/c", target_id=self.target_id(), lifecycle="provisioning")
+        self.rejects("UPDATE vaults SET target_id=%s WHERE id=%s", (dedicated, other["id"]),
+                     error=psycopg.errors.UniqueViolation)
+        # The shared target of older Vaults takes any number of Vaults.
+        self.vault("/sources/managed/d")
+        self.vault("/sources/managed/e")
+        self.assertEqual(first["target_id"], dedicated)
 
     def test_only_a_provisioning_vault_changes_its_target(self) -> None:
         """#735: a name another account owns is replaced, only before activation."""
@@ -781,6 +805,9 @@ class BaselineSchemaTests(unittest.TestCase):
                      (third, vault["id"]))
         self.rejects("UPDATE vault_bucket_provisioning SET stage = 'verified'",
                      error=psycopg.errors.CheckViolation)
+        self.rejects("UPDATE vault_bucket_provisioning SET verified_at = now()",
+                     error=psycopg.errors.CheckViolation)
+        self.execute("UPDATE vault_bucket_provisioning SET stage = 'verified', verified_at = now()")
         self.rejects("UPDATE vault_bucket_provisioning SET last_error = 'AccessDenied'",
                      error=psycopg.errors.CheckViolation)
         self.execute("UPDATE vaults SET lifecycle = 'active' WHERE id = %s", (vault["id"],))

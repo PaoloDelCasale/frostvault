@@ -65,7 +65,17 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     localized = dict(params)
     key = localized.get("remediation_key")
     if isinstance(key, str) and has_message(key, "en"):
-        localized["remediation"] = translate(key, locale=locale)
+        # A keyed remediation may name the bucket it is about (#735); its
+        # stored English text names it too.
+        bucket = localized.get("bucket")
+        if not bucket:
+            from .cloud_preflight_gate import remediation_match
+
+            match = remediation_match(str(localized.get("remediation") or ""))
+            bucket = match[1].get("bucket") if match else None
+        localized["remediation"] = (
+            translate(key, locale=locale, bucket=str(bucket)) if bucket
+            else translate(key, locale=locale))
     # A blocked protection says its known cause (#711); a problem recorded
     # without one, or by an earlier release, keeps the generic advice.
     cause = localized.get("cause_key")

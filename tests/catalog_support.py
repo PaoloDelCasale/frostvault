@@ -19,8 +19,8 @@ def seed_vault(
     if target is None:
         target = connection.execute(
             """
-            INSERT INTO vault_targets(provider, bucket, region)
-            VALUES ('s3', 'bucket', 'eu-south-1') RETURNING id
+            INSERT INTO vault_targets(provider, bucket, region, key_layout)
+            VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix') RETURNING id
             """
         ).fetchone()
     connection.execute(

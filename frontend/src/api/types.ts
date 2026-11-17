@@ -104,6 +104,7 @@ export type ValidationError = components["schemas"]["ValidationError"];
 export type VaultBucketStatus = components["schemas"]["VaultBucketStatus"];
 export type VaultCreateRequest = components["schemas"]["VaultCreateRequest"];
 export type VaultCreateResponse = components["schemas"]["VaultCreateResponse"];
+export type VaultCreationCancelled = components["schemas"]["VaultCreationCancelled"];
 export type VaultCreationMode = components["schemas"]["VaultCreationMode"];
 export type VaultDeletionPreview = components["schemas"]["VaultDeletionPreview"];
 export type VaultDeletionRequest = components["schemas"]["VaultDeletionRequest"];

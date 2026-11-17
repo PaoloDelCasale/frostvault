@@ -5,20 +5,24 @@ import {
   browseSourceVolume,
   createVault,
   fetchGeneralSourceVolumes,
+  fetchVaultBucket,
   retryVaultBucket,
   selectVault,
 } from "@/api";
 import type {
   VaultBucketStatus,
+  VaultCreationCancelled,
   VaultCreationMode,
 } from "@/api";
 
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
+import { VaultCreationCancel } from "@/components/VaultCreationCancel";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
 import { errorMessage } from "@/lib/errorMessage";
+import { BUCKET_POLL_MS, cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 
 export type VaultCreatePageProps = {
   displayName: string;
@@ -49,6 +53,8 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const [volumesAttempt, setVolumesAttempt] = useState(0);
   // A Vault saved while its bucket is not ready yet (#735).
   const [pending, setPending] = useState<VaultBucketStatus | null>(null);
+  const [pendingName, setPendingName] = useState("");
+  const [cancelled, setCancelled] = useState<VaultCreationCancelled | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +81,28 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       cancelled = true;
     };
   }, [volumesAttempt]);
+
+  // FrostVault keeps working in the background: follow it until the Vault is active.
+  const pendingVault = pending?.vault_id ?? null;
+  useEffect(() => {
+    if (pendingVault === null) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void fetchVaultBucket(pendingVault).then(async (state) => {
+        if (stopped) return;
+        if (state.state === "ready") {
+          stopped = true;
+          await openVault(state.vault_id);
+        } else setPending(state);
+      }).catch(() => undefined);
+    }, BUCKET_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+    // openVault only navigates; the poll restarts only for another Vault.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVault]);
 
   const adoptAvailable = volumeOptions.length > 0;
 
@@ -133,7 +161,10 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       // Active only once its bucket is created and verified; otherwise the
       // Vault is saved and FrostVault keeps retrying in the background.
       if (vault.lifecycle === "active") await openVault(vault.id);
-      else setPending(vault.bucket);
+      else {
+        setPendingName(vault.name);
+        setPending(vault.bucket);
+      }
     } catch (err) {
       setError(failureText(err));
     } finally {
@@ -152,23 +183,52 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
           <p className="text-sm text-muted">{t("ui.vault_create.subtitle", { name: displayName })}</p>
         </div>
         <div className="rounded-panel border border-line bg-surface p-4">
-          {pending ? (
+          {cancelled ? (
             <div className="grid gap-3.5">
-              <div className="grid gap-2 rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert" data-testid="vault-create-bucket-failed">
-                <p className="m-0 font-bold">{t("ui.vault_create.bucket_failed_title")}</p>
-                <p className="m-0 break-words">{t("ui.vault_create.bucket_failed", { bucket: pending.bucket, error: pending.error ?? "" })}</p>
-                {pending.stage ? <p className="m-0 text-muted">{t(`vault_bucket.stage_${pending.stage}`)}</p> : null}
-                <p className="m-0">{t("ui.vault_create.bucket_failed_help")}</p>
+              <p className="m-0 rounded-[10px] border border-line bg-canvas px-3.5 py-3 text-sm break-words text-ink" role="status" data-testid="vault-create-cancelled">
+                {cancelledMessage(cancelled, t)}
+              </p>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <Button type="button" variant="primary" onClick={() => navigateTo("/", onNavigate)}>
+                  {t("ui.vault_create.open_overview")}
+                </Button>
               </div>
+            </div>
+          ) : pending ? (
+            <div className="grid gap-3.5">
+              {pending.state === "failed" ? (
+                <div className="grid gap-2 rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert" data-testid="vault-create-bucket-failed">
+                  <p className="m-0 font-bold">{t("ui.vault_create.bucket_failed_title")}</p>
+                  <p className="m-0 break-words">{t("ui.vault_create.bucket_failed", { bucket: pending.bucket, error: pending.error ?? "" })}</p>
+                  {pending.stage ? <p className="m-0 text-muted">{t(`vault_bucket.stage_${pending.stage}`)}</p> : null}
+                  <p className="m-0">{t("ui.vault_create.bucket_failed_help")}</p>
+                </div>
+              ) : pending.state === "settling" ? (
+                <div className="grid gap-2 rounded-[10px] border border-line bg-canvas px-3.5 py-3 text-sm text-ink" role="status" data-testid="vault-create-bucket-settling">
+                  <p className="m-0 font-bold">{t("ui.vault_create.bucket_settling_title")}</p>
+                  <p className="m-0 break-words">{t("ui.vault_create.bucket_settling", { bucket: pending.bucket, count: minutesLeft(pending) })}</p>
+                </div>
+              ) : (
+                // Creating, no error yet: progress, never an empty failure (#735).
+                <div className="grid gap-2 rounded-[10px] border border-line bg-canvas px-3.5 py-3 text-sm text-ink" role="status" data-testid="vault-create-bucket-creating">
+                  <p className="m-0 font-bold">{t("ui.vault_create.bucket_creating_title")}</p>
+                  <p className="m-0 break-words">{t("ui.vault_create.bucket_creating", { bucket: pending.bucket })}</p>
+                  {pending.stage ? <p className="m-0 text-muted">{t(`vault_bucket.stage_${pending.stage}`)}</p> : null}
+                </div>
+              )}
               {submitting ? <p className="m-0 text-sm text-muted" role="status">{t("ui.vault_create.creating_bucket")}</p> : null}
               {error ? <div className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert">{error}</div> : null}
               <div className="flex flex-wrap items-center gap-2.5">
-                <Button type="button" variant="primary" disabled={submitting} onClick={() => void handleRetry()}>
-                  {t("ui.vault_create.bucket_retry")}
-                </Button>
+                {pending.state !== "settling" ? (
+                  <Button type="button" variant="primary" disabled={submitting} onClick={() => void handleRetry()}>
+                    {t("ui.vault_create.bucket_retry")}
+                  </Button>
+                ) : null}
                 <Button type="button" variant="secondary" onClick={() => navigateTo("/", onNavigate)}>
                   {t("ui.vault_create.open_overview")}
                 </Button>
+                <VaultCreationCancel vaultId={pending.vault_id} vaultName={pendingName} bucket={pending.bucket}
+                  disabled={submitting} onCancelled={(outcome) => { setPending(null); setCancelled(outcome); }} />
               </div>
             </div>
           ) : (

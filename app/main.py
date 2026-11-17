@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import settings, settings_snapshot, validate_settings
+from .config import settings, settings_snapshot, validate_settings, warn_removed_settings
 from .diagnostics import require_metrics_token
 from .audit import audit_log
 from .i18n import (
@@ -209,6 +209,7 @@ def _spa_index_response() -> FileResponse:
 async def lifespan(_: FastAPI):
     shutdown_state.reset()
     validate_settings()
+    warn_removed_settings()
     if os.geteuid() == 0:
         # #679: PUID=0 is an explicit choice; the entrypoint already checked
         # that root holds no capability that bypasses file permissions, or
@@ -1502,6 +1503,27 @@ def retry_vault_bucket(vault_id: int, background_tasks: BackgroundTasks,
         # folder's files); scan_vault reloads the authoritative row.
         background_tasks.add_task(scan_vault, {"id": vault_id})
     return state
+
+
+@app.post("/api/vaults/{vault_id}/creation/cancel",
+          response_model=response_model("VaultCreationCancelled"))
+def cancel_vault_creation(vault_id: int, request: Request,
+                          user: dict[str, Any] = Depends(current_user),
+                          _reauth: dict[str, Any] = Depends(require_recent_reauth)):
+    """Cancel the creation of a Vault whose bucket is not ready yet (#735).
+
+    Only while the Vault is ``provisioning``: it leaves the catalog and its
+    root is released. A bucket FrostVault already created is NOT deleted (it
+    has no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the
+    Owner can remove it by hand, and the audit record keeps them.
+    """
+    del user  # authentication gate; reauthentication is checked above
+    try:
+        return vault_buckets_service.cancel_creation(vault_id, actor=_actor(request))
+    except LookupError as exc:
+        raise LocalizedHTTPError(404, "api.vault_creation_cancel.not_found") from exc
+    except vault_buckets_service.CancelRefused as exc:
+        raise LocalizedHTTPError(409, f"api.vault_creation_cancel.{exc.code}") from exc
 
 
 @app.get("/api/vaults/{vault_id}/stop-protection", response_model=response_model("StopProtectionStatus"))

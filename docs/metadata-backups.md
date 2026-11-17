@@ -306,7 +306,10 @@ Vault.
   `frostvault-<vault name>-<8 random>` and holds one Vault at its **root**: the
   key of a file is its relative path, so `PREFIX=""`. Its tags name the Vault
   (`aws s3api get-bucket-tagging --bucket "$BUCKET"`: `frostvault:vault` is its
-  UUID, `frostvault:name` its name); `frostvault-system-*` is the System Bucket.
+  UUID, `frostvault:name` its name). The tag `frostvault:role=system` marks the
+  System Bucket FrostVault created, `frostvault-system-<8 random>`: it is never a
+  Vault, and no Vault Bucket name starts with `frostvault-system-` (a Vault named
+  `System…` gets the slug `vault-system…`).
 - An **older Vault** keeps the shared bucket of its installation, with its files
   at `vaults/<uuid>/<relative-path>`: list `vaults/` and set `PREFIX` to
   `vaults/<uuid>/`.

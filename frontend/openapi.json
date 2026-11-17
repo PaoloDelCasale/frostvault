@@ -4602,8 +4602,22 @@
       },
       "VaultBucketStatus": {
         "additionalProperties": false,
-        "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation.",
+        "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification).",
         "properties": {
+          "active_at": {
+            "description": "When a verified bucket's Vault becomes active (settling only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "active_in_seconds": {
+            "description": "Seconds until active_at, never negative (settling only).",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "attempts": {
             "type": "number"
           },
@@ -4639,6 +4653,7 @@
               "reserved",
               "created",
               "configured",
+              "verified",
               null
             ],
             "type": [
@@ -4650,6 +4665,7 @@
             "enum": [
               "creating",
               "failed",
+              "settling",
               "ready"
             ],
             "type": "string"
@@ -4668,7 +4684,9 @@
           "attempts",
           "last_attempt_at",
           "error",
-          "retention_lock_days"
+          "retention_lock_days",
+          "active_at",
+          "active_in_seconds"
         ],
         "type": "object"
       },
@@ -4725,6 +4743,39 @@
           "name",
           "lifecycle",
           "bucket"
+        ],
+        "type": "object"
+      },
+      "VaultCreationCancelled": {
+        "additionalProperties": false,
+        "description": "A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible).",
+        "properties": {
+          "bucket": {
+            "type": "string"
+          },
+          "bucket_left": {
+            "enum": [
+              "created",
+              "possible"
+            ],
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "number"
+          },
+          "vault_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vault_id",
+          "vault_name",
+          "bucket",
+          "region",
+          "bucket_left"
         ],
         "type": "object"
       },
@@ -8474,6 +8525,46 @@
           }
         },
         "summary": "Retry Vault Bucket"
+      }
+    },
+    "/api/vaults/{vault_id}/creation/cancel": {
+      "post": {
+        "description": "Cancel the creation of a Vault whose bucket is not ready yet (#735).\n\nOnly while the Vault is ``provisioning``: it leaves the catalog and its\nroot is released. A bucket FrostVault already created is NOT deleted (it\nhas no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the\nOwner can remove it by hand, and the audit record keeps them.",
+        "operationId": "cancel_vault_creation_api_vaults__vault_id__creation_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultCreationCancelled"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Vault Creation"
       }
     },
     "/api/vaults/{vault_id}/duplicate-cleanup": {

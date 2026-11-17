@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -332,6 +333,48 @@ class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
         self.assertEqual([item["id"] for item in self.client.get("/api/vaults").json()["items"]],
                          [body["id"]])
         self.assertEqual(list(self.s3.buckets), [body["bucket"]["bucket"]])
+
+    def _reauthenticate(self) -> None:
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE sessions SET reauth_at=%s", (datetime.now(timezone.utc),))
+
+    def test_the_owner_cancels_a_creation_after_reauthentication(self) -> None:
+        """#735 S7: the Vault leaves the catalog; a created bucket is only named."""
+        self._login()
+        self.s3.fail["put_bucket_versioning"] = "AccessDenied"
+        body = self._create("Travel").json()
+        url = f"/api/vaults/{body['id']}/creation/cancel"
+        refused = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual((refused.status_code, refused.json()), (403, {"error": "reauth_required"}))
+        self._reauthenticate()
+        cancelled = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json(), {
+            "vault_id": body["id"], "vault_name": "Travel", "bucket": body["bucket"]["bucket"],
+            "region": "eu-south-1", "bucket_left": "created"})
+        # Not deleted: FrostVault has no s3:DeleteBucket.
+        self.assertEqual(list(self.s3.buckets), [body["bucket"]["bucket"]])
+        self.assertEqual(self.client.get("/api/general/vaults").json()["items"], [])
+        self.assertFalse((self.managed_root / body["uuid"]).exists())
+        with PostgresConnection(str(self.database_path)) as connection:
+            audit = connection.execute(
+                "SELECT actor, vault_id, detail FROM audit_events "
+                "WHERE event='vault.creation_cancelled'").fetchall()
+        self.assertEqual([(row["actor"], row["vault_id"]) for row in audit], [("owner", body["id"])])
+        self.assertEqual((audit[0]["detail"]["bucket"], audit[0]["detail"]["bucket_left"]),
+                         (body["bucket"]["bucket"], "created"))
+        again = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(again.status_code, 404, again.text)
+
+    def test_an_active_vault_cannot_be_cancelled(self) -> None:
+        self._login()
+        self._reauthenticate()
+        body = self._create("Photos").json()
+        self.assertEqual(body["lifecycle"], "active")
+        refused = self.client.post(f"/api/vaults/{body['id']}/creation/cancel",
+                                   headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(refused.json()["message_key"], "api.vault_creation_cancel.not_provisioning")
 
     def test_bucket_endpoints_need_a_session_and_csrf(self) -> None:
         self.assertEqual(self.client.get("/api/vaults/1/bucket").status_code, 401)

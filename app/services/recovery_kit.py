@@ -149,8 +149,11 @@ account's buckets:
    aws s3 ls
 A Vault created by a release with Vault Buckets has its own bucket, named
 frostvault-<vault name>-<8 random characters>, with the files at the bucket
-ROOT (no prefix). Its tags name the Vault (frostvault:vault is its UUID,
-frostvault:name its name); frostvault-system-* is the System Bucket, not a Vault:
+ROOT (no prefix). The tags identify each bucket: frostvault:vault (the Vault
+UUID) and frostvault:name (its name) mark a Vault Bucket; the tag
+frostvault:role=system marks the System Bucket FrostVault created, named
+frostvault-system-<8 random characters>. It is never a Vault: no Vault Bucket
+name starts with frostvault-system-.
    aws s3api get-bucket-tagging --bucket "$BUCKET"
    aws s3api get-bucket-location --bucket "$BUCKET"
 For such a bucket set BUCKET to its name, REGION to its region and PREFIX to
