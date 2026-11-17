@@ -4702,7 +4702,7 @@
           },
           "estimate": {
             "additionalProperties": false,
-            "description": "The catalog's available versions by class with a Cost Estimate from AWS list prices.",
+            "description": "The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices.",
             "properties": {
               "by_storage_class": {
                 "items": {
@@ -4900,6 +4900,7 @@
                 ]
               },
               "next_read_after": {
+                "description": "When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome.",
                 "type": [
                   "string",
                   "null"

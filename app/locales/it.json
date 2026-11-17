@@ -1129,7 +1129,7 @@
   "cloud_usage.measured_objects_help": "AWS conta tutte le versioni, anche quelle precedenti, e le parti dei caricamenti multipart non completati: il numero può essere diverso dalle versioni del catalogo.",
   "cloud_usage.overhead_title": "Cos'è il sovraccarico",
   "cloud_usage.overhead_help": "Byte che AWS fattura oltre ai file, mostrati a parte rispetto alla dimensione dei file.",
-  "cloud_usage.overhead_object": "Glacier Flexible Retrieval e Deep Archive: per ogni oggetto AWS aggiunge 32 KB di indice, fatturati nella classe dell'oggetto, e 8 KB di metadati, fatturati in Standard.",
+  "cloud_usage.overhead_object": "Glacier Flexible Retrieval, Deep Archive e i livelli di archivio di Intelligent-Tiering: per ogni oggetto AWS aggiunge 32 KB di indice, fatturati alle tariffe di Glacier Flexible Retrieval o Deep Archive, e 8 KB di metadati, fatturati in Standard.",
   "cloud_usage.overhead_size": "Standard-IA, One Zone-IA e Glacier Instant Retrieval: un oggetto più piccolo di 128 KB è fatturato come 128 KB; la differenza è sovraccarico.",
   "cloud_usage.overhead_staging": "Parti di un caricamento multipart non ancora completato, fatturate in Standard.",
   "cloud_usage.kind.object_overhead": "metadati per oggetto",
@@ -1145,7 +1145,7 @@
   "cloud_usage.pending": "La prima lettura da AWS non è ancora avvenuta: FrostVault legge le metriche una volta al giorno.",
   "cloud_usage.no_data": "AWS non ha ancora pubblicato metriche per questo bucket: per un bucket nuovo arrivano dopo uno o due giorni.",
   "cloud_usage.access_denied": "FrostVault non può leggere le metriche di CloudWatch: all'identità AWS manca il permesso cloudwatch:GetMetricStatistics. Applica la frostvault-buckets-policy.json aggiornata; la stima dal catalogo resta disponibile.",
-  "cloud_usage.failed": "L'ultima lettura da CloudWatch non è riuscita ({code}). FrostVault riprova alla prossima lettura giornaliera.",
+  "cloud_usage.failed": "L'ultima lettura da CloudWatch non è riuscita ({code}). FrostVault riprova entro 6 ore.",
   "cloud_usage.stale": "I dati mostrati sono dell'ultima lettura riuscita.",
   "api.cloud_usage.not_found": "Vault non trovato."
 }

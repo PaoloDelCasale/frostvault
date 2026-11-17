@@ -2845,7 +2845,7 @@ export interface components {
         VaultCloudUsage: {
             bucket: string;
             dedicated_bucket: boolean;
-            /** @description The catalog's available versions by class with a Cost Estimate from AWS list prices. */
+            /** @description The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices. */
             estimate: {
                 by_storage_class: {
                     bytes: number;
@@ -2894,6 +2894,7 @@ export interface components {
                     /** @enum {string} */
                     outcome: "ok" | "no_data" | "access_denied" | "failed";
                 } | null;
+                /** @description When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome. */
                 next_read_after?: string | null;
                 object_count?: number | null;
                 overhead_bytes?: number;

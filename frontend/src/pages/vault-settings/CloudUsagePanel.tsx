@@ -150,7 +150,7 @@ export function CloudUsagePanel({ vaultId }: { vaultId: number }) {
   const usage = useQuery({ queryKey: ["cloud-usage", vaultId], queryFn: () => fetchVaultCloudUsage(vaultId), retry: false });
   if (usage.error) return <p role="alert" className="text-sm text-destructive">{errorMessage(usage.error, t)}</p>;
   if (!usage.data?.estimate || !usage.data.measured) return <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>;
-  return <div className="grid min-w-0 gap-3 lg:grid-cols-2" data-testid="cloud-usage">
+  return <div className="grid min-w-0 gap-3 lg:grid-cols-2 xl:grid-cols-3" data-testid="cloud-usage">
     <EstimateBlock estimate={usage.data.estimate} />
     <MeasuredBlock measured={usage.data.measured} />
   </div>;

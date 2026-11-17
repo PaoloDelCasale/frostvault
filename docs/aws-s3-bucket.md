@@ -379,17 +379,28 @@ Once a day per Vault, off the request path, the background loop reads the S3
 storage metrics of every Vault Bucket from CloudWatch, in the bucket's region
 (#737, [ADR-0051](adr/0051-billed-cost-from-the-billing-export.md)):
 
-- `BucketSizeBytes` for each `StorageType` (one `GetMetricStatistics` call per
-  type: `StandardStorage`, `StandardIAStorage`, `GlacierInstantRetrievalStorage`,
-  `GlacierStorage`, `DeepArchiveStorage`, the Intelligent-Tiering tiers and
-  their overhead types);
+- `BucketSizeBytes` for each of the 26 `StorageType` values of a general
+  purpose bucket (one `GetMetricStatistics` call per type: `StandardStorage`,
+  `StandardIAStorage`, `GlacierInstantRetrievalStorage`, `GlacierStorage`,
+  `DeepArchiveStorage`, the Intelligent-Tiering tiers and the overhead types
+  below);
 - `NumberOfObjects` (`AllStorageTypes`).
 
 Only `cloudwatch:GetMetricStatistics` is used, which stays in CloudWatch's free
-API tier (about 26 requests per Vault a day); `GetMetricData` is always billed
-and never called. Each read asks for the daily data points of the last 30 days;
-FrostVault keeps those 30 days in the catalog, and the time of the last read,
-so a restart never reads again early.
+API tier (27 requests per read: about 27 per Vault a day, at most about 108 when
+every read of the day fails); `GetMetricData` is always billed and never called.
+Each read asks for the daily data points of the last 30 UTC days, today
+included, and FrostVault keeps exactly those 30 days in the catalog: every
+recorded read, a failed one too, prunes the older ones. The time and outcome of
+the last read are kept as well, so a restart never reads again early: a Vault is
+read again 24 hours after a successful read and 6 hours after any other outcome
+(no data yet, no permission, an error).
+
+The CloudWatch client gives up fast (3 s to connect, 10 s to read, two attempts
+in all). A pass over the Vaults stops at the first connection error (the network
+or the CloudWatch endpoint is unreachable), on shutdown, or once it has run 2
+minutes (a Vault whose read started is finished first); the Vaults it did not
+reach are read at the next poll, 5 minutes later.
 
 The Vault page shows them next to the catalog's Cost Estimate: bytes per
 storage class, the object count and the day of the data point. S3 publishes
@@ -400,7 +411,10 @@ AWS bills on top of the objects is shown apart from their size:
 | StorageType | What it is | Billed as |
 | --- | --- | --- |
 | `GlacierObjectOverhead`, `DeepArchiveObjectOverhead` | 32 KB of index per archived object | the object's class |
-| `GlacierS3ObjectOverhead`, `DeepArchiveS3ObjectOverhead` | 8 KB of metadata per archived object | Standard |
+| `IntAAObjectOverhead` | 32 KB of index per object in the Intelligent-Tiering Archive Access tier | Glacier Flexible Retrieval |
+| `IntDAAObjectOverhead` | 32 KB of index per object in the Intelligent-Tiering Deep Archive Access tier | Deep Archive |
+| `GlacierS3ObjectOverhead`, `DeepArchiveS3ObjectOverhead`, `IntAAS3ObjectOverhead`, `IntDAAS3ObjectOverhead` | 8 KB of metadata per archived object | Standard |
+| `StandardIAObjectOverhead` | listed by AWS among the Standard-IA types but not described; shown as per-object metadata | Standard-IA (assumed) |
 | `StandardIASizeOverhead`, `OneZoneIASizeOverhead`, `GlacierIRSizeOverhead` | the difference to the 128 KB billed for a smaller object | the object's class |
 | `GlacierStagingStorage`, `DeepArchiveStagingStorage` | parts of a multipart upload not completed yet | Standard |
 
@@ -411,7 +425,8 @@ A Vault on a shared bucket (an older Vault, under `vaults/<uuid>/`) shows only
 the catalog estimate: the bucket's metrics cover the other Vaults too. Without
 `cloudwatch:GetMetricStatistics` the Vault page shows a note and the estimate;
 it is not a Problem. Any other CloudWatch error is shown by its code and
-retried at the next daily read.
+retried 6 hours later; an unexpected error is recorded the same way, with its
+error type, and reported as the CloudWatch worker's Problem.
 
 ## Teardown and recovery
 

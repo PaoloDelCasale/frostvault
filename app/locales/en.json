@@ -1129,7 +1129,7 @@
   "cloud_usage.measured_objects_help": "AWS counts every version, previous ones included, and the parts of unfinished multipart uploads, so the count can differ from the catalog's versions.",
   "cloud_usage.overhead_title": "What the overhead is",
   "cloud_usage.overhead_help": "Bytes AWS bills on top of the files, shown apart from the files' own size.",
-  "cloud_usage.overhead_object": "Glacier Flexible Retrieval and Deep Archive: for every object AWS adds 32 KB of index, billed in the object's class, and 8 KB of metadata, billed in Standard.",
+  "cloud_usage.overhead_object": "Glacier Flexible Retrieval, Deep Archive and the archive tiers of Intelligent-Tiering: for every object AWS adds 32 KB of index, billed at Glacier Flexible Retrieval or Deep Archive rates, and 8 KB of metadata, billed in Standard.",
   "cloud_usage.overhead_size": "Standard-IA, One Zone-IA and Glacier Instant Retrieval: an object smaller than 128 KB is billed as 128 KB; the difference is overhead.",
   "cloud_usage.overhead_staging": "Parts of a multipart upload not completed yet, billed in Standard.",
   "cloud_usage.kind.object_overhead": "per-object metadata",
@@ -1145,7 +1145,7 @@
   "cloud_usage.pending": "The first read from AWS has not run yet: FrostVault reads the metrics once a day.",
   "cloud_usage.no_data": "AWS has not published metrics for this bucket yet: for a new bucket they arrive after a day or two.",
   "cloud_usage.access_denied": "FrostVault cannot read the CloudWatch metrics: the AWS identity lacks the cloudwatch:GetMetricStatistics permission. Attach the updated frostvault-buckets-policy.json; the catalog estimate stays available.",
-  "cloud_usage.failed": "The last read from CloudWatch failed ({code}). FrostVault tries again at the next daily read.",
+  "cloud_usage.failed": "The last read from CloudWatch failed ({code}). FrostVault tries again within 6 hours.",
   "cloud_usage.stale": "The data shown come from the last successful read.",
   "api.cloud_usage.not_found": "Vault not found."
 }

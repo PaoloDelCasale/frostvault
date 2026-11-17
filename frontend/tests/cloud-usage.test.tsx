@@ -77,6 +77,8 @@ describe("Cloud usage on the Vault page", () => {
     expect(within(usageSection).getByTestId("cloud-usage-overhead-help")).toHaveTextContent(/32 KB di indice/);
     expect(within(usageSection).getByTestId("cloud-usage-history")).toBeInTheDocument();
     expect(within(usageSection).queryByTestId("cloud-usage-measured-note")).toBeNull();
+    // Room for a third block (the Billed Cost, #738) on wide screens.
+    expect(within(usageSection).getByTestId("cloud-usage")).toHaveClass("lg:grid-cols-2", "xl:grid-cols-3");
   });
 
   it("a Vault on a shared bucket shows only the catalog estimate, with a note", async () => {
@@ -89,7 +91,7 @@ describe("Cloud usage on the Vault page", () => {
   });
 
   it("without cloudwatch:GetMetricStatistics shows a note, not an error", async () => {
-    show(usage({ measured: { status: "access_denied", history: [], next_read_after: "2026-11-17T03:00:00+00:00",
+    show(usage({ measured: { status: "access_denied", history: [], next_read_after: "2026-11-16T09:00:00+00:00",
       last_read: { attempted_at: "2026-11-16T03:00:00+00:00", outcome: "access_denied", error_code: "AccessDenied" } } }), "en");
     const usageSection = await section("Cloud storage and cost");
     const note = await within(usageSection).findByTestId("cloud-usage-measured-note");
@@ -101,7 +103,7 @@ describe("Cloud usage on the Vault page", () => {
   it("keeps the last data after a failed read and says so", async () => {
     show(usage({ measured: { ...measured, last_read: { attempted_at: "2026-11-17T03:00:00+00:00", outcome: "failed", error_code: "Throttling" } } }), "en");
     const note = await screen.findByTestId("cloud-usage-measured-note");
-    expect(note).toHaveTextContent("The last read from CloudWatch failed (Throttling).");
+    expect(note).toHaveTextContent("The last read from CloudWatch failed (Throttling). FrostVault tries again within 6 hours.");
     expect(note).toHaveTextContent("The data shown come from the last successful read.");
     expect(screen.getByTestId("cloud-usage-measured-day")).toBeInTheDocument();
   });

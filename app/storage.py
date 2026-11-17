@@ -7928,8 +7928,10 @@ def read_bucket_metrics_once() -> int:
     """Read the CloudWatch sizes of every due Vault Bucket (#737); returns how many.
 
     AWS errors (no cloudwatch:GetMetricStatistics among them) are recorded on
-    their Vault and shown on its page, never a Problem; only an unexpected
-    error (the catalog unavailable) is reported as this worker's.
+    their Vault and shown on its page, never a Problem; an unexpected error is
+    recorded on its Vault too (so it waits its retry cadence) and reported as
+    this worker's. A pass stops on shutdown, after its time budget or at the
+    first connection error.
     """
     try:
         read = bucket_metrics_service.run_due(db, should_stop=lambda: shutdown_state.requested)

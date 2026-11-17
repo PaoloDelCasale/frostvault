@@ -4476,7 +4476,7 @@
             "pricing_effective_at",
             "by_storage_class"
           ],
-          "description": "The catalog's available versions by class with a Cost Estimate from AWS list prices."
+          "description": "The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices."
         },
         "measured": {
           "type": "object",
@@ -4535,7 +4535,8 @@
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "description": "When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome."
             },
             "history": {
               "type": "array",

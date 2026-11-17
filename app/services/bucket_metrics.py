@@ -10,8 +10,10 @@ the bucket's own region:
 
 Only ``GetMetricStatistics`` is used: it is in CloudWatch's free API tier,
 while ``GetMetricData`` is always billed (ADR-0051). Each call asks for the
-daily data points of the last ``HISTORY_DAYS`` days, so a missed day fills in
-at the next read; the rows of older days are pruned.
+daily data points of the last ``HISTORY_DAYS`` UTC days (today included), so a
+missed day fills in at the next read; every recorded read, a failed one too,
+prunes the rows of older days, so the catalog keeps the same days a read asks
+for.
 
 S3 publishes these metrics once a day, for the day before, so the newest data
 point is one or two days old. A new bucket has none for its first day or two
@@ -21,23 +23,35 @@ A Vault on a shared bucket (``vault_prefix``, an older Vault) is never read:
 its bucket's metrics cover other Vaults too. Without
 ``cloudwatch:GetMetricStatistics`` the read is recorded as ``access_denied``
 and the Vault page shows a note; it is never a Problem. Any other AWS error is
-recorded by its code (never its message) and retried at the next daily read.
-An unexpected error (the catalog unavailable) escapes ``run_due`` after every
-Vault was tried, so the worker reports it.
+recorded by its code (never its message). An unexpected error is recorded as
+``failed`` with its exception type and escapes ``run_due`` after every Vault
+was tried, so the worker reports it.
 
-``vault_bucket_metric_reads.attempted_at`` is persisted with every read, so a
-restart never reads a Vault again within ``RUN_INTERVAL`` of its last read.
+``vault_bucket_metric_reads`` keeps every Vault's last attempt, so a restart
+never reads a Vault before its retry cadence: ``OK_INTERVAL`` after an ``ok``
+read, ``RETRY_INTERVAL`` after any other outcome.
+
+A pass stops early, leaving the remaining Vaults due and unrecorded, on the
+first connection-level error (the network or the CloudWatch endpoint is down,
+so the other Vaults would only wait on their timeouts), on shutdown (even in
+the middle of a Vault, which is then not saved), and once it has run
+``PASS_BUDGET_SECONDS``. The budget is checked between Vaults only, so a Vault
+whose read started always ends with a recorded attempt and every pass makes
+progress.
 """
 from __future__ import annotations
 
 import logging
+import time as _time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import (
+    BotoCoreError, ClientError, ConnectTimeoutError, EndpointConnectionError, ReadTimeoutError,
+)
 from psycopg.types.json import Jsonb
 
 from .cost_estimates import estimate_storage_month, list_prices
@@ -50,9 +64,16 @@ COUNT_METRIC = "NumberOfObjects"
 COUNT_STORAGE_TYPE = "AllStorageTypes"
 PERIOD_SECONDS = 86_400
 POLL_SECONDS = 300.0
-RUN_INTERVAL = timedelta(days=1)
-# Daily data points kept per Vault, and asked for at every read.
+# The retry cadence: a Vault is read again a day after an ``ok`` read, six
+# hours after any other outcome (no data yet, no permission, an error).
+OK_INTERVAL = timedelta(hours=24)
+RETRY_INTERVAL = timedelta(hours=6)
+# Wall-clock budget of one pass; the Vaults left wait for the next poll.
+PASS_BUDGET_SECONDS = 120.0
+# UTC days kept per Vault, today included, and asked for at every read.
 HISTORY_DAYS = 30
+# Errors that mean the endpoint is unreachable, not that one Vault failed.
+CONNECTION_ERRORS = (EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError)
 OUTCOMES = ("ok", "no_data", "access_denied", "failed")
 _ACCESS_DENIED = frozenset({
     "AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
@@ -93,11 +114,16 @@ STORAGE_TYPES: dict[str, StorageType] = {
     "IntelligentTieringAIAStorage": _data("INTELLIGENT_TIERING"),
     "IntelligentTieringAAStorage": _data("INTELLIGENT_TIERING"),
     "IntelligentTieringDAAStorage": _data("INTELLIGENT_TIERING"),
-    "IntAAObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "INTELLIGENT_TIERING"),
+    # The 32 KB index of an object in the Archive Access tier is billed at
+    # Glacier Flexible Retrieval rates, Deep Archive Access at Deep Archive.
+    "IntAAObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "GLACIER"),
     "IntAAS3ObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "STANDARD"),
-    "IntDAAObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "INTELLIGENT_TIERING"),
+    "IntDAAObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "DEEP_ARCHIVE"),
     "IntDAAS3ObjectOverhead": StorageType("INTELLIGENT_TIERING", "object_overhead", "STANDARD"),
     "StandardIAStorage": _data("STANDARD_IA"),
+    # Listed by AWS among the Standard-IA StorageTypes but not described:
+    # assumed to be per-object metadata billed at Standard-IA rates.
+    "StandardIAObjectOverhead": StorageType("STANDARD_IA", "object_overhead", "STANDARD_IA"),
     "StandardIASizeOverhead": StorageType("STANDARD_IA", "size_overhead", "STANDARD_IA"),
     "OneZoneIAStorage": _data("ONEZONE_IA"),
     "OneZoneIASizeOverhead": StorageType("ONEZONE_IA", "size_overhead", "ONEZONE_IA"),
@@ -120,6 +146,10 @@ CLASS_ORDER = ("STANDARD", "INTELLIGENT_TIERING", "STANDARD_IA", "ONEZONE_IA",
 
 class CloudWatchUnavailable(RuntimeError):
     """No usable AWS credentials here (placeholders): nothing is read."""
+
+
+class PassStopped(RuntimeError):
+    """Shutdown stopped a read before its end: nothing saved."""
 
 
 @dataclass
@@ -146,8 +176,8 @@ def _default_client(region: str) -> Any:
         raise CloudWatchUnavailable("AWS credentials are not configured")
     return new_service_client(
         "cloudwatch", region=region,
-        config=Config(connect_timeout=10, read_timeout=30,
-                      retries={"mode": "standard", "max_attempts": 3}))
+        config=Config(connect_timeout=3, read_timeout=10,
+                      retries={"mode": "standard", "total_max_attempts": 2}))
 
 
 def _datapoints(client: Any, *, bucket: str, metric: str, storage_type: str,
@@ -167,22 +197,39 @@ def _datapoints(client: Any, *, bucket: str, metric: str, storage_type: str,
     return points
 
 
-def read_bucket(client: Any, bucket: str, *, now: datetime) -> dict[date, MetricDay]:
+def first_kept_day(now: datetime) -> date:
+    """The oldest UTC day read and kept: ``HISTORY_DAYS`` days, today included."""
+    return _utc(now).astimezone(timezone.utc).date() - timedelta(days=HISTORY_DAYS - 1)
+
+
+def next_read_after(attempted_at: datetime, outcome: str) -> datetime:
+    """When a Vault is due again after an attempt with ``outcome``."""
+    return _utc(attempted_at) + (OK_INTERVAL if outcome == "ok" else RETRY_INTERVAL)
+
+
+def read_bucket(client: Any, bucket: str, *, now: datetime,
+                stop: Callable[[], bool] | None = None) -> dict[date, MetricDay]:
     """The daily data points of ``bucket`` over the last ``HISTORY_DAYS`` days.
 
     One ``GetMetricStatistics`` per StorageType and one for the object count;
-    a failing call raises, so a read is saved whole or not at all.
+    a failing call raises, so a read is saved whole or not at all. ``stop`` is
+    checked before every call and raises ``PassStopped``.
     """
     end = _utc(now)
-    start = datetime.combine(end.date() - timedelta(days=HISTORY_DAYS), time(), tzinfo=timezone.utc)
+    start = datetime.combine(first_kept_day(end), time(), tzinfo=timezone.utc)
     days: dict[date, MetricDay] = {}
-    for storage_type in STORAGE_TYPES:
-        for day, value in _datapoints(client, bucket=bucket, metric=SIZE_METRIC,
+    requests = [(SIZE_METRIC, storage_type) for storage_type in STORAGE_TYPES]
+    requests.append((COUNT_METRIC, COUNT_STORAGE_TYPE))
+    for metric, storage_type in requests:
+        if stop is not None and stop():
+            raise PassStopped("the pass stopped before this read ended")
+        for day, value in _datapoints(client, bucket=bucket, metric=metric,
                                       storage_type=storage_type, start=start, end=end):
-            days.setdefault(day, MetricDay({})).storage_bytes[storage_type] = value
-    for day, value in _datapoints(client, bucket=bucket, metric=COUNT_METRIC,
-                                  storage_type=COUNT_STORAGE_TYPE, start=start, end=end):
-        days.setdefault(day, MetricDay({})).object_count = value
+            entry = days.setdefault(day, MetricDay({}))
+            if metric == COUNT_METRIC:
+                entry.object_count = value
+            else:
+                entry.storage_bytes[storage_type] = value
     return days
 
 
@@ -195,19 +242,29 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
 
 
 def due_vaults(connection: Any, *, now: datetime) -> list[dict[str, Any]]:
-    """Every Vault with its own Vault Bucket not read in the last day."""
+    """Every Vault with its own Vault Bucket whose retry cadence has passed.
+
+    Never read first, then the oldest attempt first.
+    """
+    moment = _utc(now)
     return [dict(row) for row in connection.execute(
         """SELECT v.id, t.bucket, t.region
            FROM vaults v JOIN vault_targets t ON t.id = v.target_id
            LEFT JOIN vault_bucket_metric_reads r ON r.vault_id = v.id
            WHERE t.key_layout = %s AND v.lifecycle <> 'provisioning'
-             AND (r.attempted_at IS NULL OR r.attempted_at <= %s)
-           ORDER BY v.id""",
-        (KEY_LAYOUT_BUCKET_ROOT, _utc(now) - RUN_INTERVAL)).fetchall()]
+             AND (r.attempted_at IS NULL
+                  OR (r.outcome = 'ok' AND r.attempted_at <= %s)
+                  OR (r.outcome <> 'ok' AND r.attempted_at <= %s))
+           ORDER BY r.attempted_at ASC NULLS FIRST, v.id""",
+        (KEY_LAYOUT_BUCKET_ROOT, moment - OK_INTERVAL, moment - RETRY_INTERVAL)).fetchall()]
 
 
 def _record_attempt(connection: Any, vault_id: int, *, now: datetime, outcome: str,
                     code: str | None) -> None:
+    """The Vault's last attempt, and the pruning of days older than a read asks for."""
+    connection.execute(
+        "DELETE FROM vault_bucket_metric_days WHERE vault_id = %s AND day < %s",
+        (vault_id, first_kept_day(now)))
     connection.execute(
         """INSERT INTO vault_bucket_metric_reads(vault_id, attempted_at, outcome, error_code)
            VALUES (%s, %s, %s, %s)
@@ -219,17 +276,16 @@ def _record_attempt(connection: Any, vault_id: int, *, now: datetime, outcome: s
 def record_read(connection: Any, vault_id: int, days: dict[date, MetricDay], *,
                 now: datetime) -> str:
     """Save one read's data points and prune older days; returns the outcome."""
-    for day, values in sorted(days.items()):
+    oldest = first_kept_day(now)
+    kept = {day: values for day, values in days.items() if day >= oldest}
+    for day, values in sorted(kept.items()):
         connection.execute(
             """INSERT INTO vault_bucket_metric_days(vault_id, day, storage_bytes, object_count, read_at)
                VALUES (%s, %s, %s, %s, %s)
                ON CONFLICT (vault_id, day) DO UPDATE SET storage_bytes = EXCLUDED.storage_bytes,
                    object_count = EXCLUDED.object_count, read_at = EXCLUDED.read_at""",
             (vault_id, day, Jsonb(values.storage_bytes), values.object_count, now))
-    connection.execute(
-        "DELETE FROM vault_bucket_metric_days WHERE vault_id = %s AND day < %s",
-        (vault_id, _utc(now).date() - timedelta(days=HISTORY_DAYS)))
-    outcome = "ok" if days else "no_data"
+    outcome = "ok" if kept else "no_data"
     _record_attempt(connection, vault_id, now=now, outcome=outcome, code=None)
     return outcome
 
@@ -240,15 +296,43 @@ def record_failure(connection: Any, vault_id: int, exc: BaseException, *, now: d
     return outcome
 
 
+def _record_unexpected(database: Database, vault_id: int, exc: BaseException, *,
+                       now: datetime) -> None:
+    """Record an unexpected error as ``failed`` with its type, in its own transaction.
+
+    So the Vault waits for its retry cadence like any failed read. When even
+    that fails (the catalog is unavailable) nothing more is done: the original
+    error is the one reported.
+    """
+    try:
+        with database() as connection:
+            _record_attempt(connection, vault_id, now=now, outcome="failed",
+                            code=type(exc).__name__[:100])
+    except Exception:  # noqa: BLE001 - the original error is reported instead
+        _logger.warning("CloudWatch read of Vault %s could not be recorded", vault_id)
+
+
 def run_due(database: Database, *, client_for: Callable[[str], Any] | None = None,
-            now: datetime | None = None, should_stop: Callable[[], bool] | None = None) -> int:
+            now: datetime | None = None, should_stop: Callable[[], bool] | None = None,
+            budget_seconds: float = PASS_BUDGET_SECONDS,
+            clock: Callable[[], float] = _time.monotonic) -> int:
     """Read every due Vault Bucket, each saved in its own transaction.
 
     Returns how many Vaults were read (whatever the outcome). AWS errors are
-    recorded on their Vault; an unexpected error is raised once every Vault
-    was tried. Without usable credentials nothing is read or recorded.
+    recorded on their Vault; an unexpected error is recorded as ``failed``
+    and raised once every Vault was tried. A connection-level error stops the
+    pass after recording its Vault; shutdown (``should_stop``, also checked
+    between the calls of a read) or the ``budget_seconds`` of the pass
+    (checked between Vaults) stop it too. The Vaults left are not recorded,
+    so they stay due. Without usable credentials nothing is read or
+    recorded.
     """
     moment = _utc(now or datetime.now(timezone.utc)).replace(microsecond=0)
+    started = clock()
+
+    def stopping() -> bool:
+        return should_stop is not None and should_stop()
+
     with database() as connection:
         vaults = due_vaults(connection, now=moment)
     if not vaults:
@@ -259,7 +343,9 @@ def run_due(database: Database, *, client_for: Callable[[str], Any] | None = Non
     failure: Exception | None = None
     try:
         for vault in vaults:
-            if should_stop is not None and should_stop():
+            if stopping() or clock() - started >= budget_seconds:
+                _logger.info("CloudWatch sizes pass stopped: %s Vault(s) left for later",
+                             len(vaults) - read)
                 break
             vault_id = int(vault["id"])
             try:
@@ -267,18 +353,24 @@ def run_due(database: Database, *, client_for: Callable[[str], Any] | None = Non
                 if region not in clients:
                     clients[region] = factory(region)
                 try:
-                    days = read_bucket(clients[region], str(vault["bucket"]), now=moment)
+                    days = read_bucket(clients[region], str(vault["bucket"]), now=moment, stop=stopping)
                 except (ClientError, BotoCoreError) as exc:
                     with database() as connection:
                         outcome = record_failure(connection, vault_id, exc, now=moment)
+                    read += 1
                     _logger.info("CloudWatch sizes of Vault %s not read: %s", vault_id, outcome)
+                    if isinstance(exc, CONNECTION_ERRORS):
+                        _logger.info("CloudWatch unreachable (%s): pass stopped", type(exc).__name__)
+                        break
                 else:
                     with database() as connection:
                         record_read(connection, vault_id, days, now=moment)
-                read += 1
-            except CloudWatchUnavailable:
+                    read += 1
+            except (CloudWatchUnavailable, PassStopped):
                 break
             except Exception as exc:  # noqa: BLE001 - reported once below
+                _record_unexpected(database, vault_id, exc, now=moment)
+                read += 1
                 failure = failure or exc
     finally:
         if client_for is None:
@@ -323,12 +415,16 @@ def summarize_day(storage_bytes: dict[str, Any]) -> dict[str, Any]:
 
 
 def catalog_estimate(connection: Any, vault_id: int) -> dict[str, Any]:
-    """The catalog's own view: available versions by class and a Cost Estimate."""
+    """The catalog's own view: versions not known missing, by class, and a Cost Estimate.
+
+    Like the Minimum Storage Duration (``minimum_storage``), a version whose
+    availability is still ``unknown`` counts: it is billed until proven gone.
+    """
     prices = list_prices()
     rows = connection.execute(
         """SELECT av.storage_class, count(*) AS versions, COALESCE(sum(av.size), 0) AS bytes
            FROM archive_versions av JOIN files f ON f.id = av.file_id
-           WHERE f.vault_id = %s AND av.availability = 'available'
+           WHERE f.vault_id = %s AND av.availability <> 'missing'
            GROUP BY av.storage_class""", (vault_id,)).fetchall()
     classes: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -370,7 +466,8 @@ def measured_sizes(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     last_read = None if attempt is None else {
         "attempted_at": _iso(attempt["attempted_at"]), "outcome": attempt["outcome"],
         "error_code": attempt["error_code"]}
-    next_read = None if attempt is None else _iso(attempt["attempted_at"] + RUN_INTERVAL)
+    next_read = None if attempt is None else _iso(
+        next_read_after(attempt["attempted_at"], attempt["outcome"]))
     history = []
     for row in rows:
         day = summarize_day(row["storage_bytes"] or {})
