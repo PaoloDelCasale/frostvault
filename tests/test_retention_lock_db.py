@@ -422,8 +422,8 @@ class VaultBucketDeletionTests(RetentionLockFixture):
             self.assertIn(2, [v["id"] for v in bucket_metrics.due_vaults(connection, now=now)])
             connection.execute("UPDATE vault_deletions SET bucket_deleted_at=now() WHERE vault_id=2")
             self.assertNotIn(2, [v["id"] for v in bucket_metrics.due_vaults(connection, now=now)])
-            with self.assertRaises(psycopg.errors.CheckViolation):
-                connection.execute("UPDATE vault_deletions SET delete_bucket=false WHERE vault_id=2")
+        with self.db() as connection, self.assertRaises(psycopg.errors.CheckViolation):
+            connection.execute("UPDATE vault_deletions SET delete_bucket=false WHERE vault_id=2")
         # A run that stopped after DeleteBucket only removes the catalog.
         self.due_now()
         self.provider.bucket_tags = {}
