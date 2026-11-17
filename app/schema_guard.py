@@ -32,6 +32,7 @@ SCHEMA_REVISIONS = (
     "0007_duplicate_cleanup_totals", "0008_system_bucket", "0009_class_entry",
     "0010_vault_buckets", "0011_bucket_metrics", "0012_billed_cost",
     "0013_retention_lock", "0014_vault_bucket_deletion", "0015_retained_version_retry",
+    "0016_rename_missing_size_idx",
 )
 SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 
