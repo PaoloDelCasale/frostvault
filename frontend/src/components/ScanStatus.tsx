@@ -3,7 +3,8 @@ import { ProgressBar } from "@/components/ProgressBar";
 import type { Adoption } from "@/lib/adoption";
 import { formatRemaining } from "@/lib/remaining";
 import { cn } from "@/lib/utils";
-import { formatBytes, formatDateTime, formatNumber, formatTimeOfDay } from "@/pages/archive/format";
+import { sinceMoment } from "@/lib/throughput";
+import { formatBytes, formatDateTime, formatNumber } from "@/pages/archive/format";
 
 type Params = Record<string, string | number>;
 type Runtime = StatsResponse["runtime"];
@@ -82,9 +83,9 @@ function queuedScan(runtime: Runtime, t: Translate): string | null {
   const operation = runtime.scan_waiting_for;
   const since = runtime.scan_waiting_since;
   if (!operation || !since) return t("vault.scan.queued_starting");
-  return t("vault.scan.queued", {
-    operation: t(`vault.operation.${OPERATIONS.has(operation) ? operation : "other"}`),
-    time: formatTimeOfDay(new Date(since)),
+  const { today, params } = sinceMoment(since);
+  return t(today ? "vault.scan.queued" : "vault.scan.queued_earlier", {
+    operation: t(`vault.operation.${OPERATIONS.has(operation) ? operation : "other"}`), ...params,
   });
 }
 

@@ -144,6 +144,112 @@ class QueuedScanTests(unittest.TestCase):
         scan.assert_not_called()
 
 
+    def test_a_scan_that_takes_the_vault_first_takes_the_queued_request(self):
+        lock = scan_lock_for_vault(VAULT_ID)
+        lock.acquire(operation="auto_admission")
+        bodies: list[int] = []
+
+        def body(vault, *, _on_start=None):
+            held = scan_lock_for_vault(vault["id"])
+            if not held.acquire(blocking=False, operation="full_scan"):
+                return {"already_running": 1}
+            try:
+                if _on_start:
+                    _on_start()
+                bodies.append(1)
+                return {"local": 2}
+            finally:
+                held.release()
+
+        with patch.object(storage, "QUEUED_SCAN_POLL_SECONDS", 0.3), \
+                patch.object(storage, "_scan_vault", side_effect=body):
+            future = storage.queue_scan({"id": VAULT_ID})
+            time.sleep(0.05)
+            lock.release()
+            # A direct scan (scheduled, watcher) gets there first.
+            self.assertEqual(storage.scan_vault({"id": VAULT_ID}), {"local": 2})
+            self.assertEqual(future.result(timeout=5), {"local": 2})
+            self.assertFalse(snapshot_runtime_status_for_stats(VAULT_ID)["scan_queued"])
+            time.sleep(0.5)  # The waiting thread wakes up and finds it done.
+        self.assertEqual(bodies, [1], "no second scan for the same request")
+
+    def test_a_request_that_cannot_be_submitted_is_not_left_pending(self):
+        with patch.object(storage, "_submit_queued_scan", side_effect=RuntimeError("no thread")):
+            future = storage.queue_scan({"id": VAULT_ID})
+        self.assertIsInstance(future.exception(timeout=1), RuntimeError)
+        self.assertNotIn(VAULT_ID, storage._queued_scans)
+        self.assertFalse(snapshot_runtime_status_for_stats(VAULT_ID)["scan_queued"])
+        with patch.object(storage, "_submit_queued_scan"):
+            self.assertIsNot(storage.queue_scan({"id": VAULT_ID}), future)
+
+    def test_the_shutdown_drain_awaits_a_waiting_scan(self):
+        lock = scan_lock_for_vault(VAULT_ID)
+        lock.acquire(operation="auto_admission")
+        self.addCleanup(lock.release)
+        state = MagicMock(requested=False)
+        with patch.object(storage, "shutdown_state", state), \
+                patch.object(storage, "scan_vault") as scan:
+            future = storage.queue_scan({"id": VAULT_ID})
+            self.assertTrue(settle(lambda: any(task.running() for task in storage._watcher_scan_futures)))
+            tasks = storage._detach_background_executors()
+            self.assertEqual(len(tasks), 1)
+            state.requested = True
+            tasks[0].result(timeout=5)
+            self.assertEqual(future.result(timeout=5), {"stopped": 1})
+        scan.assert_not_called()
+
+    def test_a_waiting_scan_dropped_by_the_shutdown_before_it_ran_is_settled(self):
+        lock = scan_lock_for_vault(VAULT_ID)
+        lock.acquire(operation="auto_admission")
+        self.addCleanup(lock.release)
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        # The Vault's scan thread is busy, so the waiting scan is still queued.
+        storage._watcher_scan_executor(VAULT_ID).submit(gate.wait, 5)
+        future = storage.queue_scan({"id": VAULT_ID})
+        storage._detach_background_executors()
+        self.assertEqual(future.result(timeout=5), {"stopped": 1})
+        self.assertNotIn(VAULT_ID, storage._queued_scans)
+
+
+class VerificationReadProgressTests(unittest.TestCase):
+    """A large file read for minutes still moves (#759)."""
+
+    def test_the_bytes_read_are_counted_per_chunk_before_the_file_ends(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mkv"
+            path.write_bytes(b"v" * (9 * 1024 * 1024))
+            info = path.stat()
+            row = {"path": "video.mkv", "vault_file_id": "f1", "generation": 1,
+                   "size": info.st_size, "mtime_ns": info.st_mtime_ns}
+            chunks: list[int] = []
+            kind, _update = storage._hash_local_copy(Path(directory), row, on_read=chunks.append)
+        self.assertEqual(kind, "hashed")
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(sum(chunks), 9 * 1024 * 1024)
+
+    def test_the_scan_publishes_the_bytes_read_in_its_runtime_status(self):
+        self.addCleanup(runtime.runtime_status.pop, VAULT_ID, None)
+        runtime.runtime_status[VAULT_ID] = {"scanning": True, "scan_id": "s"}
+        seen: list[int] = []
+
+        def fingerprints(vault, root, rows, *, scan_journal=None, on_result=None, on_read=None):
+            for size in (1000, 2000):
+                on_read(size)
+                seen.append(runtime.runtime_status[VAULT_ID]["verify_bytes_read"])
+            # No file completed yet: the counters of completed files stay put.
+            self.assertEqual(runtime.runtime_status[VAULT_ID]["verify_bytes_done"], 0)
+            return (update for update in ())
+
+        with patch.object(storage, "_unfingerprinted_local_rows",
+                          return_value=[{"path": "a", "size": 3000}]), \
+                patch.object(storage, "_iter_local_fingerprints", side_effect=fingerprints):
+            storage._fingerprint_scanned_local_copies({"id": VAULT_ID}, None, "s", scan_journal={})
+        self.assertEqual(seen, [1000, 3000])
+
+
 class StalledVaultTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(runtime.scan_locks.pop, VAULT_ID, None)

@@ -107,6 +107,8 @@ class ThroughputMeter:
         self._total = _Series()
         self._cut: datetime | None = None
         self._started: tuple[float, float] | None = None
+        # The installation's last progress, any Vault (#759).
+        self._moved: tuple[float, float] | None = None
 
     def reset(self) -> None:
         with self._lock:
@@ -114,6 +116,7 @@ class ThroughputMeter:
             self._total = _Series()
             self._cut = None
             self._started = None
+            self._moved = None
 
     def window(self, now: datetime) -> tuple[datetime, datetime]:
         """The (since, cut] interval of completions the next sample settles."""
@@ -166,6 +169,7 @@ class ThroughputMeter:
                 series.scan_marker = marker
                 if held_back or step_bytes or step_files or step_verified or scan_moved:
                     series.last_progress = (mono, wall)
+                    self._moved = (mono, wall)
                 series.upload_bytes += step_bytes
                 series.upload_files += step_files
                 series.verification_bytes += step_verified
@@ -181,12 +185,16 @@ class ThroughputMeter:
             total.samples.append((mono, wall, total.upload_bytes, total.upload_files,
                                   total.verification_bytes))
 
-    def stopped_since(self, vault_id: int, *, working: bool, mono: float) -> str | None:
+    def stopped_since(self, vault_id: int, *, working: bool, mono: float,
+                      in_line: bool = False) -> str | None:
         """When a Vault with work that should move last made progress, once
         that is :data:`STOPPED_SECONDS` ago; else None (#759).
 
         Work that appears after the Vault was seen idle starts its clock.
-        Without fresh samples nothing is claimed.
+        A Vault whose only work waits in the queue (``in_line``) is not
+        stopped while the installation moves: Jobs are claimed in order
+        across Vaults, and retries wait out their backoff. Without fresh
+        samples nothing is claimed.
         """
         with self._lock:
             series = self._vaults.get(int(vault_id))
@@ -199,8 +207,11 @@ class ThroughputMeter:
             series.working = working
             latest = self._total.samples[-1][0] if self._total.samples else None
             last = series.last_progress
+            moved = self._moved
         if (not working or last is None or latest is None or mono - latest > STALE_SECONDS
                 or mono - last[0] < STOPPED_SECONDS):
+            return None
+        if in_line and moved is not None and mono - moved[0] < STOPPED_SECONDS:
             return None
         return datetime.fromtimestamp(last[1], timezone.utc).isoformat()
 
@@ -345,7 +356,10 @@ def annotate(activity: dict[str, Any], *, meter: "ThroughputMeter | None" = None
         upload_left = 0 if vault.get("paused") else upload_bytes_left(vault)
         verification_left = _verification_left(int(vault["vault_id"]))
         working = not vault.get("paused") and _should_move(vault, verification_left)
-        stopped = meter.stopped_since(int(vault["vault_id"]), working=working, mono=mono)
+        in_line = verification_left <= 0 and not any(
+            int((vault.get(stage) or {}).get("files") or 0) > 0 for stage in ("uploading", "verifying"))
+        stopped = meter.stopped_since(int(vault["vault_id"]), working=working, mono=mono,
+                                      in_line=in_line)
         finish = None if vault.get("paused") or stopped else expected_finish(
             now=now, upload_left=upload_left,
             upload_average=measured["upload"]["average_bytes_per_second"],
@@ -390,7 +404,7 @@ def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None
         scans = {
             int(vault_id): (status.get("scan_id"), status.get("scan_phase"),
                             status.get("traversal_files_seen"), status.get("verify_bytes_done"),
-                            status.get("verify_files_done"))
+                            status.get("verify_files_done"), status.get("verify_bytes_read"))
             for vault_id, status in runtime_status.items() if status.get("scanning")}
     if held_back is None:
         from .source_devices import throttled_if_started

@@ -66,7 +66,7 @@ from .services.source_layout import (
 from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
-from .services.runtime_status import vault_operation_key
+from .services.runtime_status import scan_waiting, vault_operation_key
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import minimum_storage as minimum_storage_service
@@ -2418,16 +2418,19 @@ async def start_scan(
     # A Vault held by another operation queues the scan instead of dropping it
     # (#759): it starts as soon as the Vault is free and the runtime status
     # says what it waits for.
-    holder = scan_lock_for_vault(int(vault["id"])).holder()
     queue_scan(vault)
-    if holder is None:
+    # Read after queueing: the request is waiting only while something holds
+    # the Vault; once taken by a scan, or with the Vault free, it starts.
+    waiting = scan_waiting(int(vault["id"]))
+    if not waiting["scan_queued"] or waiting["scan_waiting_for"] is None:
         return {**_api_message(request, "api.scan_started", name=vault["name"]), "queued": False}
     locale = _request_locale(request)
     return {**_api_message(
         request, "api.scan_queued", name=vault["name"],
-        operation=translate(vault_operation_key(holder["operation"]), locale=locale),
-        since=format_datetime(holder["since"], locale),
-    ), "queued": True, "waiting_for": holder["operation"], "waiting_since": holder["since"]}
+        operation=translate(vault_operation_key(waiting["scan_waiting_for"]), locale=locale),
+        since=format_datetime(waiting["scan_waiting_since"], locale),
+    ), "queued": True, "waiting_for": waiting["scan_waiting_for"],
+        "waiting_since": waiting["scan_waiting_since"]}
 
 
 @app.get("/api/catalog/revision", response_model=response_model("CatalogRevisionResponse"))

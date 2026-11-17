@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ScanStatus } from "@/components/ScanStatus";
-import { formatNumber, formatTimeOfDay } from "@/pages/archive/format";
+import { formatDayMonth, formatNumber, formatTimeOfDay } from "@/pages/archive/format";
 
 // Echo the key and its params, so the test reads what the component asked for.
 const t = (key: string, params?: Record<string, string | number>) =>
@@ -16,14 +16,24 @@ describe("ScanStatus (#691, #711)", () => {
   });
 
   it("says what a queued scan waits for and since when (#759)", () => {
-    const since = "2026-11-17T17:30:00Z";
-    render(<ScanStatus t={t} runtime={{
-      scanning: false, scan_queued: true, scan_queued_at: "2026-11-17T17:45:00Z",
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const { unmount } = render(<ScanStatus t={t} runtime={{
+      scanning: false, scan_queued: true, scan_queued_at: since,
       scan_waiting_for: "identify_local_copies", scan_waiting_since: since,
     }} />);
-    expect(screen.getByTestId("scan-queued")).toHaveTextContent(`vault.scan.queued ${JSON.stringify({
-      operation: "vault.operation.identify_local_copies", time: formatTimeOfDay(new Date(since)) })}`);
+    const at = new Date(since);
+    const sameDay = at.toDateString() === new Date().toDateString();
+    expect(screen.getByTestId("scan-queued")).toHaveTextContent(`${sameDay ? "vault.scan.queued" : "vault.scan.queued_earlier"} ${JSON.stringify({
+      operation: "vault.operation.identify_local_copies", time: formatTimeOfDay(at), date: formatDayMonth(at) })}`);
     expect(screen.queryByTestId("scan-in-progress")).toBeNull();
+    unmount();
+    // Another day also names the date, like «Fermo dal …».
+    const earlier = "2026-01-02T08:30:00Z";
+    render(<ScanStatus t={t} runtime={{
+      scanning: false, scan_queued: true, scan_waiting_for: "auto_admission", scan_waiting_since: earlier,
+    }} />);
+    expect(screen.getByTestId("scan-queued")).toHaveTextContent(`vault.scan.queued_earlier ${JSON.stringify({
+      operation: "vault.operation.auto_admission", time: formatTimeOfDay(new Date(earlier)), date: formatDayMonth(new Date(earlier)) })}`);
   });
 
   it("names an unknown operation generically, and a free Vault as a scan about to start (#759)", () => {

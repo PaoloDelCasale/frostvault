@@ -7581,6 +7581,13 @@
                   "null"
                 ],
                 "description": "Since when that operation holds the Vault."
+              },
+              "verify_bytes_read": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Bytes read by the running verification, partial files included (#759)."
               }
             },
             "type": "object"

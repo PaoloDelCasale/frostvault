@@ -44,10 +44,17 @@ export function expectedFinishText(finish: ExpectedFinish, t: Translate, now = n
  * «Fermo dalle 17:38», from its last progress (#759).
  */
 export function stoppedText(since: string, t: Translate, now = new Date()): string {
+  const { today, params } = sinceMoment(since, now);
+  return t(today ? "estimate.stopped_today" : "estimate.stopped_earlier", params);
+}
+
+/**
+ * A past moment for «dalle HH:MM»: today only the time, another day also the
+ * date, for the `_earlier` form of a message (#759).
+ */
+export function sinceMoment(since: string, now = new Date()): { today: boolean; params: { time: string; date: string } } {
   const at = new Date(since);
-  const today = at.toDateString() === now.toDateString();
-  return t(today ? "estimate.stopped_today" : "estimate.stopped_earlier",
-    { time: formatTimeOfDay(at), date: formatDayMonth(at) });
+  return { today: at.toDateString() === now.toDateString(), params: { time: formatTimeOfDay(at), date: formatDayMonth(at) } };
 }
 
 /** The last progress for a tight label: «17:38», or «mer 17:38» when not today. */

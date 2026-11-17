@@ -293,8 +293,7 @@ _Avoid_: Deadlock, Hang
 A Vault whose background work (automatic admission, identifying new Local
 Copies) has held it for longer than ten minutes, so scans and uploads wait
 behind it. Reported as an Owner Problem naming the work and since when; it
-clears when the work ends. A full scan that is making progress is not a Stalled
-Vault.
+clears when the work ends. A full scan is never a Stalled Vault.
 _Avoid_: Hung vault, Deadlock
 
 **Server Priority**:

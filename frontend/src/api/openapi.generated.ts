@@ -2646,6 +2646,8 @@ export interface components {
                 scan_waiting_for?: string | null;
                 /** @description Since when that operation holds the Vault. */
                 scan_waiting_since?: string | null;
+                /** @description Bytes read by the running verification, partial files included (#759). */
+                verify_bytes_read?: number | null;
             } & {
                 [key: string]: unknown;
             };
