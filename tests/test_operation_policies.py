@@ -104,6 +104,37 @@ class GlobRuleTests(unittest.TestCase):
         self.assertEqual(preview["included"], ["readme.txt", "docs/public/a.txt"])
         self.assertEqual(preview["excluded"], ["docs/secret/key.pem", "photo.jpg"])
 
+    def test_precompiled_matcher_equals_the_per_path_rules(self) -> None:
+        """#767: one compile per cycle, exactly auto_upload_path_is_included."""
+        paths = (
+            "a.jpg", "photos/a.jpg", "photos/sub/a.jpg", "photos", "photosx/a.jpg",
+            "a/b/c", "x/a/b/c/y", "foo", "x/foo/y", "foo/a/bar/x", "x/foo/a/bar/x",
+            ".DS_Store", "x/.DS_Store/y", "x/._foo", "db.lock", "x/db-wal", "y/db-journal",
+            "Thumbs.db", "a\nb.jpg", "a[1].jpg", "win\\dir\\a.jpg", "win\\._x",
+            "/abs/a.jpg", "/abs/photos/a.jpg", "//two/a.jpg", "///three/a.jpg",
+            "./rel/a.jpg", "rel/./a.jpg", "rel//a.jpg", "trail/", "trail/.", ".",
+            "..", "../up/a.jpg", "a/../b.jpg", "*", "a*b", "photos/**", "**/x",
+            "Photos/A.JPG", "deep/" * 12 + "leaf.raw", "ünï/çødé.jpg", "",
+        )
+        policies = [
+            OperationPolicy(),
+            OperationPolicy(include_globs=("*.jpg",)),
+            OperationPolicy(include_globs=("photos/**", "**/*.jpg"), exclude_globs=("**/sub/**",)),
+            OperationPolicy(include_globs=("**/a/b/**", "a*b*c", "foo*bar", "foo"),
+                            exclude_globs=("x/**", "?")),
+            OperationPolicy(exclude_globs=("[!x]*", "a[[]1].jpg", "**/._*", "*.raw")),
+            OperationPolicy(include_globs=("/abs/**", "**/a.jpg", "rel/**", "*/**"),
+                            exclude_globs=("**", "deep/**/leaf.raw")),
+            OperationPolicy(include_globs=("ph*/**", "**", "**/**/a.jpg"), exclude_globs=("photos",)),
+            OperationPolicy(exclude_globs=("*/*", "**/*.JPG", "win/**", "a?b.jpg")),
+        ]
+        from app.services.operation_policies import AutoUploadPathMatcher
+        for policy in policies:
+            matcher = AutoUploadPathMatcher(policy)
+            for path in paths:
+                self.assertEqual(matcher(path), auto_upload_path_is_included(path, policy),
+                                 (path, policy.include_globs, policy.exclude_globs))
+
 
 class StabilityWindowTests(unittest.TestCase):
     def test_observation_restarts_window_even_for_preserved_old_mtime(self) -> None:

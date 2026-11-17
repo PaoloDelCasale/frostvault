@@ -306,7 +306,7 @@ class ProtectionProblemClosureTests(unittest.TestCase):
                 self.c = c
             def execute(self, query, params=None):
                 # The monitor's read of the durable timers (#622).
-                if "AS wanted" in query:
+                if "AS eligible" in query:
                     with fixture.connect() as upload:
                         fixture.protect(upload)
                         upload.execute("UPDATE files SET pending_since=NULL WHERE id=%s", (fixture.file_id,))

@@ -195,8 +195,9 @@ class AggregateDeadlockTests(unittest.TestCase):
             self.assertTrue(owner_held.wait(10))
             return original_enqueue(connection,job_id=job_id)
 
-        def monitor(connection,vault,**kwargs):
-            # Real maintain_notifications already holds its Owner episode lock.
+        def monitor(connection,observation):
+            # Real maintain_notifications already holds its Owner episode lock
+            # while it writes Problems (#767: only then).
             owner_held.set()
             self.assertTrue(vault_held.wait(10))
             notifications.set_problem(connection,key='blocked:docs:preflight',event='cloud_preflight_blocked',
@@ -213,7 +214,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
         with patch.object(storage,'process_upload',side_effect=fail), patch.object(
             notifications,'enqueue_job_terminal_notification_best_effort',side_effect=terminal
-        ), patch.object(protection_notifications,'monitor_vault',side_effect=monitor), ThreadPoolExecutor(max_workers=17) as pool:
+        ), patch.object(protection_notifications,'publish_vault_problems',side_effect=monitor), ThreadPoolExecutor(max_workers=17) as pool:
             maintenance = pool.submit(upkeep)
             workers = [pool.submit(self.run_job,job) for job in jobs]
             for future in workers:

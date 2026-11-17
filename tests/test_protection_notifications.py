@@ -286,6 +286,109 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             monitor.maintain_notifications(c,now=NOW+timedelta(days=7))
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='weekly_summary'").fetchone()['n'],2)
 
+    def test_large_adoption_cycle_is_fast_and_holds_the_owner_lock_briefly(self):
+        """#767: 100k pending files with globs, Owner lock only for Problem writes."""
+        import psycopg
+        import time
+        total = 100_000
+        observed = NOW - timedelta(hours=25)
+        with self.connect() as c:
+            c.execute("INSERT INTO vault_operation_policies(vault_id,auto_upload,include_globs_json,exclude_globs_json) "
+                      "VALUES (%s,TRUE,%s,%s)",
+                      (self.vault_id, json.dumps(['photos/**', '**/*.jpg', '*.mp4']),
+                       json.dumps(['**/cache/**', '*.tmp', 'photos/2026/0?/skip*'])))
+            # Every 10th file is excluded by a glob; the rest are pending uploads.
+            c.execute("""
+                INSERT INTO files(vault_id,path,path_since,local_presence,local_file_type,local_size,
+                                  local_mtime_ns,local_seen_at,local_observed_at,local_content_observed_at)
+                SELECT %s, CASE WHEN i %% 10 = 0 THEN 'photos/cache/' || i || '.jpg'
+                                ELSE 'photos/2026/' || lpad((i %% 12 + 1)::text, 2, '0') || '/IMG_' || i || '.jpg' END,
+                       %s, 'present', 'regular', 1, 1, %s, %s, %s
+                FROM generate_series(1, %s) AS i
+            """, (self.vault_id, observed, observed, observed, observed, total))
+        held: list[float] = []
+        acquired: list[float] = []
+        lock_owner = inbox._lock_owner_inbox
+        commit, rollback = psycopg.Connection.commit, psycopg.Connection.rollback
+
+        def lock(connection):
+            lock_owner(connection)
+            if not acquired:
+                acquired.append(time.perf_counter())
+
+        def end(original):
+            def wrapped(connection):
+                original(connection)
+                if acquired:
+                    held.append(time.perf_counter() - acquired.pop())
+            return wrapped
+        cycles = []
+        with self.connect() as c, patch('app.services.source_layout.vault_local_access', return_value=ONLINE), \
+                patch.object(inbox, '_lock_owner_inbox', side_effect=lock), \
+                patch.object(psycopg.Connection, 'commit', end(commit)), \
+                patch.object(psycopg.Connection, 'rollback', end(rollback)):
+            # The first cycle starts every timer; later ones find them unchanged.
+            for minute in range(3):
+                held.clear()
+                start = time.perf_counter()
+                monitor.maintain_notifications(c, now=NOW + timedelta(minutes=minute))
+                cycles.append((time.perf_counter() - start, max(held)))
+            note = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchone()
+            self.assertEqual(note['message_params']['pending'], total - total // 10)
+            self.assertEqual(note['message_params']['overdue'], total - total // 10)
+            self.assertEqual(note['problem_status'], 'open')
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM files WHERE pending_since IS NOT NULL").fetchone()['n'],
+                             total - total // 10)
+        print(f"\n#767 cycles (seconds, longest Owner lock hold): {cycles}")
+        for duration, longest_hold in cycles[1:]:
+            # The issue's target is under 2 s per cycle (about 0.9 s locally);
+            # shared CI runners are 2-3x slower, so the bound has headroom. The
+            # Owner lock hold, what blocked uploads, keeps the strict 100 ms.
+            self.assertLess(duration, 6.0, cycles)
+            self.assertLess(longest_hold, 0.1, cycles)
+        # Starting 100k timers is a one-time write, still without the Owner lock.
+        self.assertLess(cycles[0][1], 0.1, cycles)
+
+    def test_reading_leaves_the_owner_free_and_a_second_worker_waits_its_turn(self):
+        """#767: Problems can be written mid-cycle; two cycles never interleave."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        observing, release = threading.Event(), threading.Event()
+        observe = monitor.observe_vault
+
+        def blocking(connection, vault, *, now):
+            if not observing.is_set():
+                observing.set()
+                self.assertTrue(release.wait(10))
+            return observe(connection, vault, now=now)
+
+        def cycle():
+            with self.connect() as c:
+                monitor.maintain_notifications(c, now=NOW)
+
+        with patch('app.services.source_layout.vault_local_access', return_value=ONLINE), \
+                patch.object(monitor, 'observe_vault', side_effect=blocking), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(cycle)
+            self.assertTrue(observing.wait(10))
+            second = pool.submit(cycle)
+            # An upload publishing a Problem does not wait for the reading cycle.
+            with self.connect() as c:
+                c.execute("SET LOCAL lock_timeout = '2s'")
+                inbox.set_problem(c, key='blocked:docs:preflight', event='cloud_preflight_blocked',
+                                  vault_id=self.vault_id, active=True, params={'remediation': 'Check permissions'})
+            # The other worker's cycle waits for the whole first one.
+            with self.assertRaises(TimeoutError):
+                second.result(timeout=0.5)
+            release.set()
+            first.result(timeout=30)
+            second.result(timeout=30)
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='weekly_summary'")
+                             .fetchone()['n'], 1)
+            self.assertEqual(c.execute("SELECT problem_status FROM notifications WHERE dedupe_key='blocked:docs:preflight'")
+                             .fetchone()['problem_status'], 'open')
+
     def test_summary_shows_verified_backup_older_than_unverified_manual_one(self):
         """#648: a newer manual backup does not hide the verified one."""
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
