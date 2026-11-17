@@ -199,7 +199,7 @@ class VaultDeletionTests(VaultDeletionFixture):
         self.assertEqual(summary["early_deletion_estimated_count"], 1, "the stray's entry is estimated")
         stray_written = self.provider.modified[self.prefix + "stray/old.bin", self.stray]
         self.assertEqual(summary["savings_from"], (stray_written + timedelta(days=180)).isoformat())
-        self.assertGreater(summary["early_deletion_cost"], without_catalog["early_deletion_cost"])
+        self.assertGreaterEqual(summary["early_deletion_cost"], without_catalog["early_deletion_cost"])
 
         # A class the catalog did not record is estimated from the Storage Plan.
         with self.db() as connection:

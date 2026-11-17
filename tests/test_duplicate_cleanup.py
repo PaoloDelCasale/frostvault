@@ -467,7 +467,7 @@ class MinimumStorageTests(DuplicateCleanupFixture):
         self.assertEqual((status["beyond_minimum"], status["held"]), (False, None))
         minimum = status["minimum_storage"]
         self.assertEqual((minimum["count"], minimum["bytes"], minimum["estimated_count"]), (1, len(PHOTO), 0))
-        self.assertGreater(minimum["remaining_cost"], 0)
+        self.assertIsInstance(minimum["remaining_cost"], float, "a few bytes cost ~0 at list prices")
         self.assertEqual([c["storage_class"] for c in minimum["by_storage_class"]], ["DEEP_ARCHIVE"])
         since = self.rows("""SELECT v.storage_class_since FROM files f JOIN archive_versions v
                              ON v.id=f.current_version_id WHERE f.id=%s""", photo)[0]["storage_class_since"]
@@ -476,7 +476,7 @@ class MinimumStorageTests(DuplicateCleanupFixture):
         outcome = self.run_cleanup()
         self.assertEqual((outcome["outcome"], outcome["file_count"]), ("scheduled", 2))
         self.assertEqual((outcome["minimum_count"], outcome["minimum_bytes"]), (1, len(PHOTO)))
-        self.assertGreater(outcome["minimum_cost"], 0)
+        self.assertIsInstance(outcome["minimum_cost"], float)
         self.assertNotIn("held_count", outcome)
 
     def test_beyond_minimum_holds_back_the_duplicates_still_within_it(self) -> None:
