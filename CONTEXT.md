@@ -308,7 +308,9 @@ the cloud and its reading from the disk (fingerprint verification), each at its
 average speed over the last five minutes, named with the phase that limits it.
 With one phase active, that phase. Unknown until an active phase is measured.
 Unknown as well when no phase has made progress for five minutes: the Vault is
-then shown stopped since it last advanced.
+then shown stopped since it last advanced. Reading an uploaded file back from
+the cloud to verify it is progress. A Vault whose only work waits in the queue
+is not shown stopped while the installation advances: it waits its turn.
 _Avoid_: ETA, Time left, Remaining time
 
 **Cost Estimate**:

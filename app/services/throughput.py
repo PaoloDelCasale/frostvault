@@ -15,7 +15,8 @@ history for a sparkline. A Vault's expected finish is the later of its two
 phases at their average, with the phase that limits it.
 
 The meter also keeps when each Vault last made progress (#759): bytes or files
-sent, bytes verified, or a running scan moving. A Vault with work that should
+sent, bytes verified, bytes read back from S3 to verify an upload (#763), or a
+running scan moving. A Vault with work that should
 move and no progress for :data:`STOPPED_SECONDS` has no expected finish: it is
 shown stopped since its last progress instead.
 
@@ -55,6 +56,20 @@ STALE_SECONDS = 15
 STOPPED_SECONDS = 5 * 60
 PHASES = ("upload", "verification")
 _HELD = ("uploading", "verifying", "cleaning")
+
+# Bytes read back from S3 to verify uploads, per Vault, since start (#763).
+# The Job's transferred bytes stay at the file's size while its copy is read
+# back, so a long read-back of a large file would otherwise move nothing.
+_read_back_lock = threading.Lock()
+_read_back_bytes: dict[int, int] = {}
+
+
+def note_read_back(vault_id: int | None, size: int) -> None:
+    """Count one chunk read back from S3 for the Vault's upload verification."""
+    if vault_id is None or size <= 0:
+        return
+    with _read_back_lock:
+        _read_back_bytes[int(vault_id)] = _read_back_bytes.get(int(vault_id), 0) + int(size)
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +146,9 @@ class ThroughputMeter:
                scans: dict[int, tuple] | None = None, held_back: bool = False) -> None:
         """Add one sample. ``uploads`` holds the query row of each Vault with
         upload activity; ``verification`` the running scan id and the bytes it
-        verified, for each Vault in the runtime status; ``scans`` the position
-        of each running scan (a scan finalizing always moves). ``held_back``
+        verified, for each Vault in the runtime status; ``scans`` a progress
+        marker per Vault: the position of its running scan (a scan finalizing
+        always moves) and the bytes read back from S3 (#763). ``held_back``
         means Server Priority holds the reads: a choice, not a stop."""
         scans = scans or {}
         with self._lock:
@@ -406,6 +422,11 @@ def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None
                             status.get("traversal_files_seen"), status.get("verify_bytes_done"),
                             status.get("verify_files_done"), status.get("verify_bytes_read"))
             for vault_id, status in runtime_status.items() if status.get("scanning")}
+    # A read-back moving counts as progress too (#763).
+    with _read_back_lock:
+        read_back = dict(_read_back_bytes)
+    for vault_id, read in read_back.items():
+        scans[vault_id] = (*scans.get(vault_id, ()), "read_back", read)
     if held_back is None:
         from .source_devices import throttled_if_started
         held_back = throttled_if_started()

@@ -28,7 +28,7 @@ describe("ScanStatus (#691, #711)", () => {
     expect(screen.queryByTestId("scan-in-progress")).toBeNull();
     unmount();
     // Another day also names the date, like «Fermo dal …».
-    const earlier = "2026-01-02T08:30:00Z";
+    const earlier = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
     render(<ScanStatus t={t} runtime={{
       scanning: false, scan_queued: true, scan_waiting_for: "auto_admission", scan_waiting_since: earlier,
     }} />);

@@ -1,6 +1,7 @@
 """Visible stalls (#759): queued scans, the Stalled Vault problem; DB-free."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 import threading
 import time
@@ -161,17 +162,62 @@ class QueuedScanTests(unittest.TestCase):
             finally:
                 held.release()
 
-        with patch.object(storage, "QUEUED_SCAN_POLL_SECONDS", 0.3), \
+        # The waiting thread finds the Vault busy, then holds until the direct
+        # scan is done: no timing decides who gets there first.
+        polled, resume = threading.Event(), threading.Event()
+        self.addCleanup(resume.set)
+        real_busy = storage.vault_busy
+
+        def busy(vault_id):
+            result = real_busy(vault_id)
+            if result and not polled.is_set():
+                polled.set()
+                resume.wait(5)
+            return result
+
+        before = set(storage._watcher_scan_futures)
+        with patch.object(storage, "vault_busy", side_effect=busy), \
                 patch.object(storage, "_scan_vault", side_effect=body):
             future = storage.queue_scan({"id": VAULT_ID})
-            time.sleep(0.05)
+            (task,) = set(storage._watcher_scan_futures) - before
+            self.assertTrue(polled.wait(5))
             lock.release()
             # A direct scan (scheduled, watcher) gets there first.
             self.assertEqual(storage.scan_vault({"id": VAULT_ID}), {"local": 2})
             self.assertEqual(future.result(timeout=5), {"local": 2})
             self.assertFalse(snapshot_runtime_status_for_stats(VAULT_ID)["scan_queued"])
-            time.sleep(0.5)  # The waiting thread wakes up and finds it done.
+            resume.set()
+            task.result(timeout=5)  # The waiting thread wakes up and finds it done.
         self.assertEqual(bodies, [1], "no second scan for the same request")
+
+    def test_a_watcher_registered_behind_a_queued_scan_shares_it(self):
+        # The queued scan waits on the Vault's only paired-scan thread (#763):
+        # a watcher scan submitted behind it would be a second full scan.
+        lock = scan_lock_for_vault(VAULT_ID)
+        lock.acquire(operation="auto_admission")
+        self.addCleanup(lambda: lock.locked() and lock.release())
+        calls: list[int] = []
+
+        def scan(vault, *, _on_start=None):
+            if _on_start:
+                _on_start()
+            calls.append(1)
+            return {"local": 1, "cloud": 1}
+
+        async def register_watcher():
+            return await storage._reconcile_vault_after_watcher({"id": VAULT_ID})
+
+        with patch.object(storage, "scan_vault", side_effect=scan):
+            future = storage.queue_scan({"id": VAULT_ID})
+            self.assertIs(storage._submit_watcher_scan({"id": VAULT_ID}), future)
+            loop = asyncio.new_event_loop()
+            self.addCleanup(loop.close)
+            watcher = loop.create_task(register_watcher())
+            loop.call_soon(lock.release)
+            outcome = loop.run_until_complete(asyncio.wait_for(watcher, 5))
+            self.assertEqual(future.result(timeout=5), {"local": 1, "cloud": 1})
+        self.assertEqual(outcome, storage._WatcherScanOutcome())
+        self.assertEqual(calls, [1], "one full scan for the queued request and the watcher")
 
     def test_a_request_that_cannot_be_submitted_is_not_left_pending(self):
         with patch.object(storage, "_submit_queued_scan", side_effect=RuntimeError("no thread")):

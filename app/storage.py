@@ -45,6 +45,7 @@ from .services.restore_ghosts import retire_absent_restore_ghosts
 from .services import vault_relocation
 from .services import watch_plan
 from .services import source_devices
+from .services import throughput
 from .services import excluded_folders as excluded_folder_rules
 from .services import write_access
 from .services.catalog_event_hub import publish_committed_event
@@ -4237,6 +4238,8 @@ def _stream_plaintext_for_verification(
             digest.update(chunk)
             size += len(chunk)
             progress(size)
+            # The Job's bytes stay at the file's size: this shows it moving (#763).
+            throughput.note_read_back(job.get("vault_id"), len(chunk))
     finally:
         body.close()
     check_active()
@@ -7247,6 +7250,14 @@ def _submit_watcher_scan(vault: dict[str, Any]) -> Future[Any]:
     # Under the pool lock: a drain that detached the pools cannot miss it.
     with _watcher_scan_pool_lock:
         shutdown_state.checkpoint()
+        with status_lock:
+            pending = _queued_scans.get(int(vault["id"]))
+        if pending is not None:
+            # A queued scan has not started yet, so it starts after this
+            # registration: share it rather than a second full scan behind it
+            # on the Vault's scan thread (#763). A request queued after this
+            # check is taken by the scan submitted here, which runs first.
+            return pending
         future = _watcher_scan_executor_locked(int(vault["id"])).submit(scan_vault, vault)
         _watcher_scan_futures.add(future)
     future.add_done_callback(_forget_watcher_scan_future)

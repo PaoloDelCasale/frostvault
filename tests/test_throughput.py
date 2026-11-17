@@ -299,6 +299,34 @@ class StoppedTests(unittest.TestCase):
             result = annotate(self.activity(queued=0), meter=self.meter, now=NOW, mono=(2 * steps - 1) * 2.0)
             self.assertIsNotNone(result["vaults"][0]["stopped_since"])
 
+    def test_a_long_read_back_of_one_large_file_is_not_a_stop(self):
+        # A 30 GB upload verified by reading it back from S3: the Job's bytes
+        # stay at the file's size, only the bytes read back move (#763).
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = [
+            {"vault_id": 3, **row(held=30_000 * MB)}]
+
+        @contextmanager
+        def connect():
+            yield connection
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 30
+        verifying = {"files": 1, "bytes": 30_000 * MB, "transferred_bytes": 30_000 * MB}
+        activity = lambda: {"global": summary(), "vaults": [
+            {"vault_id": 3, "paused": False, **summary(verifying=verifying)}]}
+        with patch.dict(throughput._read_back_bytes, {}, clear=True):
+            for i in range(steps):
+                throughput.note_read_back(3, 28 * MB)
+                throughput.sample(connect, meter=self.meter, now=NOW + timedelta(seconds=2 * i),
+                                  mono=i * 2.0, held_back=False)
+            result = annotate(activity(), meter=self.meter, now=NOW, mono=(steps - 1) * 2.0)
+            self.assertIsNone(result["vaults"][0]["stopped_since"])
+            # The same read-back with no byte moving is a stop.
+            for i in range(steps, 2 * steps):
+                throughput.sample(connect, meter=self.meter, now=NOW + timedelta(seconds=2 * i),
+                                  mono=i * 2.0, held_back=False)
+            result = annotate(activity(), meter=self.meter, now=NOW, mono=(2 * steps - 1) * 2.0)
+            self.assertIsNotNone(result["vaults"][0]["stopped_since"])
+
     def test_a_vault_waiting_in_line_behind_another_is_not_stopped(self):
         # Vault 3 has only queued files; Vault 4 uploads. Claims are in order
         # across Vaults, so 3 waits its turn while the installation moves.
