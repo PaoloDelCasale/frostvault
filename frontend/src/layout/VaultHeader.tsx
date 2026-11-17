@@ -4,7 +4,10 @@ import { fetchGeneralVaults } from "@/api";
 import { useVaultStats } from "@/api/useVaultStats";
 type Params = Record<string, string | number>;
 import { ScanStatus } from "@/components/ScanStatus";
-import { uploadBacklog, uploadPace, useUploadActivity } from "@/api/uploadActivity";
+import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
+import type { StatsResponse } from "@/api/types";
+import { SpeedSparkline } from "@/components/SpeedSparkline";
+import { expectedFinishText, phaseSpeeds } from "@/lib/throughput";
 import { adoptionOf } from "@/lib/adoption";
 import { formatBytes, formatNumber } from "@/pages/archive/format";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
@@ -13,17 +16,38 @@ import { vaultState } from "@/lib/vaultState";
 import { cn } from "@/lib/utils";
 import { vaultFilesUrl, vaultSettingsUrl } from "@/router";
 
-/** This Vault's upload queue with its pace and time left, or that it is paused (#711). */
-function VaultUploadLine({ vaultId, t }: { vaultId: number; t: (key: string, params?: Params) => string }) {
+/**
+ * This Vault's one expected finish and the phase that limits it, then each
+ * phase's measured speeds (#755): the upload to the cloud and, while a scan
+ * verifies fingerprints, the reading from the disk.
+ */
+function VaultProgress({ vaultId, runtime, t }: {
+  vaultId: number; runtime: StatsResponse["runtime"] | undefined; t: (key: string, params?: Params) => string;
+}) {
   const activity = useUploadActivity().data?.vaults?.find((vault) => vault.vault_id === vaultId);
   if (!activity) return null;
   const backlog = uploadBacklog(activity);
-  if (backlog.files <= 0) return null;
-  const pace = activity.paused ? null : uploadPace(activity, t);
-  return <p className="pb-2 text-sm text-muted" data-testid="vault-upload-line">
-    {t("vault.upload.line", { files: formatNumber(backlog.files), size: formatBytes(backlog.bytes) })}
-    {activity.paused ? <> · {t("vault.upload.paused")}</> : pace ? <> · {t("vault.upload.rate", pace)}</> : null}
-  </p>;
+  const reading = runtime?.scanning === true && runtime.scan_phase === "verification";
+  if (backlog.files <= 0 && !reading) return null;
+  const finish = activity.paused ? null : activity.expected_finish;
+  const upload = activity.paused ? null : phaseSpeeds("upload", activity.throughput, t);
+  const verification = phaseSpeeds("verification", activity.throughput, t);
+  return <div className="grid gap-1 pb-2 text-sm" data-testid="vault-progress">
+    {finish && <p className="font-semibold" data-testid="vault-expected-finish">{expectedFinishText(finish, t)}</p>}
+    {backlog.files > 0 && <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <p className="text-muted" data-testid="vault-upload-line">
+        <span className="font-semibold text-ink">{t("estimate.upload_label")}</span>: {t("estimate.upload_backlog", { files: formatNumber(backlog.files), size: formatBytes(backlog.bytes) })}
+        {activity.paused ? <> · {t("vault.upload.paused")}</> : <> · {upload ?? t("estimate.speed_unknown")}</>}
+      </p>
+      {!activity.paused && <SpeedSparkline throughput={activity.throughput} phase="upload" t={t} />}
+    </div>}
+    {reading && <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <p className="text-muted" data-testid="vault-reading-line">
+        <span className="font-semibold text-ink">{t("estimate.verification_label")}</span>: {verification ?? t("estimate.speed_unknown")}
+      </p>
+      <SpeedSparkline throughput={activity.throughput} phase="verification" t={t} />
+    </div>}
+  </div>;
 }
 
 /** Vault title, aggregate state, the pause action and the Files | Settings tabs. */
@@ -46,7 +70,7 @@ export function VaultHeader({ vaultId, vaultName, active, t }: {
     </div>
     <ScanStatus runtime={stats.data?.runtime} t={t} adoption={adoptionOf(stats.data)}
       unconfirmed={Number((stats.data?.states as Record<string, number> | undefined)?.unconfirmed ?? 0) > 0} />
-    {active === "files" && <VaultUploadLine vaultId={vaultId} t={t} />}
+    {active === "files" && <VaultProgress vaultId={vaultId} runtime={stats.data?.runtime} t={t} />}
     <nav aria-label={t("files.tabs_label")} className="-mb-px flex gap-5">
       {tab("files", vaultFilesUrl(vaultId))}{tab("settings", vaultSettingsUrl(vaultId))}
     </nav>

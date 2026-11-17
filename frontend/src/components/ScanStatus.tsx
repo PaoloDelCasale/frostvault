@@ -1,7 +1,7 @@
 import type { StatsResponse } from "@/api/types";
 import { ProgressBar } from "@/components/ProgressBar";
 import type { Adoption } from "@/lib/adoption";
-import { formatRemaining, minutesLeft } from "@/lib/remaining";
+import { formatRemaining } from "@/lib/remaining";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatDateTime, formatNumber } from "@/pages/archive/format";
 
@@ -50,7 +50,10 @@ function traversal(runtime: Runtime, t: Translate): { detail: string; value: num
   return { detail: t("vault.scan.traversal_detail", { files, rate: perMinute }), value: null };
 }
 
-/** Fingerprint verification, by bytes: its pace is known once it ran a minute (#711). */
+/**
+ * Fingerprint verification, by bytes. Its speed and the Vault's one expected
+ * finish are shown with the upload's, below the phases (#755).
+ */
 function verification(runtime: Runtime, t: Translate): { detail: string; value: number } | null {
   const total = Number(runtime.verify_files_total ?? 0);
   if (total <= 0) return null;
@@ -60,12 +63,7 @@ function verification(runtime: Runtime, t: Translate): { detail: string; value: 
     files: formatNumber(Number(runtime.verify_files_done ?? 0)), total: formatNumber(total),
     bytes: formatBytes(bytesDone), total_bytes: formatBytes(bytesTotal),
   };
-  const minutes = minutesLeft(bytesTotal - bytesDone, runtime.verify_bytes_per_minute);
-  const detail = minutes === null
-    ? t("vault.scan.verification_detail", params)
-    : t("vault.scan.verification_detail_rate", {
-      ...params, rate: formatBytes(Number(runtime.verify_bytes_per_minute)), remaining: formatRemaining(minutes, t),
-    });
+  const detail = t("vault.scan.verification_detail", params);
   return { detail, value: bytesTotal > 0 ? percent(bytesDone, bytesTotal) : percent(Number(runtime.verify_files_done ?? 0), total) };
 }
 
@@ -75,8 +73,8 @@ function phaseState(phase: Phase, current: Phase): PhaseState {
 }
 
 /**
- * The running scan as its phases, in order, each with its state, progress
- * and time left (#711); then what its success changes. The outcome of an
+ * The running scan as its phases, in order, each with its state and
+ * progress (#711); then what its success changes. The outcome of an
  * earlier failed scan stays below it, muted and with its cause translated:
  * a `source` error stays open until a scan succeeds, but it is the last
  * scan's outcome, not the current state (#691).

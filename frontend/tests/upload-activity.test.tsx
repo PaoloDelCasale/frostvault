@@ -2,9 +2,10 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
-import type { UploadActivityResponse, UploadActivitySummary } from "@/api/types";
+import type { UploadActivityResponse, UploadActivitySummary, UploadThroughput } from "@/api/types";
 import { UploadActivity } from "@/components/UploadActivity";
 import { formatBytes } from "@/pages/archive/format";
+import { expectedFinishShort, expectedFinishText } from "@/lib/throughput";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 import { translate } from "@/i18n/translate";
 
@@ -14,8 +15,16 @@ const empty = (): UploadActivitySummary => ({
   uploading: { files: 0, bytes: 0, transferred_bytes: 0 },
   verifying: { files: 0, bytes: 0, transferred_bytes: 0 },
   awaiting_admission_files: 0, next_stable_at: null,
-  rate: { window_seconds: 900, files: 0, bytes: 0, bytes_per_minute: null },
+  throughput: measured(), expected_finish: null,
 });
+/** Speeds as the sampler reports them (#755); none measured by default. */
+function measured(upload: Partial<UploadThroughput["upload"]> = {}, history: UploadThroughput["history"] = []): UploadThroughput {
+  return {
+    sample_seconds: 2, instant_seconds: 20, average_seconds: 300, history_seconds: 900,
+    upload: { bytes_per_second: null, files_per_second: null, average_bytes_per_second: null, ...upload },
+    verification: { bytes_per_second: null, average_bytes_per_second: null }, history,
+  };
+}
 const messages = loadCatalog();
 const t = (key: string, params?: Record<string, string | number>) => translate(messages, key, params);
 
@@ -151,19 +160,38 @@ describe("aggregate upload activity", () => {
     expect(within(section).getAllByText(t("activity.sent", { sent: formatBytes(20), total: formatBytes(30) }))).toHaveLength(2);
   });
 
-  it("states the measured speed and the time left at it (#711)", async () => {
+  it("states the speed now, its average and one expected finish with its limiting phase (#755)", async () => {
     const activity = empty();
-    activity.queued = { files: 58136, bytes: 300 * 1024 ** 3, transferred_bytes: 0 };
-    activity.uploading = { files: 4, bytes: 40 * 1024 ** 2, transferred_bytes: 40 * 1024 ** 2 };
-    activity.rate = { window_seconds: 900, files: 400, bytes: 22 * 1024 ** 3, bytes_per_minute: 1.5 * 1024 ** 3 };
+    activity.queued = { files: 132689, bytes: 514 * 1024 ** 3, transferred_bytes: 0 };
+    activity.uploading = { files: 4, bytes: 40 * 1024 ** 2, transferred_bytes: 20 * 1024 ** 2 };
+    activity.throughput = measured({ bytes_per_second: 13_200_000, files_per_second: 14.1, average_bytes_per_second: 12_000_000 },
+      [{ at: "2026-11-17T16:30:00Z", upload_bytes_per_second: 11_000_000, verification_bytes_per_second: 0 },
+        { at: "2026-11-17T16:30:30Z", upload_bytes_per_second: 13_000_000, verification_bytes_per_second: 0 }]);
+    const finish = { at: new Date(Date.now() + 2 * 3600_000).toISOString(), seconds: 7200, limited_by: "upload" as const };
+    activity.expected_finish = finish;
     show(activity);
-    // 300 GiB left at 1.5 GiB per minute: 200 minutes, 3.3 hours.
-    const remaining = t("vault.scan.remaining_hours", { count: 3.3 });
-    const pace = { rate: formatBytes(1.5 * 1024 ** 3), remaining };
-    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.indicator_rate", {
-      count: 58140, size: formatBytes(300 * 1024 ** 3 + 40 * 1024 ** 2), ...pace }));
+    const indicator = await screen.findByTestId("upload-indicator");
+    expect(indicator).toHaveAccessibleName(t("activity.indicator_finish", {
+      count: 132693, size: formatBytes(514 * 1024 ** 3 + 40 * 1024 ** 2), speed: "13.2 MB/s", time: expectedFinishShort(finish) }));
+    // The tooltip says what is counted and over which windows.
+    expect(indicator.title).toContain(t("activity.current_work", { seconds: 20, minutes: 5 }));
     await openPanel();
-    expect(screen.getAllByText(t("activity.rate", pace)).length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("activity-finish")[0]).toHaveTextContent(expectedFinishText(finish, t));
+    expect(screen.getAllByTestId("activity-finish")[0]).toHaveTextContent("limited by the upload");
+    const rate = screen.getAllByTestId("activity-rate")[0];
+    expect(rate).toHaveTextContent("Upload to the cloud: now 13.2 MB/s · 105.6 Mbit/s · 14.1 files/s · last 5 min average 12.0 MB/s");
+    expect(screen.getAllByTestId("sparkline-upload")[0]).toHaveAccessibleName(t("estimate.history_label", { minutes: 15, peak: "13.0 MB/s" }));
+  });
+
+  it("shows the speed now without a finish before the average is measured (#755)", async () => {
+    const activity = empty(); activity.uploading = { files: 2, bytes: 20, transferred_bytes: 1 };
+    activity.throughput = measured({ bytes_per_second: 2_500_000, files_per_second: 0 });
+    show(activity);
+    expect(await screen.findByTestId("upload-indicator")).toHaveAccessibleName(t("activity.indicator_speed", {
+      count: 2, size: formatBytes(20), speed: "2.5 MB/s" }));
+    await openPanel();
+    expect(screen.queryByTestId("activity-finish")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sparkline-upload")).not.toBeInTheDocument();
   });
 
   it("says the speed is not measured yet instead of inventing one (#711)", async () => {

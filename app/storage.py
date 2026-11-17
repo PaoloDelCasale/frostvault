@@ -2107,24 +2107,20 @@ def _fingerprint_scanned_local_copies(
     vault_id = int(vault["id"])
     rows = _unfingerprinted_local_rows(vault_id)
     done = {"files": 0, "bytes": 0}
-    started = time.monotonic()
     _scan_progress(
         vault_id, scan_id, scan_phase="verification",
         verify_files_total=len(rows), verify_files_done=0,
         verify_bytes_total=sum(int(row.get("size") or 0) for row in rows),
-        verify_bytes_done=0, verify_bytes_per_minute=None,
+        verify_bytes_done=0,
     )
 
     def advance(row: dict[str, Any]) -> None:
         done["files"] += 1
         done["bytes"] += int(row.get("size") or 0)
-        # The pace since the phase began, for its time estimate (#711); a
-        # first minute says too little about the rest.
-        elapsed = time.monotonic() - started
+        # The pace is measured from these bytes by the throughput sampler (#755).
         _scan_progress(
             vault_id, scan_id,
             verify_files_done=done["files"], verify_bytes_done=done["bytes"],
-            verify_bytes_per_minute=(round(done["bytes"] * 60 / elapsed) if elapsed >= 60 else None),
         )
 
     hashed = 0
@@ -2625,7 +2621,7 @@ def _record_scan_component_health(
 # Verification progress of the running scan (#691), runtime status only.
 _NO_VERIFICATION_PROGRESS = {
     "verify_files_total": None, "verify_files_done": None,
-    "verify_bytes_total": None, "verify_bytes_done": None, "verify_bytes_per_minute": None,
+    "verify_bytes_total": None, "verify_bytes_done": None,
     # Traversal progress of the running scan (#696).
     "traversal_files_seen": None, "traversal_files_per_minute": None,
     "traversal_files_expected": None,

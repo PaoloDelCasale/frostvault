@@ -71,6 +71,7 @@ from .services import minimum_storage as minimum_storage_service
 from .services import bucket_metrics as bucket_metrics_service
 from .services import billed_cost as billed_cost_service
 from .services import watch_plan
+from .services import throughput as throughput_service
 from .services.excluded_folders import excluded_folders
 from .oidc import (
     IdentityRejected,
@@ -238,7 +239,9 @@ async def lifespan(_: FastAPI):
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
              asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop()),
              asyncio.create_task(bulk_upload_admission_loop()),
-             asyncio.create_task(history_retention_loop())]
+             asyncio.create_task(history_retention_loop()),
+             # In-memory speed samples (#755); informational, lost at restart.
+             asyncio.create_task(throughput_service.sampler_loop(db))]
     if settings.filesystem_watch_enabled:
         tasks.append(asyncio.create_task(filesystem_watch_loop()))
     shutdown_state.register_producers(tasks)
@@ -1885,10 +1888,12 @@ def search_all_files(
 
 @app.get("/api/upload-activity", response_model=response_model("UploadActivityResponse"))
 def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
-    from .services import source_devices
+    from .services import source_devices, throughput
     from .services.upload_activity import upload_activity
     with db() as connection:
         result = upload_activity(connection)
+    # Speeds and one expected finish per Vault, from in-memory samples (#755).
+    throughput.annotate(result)
     # Uploads held back while the server is busy (#713).
     priority = source_devices.server_priority().status()
     return {**result, "server_priority": {"throttled": priority["throttled"],

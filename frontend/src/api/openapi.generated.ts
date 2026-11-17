@@ -2019,6 +2019,13 @@ export interface components {
             /** Grace Days */
             grace_days?: number | null;
         };
+        /** @description The later of the active phases at their average speed, and the phase that limits it (#755). */
+        ExpectedFinish: {
+            at: string;
+            /** @enum {string} */
+            limited_by: "upload" | "verification";
+            seconds: number;
+        };
         /** FileAction */
         FileAction: {
             /** Archive Version Id */
@@ -2807,7 +2814,6 @@ export interface components {
                 traversal_probe_seconds?: number | null;
                 traversal_write_seconds?: number | null;
                 verify_bytes_done?: number | null;
-                verify_bytes_per_minute?: number | null;
                 verify_bytes_total?: number | null;
                 verify_files_done?: number | null;
                 verify_files_total?: number | null;
@@ -2913,12 +2919,6 @@ export interface components {
             /** Restore Tier */
             restore_tier?: string | null;
         };
-        UploadActivityRate: {
-            bytes: number;
-            bytes_per_minute: number | null;
-            files: number;
-            window_seconds: number;
-        };
         UploadActivityResponse: {
             global: components["schemas"]["UploadActivitySummary"];
             observed_at: string;
@@ -2940,10 +2940,11 @@ export interface components {
         UploadActivitySummary: {
             awaiting_admission_files: number;
             bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
+            expected_finish: components["schemas"]["ExpectedFinish"] | null;
             next_stable_at: string | null;
             queued: components["schemas"]["UploadActivityStage"];
-            rate: components["schemas"]["UploadActivityRate"];
             stability_wait: components["schemas"]["UploadActivityStage"];
+            throughput: components["schemas"]["UploadThroughput"];
             uploading: components["schemas"]["UploadActivityStage"];
             verifying: components["schemas"]["UploadActivityStage"];
         };
@@ -2985,6 +2986,27 @@ export interface components {
             retry_count: number;
             /** @enum {string} */
             state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
+        };
+        /** @description Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured. */
+        UploadThroughput: {
+            average_seconds: number;
+            history: {
+                at: string;
+                upload_bytes_per_second: number;
+                verification_bytes_per_second: number;
+            }[];
+            history_seconds: number;
+            instant_seconds: number;
+            sample_seconds: number;
+            upload: {
+                average_bytes_per_second: number | null;
+                bytes_per_second: number | null;
+                files_per_second: number | null;
+            };
+            verification: {
+                average_bytes_per_second: number | null;
+                bytes_per_second: number | null;
+            };
         };
         /** ValidationError */
         ValidationError: {
