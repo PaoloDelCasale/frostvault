@@ -101,7 +101,7 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
   // «No duplicates to delete» only when there were none at all (#729): not
   // while some wait, nor when some were never seen on the server. An older
   // outcome without these counts reads as before.
-  const counted = (count: number, bytes?: number) => ({ count, count_shown: numberFormat(locale).format(count), bytes: formatBytes(bytes ?? 0) });
+  const counted = (count: number, bytes?: number) => ({ count, count_shown: numberFormat(locale).format(count), bytes: formatBytes(bytes ?? 0, locale) });
   const outcomeText = !outcome ? "" : outcome.outcome === "none" && (outcome.held_count ?? 0) > 0
     ? t("duplicate_cleanup.outcome.none_held", counted(outcome.held_count ?? 0))
     : outcome.outcome === "none" && (outcome.waiting_count ?? 0) > 0
