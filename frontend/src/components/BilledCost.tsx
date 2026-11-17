@@ -4,9 +4,9 @@ import { useI18n } from "@/i18n";
 import { formatDate, formatDateTime, formatMoney } from "@/pages/archive/format";
 
 /** The categories of a Billed Cost, in the order the UI lists them (#738). */
-export const BILLED_CATEGORIES = ["storage", "requests", "transitions", "retrievals", "data_transfer", "other"] as const;
+export const BILLED_CATEGORIES = ["storage", "requests", "transitions", "retrievals", "data_transfer", "other", "credits"] as const;
 export type BilledCategories = Record<(typeof BILLED_CATEGORIES)[number], number>;
-type ExportStatus = Pick<BillingExportStatus, "state" | "bucket" | "prefix" | "checked_at" | "next_check_at" | "exported_at" | "data_through" | "error">;
+type ExportStatus = Pick<BillingExportStatus, "state" | "bucket" | "prefix" | "checked_at" | "next_check_at" | "exported_at" | "data_through" | "error_code" | "error_detail">;
 
 /** An AWS bill amount: exact, never «~», in the billing currency. */
 export function billedMoney(value: number, currency: string | null | undefined, locale?: string): string {
@@ -20,6 +20,15 @@ export function BilledDataDate({ status }: { status: Pick<VaultBilledCost, "data
     {status.data_through
       ? t("billed_cost.data_through", { date: formatDate(status.data_through, locale), exported: formatDateTime(status.exported_at, locale) })
       : t("billed_cost.exported_at", { exported: formatDateTime(status.exported_at, locale) })}
+  </p>;
+}
+
+/** «Data not up to date»: the newest export is over 3 days old, or the current month is missing. */
+export function BilledStale({ status }: { status: Pick<VaultBilledCost, "stale" | "exported_at"> }) {
+  const { t, locale } = useI18n();
+  if (!status.stale) return null;
+  return <p role="note" className="text-sm font-semibold" data-testid="billed-cost-stale">
+    {t("billed_cost.stale", { exported: formatDateTime(status.exported_at, locale) })}
   </p>;
 }
 
@@ -42,8 +51,10 @@ export function BillingExportState({ status }: { status: ExportStatus }) {
   if (status.state === "ok") return null;
   const location = `s3://${status.bucket ?? "…"}/${status.prefix}`;
   const next = status.next_check_at ? formatDateTime(status.next_check_at, locale) : "—";
-  return <p role="status" className="text-sm break-words" data-testid="billing-export-state" data-state={status.state}>
-    {t(`billed_cost.state_${status.state}`, { location, next, error: status.error ?? "" })}
+  // The backend stores an error code, never a provider message: translate it here.
+  const error = status.error_code ? t(`billed_cost.error.${status.error_code}`, { detail: status.error_detail ?? "" }) : "";
+  return <p role="status" className="text-sm break-words" data-testid="billing-export-state" data-state={status.state} data-error={status.error_code ?? undefined}>
+    {t(`billed_cost.state_${status.state}`, { location, next, error })}
   </p>;
 }
 

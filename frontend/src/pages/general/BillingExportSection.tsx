@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchBillingExport, type BillingExportStatus } from "@/api";
-import { BilledCategoryList, BilledDataDate, BillingExportState, BillingSetupSteps, billedMoney } from "@/components/BilledCost";
+import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, BillingSetupSteps, billedMoney } from "@/components/BilledCost";
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
@@ -15,7 +15,7 @@ type Period = BillingExportStatus["periods"][number];
 function PeriodTable({ period, currency }: { period: Period; currency: string | null }) {
   const { t, locale } = useI18n();
   const rows = [
-    ...period.vaults.map((vault) => ({ key: `vault-${vault.vault_id}`, label: <a href={vaultSettingsUrl(vault.vault_id, "billed-cost")} className="font-semibold text-ink underline">{vault.name ?? vault.bucket}</a>, entry: vault })),
+    ...period.vaults.map((vault) => ({ key: `vault-${vault.vault_id}`, label: <a href={vaultSettingsUrl(vault.vault_id, "usage")} className="font-semibold text-ink underline">{vault.name ?? vault.bucket}</a>, entry: vault })),
     ...period.installation.map((entry) => ({ key: `${entry.role}-${entry.bucket}`, label: <span>{t(`billed_cost.role_${entry.role}`, { bucket: entry.bucket })}</span>, entry })),
   ];
   return <div className="grid gap-2" data-testid={`billing-period-${period.period}`}>
@@ -57,6 +57,7 @@ export function BillingExportSection() {
           : <>
             <BillingExportState status={data} />
             {data.state === "ok" && <>
+              <BilledStale status={data} />
               {data.periods.map((period) => <PeriodTable key={period.period} period={period} currency={data.currency} />)}
               <BilledDataDate status={data} />
               <p className="text-xs text-muted">{t("billed_cost.not_estimate")}</p>

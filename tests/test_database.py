@@ -49,7 +49,7 @@ BASELINE_TABLES = {
 # Tables added by later linear revisions of the chain.
 HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_bucket_provisioning",
                                  "vault_bucket_metric_days", "vault_bucket_metric_reads",
-                                 "billing_export_status", "billed_costs"}
+                                 "billing_export_status", "billed_cost_periods", "billed_costs"}
 
 
 def _tables(path: Path) -> set[str]:

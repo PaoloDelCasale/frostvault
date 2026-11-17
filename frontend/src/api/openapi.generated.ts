@@ -1666,8 +1666,14 @@ export interface components {
             currency: string | null;
             /** @description The newest usage end in the export, never after exported_at. */
             data_through: string | null;
-            error: string | null;
-            /** @description When AWS delivered the Manifest.json that was read. */
+            /**
+             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
+             * @enum {string|null}
+             */
+            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
+            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_detail: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
             exported_at: string | null;
             next_check_at: string | null;
             /** @description Billing periods read, newest first; empty unless state is ok. */
@@ -1677,6 +1683,8 @@ export interface components {
                     bucket: string;
                     /** @description Billed amounts by category, in the billing currency; every category is present. */
                     categories: {
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
                         data_transfer: number;
                         other: number;
                         requests: number;
@@ -1690,11 +1698,14 @@ export interface components {
                 }[];
                 /** @description YYYY-MM */
                 period: string;
+                /** @description Every row of the period: Vaults and installation. */
                 total: number;
                 vaults: {
                     bucket: string;
                     /** @description Billed amounts by category, in the billing currency; every category is present. */
                     categories: {
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
                         data_transfer: number;
                         other: number;
                         requests: number;
@@ -1706,13 +1717,17 @@ export interface components {
                     total: number;
                     vault_id: number;
                 }[];
+                /** @description The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill. */
+                vaults_total: number;
             }[];
             /** @description The S3 path prefix of the export in the System Bucket. */
             prefix: string;
             /** @description When FrostVault last read the export (only when ok). */
             read_at: string | null;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
             /**
-             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error).
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
              * @enum {string}
              */
             state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
@@ -2923,7 +2938,7 @@ export interface components {
             /** Error Type */
             type: string;
         };
-        /** @description A Vault's Billed Cost from the billing export (#738), next to its Cost Estimate. */
+        /** @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737). */
         VaultBilledCost: {
             /** @description The System Bucket the export is delivered to. */
             bucket: string | null;
@@ -2932,20 +2947,22 @@ export interface components {
             currency: string | null;
             /** @description The newest usage end in the export, never after exported_at. */
             data_through: string | null;
-            error: string | null;
-            /** @description This month's Cost Estimate from AWS list prices, never an AWS bill. */
-            estimate: {
-                currency: string;
-                monthly: number;
-                pricing_effective_at: string;
-            };
-            /** @description When AWS delivered the Manifest.json that was read. */
+            /**
+             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
+             * @enum {string|null}
+             */
+            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
+            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_detail: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
             exported_at: string | null;
             next_check_at: string | null;
-            /** @description Newest first; empty unless state is ok. */
+            /** @description Newest first; empty unless state is ok, and for a shared bucket. */
             periods: {
                 /** @description Billed amounts by category, in the billing currency; every category is present. */
                 categories: {
+                    /** @description Credits, refunds and discounts of the bucket (negative). */
+                    credits: number;
                     data_transfer: number;
                     other: number;
                     requests: number;
@@ -2961,10 +2978,12 @@ export interface components {
             prefix: string;
             /** @description When FrostVault last read the export (only when ok). */
             read_at: string | null;
-            /** @description The Vault is in a shared bucket: periods are the whole bucket's, for every Vault in it. */
+            /** @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export. */
             shared: boolean;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
             /**
-             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error).
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
              * @enum {string}
              */
             state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";

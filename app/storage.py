@@ -7674,12 +7674,13 @@ def read_billed_cost_once() -> None:
 
     ``run_due`` records every export or S3 failure as a quiet status, never a
     Problem; only an unusable catalog lands here, and is only logged: the
-    other workers already report it.
+    other workers already report it. Shutdown stops a read, like the
+    CloudWatch sizes (#737), without recording it.
     """
     from .services import billed_cost
 
     try:
-        billed_cost.run_due()
+        billed_cost.run_due(should_stop=lambda: shutdown_state.requested)
     except Exception as exc:  # noqa: BLE001 - logged, retried at the next poll
         worker_error_store.log_worker_error("billed_cost", exc)
 

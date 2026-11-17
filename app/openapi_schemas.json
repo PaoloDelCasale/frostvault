@@ -4680,7 +4680,7 @@
             "ok",
             "error"
           ],
-          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error)."
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
         },
         "bucket": {
           "type": [
@@ -4717,7 +4717,7 @@
             "string",
             "null"
           ],
-          "description": "When AWS delivered the Manifest.json that was read."
+          "description": "When AWS delivered the newest manifest that was read."
         },
         "data_through": {
           "type": [
@@ -4733,11 +4733,45 @@
           ],
           "description": "The billing currency (ISO 4217)."
         },
-        "error": {
+        "stale": {
+          "type": "boolean",
+          "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
+        },
+        "error_code": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "enum": [
+            "s3_unreachable",
+            "s3_throttled",
+            "s3_server_error",
+            "credentials",
+            "access_denied",
+            "s3_refused",
+            "parquet",
+            "missing_column",
+            "not_gzip_csv",
+            "short_row",
+            "cost_not_number",
+            "currency_missing",
+            "mixed_currencies",
+            "manifest_invalid",
+            "manifest_too_large",
+            "manifest_foreign_bucket",
+            "manifest_outside_folder",
+            "no_data_files",
+            "internal",
+            null
+          ],
+          "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
+        },
+        "error_detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An S3 action and AWS error code, column or currency names: never a provider message."
         },
         "periods": {
           "type": "array",
@@ -4751,7 +4785,12 @@
                 "description": "YYYY-MM"
               },
               "total": {
-                "type": "number"
+                "type": "number",
+                "description": "Every row of the period: Vaults and installation."
+              },
+              "vaults_total": {
+                "type": "number",
+                "description": "The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill."
               },
               "vaults": {
                 "type": "array",
@@ -4796,6 +4835,10 @@
                         },
                         "other": {
                           "type": "number"
+                        },
+                        "credits": {
+                          "type": "number",
+                          "description": "Credits, refunds and discounts of the bucket (negative)."
                         }
                       },
                       "required": [
@@ -4804,7 +4847,8 @@
                         "transitions",
                         "retrievals",
                         "data_transfer",
-                        "other"
+                        "other",
+                        "credits"
                       ]
                     }
                   },
@@ -4859,6 +4903,10 @@
                         },
                         "other": {
                           "type": "number"
+                        },
+                        "credits": {
+                          "type": "number",
+                          "description": "Credits, refunds and discounts of the bucket (negative)."
                         }
                       },
                       "required": [
@@ -4867,7 +4915,8 @@
                         "transitions",
                         "retrievals",
                         "data_transfer",
-                        "other"
+                        "other",
+                        "credits"
                       ]
                     }
                   },
@@ -4883,6 +4932,7 @@
             "required": [
               "period",
               "total",
+              "vaults_total",
               "vaults",
               "installation"
             ]
@@ -4899,14 +4949,16 @@
         "exported_at",
         "data_through",
         "currency",
-        "error",
+        "stale",
+        "error_code",
+        "error_detail",
         "periods"
       ]
     },
     "VaultBilledCost": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A Vault's Billed Cost from the billing export (#738), next to its Cost Estimate.",
+      "description": "A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737).",
       "properties": {
         "state": {
           "type": "string",
@@ -4918,7 +4970,7 @@
             "ok",
             "error"
           ],
-          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first Manifest.json; ok: read; error: unreadable (see error)."
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
         },
         "bucket": {
           "type": [
@@ -4955,7 +5007,7 @@
             "string",
             "null"
           ],
-          "description": "When AWS delivered the Manifest.json that was read."
+          "description": "When AWS delivered the newest manifest that was read."
         },
         "data_through": {
           "type": [
@@ -4971,11 +5023,45 @@
           ],
           "description": "The billing currency (ISO 4217)."
         },
-        "error": {
+        "stale": {
+          "type": "boolean",
+          "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
+        },
+        "error_code": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "enum": [
+            "s3_unreachable",
+            "s3_throttled",
+            "s3_server_error",
+            "credentials",
+            "access_denied",
+            "s3_refused",
+            "parquet",
+            "missing_column",
+            "not_gzip_csv",
+            "short_row",
+            "cost_not_number",
+            "currency_missing",
+            "mixed_currencies",
+            "manifest_invalid",
+            "manifest_too_large",
+            "manifest_foreign_bucket",
+            "manifest_outside_folder",
+            "no_data_files",
+            "internal",
+            null
+          ],
+          "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
+        },
+        "error_detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An S3 action and AWS error code, column or currency names: never a provider message."
         },
         "vault_id": {
           "type": "number"
@@ -4985,11 +5071,11 @@
         },
         "shared": {
           "type": "boolean",
-          "description": "The Vault is in a shared bucket: periods are the whole bucket's, for every Vault in it."
+          "description": "The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export."
         },
         "periods": {
           "type": "array",
-          "description": "Newest first; empty unless state is ok.",
+          "description": "Newest first; empty unless state is ok, and for a shared bucket.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -5023,6 +5109,10 @@
                   },
                   "other": {
                     "type": "number"
+                  },
+                  "credits": {
+                    "type": "number",
+                    "description": "Credits, refunds and discounts of the bucket (negative)."
                   }
                 },
                 "required": [
@@ -5031,7 +5121,8 @@
                   "transitions",
                   "retrievals",
                   "data_transfer",
-                  "other"
+                  "other",
+                  "credits"
                 ]
               }
             },
@@ -5041,27 +5132,6 @@
               "categories"
             ]
           }
-        },
-        "estimate": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "This month's Cost Estimate from AWS list prices, never an AWS bill.",
-          "properties": {
-            "monthly": {
-              "type": "number"
-            },
-            "currency": {
-              "type": "string"
-            },
-            "pricing_effective_at": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "monthly",
-            "currency",
-            "pricing_effective_at"
-          ]
         }
       },
       "required": [
@@ -5074,12 +5144,13 @@
         "exported_at",
         "data_through",
         "currency",
-        "error",
+        "stale",
+        "error_code",
+        "error_detail",
         "vault_id",
         "vault_bucket",
         "shared",
-        "periods",
-        "estimate"
+        "periods"
       ]
     }
   }

@@ -89,7 +89,7 @@ export const defaultCloudUsage = {
   measured: { status: "shared_bucket" } as Record<string, unknown>,
 };
 
-/** No billing export yet (#738): only the Cost Estimate and the setup link. */
+/** No billing export yet (#738): the state and the setup link. */
 export const defaultVaultBilledCost = {
   state: "not_configured",
   bucket: "frostvault-system-k3x9q0ab",
@@ -100,12 +100,13 @@ export const defaultVaultBilledCost = {
   exported_at: null as string | null,
   data_through: null as string | null,
   currency: null as string | null,
-  error: null as string | null,
+  stale: false,
+  error_code: null as string | null,
+  error_detail: null as string | null,
   vault_id: 1,
   vault_bucket: "frostvault-foto-ab12cd34",
   shared: false,
   periods: [] as { period: string; total: number; categories: Record<string, number> }[],
-  estimate: { monthly: 1.2345, currency: "EUR", pricing_effective_at: "2026-10-01" },
 };
 
 /** The System page's view of the same state (#738). */
@@ -119,7 +120,9 @@ export const defaultBillingExport = {
   exported_at: null as string | null,
   data_through: null as string | null,
   currency: null as string | null,
-  error: null as string | null,
+  stale: false,
+  error_code: null as string | null,
+  error_detail: null as string | null,
   periods: [] as unknown[],
 };
 

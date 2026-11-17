@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchVaultCloudUsage, type VaultCloudUsage } from "@/api";
+import { fetchVaultBilledCost, fetchVaultCloudUsage, type VaultCloudUsage } from "@/api";
+import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, billedMoney } from "@/components/BilledCost";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount } from "@/pages/archive/format";
+import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount, formatMonth } from "@/pages/archive/format";
+import { systemUrl } from "@/router";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 type Estimate = VaultCloudUsage["estimate"];
@@ -140,10 +142,45 @@ function MeasuredBlock({ measured }: { measured: Measured }) {
 }
 
 /**
- * The Vault's cloud usage (#737): the catalog's Cost Estimate next to what
- * CloudWatch measured in its Vault Bucket. Each source is its own block, so
- * a further source (the Billed Cost from the billing export, #738) is one
- * more block beside these. Reads only the catalog; never AWS.
+ * What AWS billed for the Vault's bucket, from the billing export (#738).
+ * Exact amounts in the billing currency, never «~». A Vault on a shared
+ * bucket has no figure of its own: a note points to the installation rows of
+ * the System page. Without a readable export, its state and the way to the
+ * setup steps on the System page.
+ */
+function BilledCostBlock({ vaultId }: { vaultId: number }) {
+  const { t, locale } = useI18n();
+  const billed = useQuery({ queryKey: ["billed-cost", vaultId], queryFn: () => fetchVaultBilledCost(vaultId), retry: false });
+  const data = billed.data;
+  const link = (key: string) => <a className="w-fit text-sm font-semibold text-ink underline" href={systemUrl("billing-export")} data-testid="billed-cost-setup-link">{t(key)}</a>;
+  return <CloudUsageBlock id="billed" title={t("billed_cost.billed_title")} help={t("billed_cost.billed_help")}>
+    {billed.error ? <p role="alert" className="text-sm text-destructive">{errorMessage(billed.error, t)}</p>
+      : !data ? <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>
+        : data.shared ? <>
+          <p className="text-sm" role="note" data-testid="billed-cost-shared">{t("billed_cost.shared_bucket")}</p>
+          {link("billed_cost.installation_link")}
+        </> : data.state === "ok" ? <>
+          <BilledStale status={data} />
+          {data.periods.length === 0 ? <p className="text-sm text-muted">{t("billed_cost.no_charges")}</p>
+            : data.periods.map((period) => <div key={period.period} className="grid gap-1 border-t border-line pt-2 text-sm first-of-type:border-t-0 first-of-type:pt-0" data-testid={`billed-cost-${period.period}`}>
+              <p className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{formatMonth(period.period, locale)}</span>
+                <span className="font-semibold tabular-nums" data-testid="billed-cost-total">{billedMoney(period.total, data.currency, locale)}</span></p>
+              <BilledCategoryList categories={period.categories} currency={data.currency} />
+            </div>)}
+          <BilledDataDate status={data} />
+          <p className="text-xs text-muted" data-testid="billed-cost-lag">{t("billed_cost.lag")}</p>
+        </> : <>
+          <BillingExportState status={data} />
+          {data.state !== "unavailable" && data.state !== "checking"
+            && link(data.state === "error" ? "billed_cost.status_link" : "billed_cost.setup_link")}
+        </>}
+  </CloudUsageBlock>;
+}
+
+/**
+ * The Vault's cloud usage (#737, #738): the catalog's Cost Estimate, what
+ * CloudWatch measured in its Vault Bucket and what AWS billed for it, each
+ * its own block side by side. Reads only the catalog; never AWS.
  */
 export function CloudUsagePanel({ vaultId }: { vaultId: number }) {
   const { t } = useI18n();
@@ -153,5 +190,6 @@ export function CloudUsagePanel({ vaultId }: { vaultId: number }) {
   return <div className="grid min-w-0 gap-3 lg:grid-cols-2 xl:grid-cols-3" data-testid="cloud-usage">
     <EstimateBlock estimate={usage.data.estimate} />
     <MeasuredBlock measured={usage.data.measured} />
+    <BilledCostBlock vaultId={vaultId} />
   </div>;
 }

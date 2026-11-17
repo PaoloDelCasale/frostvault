@@ -17,7 +17,7 @@ import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
 import { billedMoney } from "@/components/BilledCost";
 import { formatBytes, formatMonth, formatMoney } from "@/pages/archive/format";
-import { systemUrl, vaultFilesUrl } from "@/router";
+import { vaultFilesUrl } from "@/router";
 
 const STATS_REFRESH_MS = 60_000;
 type SortKey = "name" | "state" | "protected" | "local" | "cloud" | "cost" | "problems";
@@ -84,7 +84,9 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
   const [deleting, setDeleting] = useState<GeneralVault | null>(null);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
-  // The AWS bill of the newest month, when the billing export is read (#738).
+  // What AWS billed for the Vault Buckets in the newest month, when the
+  // billing export is read (#738): never the whole AWS bill. Its setup steps
+  // live on the System page only.
   const billing = useQuery({ queryKey: ["billing-export"], queryFn: fetchBillingExport, retry: false });
   const billed = billing.data?.state === "ok" ? billing.data.periods[0] : undefined;
   const queryClient = useQueryClient();
@@ -184,9 +186,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
           value={overview ? money(overview.monthly_estimate) : "—"}
           detail={<>{overview ? <span title={t("essential.estimate_caveat")}>{overview.previous_month_delta === null ? t("essential.no_comparison")
             : t("essential.month_delta", { cost: money(overview.previous_month_delta, true) })}</span> : null}
-          {billed ? <span className="block" data-testid="tile-cost-billed">{t("billed_cost.overview_billed", { month: formatMonth(billed.period, locale), cost: billedMoney(billed.total, billing.data?.currency, locale) })}</span>
-            : billing.data && billing.data.state !== "unavailable" && billing.data.state !== "checking"
-              ? <a href={systemUrl("billing-export")} className="block font-semibold text-ink underline" data-testid="tile-cost-setup">{t(billing.data.state === "error" ? "billed_cost.status_link" : "billed_cost.setup_link")}</a> : null}</>} />
+          {billed && <span className="block" data-testid="tile-cost-billed">{t("billed_cost.overview_billed", { month: formatMonth(billed.period, locale), cost: billedMoney(billed.vaults_total, billing.data?.currency, locale) })}</span>}</>} />
       </section>
 
       <section className="grid min-w-0 gap-2" aria-labelledby="overview-vaults">
