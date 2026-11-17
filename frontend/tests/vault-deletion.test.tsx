@@ -127,7 +127,7 @@ describe("Vault Deletion of a Tombstone (#717)", () => {
     const status = await screen.findByTestId("vault-deletion-status");
     expect(status).toHaveAttribute("data-status", "pending");
     expect(calls.find((c) => c.method === "POST")).toEqual({ url: "/api/vaults/2/vault-deletion", method: "POST",
-      body: { confirmation: "Photos", reason: "No longer needed" } });
+      body: { confirmation: "Photos", reason: "No longer needed", delete_bucket: false } });
     expect(status).toHaveTextContent(`Vault Deletion scheduled: it cannot start before ${formatDateTime(pendingUntil)}.`);
     expect(screen.getByTestId("vault-deletion-countdown")).toHaveTextContent("Time left to cancel: 6 days 5 hours.");
   });
@@ -169,6 +169,30 @@ describe("Vault Deletion of a Tombstone (#717)", () => {
   it("says the Vault is gone once it has left the catalog", async () => {
     setup({ status: 404 });
     expect(await screen.findByTestId("vault-deletion-deleted")).toHaveTextContent("The Vault was deleted. Only its audit record remains.");
+  });
+
+  // #739: only a dedicated Vault Bucket (empty prefix) offers to delete the bucket, unticked.
+  it("does not offer to delete the shared bucket of an older Vault", async () => {
+    setup();
+    await screen.findByTestId("vault-deletion-preview");
+    expect(screen.queryByLabelText("Also delete the bucket")).toBeNull();
+  });
+
+  it("offers to delete a dedicated Vault Bucket, unticked by default, and sends the choice", async () => {
+    const user = userEvent.setup(); const { calls } = setup({ previewReply: { body: { ...preview, prefix: "" } } });
+    const box = await screen.findByLabelText("Also delete the bucket");
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    await user.type(screen.getByLabelText("Reason"), "No longer needed");
+    await user.type(screen.getByLabelText("Type the exact Vault name (Photos)"), "Photos");
+    await user.click(screen.getByRole("button", { name: "Delete the Vault in seven days" }));
+    await screen.findByTestId("vault-deletion-status");
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ confirmation: "Photos", reason: "No longer needed", delete_bucket: true });
+  });
+
+  it("says the dedicated bucket stays when the Owner did not tick it", async () => {
+    setup({ status: { ...pending, request: { ...request, preview: { ...preview, prefix: "" }, delete_bucket: false } } });
+    expect(await screen.findByTestId("vault-deletion-bucket")).toHaveTextContent("The Vault Bucket stays, empty.");
   });
 
   it("links a Vault Deletion Problem to the archived Vaults", () => {

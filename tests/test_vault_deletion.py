@@ -242,6 +242,18 @@ class VaultDeletionTests(VaultDeletionFixture):
                                                run_after, preview)
                    VALUES (2, 'pending', 'owner', 'x', now(), now() + interval '7 days', '{}')""")
 
+    def test_the_shared_bucket_is_never_offered_for_deletion(self) -> None:
+        """#739: only a dedicated Vault Bucket can be deleted with its Vault."""
+        self.stop()
+        summary = self.preview()
+        with self.db() as connection, self.assertRaises(vault_deletion.VaultDeletionError) as refused:
+            vault_deletion.request_deletion(
+                connection, vault_id=2, actor="owner", confirmation="Docs",
+                reason="test vault no longer needed", preview_summary=summary,
+                requested_at=PAST, delete_bucket=True)
+        self.assertEqual(refused.exception.code, "shared_bucket")
+        self.assertIsNone(self.deletion())
+
     def test_the_request_waits_seven_days_and_can_be_cancelled(self) -> None:
         self.stop()
         with self.assertRaises(cloud_deletion.ConfirmationRequired):

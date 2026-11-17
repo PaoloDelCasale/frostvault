@@ -28,6 +28,12 @@
       "Resource": "arn:aws:s3:::frostvault-*"
     },
     {
+      "Sid": "DeleteEmptyVaultBucketOnVaultDeletion",
+      "Effect": "Allow",
+      "Action": "s3:DeleteBucket",
+      "Resource": "arn:aws:s3:::frostvault-*"
+    },
+    {
       "Sid": "ReadWriteFrostVaultObjects",
       "Effect": "Allow",
       "Action": [

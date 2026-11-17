@@ -27,6 +27,8 @@ from botocore.exceptions import ClientError
 from app import storage
 from app.services import protection_stop, retention_lock, vault_deletion
 from app.services import notifications as inbox
+from app.services import bucket_metrics
+from app.services.vault_buckets import TAG_VAULT
 from app.services.vaults import VAULT_ROW_SQL
 from tests import test_cloud_purge
 from tests import test_upload_worker as fixtures
@@ -60,6 +62,18 @@ class LockedProvider(VersionedProvider):
         self.written: dict[tuple[str, str], datetime] = {}
         self.clock = lambda: datetime.now(timezone.utc)
         self.retention_reads = 0
+        self.bucket_tags: dict[str, str] = {}
+        self.deleted_buckets: list[str] = []
+
+    def get_bucket_tagging(self, *, Bucket):
+        return {"TagSet": [{"Key": k, "Value": v} for k, v in self.bucket_tags.items()]}
+
+    def delete_bucket(self, *, Bucket):
+        if self.objects or self.markers:
+            raise ClientError({"Error": {"Code": "BucketNotEmpty", "Message": "provider text"}},
+                              "DeleteBucket")
+        self.deleted_buckets.append(Bucket)
+        return {}
 
     def add(self, key, payload, metadata=None, *, version=None):
         version = super().add(key, payload, metadata, version=version)
@@ -133,6 +147,8 @@ class RetentionLockFixture(unittest.TestCase):
             fixtures.UploadWorkerTests.setUp(self)
         # A Vault Bucket: the key is the relative path.
         self.key = "report.txt"
+        # Its tag names this Vault (#739).
+        self.provider.bucket_tags = {TAG_VAULT: str(self.vault()["uuid"])}
 
     def upload(self, payload: bytes) -> dict:
         self.write(payload)
@@ -336,6 +352,84 @@ class DeferredVaultDeletionTests(RetentionLockFixture):
         self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 1)
         self.assertEqual(self.rows("SELECT id FROM vaults WHERE id=2"), [])
         self.assertIn((self.key, current["provider_version_id"]), self.provider.deleted)
+
+
+class VaultBucketDeletionTests(RetentionLockFixture):
+    """#739: the empty Vault Bucket is deleted only on request, tagged with its Vault."""
+
+    def request(self, *, delete_bucket: bool) -> None:
+        with self.db() as connection:
+            protection_stop.stop_protection(connection, vault_id=2, actor="owner",
+                                            cloud_disposition="keep", confirmation="Docs",
+                                            reason="archive it")
+            target = vault_deletion.deletion_target(connection, 2)
+        summary = vault_deletion.preview(self.provider, target)
+        with self.db() as connection:
+            vault_deletion.request_deletion(connection, vault_id=2, actor="owner", confirmation="Docs",
+                                            reason="test vault no longer needed", preview_summary=summary,
+                                            requested_at=PAST, delete_bucket=delete_bucket)
+
+    def due_now(self) -> None:
+        with self.db() as connection:
+            connection.execute("UPDATE vault_deletions SET run_after=now() - interval '1 second' WHERE vault_id=2")
+
+    def deleted_audit(self) -> dict:
+        [audit] = self.rows("SELECT detail FROM audit_events WHERE event='folder_protection.vault_deleted'")
+        return audit["detail"]
+
+    def test_a_bucket_tagged_with_another_vault_is_never_touched(self) -> None:
+        current = self.upload(A)
+        self.provider.age(self.key, current["provider_version_id"], DAYS + 1)
+        self.provider.bucket_tags = {TAG_VAULT: "00000000-0000-4000-8000-0000000000aa"}
+        self.request(delete_bucket=True)
+        self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 0)
+        [row] = self.rows("SELECT * FROM vault_deletions WHERE vault_id=2")
+        self.assertEqual((row["status"], row["failure"]["reason"]), ("failed", "bucket_identity"))
+        self.assertEqual((self.provider.deleted, self.provider.deleted_buckets), ([], []))
+        self.assertIn((self.key, current["provider_version_id"]), self.provider.objects)
+
+    def test_a_bucket_with_locked_versions_is_not_deleted_until_they_are_gone(self) -> None:
+        current = self.upload(A)
+        self.request(delete_bucket=True)
+        self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 0)
+        [row] = self.rows("SELECT * FROM vault_deletions WHERE vault_id=2")
+        self.assertEqual((row["status"], row["delete_bucket"], row["bucket_deleted_at"]), ("pending", True, None))
+        self.assertEqual(self.provider.deleted_buckets, [], "not empty: never deleted")
+        with self.db() as connection:
+            self.assertEqual(vault_deletion.status(connection, 2)["request"]["delete_bucket"], True)
+
+        self.provider.age(self.key, current["provider_version_id"], DAYS + 1)
+        self.due_now()
+        self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 1)
+        self.assertEqual(self.provider.deleted_buckets, [BUCKET])
+        self.assertEqual(self.deleted_audit()["bucket"], "deleted")
+        self.assertEqual(self.rows("SELECT id FROM vaults WHERE id=2"), [])
+
+    def test_an_unticked_bucket_stays_and_the_audit_says_so(self) -> None:
+        current = self.upload(A)
+        self.provider.age(self.key, current["provider_version_id"], DAYS + 1)
+        self.request(delete_bucket=False)
+        with self.db() as connection:
+            self.assertEqual(vault_deletion.status(connection, 2)["request"]["delete_bucket"], False)
+        self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 1)
+        self.assertEqual(self.provider.deleted_buckets, [])
+        self.assertEqual(self.deleted_audit()["bucket"], "kept")
+
+    def test_a_deleted_bucket_is_never_read_again(self) -> None:
+        self.request(delete_bucket=True)
+        now = datetime.now(timezone.utc)
+        with self.db() as connection:
+            self.assertIn(2, [v["id"] for v in bucket_metrics.due_vaults(connection, now=now)])
+            connection.execute("UPDATE vault_deletions SET bucket_deleted_at=now() WHERE vault_id=2")
+            self.assertNotIn(2, [v["id"] for v in bucket_metrics.due_vaults(connection, now=now)])
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute("UPDATE vault_deletions SET delete_bucket=false WHERE vault_id=2")
+        # A run that stopped after DeleteBucket only removes the catalog.
+        self.due_now()
+        self.provider.bucket_tags = {}
+        self.assertEqual(vault_deletion.run_due(self.db, lambda: self.provider), 1)
+        self.assertEqual(self.provider.deleted, [])
+        self.assertEqual(self.deleted_audit()["bucket"], "deleted")
 
 
 class RetentionLockApiTests(RetentionLockFixture):

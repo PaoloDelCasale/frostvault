@@ -3192,6 +3192,11 @@ export interface components {
         VaultDeletionRequest: {
             /** Confirmation */
             confirmation: string;
+            /**
+             * Delete Bucket
+             * @default false
+             */
+            delete_bucket: boolean;
             /** Reason */
             reason: string;
         };
@@ -3203,6 +3208,8 @@ export interface components {
             request: {
                 attempts: number;
                 cancellable: boolean;
+                /** @description The Owner asked to delete the empty Vault Bucket too (#739). */
+                delete_bucket?: boolean;
                 failed_at: string | null;
                 failure: {
                     [key: string]: unknown;

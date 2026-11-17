@@ -30,7 +30,7 @@ allow time for validation and a coordinated fix before disclosure.
   `cloudwatch:GetMetricData`, which is always billed); never grant
   `s3:BypassGovernanceRetention` (the policy denies it explicitly: a Vault's
   optional Retention Lock must hold even against FrostVault's own keys, #736),
-  and keep `s3:DeleteBucket` out of it. A
+  and grant `s3:DeleteBucket` only on `frostvault-*` (an empty Vault Bucket, on request, #739). A
   shared bucket from before Vault Buckets keeps
   `iam/archive-operator-policy.json`, scoped to that bucket.
 - Keep security-sensitive changes isolated and covered by regression tests.

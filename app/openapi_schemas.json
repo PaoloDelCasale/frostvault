@@ -3753,6 +3753,10 @@
                     "null"
                   ],
                   "description": "When the deletion runs again for them."
+                },
+                "delete_bucket": {
+                  "type": "boolean",
+                  "description": "The Owner asked to delete the empty Vault Bucket too (#739)."
                 }
               },
               "required": [

@@ -758,6 +758,8 @@ class VaultDeletionRequest(BaseModel):
 
     confirmation: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=1, max_length=500)
+    # «Also delete the bucket», only for a dedicated Vault Bucket (#739).
+    delete_bucket: bool = False
 
 
 class DuplicateCleanupUpdate(BaseModel):
@@ -1596,7 +1598,7 @@ def cancel_stopped_folder_deletion(vault_id: int, request: Request,
 
 VAULT_DELETION_ERROR_CODES = frozenset({
     "not_tombstone", "reason", "already_requested", "active_jobs", "not_requested",
-    "running", "not_failed", "listing_failed", "refused",
+    "running", "not_failed", "listing_failed", "refused", "shared_bucket",
 })
 
 
@@ -1654,7 +1656,8 @@ def request_vault_deletion(vault_id: int, action: VaultDeletionRequest, request:
             return vault_deletion_service.request_deletion(
                 connection, vault_id=vault_id, actor=_actor(request),
                 confirmation=action.confirmation, reason=action.reason,
-                preview_summary=preview, requested_at=now_iso())
+                preview_summary=preview, requested_at=now_iso(),
+                delete_bucket=action.delete_bucket)
     except (LookupError, ValueError) as exc:
         raise _vault_deletion_error(exc) from exc
 
