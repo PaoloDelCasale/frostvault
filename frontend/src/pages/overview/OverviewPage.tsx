@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { ApiError, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
+import { fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
@@ -119,7 +119,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
       if (state.state === "ready") await queryClient.invalidateQueries();
       else await general.refetch();
     } catch (err) {
-      setRetryError(err instanceof ApiError || err instanceof TypeError ? errorMessage(err, t) : String(err));
+      setRetryError(errorMessage(err, t));
     } finally {
       setRetrying(null);
     }

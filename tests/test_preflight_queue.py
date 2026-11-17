@@ -308,7 +308,7 @@ class PreflightQueueTests(unittest.TestCase):
             self.assertEqual(states(vault['id']), {'unconfirmed': 2})
         body, problems = audit_problems()
         self.assertEqual(sorted(item['vault_id'] for item in problems), [1, 2])
-        self.assertIn('The S3 bucket name is not configured', problems[0]['body'])
+        self.assertIn('A Vault has no S3 bucket in its Vault Target', problems[0]['body'])
         self.assertGreaterEqual(body['open_problem_count'], 2)
         # The next automatic try is minutes away, not a week.
         self.assertFalse(storage.audit_retry_due(failed_at + audit_failures.RETRY_MIN_SECONDS - 1))

@@ -264,10 +264,13 @@ def _native_fixture_runtime():
     source-access, fingerprint and API authorization checks, but represent the
     test sources root as mounted (no arbitrary child gets mount status). Treat
     seeding as the latest maintenance pass so the fake provider is not audited
-    and does not race the UI scenarios. Real maintenance/S3 has separate CI jobs.
+    and does not race the UI scenarios. A Vault created from the UI gets its
+    Vault Bucket (#735) in an in-memory S3. Real maintenance/S3 has separate CI
+    jobs.
     """
     from app import storage
-    from app.services import source_layout
+    from app.services import source_layout, vault_buckets
+    from tests.fake_bucket_s3 import FakeBucketS3
 
     real_mount_probe = source_layout.path_is_mount
     sources = source_layout.get_sources_root().resolve()
@@ -279,9 +282,10 @@ def _native_fixture_runtime():
     def fixture_maintenance_ages(**kwargs):
         return {**real_maintenance_ages(**kwargs), "scan": 0.0, "audit": 0.0}
 
+    vault_bucket_s3 = FakeBucketS3()
     with patch.object(source_layout, "path_is_mount", fixture_mount), patch.object(
         storage, "persisted_maintenance_ages", fixture_maintenance_ages,
-    ):
+    ), patch.object(vault_buckets, "_default_client", lambda region: vault_bucket_s3):
         yield
 
 

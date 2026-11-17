@@ -106,7 +106,8 @@ class Boto3ObjectStore:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
-def off_host_backup_configured(settings_obj: Settings | Any | None = None) -> bool:
+def off_host_backup_configured(settings_obj: Settings | Any | None = None, *,
+                                connection: Any = None) -> bool:
     """Whether deployment configuration requires an off-host backup copy.
 
     A METADATA_BACKUP_BUCKET, usable AWS credentials or any Vault in the
@@ -115,7 +116,8 @@ def off_host_backup_configured(settings_obj: Settings | Any | None = None) -> bo
     once committed: missing credentials or IAM fail the backup.
     """
     cfg = settings_obj if settings_obj is not None else settings
-    return system_bucket.off_host_required(cfg)
+    vaults = (lambda: system_bucket.vaults_exist(connection)) if connection is not None else None
+    return system_bucket.off_host_required(cfg, vaults=vaults)
 
 
 def backup_master_key_configured(master_key: str | None) -> bool:
@@ -702,7 +704,7 @@ def backup_status(connection: Any) -> dict[str, Any]:
         "verification": verification_overview(connection),
         # Where new off-host copies go (#734); None while backups stay local.
         "system_bucket": bucket.public() if bucket is not None else None,
-        "off_host": off_host_backup_configured(),
+        "off_host": off_host_backup_configured(connection=connection),
     }
     if latest is None:
         return {

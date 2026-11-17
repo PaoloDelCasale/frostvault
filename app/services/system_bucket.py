@@ -120,7 +120,7 @@ def aws_credentials_configured() -> bool:
     return any(os.getenv(name, "").strip() for name in _CREDENTIAL_SOURCE_VARIABLES)
 
 
-def vaults_exist() -> bool:
+def vaults_exist(connection: Any = None) -> bool:
     """Whether the catalog holds any Vault, whatever its lifecycle (#735).
 
     A Vault keeps content in its Vault Bucket (a Tombstone too, until its
@@ -128,10 +128,13 @@ def vaults_exist() -> bool:
     server: missing credentials or IAM then fail the backup loudly instead of
     silently downgrading it to local-only.
     """
+    query = "SELECT 1 FROM vaults LIMIT 1"
+    if connection is not None:
+        return connection.execute(query).fetchone() is not None
     from ..database import db
 
-    with db() as connection:
-        return connection.execute("SELECT 1 FROM vaults LIMIT 1").fetchone() is not None
+    with db() as own:
+        return own.execute(query).fetchone() is not None
 
 
 def off_host_required(cfg: Any = None, *,

@@ -157,7 +157,10 @@ def _totals(row: dict[str, Any]) -> dict[str, Any] | None:
 def status(connection: Any, vault_id: int, *, now: datetime | None = None) -> dict[str, Any]:
     """The Vault's settings, its last run, its pending automatic deletions and
     its Cloud Duplicates now, waiting, never seen and deleted so far (#729)."""
-    row = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
+    from .vaults import VAULT_ROW_SQL
+
+    # With its Vault Target: the duplicates are listed under its prefix (#735).
+    row = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault_id,)).fetchone()
     if row is None:
         raise LookupError("Vault not found")
     moment = now or datetime.now(timezone.utc).replace(microsecond=0)
