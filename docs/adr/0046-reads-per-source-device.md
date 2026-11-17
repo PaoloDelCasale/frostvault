@@ -101,3 +101,55 @@ reported as a Stalled Queue.
   read in the rotation.
 - With the server priority on, a long busy period on the host holds new
   uploads for as long as it lasts.
+
+## Amendment: one read, a limit per disk type, rates per device (#766, 2026-11-17)
+
+**Context.** During the adoption of ~52,000 Local Copies without a
+fingerprint (~294 GB), all on one Unraid array HDD, three interleaved reads
+fingerprinted at 17 MB/s and one at 63–117 MB/s: the head seeked between
+files. Every new Local Copy whose upload ran before the verification reached
+it was also read twice, by its upload and by the scan.
+
+**One read.** When an upload's Upload Snapshot pass reads a Local Copy that
+has no fingerprint, that whole, stable read (size and mtime unchanged before
+and after) is its fingerprint: the digest and the part digests are published
+through the same compare-and-swap as the scan verification
+(`publish_local_fingerprint` on the generation, size and mtime of the
+observation; no match with Current is inferred). A multipart file publishes
+it right after the pass, before its send, in a unit of its own. A single PUT
+adds no unit to a successful upload (the small-upload cost budget): its
+publication unit records the same digest of the same observation; a run that
+ends otherwise (a failed send, an automatic gate, an error) publishes it in
+a unit of its own as it ends. A failed send keeps it: it describes the disk,
+not the cloud. The observation joins a
+process-local, bounded set (65,536 entries, 24 hours), and the verification
+skips a row of its listing that is that very observation (same file,
+generation, size and mtime), checked before and again after waiting for the
+device slot. An entry serves one skip and is dropped when the fingerprint is
+retired (#703), so a fingerprint cleared since is read again. The bytes the upload sends are the fingerprinted ones: a single
+PUT sends the payload the pass kept, a multipart send checks every part it
+reads against these part digests and a contradicted part retires the
+fingerprint (#703). An upload whose snapshot comes from the catalog read
+nothing and publishes nothing; there is no resumed multipart that would
+leave earlier parts unread (every new send is a new attempt hashed whole).
+The reverse order, the verification handing a file to its upload while it
+is in the page cache, stays the "hot files" rule above.
+
+**A limit per disk type.** `SOURCE_DEVICE_READ_CONCURRENCY` is now unset by
+default. Unset, each device gets 1 read in flight when its disk is
+rotational and 3 when it is solid-state or unknown, from
+`/sys/block/<disk>/queue/rotational`: `dev:<st_dev>` follows
+`/sys/dev/block/<major>:<minor>` from a partition to its disk and through the
+members (`slaves`) of a dm/md device, rotational when any member is; an
+Unraid array disk (`system.LOCATION` `diskN`) reads `mdNp1` (`mdN`), then
+its member from `rdevName.N` of `/proc/mdstat`. A pool such as `cache` or a
+FUSE `st_dev` is unknown. Set, the value applies to every device, as before.
+The server priority is unchanged: throttled, every device gets 1.
+
+**Rates per device.** The reads under a device slot (verification, Upload
+Snapshot pass, multipart part reads) count their bytes per device; the
+throughput sampler records the counters every 2 seconds and `GET /api/stats`
+reports, for each device reading, waiting or with a measured rate,
+`runtime.source_devices[].limit` and `.bytes_per_second` (last 20 seconds,
+null while unmeasured). `runtime.source_device_read_limit` is the limit of a
+device of unknown type. No schema change.

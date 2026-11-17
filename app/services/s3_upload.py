@@ -229,6 +229,7 @@ class _UploadClient:
                         raise RuntimeError("Local file changed since fingerprinting")
                     buffer.write(chunk)
                     digest.update(chunk)
+                    source_devices.note_read(len(chunk))
                     left -= len(chunk)
             if base64.b64encode(digest.digest()).decode("ascii") != snapshot.part_checksums[number - 1]:
                 raise RuntimeError("Local file changed since fingerprinting")

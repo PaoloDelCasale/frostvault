@@ -500,6 +500,30 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
         self.assertEqual(self.reads, 1)
         self.assert_fingerprint(BIG_A)
 
+    def test_a_failed_send_keeps_the_fingerprint_of_the_whole_read(self) -> None:
+        # #766: no scan fingerprint yet; the upload's read is the fingerprint,
+        # published before the send, so a failed PUT keeps it.
+        from app.services import source_devices
+
+        self.observe_content(BIG_A, mtime_ns=MTIME_NS)
+
+        def provider_down(stage, **kwargs):
+            if stage == "before_put":
+                raise RuntimeError("provider down")
+        self.provider.hook = provider_down
+        job = self.queue()
+        self.run_job(job)
+        row = self.row(job)
+        self.assertIn(row["status"], {"retrying", "failed"}, row["message"])
+        self.assertEqual((self.reads, self.provider.puts), (1, 0))
+        self.assert_fingerprint(BIG_A)
+        with PostgresConnection(self.db_path) as connection:
+            generation = connection.execute(
+                "SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
+        self.assertTrue(source_devices.upload_fingerprints().claim({
+            "vault_file_id": str(self.file_id), "generation": generation,
+            "size": len(BIG_A), "mtime_ns": MTIME_NS}))
+
     def test_contradicted_parts_retire_the_fingerprint_and_the_retry_rehashes(self) -> None:
         self.observe_content(BIG_A, mtime_ns=MTIME_NS)
         self.scan_fingerprint()
@@ -524,11 +548,14 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
         self.assertEqual((row["status"], row["retry_count"]), ("retrying", 2), row["message"])
         self.assertEqual((self.reads, self.provider.puts), (1, 0))
         self.assertIsNone(self.bound(job))
+        # That whole, stable read of B is its fingerprint (#766).
+        self.assert_fingerprint(BIG_B)
 
-        # The next one uploads B; snapshot A is never offered again.
+        # The next one uploads B from it without reading again; snapshot A is
+        # never offered again.
         self.run_job(job)
         version = self.assert_keeper(job)
-        self.assertEqual((self.reads, self.provider.puts), (2, 1))
+        self.assertEqual((self.reads, self.provider.puts), (1, 1))
         self.assertEqual(self.provider.objects[version["object_key"], version["provider_version_id"]][0], BIG_B)
         self.assertEqual([i["snapshot_sha256"] for i in self.intents()],
                          [hashlib.sha256(BIG_A).hexdigest(), hashlib.sha256(BIG_B).hexdigest()])

@@ -2638,6 +2638,10 @@ export interface components {
                     device: string;
                     reading: number;
                     waiting: number;
+                    /** @description Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766). */
+                    limit: number;
+                    /** @description Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured. */
+                    bytes_per_second: number | null;
                 }[];
                 /** @description A requested full scan waits for the Vault (#759). */
                 scan_queued?: boolean;

@@ -34,6 +34,8 @@ jobs:
           --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      # Reads per Source Device as before #766, whatever the runner's disk type.
+      SOURCE_DEVICE_READ_CONCURRENCY: "3"
       PGHOST: localhost
       PGPORT: "5432"
       PGDATABASE: archive_test
@@ -139,6 +141,8 @@ jobs:
           --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      # Reads per Source Device as before #766, whatever the runner's disk type.
+      SOURCE_DEVICE_READ_CONCURRENCY: "3"
       FROSTVAULT_STRESS_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -432,6 +436,8 @@ jobs:
           --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      # Reads per Source Device as before #766, whatever the runner's disk type.
+      SOURCE_DEVICE_READ_CONCURRENCY: "3"
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_DEFAULT_REGION: us-east-1
@@ -537,6 +543,8 @@ jobs:
           --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/archive_test
+      # Reads per Source Device as before #766, whatever the runner's disk type.
+      SOURCE_DEVICE_READ_CONCURRENCY: "3"
       PGHOST: localhost
       PGDATABASE: archive_test
       PGUSER: postgres

@@ -204,11 +204,19 @@ class DeviceSlotTests(unittest.TestCase):
     def test_snapshot_reports_reading_and_waiting(self) -> None:
         slots = DeviceSlots(1)
         with slots.reading("location:disk1"):
-            self.assertEqual(slots.snapshot(), [{"device": "disk1", "reading": 1, "waiting": 0}])
+            self.assertEqual(slots.snapshot(), [{"device": "disk1", "reading": 1, "waiting": 0,
+                                                 "limit": 1, "bytes_per_second": None}])
         self.assertEqual(slots.snapshot(), [])
 
     def test_configured_limit_comes_from_settings(self) -> None:
-        self.assertEqual(Settings().source_device_read_concurrency, 3)
+        # Unset or empty: chosen per device (#766); set: clamped to 1-16.
+        from app.config import source_device_read_concurrency_from_env as parse
+        self.assertIsNone(parse({}))
+        self.assertIsNone(parse({"SOURCE_DEVICE_READ_CONCURRENCY": " "}))
+        self.assertEqual(parse({"SOURCE_DEVICE_READ_CONCURRENCY": "2"}), 2)
+        self.assertEqual(parse({"SOURCE_DEVICE_READ_CONCURRENCY": "99"}), 16)
+        with patch.dict(os.environ, {"SOURCE_DEVICE_READ_CONCURRENCY": ""}):
+            self.assertIsNone(Settings().source_device_read_concurrency)
         self.assertEqual(Settings().server_priority_iowait_percent, 0)
         with patch("app.config.settings", replace(Settings(), source_device_read_concurrency=5)):
             self.assertEqual(source_devices.configured_limit(), 5)

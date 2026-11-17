@@ -243,6 +243,7 @@ class UploadExecution:
             # Match with Current, automatic gate, cancellation, error or any
             # BaseException: the kept payload and its reservation end here.
             run.release_payload()
+            self._flush_read_fingerprint(run)
 
     def _db(self, job: dict[str, Any], mutation: Any, *, shared: bool = False) -> Any:
         result = self.worker._upload_catalog_unit(job, mutation, shared=shared)
@@ -502,6 +503,11 @@ class UploadExecution:
             raise RuntimeError("Local file changed since fingerprinting")
         run.snapshot = snapshot
         self._retire_contradicted_fingerprint(run)
+        self._hold_read_fingerprint(run, hashed)
+        if snapshot.size >= MULTIPART_THRESHOLD:
+            # A multipart send can last long: the scan must not read it
+            # meanwhile, one unit is negligible next to its parts.
+            self._flush_read_fingerprint(run)
         if payload is not None:
             if payload.data is None:
                 raise RuntimeError("Single-PUT hashing kept no payload")
@@ -558,9 +564,70 @@ class UploadExecution:
             return
         self._retire_fingerprint(run, bytes(row["local_sha256"]))
 
+    def _hold_read_fingerprint(self, run: _Run, hashed: os.stat_result) -> None:
+        """One read for a Local Copy without a fingerprint (#766).
+
+        The Upload Snapshot pass just read the whole file, stable (size and
+        mtime unchanged before and after, ``prepare_upload_snapshot``): its
+        digest and part digests are the Local Copy fingerprint, published with
+        the scan verification's compare-and-swap on the generation and the
+        stat (``publish_local_fingerprint``, no Current match). A multipart
+        file publishes it at once, before its send, in a unit of its own. A
+        single PUT adds no unit to a successful upload: the publication unit
+        records the same digest of the same observation (#597 cost budget);
+        a run that ends otherwise (a failed send, a gate, an error) publishes
+        it in a unit of its own as it ends. Either way a failed send keeps it:
+        it describes the disk, not the cloud. The scan verification then
+        skips that observation. The bytes sent are these: a
+        single PUT sends the payload this pass kept, a multipart send checks
+        every part it reads against these part digests. A snapshot taken from
+        the catalog (#703) read nothing and publishes nothing.
+        """
+        row, snapshot, observed = run.extra.get("fingerprint"), run.snapshot, run.observed
+        if (row is None or snapshot is None or observed is None or run.generation is None
+                or row["local_sha256"] is not None or int(row["generation"]) != run.generation
+                or (hashed.st_size, hashed.st_mtime_ns) != (observed.st_size, observed.st_mtime_ns)):
+            return
+        run.extra["read_fingerprint"] = {
+            "generation": int(run.generation), "digest": snapshot.plaintext_sha256,
+            "size": hashed.st_size, "mtime_ns": hashed.st_mtime_ns,
+            "parts": _local_parts(snapshot, hashed)}
+
+    def _publish_read_fingerprint_in(self, run: _Run, catalog: Any) -> None:
+        """Publish the held fingerprint inside the caller's unit (idempotent)."""
+        held = run.extra.get("read_fingerprint")
+        if held is None:
+            return
+        run.extra["read_fingerprint_published"] = bool(catalog.publish_local_fingerprint(
+            run.job["file_id"], generation=held["generation"], plaintext_sha256=held["digest"],
+            size=held["size"], mtime_ns=held["mtime_ns"], parts=held["parts"]))
+
+    def _read_fingerprint_committed(self, run: _Run) -> None:
+        """After the unit that published it committed: let the scan skip it."""
+        held = run.extra.pop("read_fingerprint", None)
+        published = run.extra.pop("read_fingerprint_published", False)
+        if held is not None and published:
+            source_devices.upload_fingerprints().add(
+                run.job["file_id"], generation=held["generation"], size=held["size"],
+                mtime_ns=held["mtime_ns"])
+
+    def _flush_read_fingerprint(self, run: _Run) -> None:
+        """A run that ended before its send-started unit still keeps the read."""
+        if run.extra.get("read_fingerprint") is None:
+            return
+        try:
+            self._db(run.job, lambda catalog: self._publish_read_fingerprint_in(run, catalog))
+        except Exception:  # A lost claim or an unavailable catalog: the scan reads it.
+            run.extra.pop("read_fingerprint", None)
+            logging.getLogger(__name__).debug("Upload read fingerprint not published", exc_info=True)
+            return
+        self._read_fingerprint_committed(run)
+
     def _retire_fingerprint(self, run: _Run, digest: bytes) -> None:
         observed = run.observed
         assert observed is not None and run.generation is not None
+        # The scan verification must read it again (#766).
+        source_devices.upload_fingerprints().discard(run.job["file_id"])
         self._db(run.job, lambda catalog: catalog.retire_local_fingerprint(
             run.job["file_id"], generation=run.generation, plaintext_sha256=digest,
             size=observed.st_size, mtime_ns=observed.st_mtime_ns))
@@ -610,7 +677,11 @@ class UploadExecution:
                 raise w.JobLeaseLost("Upload completion claim was lost")
             return True
 
-        return bool(self._db(job, finish))
+        matched = bool(self._db(job, finish))
+        if matched:
+            # Its own publication of the same read replaced the held one.
+            run.extra.pop("read_fingerprint", None)
+        return matched
 
     # -- the send --------------------------------------------------------------
 
@@ -898,11 +969,12 @@ class UploadExecution:
                 (version.id, job["file_id"])).fetchone()
             run.extra["superseding"] = bool(row["superseding"])
             if run.snapshot is not None and run.generation is not None and run.observed is not None:
-                catalog.publish_local_fingerprint(
+                # Also the held fingerprint of the run's whole read (#766).
+                run.extra["read_fingerprint_published"] = bool(catalog.publish_local_fingerprint(
                     job["file_id"], generation=run.generation,
                     plaintext_sha256=run.snapshot.plaintext_sha256, size=run.observed.st_size,
                     mtime_ns=run.observed.st_mtime_ns, match_current=True,
-                    parts=_local_parts(run.snapshot, run.observed))
+                    parts=_local_parts(run.snapshot, run.observed)))
             if str(row["replacing_version_id"]) == version.id:
                 catalog.promote_replacement(
                     job["file_id"], archive_version_id=version.id,
@@ -913,6 +985,8 @@ class UploadExecution:
             catalog.clear_reconciliation_block(job["file_id"])
 
         self._db(job, publish)
+        # The held fingerprint is the same digest of the same observation.
+        self._read_fingerprint_committed(run)
         version.integrity = "verified"
 
     def _complete(self, run: _Run) -> None:
