@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
+from psycopg.rows import tuple_row
+
 from .services.job_admission import (
     JOB_LEASE_HELD_STATUSES,
     TERMINAL_JOB_STATUSES,
@@ -994,20 +996,22 @@ class ArchiveCatalog:
     ) -> dict[str, datetime]:
         """Keep one continuous pending timer per pending file of the Vault.
 
-        ``pending`` maps each file that is pending now to the instant its
-        pending state began. Existing timers never reset; files no longer
+        ``pending`` maps the id (text) of each file that is pending now to
+        the instant its pending state began. Existing timers never reset; files no longer
         pending lose theirs. Returns the durable ``{file_id: pending_since}``
         of the files still pending at the write: a file protected after the
         caller read it (a concurrent upload published Current and cleared its
         timer) is left out and never gets its timer back (#549).
         """
-        ids = list(pending)
-        # One read of every timer of the Vault. A write happens only for a
-        # timer that starts or ends: an unchanged pending file is never
-        # rewritten (#622), so a long queue costs no WAL per call.
-        rows = self.connection.execute(
+        # One read of every timer of the Vault, after the caller's read: a
+        # timer a concurrent upload cleared is gone here. The pending set is
+        # compared in Python, never shipped to the server as one array per
+        # timer row (#767). A write happens only for a timer that starts or
+        # ends: an unchanged pending file is never rewritten (#622), so a long
+        # queue costs no WAL per call.
+        timers = self.connection.execute(
             f"""
-            SELECT f.id, f.pending_since, (f.id = ANY(%s::uuid[])) AS wanted,
+            SELECT f.id::text, f.pending_since,
                    (f.local_presence = 'present' AND f.held_version_id IS NULL
                     AND NOT EXISTS (
                         SELECT 1 FROM archive_versions cur
@@ -1016,12 +1020,19 @@ class ArchiveCatalog:
             FROM files f
             WHERE f.vault_id = %s AND f.pending_since IS NOT NULL
             """,
-            (ids, vault_id),
-        ).fetchall()
-        durable = {str(row["id"]): row["pending_since"]
-                   for row in rows if row["wanted"] and row["eligible"]}
-        timed = {str(row["id"]) for row in rows}
-        ended = [str(row["id"]) for row in rows if not row["wanted"]]
+            (vault_id,),
+        )
+        # Plain tuples: a long adoption has one timer row per pending file.
+        timers.row_factory = tuple_row
+        durable: dict[str, datetime] = {}
+        timed: set[str] = set()
+        ended: list[str] = []
+        for file_id, since, eligible in timers.fetchall():
+            timed.add(file_id)
+            if file_id not in pending:
+                ended.append(file_id)
+            elif eligible:
+                durable[file_id] = since
         if ended:
             self.connection.execute(
                 """
@@ -1030,7 +1041,7 @@ class ArchiveCatalog:
                 """,
                 (vault_id, ended),
             )
-        starting = [file_id for file_id in ids if file_id not in timed]
+        starting = [file_id for file_id in pending if file_id not in timed]
         if starting:
             sinces = [_required_timestamp(pending[file_id]) for file_id in starting]
             # Re-checked under the row lock: a file protected after the caller
