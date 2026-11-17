@@ -1,54 +1,72 @@
-"""Vault creation from the UI (issues #7, #6, #150, and #412).
+"""Vault creation from the UI (issues #7, #6, #150, #412 and #735).
 
 The single owner creates every Vault from the UI; there is no environment
 bootstrap Vault and no per-Vault membership.
 
 The server is the sole authority over storage identity. Every vault gets an
-immutable, randomly generated UUID, and the S3 namespace
-(``vaults/<uuid>/``) is derived from that UUID alone. Empty Vaults also
-receive ``/sources/managed/<uuid>``; adoption mode stores any free existing
-directory under a custom Source Volume instead. Callers can never
-choose S3 bucket/prefix: ``name`` is only a
-human-readable label (Vaults have no slug, #593), and adoption accepts only a volume alias plus
-volume-relative path — never an arbitrary filesystem path.
+immutable, randomly generated UUID and, since #735 (ADR-0049), its own Vault
+Bucket that FrostVault creates (``vault_buckets``), with its objects at the
+bucket root. Empty Vaults also receive ``/sources/managed/<uuid>``; adoption
+mode stores any free existing directory under a custom Source Volume instead.
+Callers can never choose S3 bucket/prefix: ``name`` is only a human-readable
+label (Vaults have no slug, #593; the bucket name only carries a slug of it),
+and adoption accepts only a volume alias plus volume-relative path -- never an
+arbitrary filesystem path.
 
-Objects use readable keys under the immutable ``vaults/<uuid>/`` namespace.
+Where a Vault's objects live is data of its Vault Target: the bucket, its
+region and its ``key_layout``. A Vault Bucket (``bucket_root``) holds the
+Vault at its root; a Vault of an older installation keeps its shared bucket
+and its ``vaults/<uuid>/`` prefix (``vault_prefix``). Every key is built from
+the target's prefix (``object_prefix``), never from configuration.
 
-Vault row and local root are provisioned as one
-unit. Empty mode creates the managed directory inside the transaction;
-adoption binds an existing directory in place and never moves, copies,
-chowns, or rewrites adopted content. Because the identity is a freshly
-generated UUID checked against a unique database index, concurrent empty
-creations cannot collide in the database, the filesystem, or the S3 prefix.
+Vault row, bucket reservation and local root are provisioned as one unit.
+Empty mode creates the managed directory inside the transaction; adoption
+binds an existing directory in place and never moves, copies, chowns, or
+rewrites adopted content. The Vault is ``provisioning`` until its bucket is
+created and verified, then ``active``.
 """
 from __future__ import annotations
 
 import os
 import shutil
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
-from . import source_directories
+from . import source_directories, vault_buckets
+from .bucket_provisioning import RetentionLock
+from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX, object_prefix
 from .source_layout import ensure_managed_directory, managed_vault_path
 from .vault_relocation import enroll_vault_root_identity
 
 
-# A Vault row with its immutable cloud location. The bucket belongs to the
-# Vault Target and the prefix is derived from the Vault UUID alone; neither is
-# stored on the Vault (#593). Callers read ``s3_bucket``/``s3_prefix`` from
-# this projection, never from Vault columns.
-VAULT_ROW_SQL = """
-    SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
-           'vaults/' || v.uuid::text || '/' AS s3_prefix
+
+# The Vault's object prefix in its target's bucket, for rows aliased ``v``
+# (vaults) and ``t`` (vault_targets). ``object_prefix`` is its Python twin.
+PREFIX_SQL = (
+    "(CASE t.key_layout WHEN 'bucket_root' THEN '' "
+    "ELSE 'vaults/' || v.uuid::text || '/' END)"
+)
+# The cloud location of a Vault row, read from its Vault Target (#593, #735).
+TARGET_COLUMNS_SQL = (
+    "t.bucket AS s3_bucket, t.region AS s3_region, t.key_layout AS s3_key_layout, "
+    f"{PREFIX_SQL} AS s3_prefix"
+)
+
+# A Vault row with its immutable cloud location. The bucket, region and key
+# layout belong to the Vault Target; none is stored on the Vault (#593).
+# Callers read ``s3_bucket``/``s3_prefix`` from this projection, never from
+# Vault columns or configuration.
+VAULT_ROW_SQL = f"""
+    SELECT v.*, {TARGET_COLUMNS_SQL}
     FROM vaults v JOIN vault_targets t ON t.id = v.target_id
 """
 
 
-def vault_prefix(vault_uuid: Any) -> str:
-    """The Vault's S3 namespace, ``vaults/<uuid>/``."""
-    return f"vaults/{vault_uuid}/"
+def vault_object_prefix(vault: Any) -> str:
+    """``object_prefix`` of a row from ``VAULT_ROW_SQL`` (or with ``s3_key_layout``)."""
+    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 class VaultCreationError(Exception):
@@ -60,7 +78,7 @@ class InvalidVaultName(VaultCreationError):
 
 
 class VaultProvisioningUnavailable(VaultCreationError):
-    """The server has no default S3 bucket configured."""
+    """Vault Buckets cannot be created here: no AWS region or credentials."""
 
 
 class VaultAdoptionError(VaultCreationError):
@@ -82,6 +100,7 @@ _VAULT_INVENTORY_FIELDS = (
     "name",
     "source_root",
     "s3_bucket",
+    "s3_region",
     "s3_prefix",
     "lifecycle",
     "paused",
@@ -97,30 +116,19 @@ def list_vault_inventory(connection: Any) -> list[dict[str, Any]]:
     # A requested Vault Deletion of a Tombstone (#717): pending, running or failed.
     deletions = {int(r["vault_id"]): r["status"] for r in connection.execute(
         "SELECT vault_id, status FROM vault_deletions").fetchall()}
+    # A new Vault whose bucket is not ready yet (#735): its creation state.
+    provisioning = vault_buckets.provisioning_states(connection)
     items = []
     for row in rows:
         item = {field: row[field] for field in _VAULT_INVENTORY_FIELDS}
         item["uuid"] = str(row["uuid"])
+        item["dedicated_bucket"] = row["s3_key_layout"] == KEY_LAYOUT_BUCKET_ROOT
         released = row["root_released_at"]
         item["root_released_at"] = released.isoformat() if released else None
         item["vault_deletion_status"] = deletions.get(int(row["id"]))
+        item["bucket_provisioning"] = provisioning.get(int(row["id"]))
         items.append(item)
     return items
-
-
-def _vault_target_id(connection: Any, bucket: str, region: str) -> int:
-    """The immutable Vault Target for ``bucket``/``region``, created once."""
-    connection.execute(
-        """
-        INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', %s, %s)
-        ON CONFLICT (provider, bucket, region) DO NOTHING
-        """,
-        (bucket, region),
-    )
-    return int(connection.execute(
-        "SELECT id FROM vault_targets WHERE provider='s3' AND bucket=%s AND region=%s",
-        (bucket, region),
-    ).fetchone()["id"])
 
 
 def create_vault(
@@ -129,23 +137,25 @@ def create_vault(
     creation_mode: str = "empty",
     volume_alias: str | None = None,
     relative_path: str | None = None,
+    retention_lock: RetentionLock | None = None,
+    client_for: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a Vault with an immutable plaintext cloud namespace.
+    """Create a Vault and its dedicated Vault Bucket (#735).
 
     ``creation_mode`` is ``empty`` (default) or ``adopt``. Adoption requires
     ``volume_alias`` and ``relative_path`` naming a free directory inside a
     custom Source Volume. Callers never supply S3 identity or absolute
-    filesystem paths.
+    filesystem paths. ``retention_lock`` is the optional Governance Retention
+    Lock of the new bucket (#736 exposes it); it cannot change afterwards.
+
+    The Vault, its reserved bucket name and its root are committed first; the
+    bucket is then created and verified (``vault_buckets.provision``). The
+    returned row carries ``bucket``, the creation state: when it failed, the
+    Vault stays ``provisioning`` and the creation resumes later.
     """
     create_mode = (creation_mode or "empty").strip().lower()
     if create_mode not in _CREATION_MODES:
         raise InvalidVaultName("creation_mode must be 'empty' or 'adopt'")
-
-    default_bucket = settings.vault_s3_bucket.strip()
-    if not default_bucket:
-        raise VaultProvisioningUnavailable(
-            "Vault creation is not configured on this server"
-        )
 
     clean_name = name.strip()
     if not clean_name:
@@ -161,16 +171,18 @@ def create_vault(
             "volume_alias and relative_path are only valid for adoption"
         )
 
+    region = (settings.aws_region or "").strip()
+    try:
+        # A client first: without a region or credentials nothing is saved.
+        client = vault_buckets.client_for_region(region, client_for)
+    except vault_buckets.VaultBucketUnavailable as exc:
+        raise VaultProvisioningUnavailable(str(exc)) from None
+
     # The server -- never the caller -- mints the storage identity. UUIDv4
     # is already collision-resistant; the database's unique index on
     # vaults.uuid additionally guarantees a collision can never persist even
     # under concurrent creation (vaults_uuid_uq).
     vault_uuid = str(uuid.uuid4())
-    region = (settings.aws_region or "").strip()
-    if not region:
-        raise VaultProvisioningUnavailable(
-            "Vault creation is not configured on this server"
-        )
     adopting = create_mode == "adopt"
     if not adopting:
         ensure_managed_directory()
@@ -192,15 +204,19 @@ def create_vault(
                     raise VaultAdoptionError(exc.reason, str(exc)) from exc
                 source_root = str(adopted)
 
-            target_id = _vault_target_id(connection, default_bucket, region)
+            # The bucket name is saved before CreateBucket (ADR-0049).
+            target_id = vault_buckets.reserve(
+                connection, vault_name=clean_name, region=region,
+                retention_lock=retention_lock)
             inserted = connection.execute(
                 """
-                INSERT INTO vaults(uuid, target_id, name, source_root)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO vaults(uuid, target_id, name, source_root, lifecycle)
+                VALUES (%s, %s, %s, %s, 'provisioning')
                 RETURNING id
                 """,
                 (vault_uuid, target_id, clean_name, source_root),
             ).fetchone()
+            vault_buckets.start(connection, int(inserted["id"]))
             row = connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (inserted["id"],),
             ).fetchone()
@@ -234,4 +250,9 @@ def create_vault(
         if directory_created:
             shutil.rmtree(source_root, ignore_errors=True)
         raise
-    return vault
+    bucket = vault_buckets.provision(int(vault["id"]), client=client)
+    with db() as connection:
+        row = connection.execute(
+            f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault["id"],),
+        ).fetchone()
+    return {**row, "uuid": str(row["uuid"]), "bucket": bucket}

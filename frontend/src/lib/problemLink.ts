@@ -5,6 +5,8 @@ export function problemLink(vaultId: number | null, params: Record<string, unkno
   if (!vaultId) return "/system";
   // A Vault Deletion acts on a Tombstone, reachable only from the Overview (#717).
   if (params.vault_deletion) return "/#archived";
+  // A Vault Bucket not created yet (#735): the Vault is listed on the Overview.
+  if (params.vault_bucket) return "/#creating";
   // Automatic Duplicate Cleanup (#726): a scheduled run is cancelled from its
   // settings; a capped one is confirmed by hand from the Cloud-only files.
   if (params.duplicate_cleanup) return params.group_id ? vaultSettingsUrl(vaultId, "duplicates") : vaultFilesUrl(vaultId, { state: "cloud_only" });

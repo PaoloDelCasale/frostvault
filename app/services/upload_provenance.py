@@ -21,7 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
 from .s3_copy import ProviderResponseError, _object_version_entries
-from .vault_paths import expected_cloud_key
+from .vault_paths import expected_cloud_key, object_prefix
 
 TOKEN_KEY = "frostvault-upload"
 ABSENT_OPERATION = 'ProvenAbsent'
@@ -282,7 +282,7 @@ def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     lock = "SHARE" if shared else "NO KEY UPDATE"
     vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
     row = connection.execute(
-        """SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region,
+        """SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region, t.key_layout,
                   j.status AS job_status, j.file_id AS job_file_id, j.vault_id AS job_vault_id,
                   j.action AS job_action,
                   EXISTS (SELECT 1 FROM jobs other WHERE other.file_id=f.id AND other.id<>%(job)s
@@ -301,7 +301,7 @@ def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
         raise UploadBlocked("already_resolved")
     if (not vault or not row or row["job_status"] is None or row["job_action"] not in TARGET_ACTIONS
             or str(row["job_file_id"]) != str(job["file_id"]) or row["job_vault_id"] != job["vault_id"]
-            or key != expected_cloud_key(row["path"], f"vaults/{vault['uuid']}")):
+            or key != expected_cloud_key(row["path"], object_prefix(row["key_layout"], vault["uuid"]))):
         raise UploadBlocked("identity_changed")
     if vault["lifecycle"] != "active":
         raise UploadBlocked("vault_suspended")
@@ -448,7 +448,7 @@ class UploadAttempt:
 _SNAPSHOT_COLUMNS = """s.id AS snapshot_id, s.vault_id, s.file_id, s.path, s.path_since, s.source_root,
     s.root_identity, s.provider, s.local_generation, s.size, s.mtime_ns, s.owner_uid,
     s.owner_gid, s.file_mode, s.plaintext_sha256, s.part_size, s.part_sha256, s.verification, s.closed_at, v.uuid AS vault_uuid,
-    t.bucket, t.region"""
+    t.bucket, t.region, t.key_layout"""
 _SNAPSHOT_FROM = """upload_snapshots s JOIN vaults v ON v.id=s.vault_id
     JOIN vault_targets t ON t.id=v.target_id"""
 _ATTEMPT_COLUMNS = _SNAPSHOT_COLUMNS + """, a.id AS attempt_id, a.token, a.job_id,
@@ -464,7 +464,7 @@ def _admitted(row: dict[str, Any]) -> AdmittedSnapshot:
         owner_gid=row["owner_gid"], file_mode=row["file_mode"])
     pinned = {"vault_id": row["vault_id"], "file_id": str(row["file_id"]),
               "bucket": row["bucket"], "region": row["region"],
-              "key": expected_cloud_key(row["path"], f"vaults/{row['vault_uuid']}"),
+              "key": expected_cloud_key(row["path"], object_prefix(row["key_layout"], row["vault_uuid"])),
               "provider": row["provider"], "path": row["path"], "path_since": row["path_since"],
               "source_root": row["source_root"], "root_identity": row["root_identity"]}
     return AdmittedSnapshot(str(row["snapshot_id"]), row["vault_id"], str(row["file_id"]), pinned,

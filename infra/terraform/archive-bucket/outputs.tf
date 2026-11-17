@@ -14,10 +14,8 @@ output "aws_region" {
 }
 
 output "application_env" {
-  description = "Environment variables required by FrostVault."
+  description = "Environment variables required by FrostVault. No bucket: FrostVault creates a Vault Bucket for every new Vault."
   value = {
     AWS_DEFAULT_REGION = var.aws_region
-    S3_BUCKET          = aws_s3_bucket.archive.bucket
-    VAULT_S3_BUCKET    = aws_s3_bucket.archive.bucket
   }
 }

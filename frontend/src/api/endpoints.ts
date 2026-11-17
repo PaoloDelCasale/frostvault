@@ -46,7 +46,9 @@ import type {
   StatsResponse,
   StorageEstimateRequest,
   StorageEstimateResponse,
+  VaultBucketStatus,
   VaultCreateRequest,
+  VaultCreationCancelled,
   VaultCreateResponse,
   VaultSelectRequest,
   VaultSelectResponse,
@@ -251,6 +253,19 @@ export function createVault(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function retryVaultBucket(vaultId: number): Promise<VaultBucketStatus> {
+  return apiRequest<VaultBucketStatus>(`/api/vaults/${vaultId}/bucket/retry`, { method: "POST" });
+}
+
+export function fetchVaultBucket(vaultId: number): Promise<VaultBucketStatus> {
+  return apiRequest<VaultBucketStatus>(`/api/vaults/${vaultId}/bucket`);
+}
+
+/** Cancel a Vault still being created (#735); a destructive action behind reauthentication. */
+export function cancelVaultCreation(vaultId: number): Promise<VaultCreationCancelled> {
+  return apiRequest<VaultCreationCancelled>(`/api/vaults/${vaultId}/creation/cancel`, { method: "POST" });
 }
 
 export function selectVault(

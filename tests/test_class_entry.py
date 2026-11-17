@@ -31,6 +31,7 @@ from app.config import Settings
 from app.services import duplicate_cleanup, minimum_storage, source_layout
 from app.services import vaults as vaults_service
 from app.services.catalog_audit import audit_vault_catalog
+from tests.fake_bucket_s3 import fake_vault_buckets
 from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn
 from tests.test_cloud_scan_batching import PREFIX, VAULT, VAULT_UUID, _run_scan, _seed_vault
@@ -294,8 +295,8 @@ class NewVaultTests(unittest.TestCase):
         source_layout.override_sources_root(sources)
         with PostgresConnection(str(self.path)) as connection:
             insert_owner(connection, display_name="Alice")
-        configured = replace(Settings(), database_dsn=database_dsn(str(self.path)),
-                             vault_s3_bucket="test-bucket")
+        configured = replace(Settings(), database_dsn=database_dsn(str(self.path)))
+        fake_vault_buckets(self)
         for target in ("app.database.settings", "app.services.vaults.settings"):
             patcher = patch(target, configured)
             patcher.start()

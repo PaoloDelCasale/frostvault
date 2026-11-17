@@ -393,18 +393,19 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
         base = __import__("app.config", fromlist=["settings"]).settings
         for bucket in ("", "example-bucket", "REPLACE-WITH-A-BUCKET"):
             with self.subTest(bucket=bucket):
-                configured = replace(base, metadata_backup_bucket=bucket, vault_s3_bucket="")
+                configured = replace(base, metadata_backup_bucket=bucket)
                 with (
                     patch.object(metadata_backups, "settings", configured),
                     patch.object(metadata_backups.system_bucket,
                                  "aws_credentials_configured", return_value=False),
+                    patch.object(metadata_backups.system_bucket, "vaults_exist", return_value=False),
                 ):
                     self.assertIsNone(metadata_backups.default_object_store())
 
-    def test_the_shared_vault_bucket_no_longer_selects_the_backup_bucket(self) -> None:
-        """#734: backups go to the System Bucket, never to VAULT_S3_BUCKET."""
+    def test_backups_go_to_the_system_bucket(self) -> None:
+        """#734: backups go to the System Bucket, never to a Vault's bucket."""
         base = __import__("app.config", fromlist=["settings"]).settings
-        configured = replace(base, vault_s3_bucket="shared-bucket", metadata_backup_bucket="")
+        configured = replace(base, metadata_backup_bucket="")
         system = metadata_backups.system_bucket.SystemBucket(
             "frostvault-system-abcd1234", "eu-south-1", "created")
         client = object()
@@ -420,10 +421,10 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
         s3_client.assert_called_once_with(region="eu-south-1")
         self.assertEqual(store.bucket, "frostvault-system-abcd1234")
 
-    def test_the_shared_vault_bucket_still_requires_an_off_host_copy(self) -> None:
-        """S1: an upgrade with VAULT_S3_BUCKET but no credentials/IAM fails loudly."""
+    def test_any_vault_requires_an_off_host_copy(self) -> None:
+        """S1, #735: Vaults but no credentials/IAM fail loudly, never local-only."""
         base = __import__("app.config", fromlist=["settings"]).settings
-        configured = replace(base, vault_s3_bucket="shared-bucket", metadata_backup_bucket="")
+        configured = replace(base, metadata_backup_bucket="")
         refusal = metadata_backups.system_bucket.SystemBucketUnavailable(
             "Creating System Bucket frostvault-system-abcd1234 did not finish: "
             "S3 refused s3:CreateBucket (AccessDenied). FrostVault retries with the same name")
@@ -431,6 +432,7 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
             patch.object(metadata_backups, "settings", configured),
             patch.object(metadata_backups.system_bucket,
                          "aws_credentials_configured", return_value=False),
+            patch.object(metadata_backups.system_bucket, "vaults_exist", return_value=True),
             patch.object(metadata_backups.system_bucket, "ensure", side_effect=refusal) as ensure,
         ):
             self.assertTrue(metadata_backups.off_host_backup_configured())

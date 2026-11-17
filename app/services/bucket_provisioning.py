@@ -25,6 +25,7 @@ provider messages, which can contain account identifiers.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import string
 from dataclasses import dataclass, field
@@ -46,6 +47,11 @@ _NAME_TAKEN = frozenset({"BucketAlreadyExists"})
 # GetBucketLocation answers a client of another region with these.
 _OTHER_REGION = frozenset({"PermanentRedirect", "AuthorizationHeaderMalformed"})
 OWNERSHIP = "BucketOwnerEnforced"
+# Objects smaller than 128 KiB never transition (they stay in their class,
+# Standard for FrostVault): the documented product rule. It is also the AWS
+# default since September 2024, but FrostVault states it on every lifecycle it
+# writes instead of inheriting whatever an SDK or the account defaults to.
+TRANSITION_MINIMUM_OBJECT_SIZE = "all_storage_classes_128K"
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,9 @@ class BucketSpec:
     # The lifecycle configuration FrostVault applies (see ``verify_bucket``).
     lifecycle_rules: tuple[Mapping[str, Any], ...] = ()
     retention_lock: RetentionLock | None = None
+    # ``TransitionDefaultMinimumObjectSize`` of the lifecycle; None leaves it
+    # to the provider (the System Bucket only aborts multipart uploads).
+    transition_minimum_object_size: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,8 +128,20 @@ def random_bucket_name(stem: str, *, length: int = 8) -> str:
     return name
 
 
-def _error_code(exc: ClientError) -> str:
-    return str(exc.response.get("Error", {}).get("Code") or "ClientError")
+_SAFE_ERROR_CODE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def error_code(exc: ClientError) -> str:
+    """The provider's error code, kept only when it looks like one.
+
+    An S3-compatible endpoint may answer anything: an unexpected value is
+    never stored or shown, only ``ClientError``.
+    """
+    code = str(exc.response.get("Error", {}).get("Code") or "")
+    return code if _SAFE_ERROR_CODE.fullmatch(code) else "ClientError"
+
+
+_error_code = error_code
 
 
 def _failed(action: str, exc: ClientError) -> BucketProvisioningError:
@@ -176,16 +197,7 @@ def configure_bucket(client: Any, spec: BucketSpec) -> None:
             call(Bucket=name, **arguments)
         except ClientError as exc:
             raise _failed(action, exc) from None
-    try:
-        if spec.lifecycle_rules:
-            client.put_bucket_lifecycle_configuration(
-                Bucket=name,
-                LifecycleConfiguration={"Rules": [dict(rule) for rule in spec.lifecycle_rules]},
-            )
-        else:
-            client.delete_bucket_lifecycle(Bucket=name)
-    except ClientError as exc:
-        raise _failed("s3:PutLifecycleConfiguration", exc) from None
+    apply_lifecycle(client, spec)
     if spec.tags:
         # Keep tags someone else added (cost allocation, AWS Organizations).
         tags = {**_bucket_tags(client, name, action="s3:GetBucketTagging"), **spec.tags}
@@ -205,6 +217,34 @@ def configure_bucket(client: Any, spec: BucketSpec) -> None:
             })
         except ClientError as exc:
             raise _failed("s3:PutBucketObjectLockConfiguration", exc) from None
+
+
+def apply_lifecycle(client: Any, spec: BucketSpec) -> None:
+    """Replace the bucket's whole lifecycle configuration with the spec's.
+
+    Every rule not in the spec is removed: call this only on a bucket whose
+    lifecycle is FrostVault's alone (a Vault Bucket), when it is created and
+    when it no longer matches the spec (a Storage Plan change). The System
+    Bucket keeps the Owner's extra rules and is never rewritten.
+    """
+    try:
+        if spec.lifecycle_rules:
+            request: dict[str, Any] = {
+                "Bucket": spec.name,
+                "LifecycleConfiguration": {"Rules": [dict(rule) for rule in spec.lifecycle_rules]},
+            }
+            if spec.transition_minimum_object_size:
+                request["TransitionDefaultMinimumObjectSize"] = spec.transition_minimum_object_size
+            client.put_bucket_lifecycle_configuration(**request)
+        else:
+            client.delete_bucket_lifecycle(Bucket=spec.name)
+    except ClientError as exc:
+        raise _failed("s3:PutLifecycleConfiguration", exc) from None
+
+
+def lifecycle_check(client: Any, spec: BucketSpec) -> BucketCheck:
+    """Whether the bucket's lifecycle is exactly the spec's (rules and minimum size)."""
+    return _lifecycle_check(client, spec, extra_rules=False)
 
 
 def provision_bucket(client: Any, spec: BucketSpec) -> BucketVerification:
@@ -354,12 +394,20 @@ def _normalized_rule(rule: Mapping[str, Any]) -> dict[str, Any]:
 
 def _lifecycle_check(client: Any, spec: BucketSpec, *, extra_rules: bool) -> BucketCheck:
     try:
-        actual = client.get_bucket_lifecycle_configuration(Bucket=spec.name).get("Rules") or []
+        configuration = client.get_bucket_lifecycle_configuration(Bucket=spec.name)
     except ClientError as exc:
         if _error_code(exc) != "NoSuchLifecycleConfiguration":
             return BucketCheck("bucket.lifecycle", False,
                                f"S3 refused s3:GetLifecycleConfiguration ({_error_code(exc)})")
-        actual = []
+        configuration = {}
+    actual = configuration.get("Rules") or []
+    wanted_size = spec.transition_minimum_object_size
+    if wanted_size and actual:
+        # Absent means the provider default, which AWS documents as 128 KiB.
+        size = configuration.get("TransitionDefaultMinimumObjectSize") or TRANSITION_MINIMUM_OBJECT_SIZE
+        if size != wanted_size:
+            return BucketCheck("bucket.lifecycle", False,
+                               f"The lifecycle minimum transition size is {size}, not {wanted_size}")
     present = [_normalized_rule(rule) for rule in actual]
     wanted = [_normalized_rule(rule) for rule in spec.lifecycle_rules]
     if extra_rules:

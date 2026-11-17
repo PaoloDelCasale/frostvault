@@ -65,7 +65,17 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     localized = dict(params)
     key = localized.get("remediation_key")
     if isinstance(key, str) and has_message(key, "en"):
-        localized["remediation"] = translate(key, locale=locale)
+        # A keyed remediation may name the bucket it is about (#735); its
+        # stored English text names it too.
+        bucket = localized.get("bucket")
+        if not bucket:
+            from .cloud_preflight_gate import remediation_match
+
+            match = remediation_match(str(localized.get("remediation") or ""))
+            bucket = match[1].get("bucket") if match else None
+        localized["remediation"] = (
+            translate(key, locale=locale, bucket=str(bucket)) if bucket
+            else translate(key, locale=locale))
     # A blocked protection says its known cause (#711); a problem recorded
     # without one, or by an earlier release, keeps the generic advice.
     cause = localized.get("cause_key")
@@ -810,6 +820,15 @@ _DUPLICATE_CLEANUP_RESOLUTION = """
 """
 
 
+# A Vault Bucket not created yet (#735) closes once its Vault left
+# provisioning (``vault_buckets`` closes it on activation; this is the net).
+_VAULT_BUCKET_RESOLUTION = """
+    n.event='vault_bucket_failed' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.lifecycle='provisioning'
+    )
+"""
+
+
 # Problems of a stopped Vault that still need the Owner: a failed Vault
 # Deletion of its Tombstone (#717, ADR-0047).
 STOPPED_VAULT_PROBLEM_EVENTS = frozenset({"vault_deletion_failed"})
@@ -854,6 +873,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
         frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
         frozenset({"duplicate_cleanup_capped"}): _DUPLICATE_CLEANUP_RESOLUTION,
+        frozenset({"vault_bucket_failed"}): _VAULT_BUCKET_RESOLUTION,
     }
 
 

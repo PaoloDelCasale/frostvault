@@ -20,8 +20,8 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
 
     def test_outputs_expose_application_settings(self) -> None:
         outputs_tf = (MODULE_ROOT / "outputs.tf").read_text(encoding="utf-8")
-        self.assertIn("S3_BUCKET", outputs_tf)
-        self.assertIn("VAULT_S3_BUCKET", outputs_tf)
+        # #735: VAULT_S3_BUCKET is gone; FrostVault creates every Vault Bucket.
+        self.assertNotIn("S3_BUCKET", outputs_tf)
         self.assertIn("AWS_DEFAULT_REGION", outputs_tf)
 
     def test_operator_policy_covers_archive_operations(self) -> None:
@@ -46,7 +46,7 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertIn("s3:ListBucketMultipartUploads", actions)
 
     def test_frostvault_buckets_policy_is_scoped_and_never_bypasses_retention(self) -> None:
-        """#734 (ADR-0049): FrostVault creates and configures only frostvault-* buckets."""
+        """#734, #735 (ADR-0049): FrostVault creates, configures and uses only frostvault-* buckets."""
         policy_path = MODULE_ROOT / "iam" / "frostvault-buckets-policy.json"
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         allowed: set[str] = set()
@@ -62,9 +62,8 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
             else:
                 self.assertEqual(actions, ["s3:BypassGovernanceRetention"])
         self.assertNotIn("s3:BypassGovernanceRetention", allowed)
-        # Deletion of buckets and objects belongs to #735/#739, not to #734.
-        for action in ("s3:DeleteBucket", "s3:DeleteObject", "s3:DeleteObjectVersion"):
-            self.assertNotIn(action, allowed)
+        # Deleting a Vault Bucket belongs to #739: never allowed here.
+        self.assertNotIn("s3:DeleteBucket", allowed)
         self.assertFalse(any("*" in action for action in allowed))
         for action in ("s3:CreateBucket", "s3:PutBucketPublicAccessBlock",
                        "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
@@ -73,6 +72,16 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
                        "s3:PutBucketObjectLockConfiguration",
                        "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls",
                        "s3:PutObject", "s3:GetObject"):
+            self.assertIn(action, allowed)
+        # #735: everything a Vault does in its Vault Bucket, as on the shared bucket.
+        operator = json.loads((MODULE_ROOT / "iam" / "archive-operator-policy.json")
+                              .read_text(encoding="utf-8"))
+        shared = {action for statement in operator["Statement"] for action in statement["Action"]}
+        self.assertLessEqual(shared, allowed)
+        for action in ("s3:ListBucketVersions", "s3:ListBucketMultipartUploads",
+                       "s3:GetObjectVersion", "s3:DeleteObjectVersion", "s3:DeleteObject",
+                       "s3:AbortMultipartUpload", "s3:RestoreObject",
+                       "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration"):
             self.assertIn(action, allowed)
 
     def test_github_oidc_ci_policy_is_prefix_scoped(self) -> None:

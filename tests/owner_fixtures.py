@@ -41,8 +41,8 @@ def insert_vault(
     target = connection.execute(
         "SELECT id FROM vault_targets WHERE bucket=%s", (bucket,)
     ).fetchone() or connection.execute(
-        "INSERT INTO vault_targets(provider, bucket, region) "
-        "VALUES ('s3', %s, 'eu-south-1') RETURNING id",
+        "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+        "VALUES ('s3', %s, 'eu-south-1', 'vault_prefix') RETURNING id",
         (bucket,),
     ).fetchone()
     columns = {"name": name, "source_root": source_root, "target_id": target["id"], **values}

@@ -30,8 +30,10 @@ mistake or leaked rule cannot touch another.
 ## Naming
 
 `frostvault-<vault-name-slug>-<8 random [a-z0-9]>` in `AWS_DEFAULT_REGION`. The
-slug is lowercase ASCII, at most 40 characters; the Vault UUID lives in the
-`frostvault:vault` tag, not in the name. IAM can be scoped to
+slug is lowercase ASCII, at most 40 characters, and never `system` or
+`system-…` (those become `vault-system…`): only the System Bucket is
+`frostvault-system-*`. The Vault UUID lives in the `frostvault:vault` tag, not
+in the name. IAM can be scoped to
 `arn:aws:s3:::frostvault-*`.
 
 ## Consequences
@@ -41,3 +43,22 @@ permissions. Bucket creation is idempotent and resumable; a created but
 unregistered bucket opens a Problem instead of being silently orphaned. Vault
 Deletion removes the bucket only when the Owner ticks it and the bucket is
 empty.
+
+## Implementation notes (#735)
+
+- A Vault Target records its `key_layout`: `bucket_root` (a Vault Bucket, prefix
+  empty) or `vault_prefix` (the shared bucket of an older Vault, prefix
+  `vaults/<uuid>/`). Every key is built from the target's prefix.
+- A new Vault is `provisioning` until its bucket is verified and 15 minutes
+  more (AWS recommends that wait after enabling versioning before writing
+  objects); the reserved name is saved first, and a name another account owns
+  is replaced (the only change of target a Vault may make, and only while
+  provisioning). A `bucket_root` target belongs to exactly one Vault.
+- The Owner may cancel a creation while the Vault is provisioning: the Vault
+  leaves the catalog, and a bucket already created stays in AWS, named in the
+  outcome and the audit record for manual removal (no `s3:DeleteBucket`, #739).
+- Every lifecycle FrostVault writes sets `TransitionDefaultMinimumObjectSize`
+  to `all_storage_classes_128K`: objects smaller than 128 KiB stay in Standard.
+- The readiness gate stays installation-wide and probes the bucket of every
+  live Vault.
+- Off-host metadata backups are required as soon as any Vault exists.

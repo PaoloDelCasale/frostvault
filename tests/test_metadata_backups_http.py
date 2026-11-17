@@ -54,7 +54,6 @@ class MetadataBackupHttpTests(unittest.TestCase):
             metadata_backup_retention=5,
             metadata_backup_interval_seconds=3600,
             metadata_backup_s3_prefix="system/backups/",
-            vault_s3_bucket="archive-bucket",
         )
         for target in (
             "app.main.settings",

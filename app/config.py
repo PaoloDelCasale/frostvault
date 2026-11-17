@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -152,10 +153,9 @@ class Settings:
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
     bootstrap_admin_display_name: str = os.getenv("BOOTSTRAP_ADMIN_DISPLAY_NAME", "Administrator")
     # Vault creation (issue #7): the server -- never the caller -- derives
-    # every vault's storage namespace from a generated UUID.
-    # Local empty-Vault roots use the fixed /sources/managed/<uuid> contract
-    # (issue #148); vault_s3_bucket is shared across Vault namespaces.
-    vault_s3_bucket: str = os.getenv("VAULT_S3_BUCKET", os.getenv("S3_BUCKET", ""))
+    # every vault's storage identity. Local empty-Vault roots use the fixed
+    # /sources/managed/<uuid> contract (issue #148); each new Vault gets its
+    # own Vault Bucket in aws_region (#735): there is no bucket setting.
     # Fernet key (url-safe base64-encoded 32 bytes) for metadata backups only.
     archive_master_key: str = os.getenv("ARCHIVE_MASTER_KEY", "")
 
@@ -221,6 +221,26 @@ def settings_snapshot(configured: Settings | Any) -> Settings:
         field.name: getattr(configured, field.name)
         for field in fields(Settings) if hasattr(configured, field.name)
     })
+
+
+# Settings that are read no more. A Vault created before 0.15.0 keeps its
+# bucket in its Vault Target; every new Vault gets its own bucket (#735).
+REMOVED_BUCKET_SETTINGS = ("VAULT_S3_BUCKET", "S3_BUCKET")
+
+
+def warn_removed_settings(environ: Any = None) -> str | None:
+    """Log one WARNING when a removed bucket setting is still set.
+
+    Names the settings only, never their values. Returns the message logged.
+    """
+    environ = os.environ if environ is None else environ
+    present = [name for name in REMOVED_BUCKET_SETTINGS if str(environ.get(name) or "").strip()]
+    if not present:
+        return None
+    message = (f"{' and '.join(present)} ignored since 0.15.0; "
+               "each Vault uses its own bucket")
+    logging.getLogger("app.config").warning(message)
+    return message
 
 
 def validate_settings() -> None:

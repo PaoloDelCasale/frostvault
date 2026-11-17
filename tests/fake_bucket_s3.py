@@ -99,9 +99,14 @@ class FakeBucketS3:
             "get_bucket_encryption", Bucket, "sse",
             "ServerSideEncryptionConfigurationNotFoundError")}
 
-    def put_bucket_lifecycle_configuration(self, Bucket: str, LifecycleConfiguration: dict) -> dict:
-        self._bucket("put_bucket_lifecycle_configuration", Bucket)["lifecycle"] = copy.deepcopy(
-            LifecycleConfiguration["Rules"])
+    def put_bucket_lifecycle_configuration(
+            self, Bucket: str, LifecycleConfiguration: dict,
+            TransitionDefaultMinimumObjectSize: str | None = None) -> dict:
+        bucket = self._bucket("put_bucket_lifecycle_configuration", Bucket)
+        bucket["lifecycle"] = copy.deepcopy(LifecycleConfiguration["Rules"])
+        # S3 stores its default when the request names no minimum size.
+        bucket["lifecycle_minimum_size"] = (TransitionDefaultMinimumObjectSize
+                                            or "all_storage_classes_128K")
         return {}
 
     def delete_bucket_lifecycle(self, Bucket: str) -> dict:
@@ -109,8 +114,10 @@ class FakeBucketS3:
         return {}
 
     def get_bucket_lifecycle_configuration(self, Bucket: str) -> dict:
-        return {"Rules": self._setting("get_bucket_lifecycle_configuration", Bucket,
-                                       "lifecycle", "NoSuchLifecycleConfiguration")}
+        rules = self._setting("get_bucket_lifecycle_configuration", Bucket,
+                              "lifecycle", "NoSuchLifecycleConfiguration")
+        return {"Rules": rules, "TransitionDefaultMinimumObjectSize":
+                self.buckets[Bucket].get("lifecycle_minimum_size", "all_storage_classes_128K")}
 
     def put_bucket_tagging(self, Bucket: str, Tagging: dict) -> dict:
         self._bucket("put_bucket_tagging", Bucket)["tags"] = copy.deepcopy(Tagging["TagSet"])
@@ -138,3 +145,22 @@ class FakeBucketS3:
         return {"ObjectLockConfiguration": self._setting(
             "get_object_lock_configuration", Bucket, "lock",
             "ObjectLockConfigurationNotFoundError")}
+
+
+def fake_vault_buckets(test: Any, *, foreign: set[str] | None = None,
+                       settle_seconds: int = 0) -> FakeBucketS3:
+    """Create every Vault Bucket of ``test`` in one in-memory S3 (#735).
+
+    Patches the client ``vault_buckets`` opens by default and, since an
+    in-memory bucket has no versioning to propagate, the wait between the
+    verification and the activation (``settle_seconds``, 0 by default: a
+    verified Vault is active at once). The patches end with the test.
+    """
+    from unittest.mock import patch
+
+    fake = FakeBucketS3(foreign=foreign)
+    for patcher in (patch("app.services.vault_buckets._default_client", return_value=fake),
+                    patch("app.services.vault_buckets.VERSIONING_SETTLE_SECONDS", settle_seconds)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    return fake

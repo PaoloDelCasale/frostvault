@@ -173,7 +173,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         pass
 
     def run_job(self):
-        job = {"id": 1, "vault_id": 2, "vault_uuid": "vault", "path": "movie.mkv",
+        job = {"id": 1, "vault_id": 2, "vault_uuid": "vault", "s3_key_layout": "vault_prefix", "path": "movie.mkv",
                "file_id": "file", "source_root": "/sources", "origin": "manual"}
         return self.execution._run_claimed(job, self.pipeline, lambda: None)
 

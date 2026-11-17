@@ -17,6 +17,7 @@ from .cost_estimates import estimate_storage_month, list_prices
 from .lifecycle_policies import load_vault_plan
 from .lifecycle_profiles import ALLOWED_TARGETS
 from .s3_copy import S3_SINGLE_COPY_MAX_BYTES, restore_header_state
+from .vault_paths import object_prefix
 
 MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
                 "GLACIER": 90, "DEEP_ARCHIVE": 180}
@@ -71,12 +72,13 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
 
 def _with_bucket(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     target = connection.execute(
-        "SELECT bucket FROM vault_targets WHERE id=%s", (vault["target_id"],)).fetchone()
-    return {**vault, "s3_bucket": target["bucket"]}
+        "SELECT bucket, key_layout FROM vault_targets WHERE id=%s", (vault["target_id"],)).fetchone()
+    return {**vault, "s3_bucket": target["bucket"], "s3_key_layout": target["key_layout"]}
 
 
 def _namespace(vault: dict[str, Any]) -> str:
-    return f"vaults/{vault['uuid']}/"
+    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
+    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> None:

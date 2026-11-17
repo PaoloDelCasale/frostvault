@@ -74,8 +74,8 @@ def _seed(paths: dict[str, Path]) -> dict:
             ("E2E Owner", password_hash),
         )
         target_id = connection.execute(
-            "INSERT INTO vault_targets(provider, bucket, region) "
-            "VALUES ('s3', 'e2e-bucket', 'eu-south-1') RETURNING id"
+            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+            "VALUES ('s3', 'e2e-bucket', 'eu-south-1', 'vault_prefix') RETURNING id"
         ).fetchone()["id"]
 
         def vault(uuid: str, name: str, root: Path) -> int:
@@ -233,7 +233,6 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "FRONTEND_DIST_DIR": str(REPO_ROOT / "frontend" / "dist"),
         "BREAK_GLASS_ALLOWED_CIDRS": "",
         "ARCHIVE_MASTER_KEY": master_key,
-        "S3_BUCKET": "e2e-bucket",
         # An operator-supplied System Bucket: the Recovery Kit names it without
         # any S3 request, and nothing creates one in the fake account (#734).
         "METADATA_BACKUP_BUCKET": "e2e-system-bucket",
@@ -265,10 +264,14 @@ def _native_fixture_runtime():
     source-access, fingerprint and API authorization checks, but represent the
     test sources root as mounted (no arbitrary child gets mount status). Treat
     seeding as the latest maintenance pass so the fake provider is not audited
-    and does not race the UI scenarios. Real maintenance/S3 has separate CI jobs.
+    and does not race the UI scenarios. A Vault created from the UI gets its
+    Vault Bucket (#735) in an in-memory S3, with no versioning to propagate, so
+    it is active as soon as it is verified. Real maintenance/S3 has separate CI
+    jobs.
     """
     from app import storage
-    from app.services import source_layout
+    from app.services import source_layout, vault_buckets
+    from tests.fake_bucket_s3 import FakeBucketS3
 
     real_mount_probe = source_layout.path_is_mount
     sources = source_layout.get_sources_root().resolve()
@@ -280,9 +283,11 @@ def _native_fixture_runtime():
     def fixture_maintenance_ages(**kwargs):
         return {**real_maintenance_ages(**kwargs), "scan": 0.0, "audit": 0.0}
 
+    vault_bucket_s3 = FakeBucketS3()
     with patch.object(source_layout, "path_is_mount", fixture_mount), patch.object(
         storage, "persisted_maintenance_ages", fixture_maintenance_ages,
-    ):
+    ), patch.object(vault_buckets, "_default_client", lambda region: vault_bucket_s3), \
+            patch.object(vault_buckets, "VERSIONING_SETTLE_SECONDS", 0):
         yield
 
 

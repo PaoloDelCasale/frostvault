@@ -1,16 +1,19 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Plus, ShieldCheck } from "lucide-react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { fetchGeneralVaults, type GeneralVault, type StatsResponse, type VaultListItem } from "@/api";
+import { fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { VaultDeletionDialog } from "@/components/VaultDeletionDialog";
+import { VaultCreationCancel } from "@/components/VaultCreationCancel";
 import { buttonVariants } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/errorMessage";
+import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatMoney } from "@/pages/archive/format";
 import { vaultFilesUrl } from "@/router";
@@ -80,6 +83,10 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
   const [deleting, setDeleting] = useState<GeneralVault | null>(null);
   const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
+  const queryClient = useQueryClient();
+  const [retrying, setRetrying] = useState<number | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [cancelledCreation, setCancelledCreation] = useState<VaultCreationCancelled | null>(null);
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: ["vault-stats", vault.id],
     queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
@@ -104,6 +111,22 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const stoppedFiles = stats.reduce((sum, query) => sum + Number((query.data?.states as Record<string, number> | undefined)?.stopped ?? 0), 0);
   const loaded = stats.length > 0 && stats.every((query) => query.data || query.error);
   const archived = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "stopping" || vault.lifecycle === "tombstone");
+  // New Vaults whose own bucket is not created and verified yet (#735).
+  const creating = (general.data?.items ?? []).filter((vault) => vault.lifecycle === "provisioning");
+  async function retryBucket(vaultId: number) {
+    setRetrying(vaultId);
+    setRetryError(null);
+    try {
+      const state = await retryVaultBucket(vaultId);
+      // A Vault that became active joins the Vault list.
+      if (state.state === "ready") await queryClient.invalidateQueries();
+      else await general.refetch();
+    } catch (err) {
+      setRetryError(errorMessage(err, t));
+    } finally {
+      setRetrying(null);
+    }
+  }
   const archivedOpen = typeof window !== "undefined" && window.location.hash === "#archived" ? true : undefined;
   const problems = overview?.open_problem_count;
   // The tile takes its tone from the protected share, never green at 0 of N (#658).
@@ -190,6 +213,38 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
         <p className="text-xs text-muted">{t("essential.estimate_caveat")}</p>
       </section>
     </>}
+
+    {cancelledCreation ? <p className="rounded-card border border-line bg-surface p-3 text-sm break-words" role="status" data-testid="overview-creation-cancelled">
+      {cancelledMessage(cancelledCreation, t)}</p> : null}
+
+    {/* A Vault Bucket Problem links here (#735): it opens on #creating. */}
+    {creating.length > 0 && <details id="creating" open className="rounded-card border border-line bg-surface p-3" data-testid="overview-creating">
+      <summary className="flex min-h-11 cursor-pointer items-center gap-2 font-semibold"><Hourglass className="size-4 text-muted" aria-hidden="true" />{t("overview.creating", { count: creating.length })}</summary>
+      <p className="mb-2 text-sm text-muted">{t("overview.creating_help")}</p>
+      {retryError ? <p className="mb-2 rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert">{retryError}</p> : null}
+      <ul className="grid">{creating.map((vault) => {
+        const bucket = vault.bucket_provisioning;
+        const failed = bucket?.state === "failed";
+        const settling = bucket?.state === "settling";
+        const badge = failed ? t("overview.creating_failed")
+          : settling ? t("overview.creating_settling", { count: minutesLeft(bucket) })
+            : t("overview.creating_pending");
+        return <li key={vault.id} className="grid min-w-0 gap-1 border-t border-line py-2" data-testid="overview-creating-vault">
+          <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <span className="flex min-w-0 flex-wrap items-center gap-2"><span className="min-w-0 break-words">{vault.name}</span>
+              <span className={cn("w-fit rounded-full border px-2 py-1 text-xs font-bold", failed ? "border-destructive text-destructive" : "border-line")}>
+                {badge}</span></span>
+            <span className="flex flex-wrap items-center gap-2">
+              {!settling ? <button type="button" className={buttonVariants({ variant: "secondary", size: "sm" })} disabled={retrying !== null}
+                onClick={() => void retryBucket(vault.id)}>{t("ui.vault_create.bucket_retry")}</button> : null}
+              <VaultCreationCancel vaultId={vault.id} vaultName={vault.name} bucket={bucket?.bucket ?? vault.s3_bucket ?? ""} size="sm"
+                disabled={retrying !== null} onCancelled={(outcome) => { setCancelledCreation(outcome); void general.refetch(); }} />
+            </span>
+          </span>
+          {bucket && failed ? <span className="text-sm break-words text-muted">{t("ui.vault_create.bucket_failed", { bucket: bucket.bucket, error: bucket.error ?? "" })}</span> : null}
+        </li>;
+      })}</ul>
+    </details>}
 
     {/* A Vault Deletion Problem links here (#717): it opens on #archived. */}
     {archived.length > 0 && <details id="archived" open={archivedOpen} className="rounded-card border border-line bg-surface p-3" data-testid="overview-archived">

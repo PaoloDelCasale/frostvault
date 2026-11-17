@@ -106,16 +106,18 @@ class Boto3ObjectStore:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
-def off_host_backup_configured(settings_obj: Settings | Any | None = None) -> bool:
+def off_host_backup_configured(settings_obj: Settings | Any | None = None, *,
+                                connection: Any = None) -> bool:
     """Whether deployment configuration requires an off-host backup copy.
 
-    A METADATA_BACKUP_BUCKET, a VAULT_S3_BUCKET (until #735) or usable AWS
-    credentials commit every backup to the System Bucket (#734); none of them,
-    as in local development, means local-only. Never an optional optimization
+    A METADATA_BACKUP_BUCKET, usable AWS credentials or any Vault in the
+    catalog (#735) commit every backup to the System Bucket (#734); none of
+    them, as in local development, means local-only. Never an optional optimization
     once committed: missing credentials or IAM fail the backup.
     """
     cfg = settings_obj if settings_obj is not None else settings
-    return system_bucket.off_host_required(cfg)
+    vaults = (lambda: system_bucket.vaults_exist(connection)) if connection is not None else None
+    return system_bucket.off_host_required(cfg, vaults=vaults)
 
 
 def backup_master_key_configured(master_key: str | None) -> bool:
@@ -214,7 +216,7 @@ _SNAPSHOT_KEYS = frozenset("""
     restore_days restore_tier restore_high_impact_gib restore_high_impact_eur
     restore_approval_hold_seconds oidc_enabled oidc_issuer oidc_client_id oidc_scopes
     oidc_login_ttl_seconds bootstrap_admin_username bootstrap_admin_display_name
-    vault_s3_bucket metadata_backup_bucket
+    metadata_backup_bucket
     metadata_backup_dir metadata_backup_retention metadata_backup_interval_seconds
     metadata_backup_s3_prefix metadata_backup_verify_interval_seconds frontend_dist_dir
     smtp_host smtp_port smtp_username smtp_from_address smtp_to_address smtp_use_tls
@@ -702,7 +704,7 @@ def backup_status(connection: Any) -> dict[str, Any]:
         "verification": verification_overview(connection),
         # Where new off-host copies go (#734); None while backups stay local.
         "system_bucket": bucket.public() if bucket is not None else None,
-        "off_host": off_host_backup_configured(),
+        "off_host": off_host_backup_configured(connection=connection),
     }
     if latest is None:
         return {

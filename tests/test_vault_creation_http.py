@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from app.config import settings
 from app.main import app
 from app.services import source_layout
 from app.sessions import create_session
+from tests.fake_bucket_s3 import fake_vault_buckets
 from tests.owner_fixtures import insert_owner
 from tests.spa_fixture import write_spa_dist
 from tests.test_database import run_alembic
@@ -48,7 +50,6 @@ class VaultCreationHttpTestCase(unittest.TestCase):
         overrides: dict[str, object] = {
             "database_dsn": database_dsn(str(self.database_path)),
             "cookie_secure": False,
-            "vault_s3_bucket": "test-bucket",
 
             "frontend_dist_dir": str(write_spa_dist(Path(self._tmp.name))),
         }
@@ -64,6 +65,7 @@ class VaultCreationHttpTestCase(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+        self.s3 = fake_vault_buckets(self)
         self.client = TestClient(app, client=("127.0.0.1", 50000))
 
     def _authenticate(self, client: TestClient, user_id: int = 1) -> None:
@@ -169,7 +171,10 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         with patch("app.services.vaults.settings", replace(self.settings, archive_master_key="")):
             response = self._create("Readable")
         self.assertEqual(response.status_code, 201, response.text)
-        self.assertEqual(set(response.json()), {"id", "uuid", "name", "creation_mode"})
+        self.assertEqual(set(response.json()),
+                         {"id", "uuid", "name", "creation_mode", "lifecycle", "bucket"})
+        self.assertEqual(response.json()["lifecycle"], "active")
+        self.assertEqual(response.json()["bucket"]["state"], "ready")
         with PostgresConnection(str(self.database_path)) as connection:
             row = connection.execute("SELECT * FROM vaults WHERE id=%s", (response.json()["id"],)).fetchone()
         self.assertEqual(str(row["uuid"]), response.json()["uuid"])
@@ -297,8 +302,91 @@ class VaultCreationTests(VaultCreationHttpTestCase):
         self.assertEqual(created_dirs, uuids)
 
 
+class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
+    """#735: the Vault is active only once its own bucket is verified."""
+
+    def test_a_failed_bucket_keeps_the_vault_provisioning_and_the_owner_retries(self) -> None:
+        self._login()
+        self.s3.fail["put_bucket_versioning"] = "AccessDenied"
+        response = self._create("Travel")
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["lifecycle"], "provisioning")
+        self.assertEqual((body["bucket"]["state"], body["bucket"]["stage"]), ("failed", "created"))
+        self.assertIn("AccessDenied", body["bucket"]["error"])
+        self.assertNotIn("provider detail", body["bucket"]["error"])
+        # Not selectable, not operational, but listed with its creation state.
+        self.assertEqual(self.client.get("/api/vaults").json()["items"], [])
+        general = self.client.get("/api/general/vaults").json()["items"]
+        self.assertEqual([(item["lifecycle"], item["bucket_provisioning"]["state"]) for item in general],
+                         [("provisioning", "failed")])
+        selected = self.client.post("/api/vaults/select", json={"vault_id": body["id"]},
+                                    headers={"X-CSRF-Token": self._csrf()})
+        self.assertNotEqual(selected.status_code, 200, selected.text)
+        status = self.client.get(f"/api/vaults/{body['id']}/bucket")
+        self.assertEqual(status.json()["state"], "failed")
+
+        retried = self.client.post(f"/api/vaults/{body['id']}/bucket/retry",
+                                   headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual((retried.json()["state"], retried.json()["error"]), ("ready", None))
+        self.assertEqual([item["id"] for item in self.client.get("/api/vaults").json()["items"]],
+                         [body["id"]])
+        self.assertEqual(list(self.s3.buckets), [body["bucket"]["bucket"]])
+
+    def _reauthenticate(self, at: datetime | None = None) -> None:
+        with PostgresConnection(str(self.database_path)) as connection:
+            connection.execute("UPDATE sessions SET reauth_at=%s", (at or datetime.now(timezone.utc),))
+
+    def test_the_owner_cancels_a_creation_after_reauthentication(self) -> None:
+        """#735 S7: the Vault leaves the catalog; a created bucket is only named."""
+        self._login()
+        self.s3.fail["put_bucket_versioning"] = "AccessDenied"
+        body = self._create("Travel").json()
+        url = f"/api/vaults/{body['id']}/creation/cancel"
+        self._reauthenticate(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        refused = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual((refused.status_code, refused.json()), (403, {"error": "reauth_required"}))
+        self._reauthenticate()
+        cancelled = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json(), {
+            "vault_id": body["id"], "vault_name": "Travel", "bucket": body["bucket"]["bucket"],
+            "region": "eu-south-1", "bucket_left": "created"})
+        # Not deleted: FrostVault has no s3:DeleteBucket.
+        self.assertEqual(list(self.s3.buckets), [body["bucket"]["bucket"]])
+        self.assertEqual(self.client.get("/api/general/vaults").json()["items"], [])
+        self.assertFalse((self.managed_root / body["uuid"]).exists())
+        with PostgresConnection(str(self.database_path)) as connection:
+            audit = connection.execute(
+                "SELECT actor, vault_id, detail FROM audit_events "
+                "WHERE event='vault.creation_cancelled'").fetchall()
+        self.assertEqual([(row["actor"], row["vault_id"]) for row in audit], [("owner", body["id"])])
+        self.assertEqual((audit[0]["detail"]["bucket"], audit[0]["detail"]["bucket_left"]),
+                         (body["bucket"]["bucket"], "created"))
+        again = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(again.status_code, 404, again.text)
+
+    def test_an_active_vault_cannot_be_cancelled(self) -> None:
+        self._login()
+        self._reauthenticate()
+        body = self._create("Photos").json()
+        self.assertEqual(body["lifecycle"], "active")
+        refused = self.client.post(f"/api/vaults/{body['id']}/creation/cancel",
+                                   headers={"X-CSRF-Token": self._csrf()})
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(refused.json()["message_key"], "api.vault_creation_cancel.not_provisioning")
+
+    def test_bucket_endpoints_need_a_session_and_csrf(self) -> None:
+        self.assertEqual(self.client.get("/api/vaults/1/bucket").status_code, 401)
+        self._login()
+        self.assertEqual(self.client.get("/api/vaults/999/bucket").status_code, 404)
+        refused = self.client.post("/api/vaults/999/bucket/retry", headers={"X-CSRF-Token": "bad"})
+        self.assertIn(refused.status_code, {401, 403})
+
+
 class UnconfiguredVaultCreationTests(VaultCreationHttpTestCase):
-    settings_overrides = {"vault_s3_bucket": ""}
+    settings_overrides = {"aws_region": ""}
 
     def test_creation_fails_clearly_when_the_server_has_no_default_storage(self) -> None:
         self._login()

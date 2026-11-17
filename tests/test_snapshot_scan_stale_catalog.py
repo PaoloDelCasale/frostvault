@@ -25,7 +25,7 @@ from tests.test_database import run_alembic
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
 PREFIX = f"vaults/{VAULT_UUID}/"
-VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket"}
+VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket", "s3_key_layout": "vault_prefix"}
 
 
 def _item(version_id: str, hour: int) -> dict:

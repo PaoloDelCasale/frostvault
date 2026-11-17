@@ -105,7 +105,8 @@ class VaultReconnectTests(unittest.TestCase):
         self.identity = identity.start(); self.addCleanup(identity.stop)
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'bucket', 'eu-south-1')")
+            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
             connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)
                 VALUES (7, '11111111-1111-1111-1111-111111111111',
                         (SELECT id FROM vault_targets WHERE bucket='bucket'), 'Photos', %s)""", (str(self.old),))
@@ -609,7 +610,8 @@ class ManagedVaultReconnectTests(unittest.TestCase):
         self.boundary = boundary.start(); self.addCleanup(boundary.stop)
         with PostgresConnection(str(self.db_path)) as connection:
             connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'bucket', 'eu-south-1')")
+            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
             for vault_id, vault_uuid, name, root in ((7, MANAGED_UUID, "Photos", self.own),
                                                      (8, OTHER_UUID, "Other", self.other)):
                 connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)

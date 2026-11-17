@@ -105,28 +105,35 @@ class CloudPreflightPolicyTests(unittest.TestCase):
 
 
 class LocalizedRemediationTests(unittest.TestCase):
-    """#531: the missing-bucket readiness text follows the viewer's language."""
+    """#531: the missing-bucket readiness text follows the viewer's language.
+
+    #735: it names the bucket, since every Vault has its own.
+    """
+
+    BUCKET = 'frostvault-docs-ab12cd34'
 
     def setUp(self):
         from app.i18n import translate
         from app.services.s3_preflight import BUCKET_NOT_FOUND_KEY
         self.key = BUCKET_NOT_FOUND_KEY
-        self.english = translate(self.key, locale='en')
-        self.italian = translate(self.key, locale='it')
+        self.english = translate(self.key, locale='en', bucket=self.BUCKET)
+        self.italian = translate(self.key, locale='it', bucket=self.BUCKET)
 
     def test_both_catalogs_explain_the_missing_bucket_without_a_permission(self):
         self.assertNotEqual(self.english, self.italian)
         for text in (self.english, self.italian):
-            for setting in ('VAULT_S3_BUCKET', 'S3_BUCKET', 'AWS_DEFAULT_REGION'):
-                self.assertIn(setting, text)
+            self.assertIn('AWS_DEFAULT_REGION', text)
+            self.assertNotIn('VAULT_S3_BUCKET', text)
             self.assertNotIn('s3:HeadBucket', text)
             # The notification body appends ". Jobs remain queued…".
             self.assertFalse(text.endswith('.'))
-        self.assertIn('does not exist', self.english)
-        self.assertIn('non esiste', self.italian)
+        self.assertIn(f'the bucket {self.BUCKET} of a Vault does not exist', self.english)
+        self.assertIn(f'il bucket {self.BUCKET} di un Vault non esiste', self.italian)
 
     def test_stored_english_remediation_maps_back_to_its_key(self):
         self.assertEqual(gate.remediation_key(self.english), self.key)
+        self.assertEqual(gate.remediation_match(self.english), (self.key, {'bucket': self.BUCKET}))
+        self.assertIsNone(gate.remediation_key(self.english.replace(self.BUCKET, 'two words')))
         for other in (None, '', self.italian, gate.AUTH_REMEDIATION, self.english + ' '):
             self.assertIsNone(gate.remediation_key(other))
 
@@ -151,7 +158,8 @@ class LocalizedRemediationTests(unittest.TestCase):
         ), patch.object(gate.notifications, 'set_problem') as notify:
             gate.check(lambda: connection, probe, now=now)
         params = notify.call_args.kwargs['params']
-        self.assertEqual(params, {'remediation': self.english, 'remediation_key': self.key})
+        self.assertEqual(params, {'remediation': self.english, 'remediation_key': self.key,
+                                  'bucket': self.BUCKET})
         row = {'id': 1, 'user_id': 1, 'event': 'cloud_preflight_blocked', 'created_at': now.isoformat(),
                'title_key': 'notification.cloud_preflight_blocked.title', 'title': '',
                'body_key': 'notification.cloud_preflight_blocked.body', 'body': 'stored',

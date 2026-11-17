@@ -657,7 +657,7 @@ class UploadExecution:
 
     def _send_bytes(self, run: _Run, provider: str) -> tuple[provenance.UploadAttempt, dict[str, Any]]:
         w, job, client = self.worker, run.job, run.client
-        key = w.expected_cloud_key(job["path"], f"vaults/{job['vault_uuid']}")
+        key = w._upload_key(job)
         # The pin _load read; prepare compares it with the live target again.
         pinned = {**run.extra["pin"], "key": key, "provider": provider}
         if run.extra.get("key_never_written"):

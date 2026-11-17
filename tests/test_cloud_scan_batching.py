@@ -41,7 +41,7 @@ from tests.test_database import run_alembic
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
 PREFIX = f"vaults/{VAULT_UUID}/"
 LEASE_TOKEN = "00000000-0000-4000-8000-0000000000aa"
-VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket"}
+VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket", "s3_key_layout": "vault_prefix"}
 
 
 def _seed_vault(connection: PostgresConnection, *, source_root: str = "/source") -> None:

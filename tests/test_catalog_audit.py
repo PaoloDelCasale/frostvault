@@ -26,7 +26,7 @@ class CatalogAuditTests(unittest.TestCase):
             seed_vault(connection, vault_id=1)
             self.vault = dict(connection.execute(
                 "SELECT id, uuid FROM vaults WHERE id=1"
-            ).fetchone(), s3_bucket="bucket")
+            ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=1, path="docs/report.pdf", file_type="regular",

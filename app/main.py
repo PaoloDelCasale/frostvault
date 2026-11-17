@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import settings, settings_snapshot, validate_settings
+from .config import settings, settings_snapshot, validate_settings, warn_removed_settings
 from .diagnostics import require_metrics_token
 from .audit import audit_log
 from .i18n import (
@@ -127,6 +127,7 @@ from .services.lifecycle_profiles import (
 )
 from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
+from .services import vault_buckets as vault_buckets_service
 from .services import write_access
 from .services.vaults import (
     VAULT_ROW_SQL,
@@ -208,6 +209,7 @@ def _spa_index_response() -> FileResponse:
 async def lifespan(_: FastAPI):
     shutdown_state.reset()
     validate_settings()
+    warn_removed_settings()
     if os.geteuid() == 0:
         # #679: PUID=0 is an explicit choice; the entrypoint already checked
         # that root holds no capability that bypasses file permissions, or
@@ -1433,9 +1435,12 @@ def create_owner_vault(
 ):
     """Create a Vault from the UI, the only way Vaults are created (#412).
 
-    The server generates the plaintext storage identity.
-    Adoption binds any free directory of a custom Source Volume
-    in place and starts an asynchronous local scan.
+    The server generates the plaintext storage identity and creates the
+    Vault's own Vault Bucket (#735): the Vault is active only once the bucket
+    is created and verified. ``bucket`` reports that; when it failed the Vault
+    stays ``provisioning``, FrostVault retries in the background and the Owner
+    may retry at once. Adoption binds any free directory of a custom Source
+    Volume in place and, once active, starts an asynchronous local scan.
     """
     try:
         vault = create_vault(
@@ -1453,7 +1458,7 @@ def create_owner_vault(
         return _vault_create_error(request, 422, key if key in VAULT_ADOPTION_ERROR_KEYS else "api.vault_adoption.failed")
     except VaultCreationError:
         return _vault_create_error(request, 409, "ui.vault_create.failed")
-    if action.creation_mode == "adopt":
+    if action.creation_mode == "adopt" and vault["lifecycle"] == "active":
         # scan_vault reloads the authoritative row.
         background_tasks.add_task(scan_vault, {"id": vault["id"]})
     payload: dict[str, Any] = {
@@ -1461,8 +1466,64 @@ def create_owner_vault(
         "uuid": str(vault["uuid"]),
         "name": vault["name"],
         "creation_mode": action.creation_mode,
+        "lifecycle": vault["lifecycle"],
+        "bucket": vault["bucket"],
     }
     return payload
+
+
+@app.get("/api/vaults/{vault_id}/bucket", response_model=response_model("VaultBucketStatus"))
+def vault_bucket_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    """The Vault's bucket and, while it is being created, the creation state (#735)."""
+    with db() as connection:
+        state = vault_buckets_service.status(connection, vault_id)
+    if state is None:
+        raise HTTPException(404, "Vault not found")
+    return state
+
+
+@app.post("/api/vaults/{vault_id}/bucket/retry", response_model=response_model("VaultBucketStatus"))
+def retry_vault_bucket(vault_id: int, background_tasks: BackgroundTasks,
+                       _: dict[str, Any] = Depends(current_user)):
+    """Retry the creation of a provisioning Vault's bucket now (#735).
+
+    Idempotent: the same saved name, configuration applied again, then
+    verified. A Vault whose bucket is ready is returned unchanged.
+    """
+    with db() as connection:
+        before = vault_buckets_service.status(connection, vault_id)
+    if before is None:
+        raise HTTPException(404, "Vault not found")
+    try:
+        state = vault_buckets_service.provision(vault_id)
+    except LookupError as exc:
+        raise HTTPException(404, "Vault not found") from exc
+    if before["state"] != "ready" and state["state"] == "ready":
+        # A Vault that became active now gets its first scan (an adopted
+        # folder's files); scan_vault reloads the authoritative row.
+        background_tasks.add_task(scan_vault, {"id": vault_id})
+    return state
+
+
+@app.post("/api/vaults/{vault_id}/creation/cancel",
+          response_model=response_model("VaultCreationCancelled"))
+def cancel_vault_creation(vault_id: int, request: Request,
+                          user: dict[str, Any] = Depends(current_user),
+                          _reauth: dict[str, Any] = Depends(require_recent_reauth)):
+    """Cancel the creation of a Vault whose bucket is not ready yet (#735).
+
+    Only while the Vault is ``provisioning``: it leaves the catalog and its
+    root is released. A bucket FrostVault already created is NOT deleted (it
+    has no ``s3:DeleteBucket``): ``bucket`` and ``bucket_left`` name it so the
+    Owner can remove it by hand, and the audit record keeps them.
+    """
+    del user  # authentication gate; reauthentication is checked above
+    try:
+        return vault_buckets_service.cancel_creation(vault_id, actor=_actor(request))
+    except LookupError as exc:
+        raise LocalizedHTTPError(404, "api.vault_creation_cancel.not_found") from exc
+    except vault_buckets_service.CancelRefused as exc:
+        raise LocalizedHTTPError(409, f"api.vault_creation_cancel.{exc.code}") from exc
 
 
 @app.get("/api/vaults/{vault_id}/stop-protection", response_model=response_model("StopProtectionStatus"))
@@ -3703,7 +3764,7 @@ def update_vault_storage_plan(
         try:
             sync_lifecycle_rules_for_bucket(
                 connection,
-                s3_client(),
+                s3_client(region=vault.get("s3_region")),
                 bucket=vault["s3_bucket"],
             )
         except Exception:

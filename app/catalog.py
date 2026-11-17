@@ -2589,7 +2589,7 @@ class ArchiveCatalog:
             f"""
             SELECT j.*, f.path, v.source_root, v.uuid AS vault_uuid,
                    v.name AS vault_name, v.lifecycle AS vault_lifecycle,
-                   t.bucket AS s3_bucket
+                   t.bucket AS s3_bucket, t.key_layout AS s3_key_layout
             FROM vaults v
             JOIN vault_targets t ON t.id = v.target_id
             CROSS JOIN LATERAL (
