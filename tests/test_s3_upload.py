@@ -176,6 +176,23 @@ class ExactVersionReadTests(unittest.TestCase):
         self.assertTrue(body.closed)
         client.get_object.assert_called_once_with(Bucket="bucket", Key="key", VersionId="upload-response")
 
+    def test_the_read_back_counts_each_chunk_for_its_vault(self):
+        # The Job's bytes stay at the file's size during a read-back: the
+        # chunks read show it moving (#763).
+        payload = b"x" * (2 * 1024 * 1024 + 512)
+        client = Mock()
+        client.get_object.return_value = {"Body": io.BytesIO(payload), "VersionId": "v"}
+        with patch("app.storage.s3_client", return_value=client), \
+                patch("app.storage.job_progress_callback", return_value=lambda *_: None), \
+                patch("app.storage.throughput.note_read_back") as note:
+            _, size = _stream_plaintext_for_verification(
+                {"id": 1, "vault_id": 9, "s3_bucket": "bucket"},
+                target={"object_key": "key", "provider_version_id": "v"},
+                source_size=len(payload), check_active=lambda: None)
+        self.assertEqual(size, len(payload))
+        self.assertEqual([c.args for c in note.call_args_list],
+                         [(9, 1024 * 1024), (9, 1024 * 1024), (9, 512)])
+
     def test_wrong_version_and_interruption_never_return_trust(self):
         for version in ("wrong", "expected"):
             body = io.BytesIO(b"bytes")
