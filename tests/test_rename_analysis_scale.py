@@ -149,12 +149,15 @@ class RenameAnalysisScaleTests(unittest.TestCase):
         self.assertEqual(len(recorder.statements), 1)
         return recorder.statements[0]
 
-    def examined_file_rows(self, statement: dict[str, Any]) -> tuple[int, set[str]]:
-        """Rows of ``files`` the statement read, over all loops, and its indexes."""
+    def explain(self, statement: dict[str, Any]) -> tuple[int, set[str], float]:
+        """Rows of ``files`` the statement read over all loops, its indexes and
+        its server execution time in milliseconds."""
         explained = self.connection.execute(
-            "EXPLAIN (ANALYZE, FORMAT JSON) " + statement["query"], statement["params"],
+            "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) " + statement["query"],
+            statement["params"],
         ).fetchone()
-        plan = next(iter(explained.values()))[0]["Plan"]
+        result = next(iter(explained.values()))[0]
+        plan = result["Plan"]
         examined = 0
         indexes = set()
         for node in _plan_nodes(plan):
@@ -166,13 +169,14 @@ class RenameAnalysisScaleTests(unittest.TestCase):
             per_loop = (node.get("Actual Rows", 0) + node.get("Rows Removed by Filter", 0)
                         + node.get("Rows Removed by Index Recheck", 0))
             examined += int(node.get("Actual Loops", 0) * per_loop)
-        return examined, indexes
+        return examined, indexes, float(result["Execution Time"])
 
     def assert_linear(self, statement: dict[str, Any]) -> set[str]:
-        examined, indexes = self.examined_file_rows(statement)
+        examined, indexes, milliseconds = self.explain(statement)
         # Quadratic was PER_KIND * PER_KIND = 2.5e9 rows; linear is a few
         # passes over the 100k files.
         self.assertLess(examined, 3 * 2 * PER_KIND, (examined, indexes))
+        self.assertLess(milliseconds, 1000, (milliseconds, statement["seconds"]))
         return indexes
 
     def test_without_missing_files_identification_skips_rename_analysis(self):
@@ -185,7 +189,8 @@ class RenameAnalysisScaleTests(unittest.TestCase):
         statement = self.admit()
         self.assertEqual(len(statement["rows"]), 2 * PER_KIND,
                          "nothing missing: every Local Copy is an admission candidate")
-        self.assertLess(statement["seconds"], 1.0)
+        # The statement returns all 100k candidates: the time to build them
+        # in Python is not the rename analysis. The bound is on the server.
         self.assert_linear(statement)
 
     def test_a_missing_file_still_makes_its_size_twin_a_rename_candidate(self):
