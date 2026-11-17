@@ -76,6 +76,19 @@ export const defaultMinimumStorage = {
   evaluated_at: "2026-11-17T10:00:00+00:00",
 };
 
+/** A Vault on a shared bucket with no version yet (#737). */
+export const defaultCloudUsage = {
+  vault_id: 1,
+  bucket: "shared-archive",
+  region: "eu-south-1",
+  dedicated_bucket: false,
+  estimate: {
+    versions: 0, bytes: 0, monthly_cost: 0, currency: "EUR", region: "eu-south-1",
+    pricing_effective_at: "2026-10-01", by_storage_class: [] as { storage_class: string; versions: number; bytes: number; monthly_cost: number }[],
+  },
+  measured: { status: "shared_bucket" } as Record<string, unknown>,
+};
+
 export const defaultLifecycle = {
   profile: { transitions: [] as { days: number; storage_class: string }[] },
   guided_profiles: {
@@ -142,6 +155,9 @@ export function createVaultAccessFetch(
     }
     if (/^\/api\/vaults\/\d+\/minimum-storage$/.test(url) && method === "GET") {
       return jsonResponse(defaultMinimumStorage);
+    }
+    if (/^\/api\/vaults\/\d+\/cloud-usage$/.test(url) && method === "GET") {
+      return jsonResponse(defaultCloudUsage);
     }
     if (url === "/api/vault/move") {
       return jsonResponse({ vault_id: 1, targets: [] });

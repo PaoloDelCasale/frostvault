@@ -158,13 +158,15 @@ provider messages never.
 
 ### IAM for FrostVault-created buckets
 
-`iam/frostvault-buckets-policy.json` is scoped to `arn:aws:s3:::frostvault-*`:
+`iam/frostvault-buckets-policy.json` is scoped to `arn:aws:s3:::frostvault-*`,
+apart from its one CloudWatch statement:
 
 | Statement | Actions |
 | --- | --- |
 | Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:ListBucketMultipartUploads`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:Get/PutBucketOwnershipControls`, `s3:Get/PutBucketObjectLockConfiguration` (a Vault Bucket's Governance Retention Lock only) |
 | Objects (`frostvault-*/*`) | `s3:GetObject`, `s3:GetObjectVersion`, `s3:GetObjectTagging`, `s3:GetObjectVersionTagging`, `s3:PutObject`, `s3:PutObjectTagging`, `s3:RestoreObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload` (Vault content, metadata backups and their read-back) |
 | Deletion (`frostvault-*/*`) | `s3:DeleteObject`, `s3:DeleteObjectVersion`: the [accepted single-identity deletion model](#accepted-single-identity-deletion-risk) |
+| CloudWatch (`"*"`) | `cloudwatch:GetMetricStatistics`: the daily [Vault Bucket sizes](#vault-bucket-sizes-from-cloudwatch). CloudWatch actions take no resource ARN |
 | Deny | `s3:BypassGovernanceRetention`, always |
 
 FrostVault never holds `s3:BypassGovernanceRetention`, and this policy never
@@ -370,6 +372,61 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
   per region (`app/services/aws_list_prices.json`, selected by
   `AWS_DEFAULT_REGION`). Regenerate them with
   `python scripts/update_aws_list_prices.py` when AWS changes S3 prices.
+
+### Vault Bucket sizes from CloudWatch
+
+Once a day per Vault, off the request path, the background loop reads the S3
+storage metrics of every Vault Bucket from CloudWatch, in the bucket's region
+(#737, [ADR-0051](adr/0051-billed-cost-from-the-billing-export.md)):
+
+- `BucketSizeBytes` for each of the 26 `StorageType` values of a general
+  purpose bucket (one `GetMetricStatistics` call per type: `StandardStorage`,
+  `StandardIAStorage`, `GlacierInstantRetrievalStorage`, `GlacierStorage`,
+  `DeepArchiveStorage`, the Intelligent-Tiering tiers and the overhead types
+  below);
+- `NumberOfObjects` (`AllStorageTypes`).
+
+Only `cloudwatch:GetMetricStatistics` is used, which stays in CloudWatch's free
+API tier (27 requests per read: about 27 per Vault a day, at most about 108 when
+every read of the day fails); `GetMetricData` is always billed and never called.
+Each read asks for the daily data points of the last 30 UTC days, today
+included, and FrostVault keeps exactly those 30 days in the catalog: every
+recorded read, a failed one too, prunes the older ones. The time and outcome of
+the last read are kept as well, so a restart never reads again early: a Vault is
+read again 24 hours after a successful read and 6 hours after any other outcome
+(no data yet, no permission, an error).
+
+The CloudWatch client gives up fast (3 s to connect, 10 s to read, two attempts
+in all). A pass over the Vaults stops at the first connection error (the network
+or the CloudWatch endpoint is unreachable), on shutdown, or once it has run 2
+minutes (a Vault whose read started is finished first); the Vaults it did not
+reach are read at the next poll, 5 minutes later.
+
+The Vault page shows them next to the catalog's Cost Estimate: bytes per
+storage class, the object count and the day of the data point. S3 publishes
+these metrics once a day with about a day of delay, so the newest figures are
+one or two days old, and a new bucket has none for a day or two. The overhead
+AWS bills on top of the objects is shown apart from their size:
+
+| StorageType | What it is | Billed as |
+| --- | --- | --- |
+| `GlacierObjectOverhead`, `DeepArchiveObjectOverhead` | 32 KB of index per archived object | the object's class |
+| `IntAAObjectOverhead` | 32 KB of index per object in the Intelligent-Tiering Archive Access tier | Glacier Flexible Retrieval |
+| `IntDAAObjectOverhead` | 32 KB of index per object in the Intelligent-Tiering Deep Archive Access tier | Deep Archive |
+| `GlacierS3ObjectOverhead`, `DeepArchiveS3ObjectOverhead`, `IntAAS3ObjectOverhead`, `IntDAAS3ObjectOverhead` | 8 KB of metadata per archived object | Standard |
+| `StandardIAObjectOverhead` | listed by AWS among the Standard-IA types but not described; shown as per-object metadata | Standard-IA (assumed) |
+| `StandardIASizeOverhead`, `OneZoneIASizeOverhead`, `GlacierIRSizeOverhead` | the difference to the 128 KB billed for a smaller object | the object's class |
+| `GlacierStagingStorage`, `DeepArchiveStagingStorage` | parts of a multipart upload not completed yet | Standard |
+
+`NumberOfObjects` counts every version, noncurrent ones included, and the parts
+of incomplete multipart uploads, so it can differ from the catalog's versions.
+
+A Vault on a shared bucket (an older Vault, under `vaults/<uuid>/`) shows only
+the catalog estimate: the bucket's metrics cover the other Vaults too. Without
+`cloudwatch:GetMetricStatistics` the Vault page shows a note and the estimate;
+it is not a Problem. Any other CloudWatch error is shown by its code and
+retried 6 hours later; an unexpected error is recorded the same way, with its
+error type, and reported as the CloudWatch worker's Problem.
 
 ## Teardown and recovery
 

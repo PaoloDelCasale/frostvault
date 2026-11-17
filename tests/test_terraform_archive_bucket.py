@@ -53,10 +53,16 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         for statement in policy["Statement"]:
             resources = statement["Resource"]
             resources = resources if isinstance(resources, list) else [resources]
-            self.assertTrue(all(resource.startswith("arn:aws:s3:::frostvault-*")
-                                for resource in resources), resources)
             actions = statement["Action"]
             actions = actions if isinstance(actions, list) else [actions]
+            if any(action.startswith("cloudwatch:") for action in actions):
+                # #737: CloudWatch actions are not resource-scoped. This one
+                # statement reads metrics only, never GetMetricData (billed).
+                self.assertEqual((statement["Effect"], actions, resources),
+                                 ("Allow", ["cloudwatch:GetMetricStatistics"], ["*"]))
+                continue
+            self.assertTrue(all(resource.startswith("arn:aws:s3:::frostvault-*")
+                                for resource in resources), resources)
             if statement["Effect"] == "Allow":
                 allowed.update(actions)
             else:
@@ -64,6 +70,7 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertNotIn("s3:BypassGovernanceRetention", allowed)
         # Deleting a Vault Bucket belongs to #739: never allowed here.
         self.assertNotIn("s3:DeleteBucket", allowed)
+        self.assertNotIn("cloudwatch:GetMetricData", allowed)
         self.assertFalse(any("*" in action for action in allowed))
         for action in ("s3:CreateBucket", "s3:PutBucketPublicAccessBlock",
                        "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",

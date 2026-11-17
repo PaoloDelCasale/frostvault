@@ -11,6 +11,7 @@ import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
+import { CloudUsagePanel } from "./CloudUsagePanel";
 import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { MinimumStoragePanel } from "./MinimumStoragePanel";
@@ -108,6 +109,9 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <SettingsSection id="plan" highlighted={highlight === "plan"} title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
       <details className="rounded-card border border-line"><summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("settings.plan_open")}</summary>
         <div className="border-t border-line p-3"><LifecyclePanel vaultId={vaultId} onNotice={show} /></div></details>
+    </SettingsSection>
+    <SettingsSection id="usage" highlighted={highlight === "usage"} title={t("cloud_usage.title")} summary={t("cloud_usage.summary")}>
+      <CloudUsagePanel vaultId={vaultId} />
     </SettingsSection>
     <SettingsSection id="minimum" highlighted={highlight === "minimum"} title={t("minimum_storage.title")} summary={t("minimum_storage.summary")}
       more={<><p>{t("minimum_storage.how")}</p><p>{t("minimum_storage.small_objects")}</p></>}>

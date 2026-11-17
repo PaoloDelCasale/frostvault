@@ -4690,6 +4690,270 @@
         ],
         "type": "object"
       },
+      "VaultCloudUsage": {
+        "additionalProperties": false,
+        "description": "A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket.",
+        "properties": {
+          "bucket": {
+            "type": "string"
+          },
+          "dedicated_bucket": {
+            "type": "boolean"
+          },
+          "estimate": {
+            "additionalProperties": false,
+            "description": "The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices.",
+            "properties": {
+              "by_storage_class": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "monthly_cost": {
+                      "type": "number"
+                    },
+                    "storage_class": {
+                      "type": "string"
+                    },
+                    "versions": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "storage_class",
+                    "versions",
+                    "bytes",
+                    "monthly_cost"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "monthly_cost": {
+                "type": "number"
+              },
+              "pricing_effective_at": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "versions": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "versions",
+              "bytes",
+              "monthly_cost",
+              "currency",
+              "region",
+              "pricing_effective_at",
+              "by_storage_class"
+            ],
+            "type": "object"
+          },
+          "measured": {
+            "additionalProperties": false,
+            "description": "Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737).",
+            "properties": {
+              "by_storage_class": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "description": "The objects' own bytes in this class.",
+                      "type": "number"
+                    },
+                    "overhead": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "billed_as": {
+                            "description": "The storage class whose price AWS applies to these bytes.",
+                            "type": "string"
+                          },
+                          "bytes": {
+                            "type": "number"
+                          },
+                          "kind": {
+                            "enum": [
+                              "object_overhead",
+                              "size_overhead",
+                              "staging"
+                            ],
+                            "type": "string"
+                          },
+                          "storage_type": {
+                            "description": "The CloudWatch StorageType dimension value.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "storage_type",
+                          "kind",
+                          "billed_as",
+                          "bytes"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "overhead_bytes": {
+                      "description": "Bytes AWS bills on top of the objects of this class.",
+                      "type": "number"
+                    },
+                    "storage_class": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "storage_class",
+                    "bytes",
+                    "overhead_bytes",
+                    "overhead"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "day": {
+                "description": "UTC day of the newest data point.",
+                "type": "string"
+              },
+              "history": {
+                "description": "Saved daily totals, newest first.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "day": {
+                      "type": "string"
+                    },
+                    "object_count": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "overhead_bytes": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "bytes",
+                    "overhead_bytes",
+                    "object_count"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "last_read": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attempted_at": {
+                        "type": "string"
+                      },
+                      "error_code": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "outcome": {
+                        "enum": [
+                          "ok",
+                          "no_data",
+                          "access_denied",
+                          "failed"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "attempted_at",
+                      "outcome",
+                      "error_code"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "next_read_after": {
+                "description": "When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "object_count": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "overhead_bytes": {
+                "type": "number"
+              },
+              "read_at": {
+                "type": "string"
+              },
+              "status": {
+                "description": "available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.",
+                "enum": [
+                  "available",
+                  "pending",
+                  "no_data",
+                  "access_denied",
+                  "failed",
+                  "shared_bucket",
+                  "provisioning"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "region": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "vault_id",
+          "bucket",
+          "region",
+          "dedicated_bucket",
+          "estimate",
+          "measured"
+        ],
+        "type": "object"
+      },
       "VaultCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8525,6 +8789,46 @@
           }
         },
         "summary": "Retry Vault Bucket"
+      }
+    },
+    "/api/vaults/{vault_id}/cloud-usage": {
+      "get": {
+        "description": "A Vault's cloud usage (#737): the catalog's Cost Estimate by storage\nclass next to the bytes and objects CloudWatch measured in its Vault\nBucket once a day. Reads only the catalog, never AWS.",
+        "operationId": "vault_cloud_usage_api_vaults__vault_id__cloud_usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultCloudUsage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Cloud Usage"
       }
     },
     "/api/vaults/{vault_id}/creation/cancel": {

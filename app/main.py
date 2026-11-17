@@ -68,6 +68,7 @@ from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import minimum_storage as minimum_storage_service
+from .services import bucket_metrics as bucket_metrics_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
 from .oidc import (
@@ -1706,6 +1707,18 @@ def minimum_storage_summary(vault_id: int, _: dict[str, Any] = Depends(current_u
             return minimum_storage_service.load_vault_summary(connection, vault_id)
     except LookupError as exc:
         raise LocalizedHTTPError(404, "api.minimum_storage.not_found") from exc
+
+
+@app.get("/api/vaults/{vault_id}/cloud-usage", response_model=response_model("VaultCloudUsage"))
+def vault_cloud_usage(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    """A Vault's cloud usage (#737): the catalog's Cost Estimate by storage
+    class next to the bytes and objects CloudWatch measured in its Vault
+    Bucket once a day. Reads only the catalog, never AWS."""
+    try:
+        with db() as connection:
+            return bucket_metrics_service.vault_usage(connection, vault_id)
+    except LookupError as exc:
+        raise LocalizedHTTPError(404, "api.cloud_usage.not_found") from exc
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

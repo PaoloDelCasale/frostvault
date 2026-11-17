@@ -132,6 +132,7 @@ from .services import vault_moves
 from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
+from .services import bucket_metrics as bucket_metrics_service
 from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
@@ -7923,6 +7924,24 @@ def run_duplicate_cleanup_once() -> int:
     return ran
 
 
+def read_bucket_metrics_once() -> int:
+    """Read the CloudWatch sizes of every due Vault Bucket (#737); returns how many.
+
+    AWS errors (no cloudwatch:GetMetricStatistics among them) are recorded on
+    their Vault and shown on its page, never a Problem; an unexpected error is
+    recorded on its Vault too (so it waits its retry cadence) and reported as
+    this worker's. A pass stops on shutdown, after its time budget or at the
+    first connection error.
+    """
+    try:
+        read = bucket_metrics_service.run_due(db, should_stop=lambda: shutdown_state.requested)
+    except Exception as exc:
+        _report_worker_error("bucket_metrics", exc)
+        return 0
+    _note_worker_ok("bucket_metrics")
+    return read
+
+
 def _record_background_loop_error(exc: Exception) -> None:
     # Never include paths/provider messages in logs. The existing bounded error
     # store and counter own diagnostics for ordinary and fast-refill cycles.
@@ -7958,6 +7977,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_duplicate_cleanup: float | None = None
     last_system_bucket: float | None = None
     last_vault_buckets: float | None = None
+    last_bucket_metrics: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -8006,6 +8026,12 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_vault_buckets >= VAULT_BUCKET_POLL_SECONDS):
                     last_vault_buckets = loop.time()
                     _submit_maintenance("vault_buckets", ensure_vault_buckets_once)
+                # CloudWatch sizes of the Vault Buckets (#737): each Vault is read
+                # once a day from its persisted last read; the poll finds due ones.
+                if (last_bucket_metrics is None
+                        or loop.time() - last_bucket_metrics >= bucket_metrics_service.POLL_SECONDS):
+                    last_bucket_metrics = loop.time()
+                    _submit_maintenance("bucket_metrics", read_bucket_metrics_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck
