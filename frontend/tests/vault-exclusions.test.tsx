@@ -76,6 +76,14 @@ describe("exclusions in the Vault browser (#754)", () => {
     expect(screen.getByRole("menuitem", { name: "exclusions.open_panel" })).toBeInTheDocument();
   });
 
+  it("disables «Exclude» for a file at the Vault root: its rule would match the name everywhere", async () => {
+    setup("", { items: [{ ...photo, name: "notes.txt", path: "notes.txt" }] });
+    const user = userEvent.setup();
+    await user.click(await within(await screen.findByTestId("file-list-table")).findByRole("button", { name: /exclusions.actions/ }));
+    expect(await screen.findByRole("menuitem", { name: "exclusions.exclude" })).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("exclude-glob-hint")).toHaveTextContent("exclusions.exclude_root_file_disabled");
+  });
+
   it("includes a folder again with what will be uploaded, and the scan it starts", async () => {
     const calls = setup("", { disk: { directory: "", excluded_by: null, folders: [{ name: "upload", path: "upload", rule: "upload/**" }], entries: [], total_entries: 0, truncated: false },
       preview: { path: "upload", is_directory: true, own_rule: "upload/**", own_rule_present: true, excluded: true, rules: [], fixed: [], not_included: false, includable: true, folder_rule: true, files: 1200, bytes: 5e9, complete: false, estimate: { estimated_cost_eur: 0.11 } } });

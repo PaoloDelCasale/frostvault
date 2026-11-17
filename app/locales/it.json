@@ -1302,7 +1302,7 @@
   "exclusions.confirm_exclude_title": "Escludere «{name}» dal vault?",
   "exclusions.confirm_exclude_file": "Regola aggiunta: {rule}. Le copie già nel cloud restano (nessuna eliminazione). Il file diventa «Escluso» e le modifiche successive non vengono più caricate.",
   "exclusions.confirm_exclude_folder": "Regola aggiunta: {rule}. Le copie già nel cloud restano (nessuna eliminazione). I file diventano «Escluso» e le modifiche successive non vengono più caricate. La scansione e il rilevamento in tempo reale smettono di entrare nella cartella.",
-  "exclusions.root_file_rule": "Una regola senza «/» vale per ogni elemento con questo nome, in qualunque cartella.",
+  "exclusions.exclude_root_file_disabled": "Una regola per un file nella root del Vault varrebbe per ogni elemento con questo nome: aggiungi una regola in «Esclusioni».",
   "exclusions.confirm_include_title": "Includere di nuovo «{name}»?",
   "exclusions.loading": "Conteggio sul disco…",
   "exclusions.include_removes": "Regola tolta: {rule}. I suoi file vengono caricati in automatico.",

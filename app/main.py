@@ -3903,6 +3903,9 @@ def exclude_vault_item(
     rule = vault_exclusions.own_rule(path, is_directory=action.is_directory)
     if rule is None:
         raise HTTPException(422, "The name contains glob characters; edit the exclusion rules instead")
+    if not action.is_directory and "/" not in path:
+        # A rule without "/" matches the name in every folder: not this item only.
+        raise HTTPException(422, "A file at the Vault root cannot have its own rule; edit the exclusion rules instead")
 
     def change(before: OperationPolicy) -> OperationPolicy:
         return vault_exclusions.edit_glob(before, "exclude_globs", "add", rule)

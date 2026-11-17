@@ -23,7 +23,10 @@ const itemClass = "flex min-h-11 cursor-pointer items-center rounded px-3 text-s
 export function ExclusionMenu({ target, t, vaultId, onExclude, onInclude }: {
   target: ExclusionTarget; t: Translate; vaultId: number; onExclude: () => void; onInclude: () => void;
 }) {
-  const blocked = !target.excluded && hasGlobCharacters(target.path);
+  const globName = hasGlobCharacters(target.path);
+  // A rule without "/" would match the name in every folder (#754).
+  const rootFile = !target.isDirectory && !target.path.includes("/");
+  const blocked = !target.excluded && (globName || rootFile);
   return <DropdownMenu.Root>
     <DropdownMenu.Trigger asChild>
       <Button variant="ghost" className="min-h-11 min-w-11 px-2" aria-label={t("exclusions.actions", { name: target.name })} data-testid="exclusion-menu">
@@ -35,7 +38,7 @@ export function ExclusionMenu({ target, t, vaultId, onExclude, onInclude }: {
         {target.excluded
           ? <DropdownMenu.Item className={itemClass} onSelect={onInclude}>{t("exclusions.include")}</DropdownMenu.Item>
           : <DropdownMenu.Item className={itemClass} disabled={blocked} onSelect={onExclude}>{t("exclusions.exclude")}</DropdownMenu.Item>}
-        {blocked && <p className="px-3 pb-1 text-xs text-muted" data-testid="exclude-glob-hint">{t("exclusions.exclude_glob_disabled")}</p>}
+        {blocked && <p className="px-3 pb-1 text-xs text-muted" data-testid="exclude-glob-hint">{t(globName ? "exclusions.exclude_glob_disabled" : "exclusions.exclude_root_file_disabled")}</p>}
         <DropdownMenu.Item className={itemClass} onSelect={() => navigate(vaultSettingsUrl(vaultId, EXCLUSIONS_SECTION))}>{t("exclusions.open_panel")}</DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Portal>
@@ -59,7 +62,6 @@ export function ExcludeDialog({ vaultId, target, t, onClose, onDone }: {
     title={t("exclusions.confirm_exclude_title", { name: target.name })}
     description={t(target.isDirectory ? "exclusions.confirm_exclude_folder" : "exclusions.confirm_exclude_file", { rule })}
     confirmLabel={t("exclusions.exclude")} cancelLabel={t("ui.cancel")} onConfirm={() => void confirm()}>
-    {!target.isDirectory && !target.path.includes("/") && <p className="text-sm text-muted" data-testid="exclude-name-rule">{t("exclusions.root_file_rule")}</p>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </ConfirmDialog>;
 }

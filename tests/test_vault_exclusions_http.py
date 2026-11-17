@@ -132,6 +132,12 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         refused = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
                                    json={"path": "library/a[1].jpg"})
         self.assertEqual(refused.status_code, 422, refused.text)
+        # A root file's rule would have no "/" and match the name in every folder.
+        root_file = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
+                                     json={"path": "notes.txt"})
+        self.assertEqual(root_file.status_code, 422, root_file.text)
+        self.assertEqual(self.client.get("/api/vault/operation-policy").json()["exclude_globs"],
+                         ["library/a.jpg"])
 
     def test_a_broader_rule_is_shown_and_never_removed_from_an_item(self) -> None:
         self.edit("exclude_globs", "add", "**/u1/**")

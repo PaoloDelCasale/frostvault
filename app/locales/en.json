@@ -1302,7 +1302,7 @@
   "exclusions.confirm_exclude_title": "Exclude «{name}» from the Vault?",
   "exclusions.confirm_exclude_file": "Rule added: {rule}. Copies already in the cloud stay (nothing is deleted). The file becomes Excluded and later changes are no longer uploaded.",
   "exclusions.confirm_exclude_folder": "Rule added: {rule}. Copies already in the cloud stay (nothing is deleted). The files become Excluded and later changes are no longer uploaded. Scans and real-time detection stop looking inside the folder.",
-  "exclusions.root_file_rule": "A rule without «/» applies to every item with this name, in any folder.",
+  "exclusions.exclude_root_file_disabled": "A rule for a file at the Vault root would apply to every item with this name: add a rule in Exclusions.",
   "exclusions.confirm_include_title": "Include «{name}» again?",
   "exclusions.loading": "Counting on disk…",
   "exclusions.include_removes": "Rule removed: {rule}. Its files are uploaded automatically.",
