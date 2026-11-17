@@ -4,7 +4,7 @@ import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiCli
 import type { UploadActivitySummary, UploadThroughput } from "@/api/types";
 import { translate } from "@/i18n/translate";
 import { VaultHeader } from "@/layout/VaultHeader";
-import { expectedFinishText } from "@/lib/throughput";
+import { expectedFinishText, stoppedText } from "@/lib/throughput";
 import { createVaultAccessFetch, jsonResponse, loadCatalog } from "./vault-settings-harness";
 
 afterEach(resetApiClientForTests);
@@ -24,14 +24,14 @@ function throughput(): UploadThroughput {
   };
 }
 
-function setup({ paused = false, scanning = true } = {}) {
+function setup({ paused = false, scanning = true, stopped = null as string | null } = {}) {
   const finish = { at: new Date(Date.now() + 14 * 3600_000).toISOString(), seconds: 50400, limited_by: "upload" as const };
   const vault: UploadActivitySummary & { vault_id: number; vault_name: string; paused: boolean } = {
     vault_id: 3, vault_name: "Immich", paused,
     stability_wait: idle, verifying: idle, uploading: idle,
     queued: { files: 132693, bytes: 514 * 1024 ** 3, transferred_bytes: 0 },
     awaiting_admission_files: 0, next_stable_at: null,
-    throughput: throughput(), expected_finish: paused ? null : finish,
+    throughput: throughput(), expected_finish: paused || stopped ? null : finish, stopped_since: stopped,
   };
   configureApiClient({ fetch: createVaultAccessFetch({
     "GET /api/general/vaults": () => jsonResponse({ items: [] }),
@@ -63,6 +63,15 @@ describe("A Vault's one expected finish and the speeds of its two phases (#755)"
     expect(within(panel).getByTestId("sparkline-verification")).toBeInTheDocument();
     // The verification phase no longer carries its own time left.
     expect(screen.getByTestId("scan-verification")).not.toHaveTextContent(/left/);
+  });
+
+  it("shows since when the Vault stopped instead of a finish (#759)", async () => {
+    const since = new Date(Date.now() - 15 * 60_000).toISOString();
+    setup({ scanning: false, stopped: since });
+    const line = await screen.findByTestId("vault-stopped");
+    expect(line).toHaveTextContent(stoppedText(since, t));
+    expect(line).toHaveTextContent(/^Stopped since /);
+    expect(screen.queryByTestId("vault-expected-finish")).not.toBeInTheDocument();
   });
 
   it("shows no reading line without a verifying scan and no finish while paused", async () => {

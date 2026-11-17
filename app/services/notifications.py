@@ -102,6 +102,13 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
             localized[shown] = format_bytes(localized[raw], locale)
     if "executes_at" in localized:
         localized["executes"] = format_datetime(localized["executes_at"], locale)
+    # A Stalled Vault names its work and since when, in the reader's words (#759).
+    if "operation_key" in localized:
+        from .runtime_status import vault_operation_key
+        localized["operation"] = translate(
+            vault_operation_key(str(localized["operation_key"])), locale=locale)
+    if "held_since" in localized:
+        localized["since"] = format_datetime(localized["held_since"], locale)
     return localized
 
 

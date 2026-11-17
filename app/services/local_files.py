@@ -18,8 +18,12 @@ _CHUNK_SIZE = CHUNK_SIZE
 def hash_stable_regular_file(
     path: Path, *, should_stop: Callable[[], bool] | None = None,
     parts: PartDigests | None = None,
+    on_chunk: Callable[[int], None] | None = None,
 ) -> tuple[str, os.stat_result]:
     """``should_stop`` aborts a long read between chunks (process shutdown, #696).
+
+    ``on_chunk`` receives the size of each chunk read, so a long read of one
+    large file shows progress before it ends (#759).
 
     With ``parts``, the same read also records the SHA-256 of each multipart
     part of a file of at least 8 MiB (#703), cut with the part size of the
@@ -53,6 +57,8 @@ def hash_stable_regular_file(
                 if should_stop is not None and should_stop():
                     raise WorkerStopping("Process shutdown requested")
                 digest.update(chunk)
+                if on_chunk is not None:
+                    on_chunk(len(chunk))
                 if part_size is None:
                     continue
                 view = memoryview(chunk)

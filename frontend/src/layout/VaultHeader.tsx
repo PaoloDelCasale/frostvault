@@ -7,7 +7,7 @@ import { ScanStatus } from "@/components/ScanStatus";
 import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
 import type { StatsResponse } from "@/api/types";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
-import { expectedFinishText, phaseSpeeds } from "@/lib/throughput";
+import { expectedFinishText, phaseSpeeds, stoppedText } from "@/lib/throughput";
 import { adoptionOf } from "@/lib/adoption";
 import { formatBytes, formatNumber } from "@/pages/archive/format";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
@@ -30,10 +30,13 @@ function VaultProgress({ vaultId, runtime, t }: {
   const reading = runtime?.scanning === true && runtime.scan_phase === "verification";
   if (backlog.files <= 0 && !reading) return null;
   const finish = activity.paused ? null : activity.expected_finish;
+  // Nothing moved for five minutes: no finish, since when it stopped (#759).
+  const stopped = activity.paused ? null : activity.stopped_since;
   const upload = activity.paused ? null : phaseSpeeds("upload", activity.throughput, t);
   const verification = phaseSpeeds("verification", activity.throughput, t);
   return <div className="grid gap-1 pb-2 text-sm" data-testid="vault-progress">
-    {finish && <p className="font-semibold" data-testid="vault-expected-finish">{expectedFinishText(finish, t)}</p>}
+    {stopped ? <p className="font-semibold" data-testid="vault-stopped">{stoppedText(stopped, t)}</p>
+      : finish && <p className="font-semibold" data-testid="vault-expected-finish">{expectedFinishText(finish, t)}</p>}
     {backlog.files > 0 && <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <p className="text-muted" data-testid="vault-upload-line">
         <span className="font-semibold text-ink">{t("estimate.upload_label")}</span>: {t("estimate.upload_backlog", { files: formatNumber(backlog.files), size: formatBytes(backlog.bytes) })}

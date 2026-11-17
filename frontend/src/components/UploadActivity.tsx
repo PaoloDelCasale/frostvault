@@ -11,7 +11,7 @@ import { vaultFilesUrl } from "@/router";
 import { errorMessage } from "@/lib/errorMessage";
 import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
-import { expectedFinishShort, expectedFinishText, instantUploadSpeed, phaseSpeeds } from "@/lib/throughput";
+import { expectedFinishShort, expectedFinishText, instantUploadSpeed, phaseSpeeds, stoppedShort, stoppedText } from "@/lib/throughput";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
@@ -24,6 +24,7 @@ function Summary({ activity, observedAt, t, paused = false }: {
   const remaining = activity.next_stable_at ? Date.parse(activity.next_stable_at) - Date.parse(observedAt) : NaN;
   const speeds = paused ? null : phaseSpeeds("upload", activity.throughput, t);
   const finish = paused ? null : activity.expected_finish;
+  const stopped = paused ? null : activity.stopped_since;
   return <>
     {admitting(activity) && <p className="text-sm" role="status">{t("activity.bulk_admission", {
       processed: activity.bulk_admission?.processed_files ?? 0,
@@ -44,7 +45,9 @@ function Summary({ activity, observedAt, t, paused = false }: {
     {activity.awaiting_admission_files > 0 && <p className="mt-1 text-xs text-muted">{t("activity.admission", { count: activity.awaiting_admission_files })}</p>}
     {paused ? <p className="mt-1 text-sm font-semibold" data-testid="activity-paused">{t("activity.paused")}</p> : <>
       {/* One expected finish with the phase that limits it (#755). */}
-      {finish && <p className="mt-1 text-sm font-semibold" data-testid="activity-finish">{expectedFinishText(finish, t)}</p>}
+      {/* Nothing moved for five minutes: since when, instead of a finish (#759). */}
+      {stopped ? <p className="mt-1 text-sm font-semibold" data-testid="activity-stopped">{stoppedText(stopped, t)}</p>
+        : finish && <p className="mt-1 text-sm font-semibold" data-testid="activity-finish">{expectedFinishText(finish, t)}</p>}
       {speeds ? <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
         <p className="text-sm" data-testid="activity-rate"><span className="font-semibold">{t("estimate.upload_label")}</span>: {speeds}</p>
         <SpeedSparkline throughput={activity.throughput} phase="upload" t={t} />
@@ -88,11 +91,13 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
   const pausedFiles = paused.reduce((sum, vault) => sum + uploadBacklog(vault).files, 0);
   const speed = instantUploadSpeed(data.global.throughput, t);
   const finish = data.global.expected_finish;
+  const stopped = data.global.stopped_since;
   // Server priority (#713): uploads held back while the server's disks are busy.
   const serverBusy = data.server_priority?.throttled === true;
   const counted = { count: files, size: formatBytes(bytes) };
   const label = files > 0
-    ? speed && finish ? t("activity.indicator_finish", { ...counted, speed, time: expectedFinishShort(finish) })
+    ? stopped ? t("activity.indicator_stopped", { ...counted, time: stoppedShort(stopped) })
+      : speed && finish ? t("activity.indicator_finish", { ...counted, speed, time: expectedFinishShort(finish) })
       : speed ? t("activity.indicator_speed", { ...counted, speed })
       : t("activity.indicator", counted)
     : busy(data.global) ? t("activity.preparing") : t("activity.paused_only", { count: pausedFiles });

@@ -329,24 +329,27 @@ class WatcherExcludedFolderTests(Harness):
 
 
 class RequestFullScanTests(unittest.TestCase):
-    def test_a_request_during_a_scan_runs_after_it(self):
-        results = [{"already_running": 1}, {"local": 1}]
+    def test_requests_while_the_vault_is_busy_share_one_scan_after_it(self):
         calls: list[int] = []
 
-        def scan(vault):
+        def scan(vault, *, _on_start=None):
             calls.append(1)
-            return results.pop(0)
+            if _on_start:
+                _on_start()
+            return {"local": 1}
 
+        self.addCleanup(storage.runtime_status.pop, 6882, None)
+        lock = storage.scan_lock_for_vault(6882)
         with patch("app.storage.scan_vault", side_effect=scan), \
-                patch("app.storage.WATCHER_SCAN_BUSY_SECONDS", 0.01):
-            storage.request_full_scan({"id": 6882})
-            storage.request_full_scan({"id": 6882})  # Already requested: one scan.
-            for _ in range(500):
-                if len(calls) >= 2 and 6882 not in storage._full_scan_requests:
-                    break
-                time.sleep(0.01)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(results, [])
+                patch("app.storage.QUEUED_SCAN_POLL_SECONDS", 0.01):
+            with lock.holding("full_scan"):
+                future = storage.queue_scan({"id": 6882})
+                storage.request_full_scan({"id": 6882})  # Already requested: one scan.
+                time.sleep(0.05)
+                self.assertEqual(calls, [])
+            self.assertEqual(future.result(timeout=5), {"local": 1})
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn(6882, storage._queued_scans)
 
 
 if __name__ == "__main__":

@@ -7341,11 +7341,24 @@
           },
           "message_key": {
             "type": "string"
+          },
+          "queued": {
+            "type": "boolean",
+            "description": "True when the Vault is held by another operation: the scan waits and starts as soon as the Vault is free (#759)."
+          },
+          "waiting_for": {
+            "type": "string",
+            "description": "The operation holding the Vault, when queued."
+          },
+          "waiting_since": {
+            "type": "string",
+            "description": "When that operation took the Vault, when queued."
           }
         },
         "required": [
           "message",
-          "message_key"
+          "message_key",
+          "queued"
         ],
         "type": "object"
       },
@@ -7544,6 +7557,37 @@
                     "waiting"
                   ]
                 }
+              },
+              "scan_queued": {
+                "type": "boolean",
+                "description": "A requested full scan waits for the Vault (#759)."
+              },
+              "scan_queued_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scan_waiting_for": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The operation the queued scan waits for (null when the Vault is free)."
+              },
+              "scan_waiting_since": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Since when that operation holds the Vault."
+              },
+              "verify_bytes_read": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Bytes read by the running verification, partial files included (#759)."
               }
             },
             "type": "object"
@@ -10887,6 +10931,13 @@
                 "type": "null"
               }
             ]
+          },
+          "stopped_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759)."
           }
         },
         "required": [
@@ -10897,7 +10948,8 @@
           "awaiting_admission_files",
           "next_stable_at",
           "throughput",
-          "expected_finish"
+          "expected_finish",
+          "stopped_since"
         ]
       },
       "UploadThroughput": {

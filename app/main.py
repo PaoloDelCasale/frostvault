@@ -37,6 +37,7 @@ from .i18n import (
     LOCALE_COOKIE_NAME,
     available_locales,
     catalog as locale_catalog,
+    format_datetime,
     normalize_locale,
     present_job_message,
     resolve_locale,
@@ -65,6 +66,7 @@ from .services.source_layout import (
 from .services import source_directories as source_directories_service
 from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
+from .services.runtime_status import scan_waiting, vault_operation_key
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import minimum_storage as minimum_storage_service
@@ -179,6 +181,7 @@ from .storage import (
     runtime_status,
     safe_local_path,
     scan_lock_for_vault,
+    queue_scan,
     request_full_scan,
     snapshot_runtime_status_for_stats,
     status_lock,
@@ -1592,7 +1595,7 @@ def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request
     if action.cloud_disposition == "delete":
         require_recent_reauth(request, user)
     operation_lock = scan_lock_for_vault(vault_id)
-    if not operation_lock.acquire(blocking=False):
+    if not operation_lock.acquire(blocking=False, operation="stop_protection"):
         raise HTTPException(409, "Wait for the Vault scan to finish")
     try:
         with db() as connection:
@@ -2411,9 +2414,23 @@ async def start_scan(
 ):
     status = runtime_status.get(vault["id"], {})
     if status.get("scanning"):
-        return {**_api_message(request, "api.scan_in_progress")}
-    asyncio.create_task(asyncio.to_thread(scan_vault, vault))
-    return {**_api_message(request, "api.scan_started", name=vault["name"])}
+        return {**_api_message(request, "api.scan_in_progress"), "queued": False}
+    # A Vault held by another operation queues the scan instead of dropping it
+    # (#759): it starts as soon as the Vault is free and the runtime status
+    # says what it waits for.
+    queue_scan(vault)
+    # Read after queueing: the request is waiting only while something holds
+    # the Vault; once taken by a scan, or with the Vault free, it starts.
+    waiting = scan_waiting(int(vault["id"]))
+    if not waiting["scan_queued"] or waiting["scan_waiting_for"] is None:
+        return {**_api_message(request, "api.scan_started", name=vault["name"]), "queued": False}
+    locale = _request_locale(request)
+    return {**_api_message(
+        request, "api.scan_queued", name=vault["name"],
+        operation=translate(vault_operation_key(waiting["scan_waiting_for"]), locale=locale),
+        since=format_datetime(waiting["scan_waiting_since"], locale),
+    ), "queued": True, "waiting_for": waiting["scan_waiting_for"],
+        "waiting_since": waiting["scan_waiting_since"]}
 
 
 @app.get("/api/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
@@ -3616,7 +3633,7 @@ def reconnect_vault_root(
     # Without this lock a scan can begin after the ``busy`` snapshot but before
     # relocation publishes its persistent suspension state.
     relocation_lock = scan_lock_for_vault(vault_id)
-    if not relocation_lock.acquire(blocking=False):
+    if not relocation_lock.acquire(blocking=False, operation="reconnect"):
         status_code, message = _VAULT_RECONNECT_ERROR_STATUS["active_jobs"]
         raise HTTPException(status_code, message)
     try:

@@ -3,6 +3,7 @@ import { ProgressBar } from "@/components/ProgressBar";
 import type { Adoption } from "@/lib/adoption";
 import { formatRemaining } from "@/lib/remaining";
 import { cn } from "@/lib/utils";
+import { sinceMoment } from "@/lib/throughput";
 import { formatBytes, formatDateTime, formatNumber } from "@/pages/archive/format";
 
 type Params = Record<string, string | number>;
@@ -67,6 +68,27 @@ function verification(runtime: Runtime, t: Translate): { detail: string; value: 
   return { detail, value: bytesTotal > 0 ? percent(bytesDone, bytesTotal) : percent(Number(runtime.verify_files_done ?? 0), total) };
 }
 
+/** Operations that hold a Vault, each with its name (#759). */
+const OPERATIONS = new Set([
+  "full_scan", "auto_admission", "identify_local_copies", "watcher_changes",
+  "free_space", "recovery", "stop_protection", "reconnect",
+]);
+
+/**
+ * A requested scan that waits for the Vault (#759): «Scansione in attesa di
+ * ammissione automatica dei caricamenti dalle 17:30».
+ */
+function queuedScan(runtime: Runtime, t: Translate): string | null {
+  if (runtime.scan_queued !== true) return null;
+  const operation = runtime.scan_waiting_for;
+  const since = runtime.scan_waiting_since;
+  if (!operation || !since) return t("vault.scan.queued_starting");
+  const { today, params } = sinceMoment(since);
+  return t(today ? "vault.scan.queued" : "vault.scan.queued_earlier", {
+    operation: t(`vault.operation.${OPERATIONS.has(operation) ? operation : "other"}`), ...params,
+  });
+}
+
 function phaseState(phase: Phase, current: Phase): PhaseState {
   const [index, running] = [PHASES.indexOf(phase), PHASES.indexOf(current)];
   return index < running ? "done" : index === running ? "running" : "waiting";
@@ -87,11 +109,13 @@ export function ScanStatus({ runtime, t, adoption, unconfirmed = false }: {
   const stored = runtime.last_error_source;
   const failedAt = runtime.last_error_source_at;
   const failed = Boolean(stored && failedAt);
-  if (!scanning && !failed) return null;
+  const queued = queuedScan(runtime, t);
+  if (!scanning && !failed && !queued) return null;
   const cause = runtime.last_error_source_cause;
   const current: Phase = PHASES.includes(runtime.scan_phase as Phase) ? runtime.scan_phase as Phase : "traversal";
   const progress = { traversal: traversal(runtime, t), verification: verification(runtime, t), finalization: null };
   return <div className="grid gap-2 pb-2 text-sm" data-testid="scan-status" role="status">
+    {queued && <p className="font-semibold" data-testid="scan-queued">{queued}</p>}
     {scanning && <section className="grid gap-2 rounded-card border border-line bg-surface p-3" data-testid="scan-in-progress">
       <h2 className="font-bold">{t("vault.scan.panel_title")}</h2>
       <ol className="grid gap-2">

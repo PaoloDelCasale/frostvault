@@ -41,6 +41,7 @@ _ALLOWED_METRICS = {
     "queue_depth": "gauge",
     "queue_stalled": "gauge",
     "queue_stalled_seconds": "gauge",
+    "vaults_stalled": "gauge",
     "jobs_stuck": "gauge",
     "jobs_stuck_oldest_age_seconds": "gauge",
     "jobs_failed_backlog": "gauge",

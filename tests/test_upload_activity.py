@@ -64,7 +64,8 @@ class UploadActivityTests(unittest.TestCase):
         client = TestClient(main.app)
         self.assertEqual(client.get('/api/upload-activity').status_code, 401)
         expected = {'observed_at': '2026-11-06', 'global': {}, 'vaults': []}
-        annotated = {'throughput', 'expected_finish'}
+        # And since when a Vault with work has stopped (#759).
+        annotated = {'throughput', 'expected_finish', 'stopped_since'}
         @contextmanager
         def connection():
             yield Mock()

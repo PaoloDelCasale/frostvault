@@ -16,6 +16,7 @@ from unittest.mock import patch
 from watchfiles import Change, awatch
 
 from app import storage
+from app.services import runtime_status
 from tests import test_local_release
 
 
@@ -815,6 +816,92 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
                 await self.settle(lambda: self.scan.call_count >= 2)
                 await asyncio.sleep(0.2)
                 self.assertEqual(self.scan.call_count, 2)
+            finally:
+                await self.stop(task)
+
+    def hold_for_admission(self, stack):
+        """The real scan wrapper and queue, with the Vault held by admission (#759)."""
+        stack.enter_context(patch("app.storage.QUEUED_SCAN_POLL_SECONDS", 0.01))
+        self.addCleanup(runtime_status.scan_locks.pop, 9402, None)
+        self.addCleanup(storage._queued_scans.pop, 9402, None)
+        lock = storage.scan_lock_for_vault(9402)
+        lock.acquire(operation="auto_admission")
+        self.addCleanup(lambda: lock.locked() and lock.release())
+        return lock
+
+    @staticmethod
+    def changing(root):
+        """An observer that reports a new file on every tick, after a quiet start."""
+        ticks = {"count": 0}
+
+        def make(*args, **kwargs):
+            async def generate():
+                yield set()
+                while True:
+                    await asyncio.sleep(0.01)
+                    ticks["count"] += 1
+                    yield {(Change.added, str(Path(root) / "new.jpg"))} if ticks["count"] > 3 else set()
+            return generate()
+        return make, ticks
+
+    async def test_a_busy_vault_queues_the_paired_scan_and_events_keep_flowing(self):
+        real_scan = storage.scan_vault
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            lock = self.hold_for_admission(stack)
+            scans: list[str] = []
+
+            def scan_body(vault, *, _on_start=None):
+                held = storage.scan_lock_for_vault(vault["id"])
+                if not held.acquire(blocking=False, operation="full_scan"):
+                    return {"already_running": 1}
+                try:
+                    if _on_start:
+                        _on_start()
+                    scans.append("scan")
+                    return {"local": 1, "cloud": 1}
+                finally:
+                    held.release()
+            stack.enter_context(patch("app.storage._scan_vault", side_effect=scan_body))
+            applied: list[set] = []
+            stack.enter_context(patch("app.storage._apply_filesystem_changes",
+                                      side_effect=lambda vault, changes, **_: applied.append(set(changes)) or 1))
+            observer, ticks = self.changing(directory)
+            task = self.start(stack, directory, [observer], real_scan)
+            try:
+                await self.settle(lambda: storage.snapshot_runtime_status_for_stats(9402)["scan_queued"])
+                waiting = storage.snapshot_runtime_status_for_stats(9402)
+                self.assertEqual(waiting["scan_waiting_for"], "auto_admission")
+                # The watcher is not blocked by the queued scan: it goes on
+                # consuming events, keeping the batch while the Vault is held.
+                consumed = ticks["count"]
+                await self.settle(lambda: ticks["count"] > consumed + 5)
+                self.assertEqual(applied, [])
+                self.assertEqual(scans, [])
+                lock.release()
+                await self.settle(lambda: scans == ["scan"] and applied)
+                self.assertIn((Change.added, str(Path(directory) / "new.jpg")), applied[0])
+                await self.settle(lambda: not storage.snapshot_runtime_status_for_stats(9402)["scan_queued"])
+            finally:
+                await self.stop(task)
+
+    async def test_a_queued_scan_of_a_vault_stopped_meanwhile_is_suspended(self):
+        real_scan = storage.scan_vault
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            lock = self.hold_for_admission(stack)
+            stopped = {"value": False}
+            stack.enter_context(patch("app.storage.protection_stop_service.local_work_suspended",
+                                      side_effect=lambda vault: stopped["value"]))
+            stack.enter_context(patch("app.storage._current_scan_vault", side_effect=lambda vault: dict(vault)))
+            walk = stack.enter_context(patch("app.storage._verified_local_scan"))
+            task = self.start(stack, directory, [self.quiet], real_scan)
+            try:
+                await self.settle(lambda: 9402 in storage._queued_scans)
+                queued = storage._queued_scans[9402]
+                stopped["value"] = True  # Stop protection while the scan waits.
+                lock.release()
+                self.assertEqual(await asyncio.wrap_future(queued), {"suspended": 1})
+                walk.assert_not_called()
+                self.assertNotIn(9402, storage._queued_scans)
             finally:
                 await self.stop(task)
 

@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import Iterator, Mapping
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, InvalidStateError, ThreadPoolExecutor
 from concurrent.futures import wait as wait_for_futures
 from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -105,8 +105,8 @@ from .services.upload_retry import (
     upload_retry_delay_seconds,
 )
 from .services.runtime_status import (
+    lock_holders,
     runtime_status,
-    scan_locks,
     status_lock,
     scan_lock_for_vault,
     snapshot_runtime_status_for_stats,
@@ -1230,9 +1230,8 @@ def apply_filesystem_changes(
     applied: the watcher keeps the batch and keeps consuming events (#690).
     """
     vault_id = int(vault["id"])
-    with status_lock:
-        lock = scan_locks.setdefault(vault_id, threading.Lock())
-    if not lock.acquire(blocking=wait):
+    lock = scan_lock_for_vault(vault_id)
+    if not lock.acquire(blocking=wait, operation="watcher_changes"):
         return None
     try:
         journal: dict[str, Any] = {}
@@ -1936,6 +1935,7 @@ def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
 def _hash_local_copy(
     root: Path, row: dict[str, Any], *, device: str | None = None,
     cancelled: threading.Event | None = None,
+    on_read: Callable[[int], None] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Fingerprint one Local Copy; runs on a hashing thread, writes nothing.
 
@@ -1961,6 +1961,7 @@ def _hash_local_copy(
         ):
             digest, stat_result = hash_stable_regular_file(
                 local_path, should_stop=lambda: shutdown_state.requested, parts=parts,
+                **({"on_chunk": on_read} if on_read is not None else {}),
             )
     except WorkerStopping:
         raise
@@ -1993,6 +1994,7 @@ def _iter_local_fingerprints(
     *,
     scan_journal: dict[str, Any] | None = None,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    on_read: Callable[[int], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Hash Local Copies ``SCAN_HASH_CONCURRENCY`` at a time (#691).
 
@@ -2030,7 +2032,8 @@ def _iter_local_fingerprints(
 
     if concurrency == 1 or len(rows) <= 1:
         for row in rows:
-            update = outcome(row, *_hash_local_copy(root, row))
+            update = outcome(row, *_hash_local_copy(
+                root, row, **({"on_read": on_read} if on_read is not None else {})))
             if update is not None:
                 yield update
         return
@@ -2061,6 +2064,7 @@ def _iter_local_fingerprints(
                 device, row = step
                 pending[pool.submit(
                     _hash_local_copy, root, row, device=device, cancelled=cancelled,
+                    **({"on_read": on_read} if on_read is not None else {}),
                 )] = (row, device)
                 in_flight[device] += 1
             if not pending:
@@ -2111,8 +2115,16 @@ def _fingerprint_scanned_local_copies(
         vault_id, scan_id, scan_phase="verification",
         verify_files_total=len(rows), verify_files_done=0,
         verify_bytes_total=sum(int(row.get("size") or 0) for row in rows),
-        verify_bytes_done=0,
+        verify_bytes_done=0, verify_bytes_read=0,
     )
+
+    def read(size: int) -> None:
+        # Bytes read so far, partial files included, from the hashing
+        # threads: a large file read for minutes still moves (#759).
+        with status_lock:
+            status = runtime_status.get(vault_id)
+            if status is not None and status.get("scan_id") == scan_id:
+                status["verify_bytes_read"] = int(status.get("verify_bytes_read") or 0) + size
 
     def advance(row: dict[str, Any]) -> None:
         done["files"] += 1
@@ -2130,7 +2142,7 @@ def _fingerprint_scanned_local_copies(
     # running ones abort; closing the iterator waits for them. The digests
     # already hashed are published like any batch, then the scan stops.
     with closing(_iter_local_fingerprints(
-        vault, root, rows, scan_journal=scan_journal, on_result=advance,
+        vault, root, rows, scan_journal=scan_journal, on_result=advance, on_read=read,
     )) as results:
         try:
             for update in results:
@@ -2387,7 +2399,7 @@ def _verified_local_scan(
             )
         finally:
             if scan_lock is not None:
-                scan_lock.acquire()
+                scan_lock.acquire(operation="full_scan")
         # A shutdown during hashing stops before the finalization (#696).
         shutdown_state.checkpoint()
         # The walk skipped the readability probe of the files just hashed
@@ -2621,7 +2633,7 @@ def _record_scan_component_health(
 # Verification progress of the running scan (#691), runtime status only.
 _NO_VERIFICATION_PROGRESS = {
     "verify_files_total": None, "verify_files_done": None,
-    "verify_bytes_total": None, "verify_bytes_done": None,
+    "verify_bytes_total": None, "verify_bytes_done": None, "verify_bytes_read": None,
     # Traversal progress of the running scan (#696).
     "traversal_files_seen": None, "traversal_files_per_minute": None,
     "traversal_files_expected": None,
@@ -2631,9 +2643,36 @@ _NO_VERIFICATION_PROGRESS = {
 
 
 def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
+    """Run a full scan now, or return ``already_running`` when the Vault is busy.
+
+    A scan that takes the Vault also takes its queued request, if any
+    (:func:`queue_scan`), and resolves it with its own result (#759): the
+    request is satisfied, no second scan follows.
+    """
+    vault_id = int(vault["id"])
+    taken: list[Future[dict[str, int]]] = []
+
+    def take() -> None:
+        pending = _take_queued_scan(vault_id)
+        if pending is not None:
+            taken.append(pending)
+
+    try:
+        result = _scan_vault(vault, _on_start=take)
+    except BaseException as exc:
+        for pending in taken:
+            _settle_queued_scan(pending, exception=exc)
+        raise
+    for pending in taken:
+        _settle_queued_scan(pending, result=result)
+    return result
+
+
+def _scan_vault(vault: dict[str, Any], *,
+                _on_start: Callable[[], None] | None = None) -> dict[str, int]:
     vault_id = int(vault["id"])
     lock = scan_lock_for_vault(vault_id)
-    if not lock.acquire(blocking=False):
+    if not lock.acquire(blocking=False, operation="full_scan"):
         return {"already_running": 1}
 
     with status_lock:
@@ -2646,6 +2685,8 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
         lock.release()
         return {"already_running": 1}
     try:
+        if _on_start is not None:
+            _on_start()
         # The relocation route holds this same lock while it publishes the
         # recovery state. A direct caller can still observe the short runtime
         # handoff gate, so do not turn that into a scan while the DB row is
@@ -4649,7 +4690,7 @@ def process_free_space(job: dict[str, Any]) -> None:
     # The claim's temporary absence must never become a watcher/full-scan
     # observation. Hashing holds no DB write transaction, only the same
     # per-Vault filesystem lock used by scans and watcher batches.
-    with scan_lock_for_vault(int(job["vault_id"])):
+    with scan_lock_for_vault(int(job["vault_id"])).holding("free_space"):
         _process_free_space(job)
 
 
@@ -5159,7 +5200,7 @@ def process_recover(job: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Recovered plaintext digest does not match the Archive Version"
             )
-        with scan_lock_for_vault(int(job["vault_id"])):
+        with scan_lock_for_vault(int(job["vault_id"])).holding("recovery"):
             # Transfers/hash stay outside the filesystem critical section. The
             # observation token is read before the final path appears, and the
             # observation, digest and recovered_at are published with one
@@ -6235,6 +6276,66 @@ def observe_queue_stall(queued: int, *, now: float | None = None) -> bool:
     return stalled
 
 
+# Background work holding a Vault for this long makes it a Stalled Vault (#759):
+# its scans and uploads wait behind it. A full scan is never one.
+VAULT_STALL_SECONDS = 600.0
+VAULT_STALL_REFRESH_SECONDS = 60.0
+BACKGROUND_VAULT_OPERATIONS = frozenset({"auto_admission", "identify_local_copies"})
+# Vault id -> (operation, since) of each open Stalled Vault problem; None until
+# the first check, which also closes those a previous process left open.
+_stalled_vaults: dict[int, tuple[str, str]] | None = None
+_stalled_vaults_refreshed_at: dict[int, float] = {}
+
+
+def observe_vault_stalls(*, now: float | None = None) -> dict[int, dict[str, Any]]:
+    """Open, refresh or close the Stalled Vault problem of each Vault (#759).
+
+    It reads the in-memory lock holders, so it runs from the background loop,
+    never from the thread doing the work. Only state changes (and a refresh
+    of the duration each minute) write. No email: it clears by itself.
+    """
+    global _stalled_vaults
+    current = time.monotonic() if now is None else now
+    stalled = {
+        vault_id: holder for vault_id, holder in lock_holders().items()
+        if holder["operation"] in BACKGROUND_VAULT_OPERATIONS
+        and current - float(holder["since_monotonic"]) >= VAULT_STALL_SECONDS
+    }
+    metrics_service.set_gauge("vaults_stalled", float(len(stalled)))
+    previous = _stalled_vaults
+    if previous is None:
+        with db() as connection:
+            rows = connection.execute(
+                "SELECT vault_id FROM notifications WHERE event='vault_stalled' "
+                "AND problem_status='open' AND vault_id IS NOT NULL"
+            ).fetchall()
+        previous = {int(row["vault_id"]): ("", "") for row in rows}
+    opened: dict[int, tuple[str, str]] = {}
+    for vault_id, holder in stalled.items():
+        state = (str(holder["operation"]), str(holder["since"]))
+        opened[vault_id] = state
+        if (previous.get(vault_id) == state and current
+                - _stalled_vaults_refreshed_at.get(vault_id, current) < VAULT_STALL_REFRESH_SECONDS):
+            continue
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key=f"vault_stalled:{vault_id}", event="vault_stalled",
+                vault_id=vault_id, active=True, email=False,
+                params={"operation_key": state[0], "held_since": state[1],
+                        "minutes": int((current - float(holder["since_monotonic"])) // 60)},
+            )
+        _stalled_vaults_refreshed_at[vault_id] = current
+    for vault_id in set(previous) - set(opened):
+        with db() as connection:
+            notification_service.set_problem(
+                connection, key=f"vault_stalled:{vault_id}", event="vault_stalled",
+                vault_id=vault_id, active=False, email=False,
+            )
+        _stalled_vaults_refreshed_at.pop(vault_id, None)
+    _stalled_vaults = opened
+    return stalled
+
+
 def _claim_source_device(job: Mapping[str, Any]) -> str | None:
     """The Source Device an upload candidate reads, or None (not an upload)."""
     if job.get("action") != "upload" or not job.get("source_root") or not job.get("path"):
@@ -6509,8 +6610,117 @@ def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
         )
 
 
-# Vaults with a full scan requested by a policy change and not started yet.
-_full_scan_requests: set[int] = set()
+# A requested full scan that waits for its Vault, one per Vault (#759).
+_queued_scans: dict[int, Future[dict[str, int]]] = {}
+QUEUED_SCAN_POLL_SECONDS = 1.0
+
+
+def vault_busy(vault_id: int) -> bool:
+    """Whether a scan started now would find the Vault taken.
+
+    A full scan verifying fingerprints runs without the lock (#689), so a
+    running scan counts as well.
+    """
+    with status_lock:
+        scanning = bool((runtime_status.get(int(vault_id)) or {}).get("scanning"))
+    return scanning or scan_lock_for_vault(vault_id).locked()
+
+
+def queue_scan(vault: dict[str, Any]) -> Future[dict[str, int]]:
+    """Run a full scan of the Vault now, or as soon as the Vault is free (#759).
+
+    A scan requested while another operation holds the Vault is not lost: it
+    waits, in memory, and the Vault's runtime status says what it waits for.
+    At a restart the full scan is due anyway. Requests made before a scan
+    starts share it, and so does any scan that starts first (it takes the
+    request); one made while a scan runs waits for a scan of its own, since
+    the running one may have walked past what made it due.
+    """
+    vault_id = int(vault["id"])
+    with status_lock:
+        pending = _queued_scans.get(vault_id)
+        if pending is not None:
+            return pending
+        future: Future[dict[str, int]] = Future()
+        # Shared by every requester: one that stops waiting cannot cancel it.
+        future.set_running_or_notify_cancel()
+        _queued_scans[vault_id] = future
+        runtime_status.setdefault(
+            vault_id, {"scanning": False, "last_scan": None, "last_error": None},
+        )["scan_queued_at"] = now_iso()
+    try:
+        _submit_queued_scan(dict(vault), future)
+    except BaseException as exc:
+        # Never a request left pending forever: the next one starts afresh.
+        _take_queued_scan(vault_id, future)
+        _settle_queued_scan(future, exception=exc)
+    return future
+
+
+def _submit_queued_scan(vault: dict[str, Any], future: Future[dict[str, int]]) -> None:
+    """Wait on the Vault's paired-scan thread, which the shutdown drain awaits
+    (ADR-0045, #696). Under the pool lock: a drain cannot miss it."""
+    with _watcher_scan_pool_lock:
+        shutdown_state.checkpoint()
+        task = _watcher_scan_executor_locked(int(vault["id"])).submit(
+            _run_queued_scan, vault, future)
+        _watcher_scan_futures.add(task)
+
+    def done(task: Future[Any]) -> None:
+        _forget_watcher_scan_future(task)
+        if task.cancelled():  # Dropped by a shutdown before it ran.
+            _take_queued_scan(int(vault["id"]), future)
+            _settle_queued_scan(future, result={"stopped": 1})
+
+    task.add_done_callback(done)
+
+
+def _settle_queued_scan(future: Future[dict[str, int]], *, result: dict[str, int] | None = None,
+                        exception: BaseException | None = None) -> None:
+    """Resolve a queued scan once; whoever comes second changes nothing."""
+    try:
+        if exception is not None:
+            future.set_exception(exception)
+        else:
+            future.set_result(result or {})
+    except InvalidStateError:
+        pass
+
+
+def _take_queued_scan(vault_id: int, future: Future[dict[str, int]] | None = None,
+                      ) -> Future[dict[str, int]] | None:
+    """Remove the Vault's pending request (only ``future``, when given)."""
+    with status_lock:
+        pending = _queued_scans.get(vault_id)
+        if pending is None or (future is not None and pending is not future):
+            return None
+        _queued_scans.pop(vault_id, None)
+        (runtime_status.get(vault_id) or {}).pop("scan_queued_at", None)
+        return pending
+
+
+def _run_queued_scan(vault: dict[str, Any], future: Future[dict[str, int]]) -> None:
+    vault_id = int(vault["id"])
+    try:
+        while not future.done():
+            if shutdown_state.requested:
+                _take_queued_scan(vault_id, future)
+                _settle_queued_scan(future, result={"stopped": 1})
+                return
+            if vault_busy(vault_id):
+                time.sleep(QUEUED_SCAN_POLL_SECONDS)
+                continue
+            result = scan_vault(vault)
+            if not result.get("already_running"):
+                # scan_vault took the request; settle it here as well in case
+                # it did not (a scan that started first resolved it already).
+                _take_queued_scan(vault_id, future)
+                _settle_queued_scan(future, result=result)
+    except BaseException as exc:
+        _take_queued_scan(vault_id, future)
+        if isinstance(exc, Exception) and not isinstance(exc, WorkerStopping):
+            _report_worker_error("source_scan", exc, vault_id)
+        _settle_queued_scan(future, exception=exc)
 
 
 def request_full_scan(vault: dict[str, Any]) -> None:
@@ -6520,31 +6730,18 @@ def request_full_scan(vault: dict[str, Any]) -> None:
     (an Excluded Folder whose rule was removed, ADR-0044). A scan already
     walking used the older rules, so it does not count.
     """
-    vault_id = int(vault["id"])
-    with status_lock:
-        if vault_id in _full_scan_requests:
-            return
-        _full_scan_requests.add(vault_id)
+    queue_scan(vault)
 
-    def run() -> None:
-        while not shutdown_state.requested:
-            with status_lock:
-                # A request made after this point needs a scan of its own.
-                _full_scan_requests.discard(vault_id)
-            try:
-                result = scan_vault(vault)
-            except Exception as exc:
-                _report_worker_error("source_scan", exc, vault_id)
-                return
-            if not result.get("already_running"):
-                return
-            with status_lock:
-                if vault_id in _full_scan_requests:
-                    return  # A newer request waits for the same scan.
-                _full_scan_requests.add(vault_id)
-            time.sleep(WATCHER_SCAN_BUSY_SECONDS)
 
-    threading.Thread(target=run, name=f"full-scan-request-{vault_id}", daemon=True).start()
+def _scan_or_queue(vault: dict[str, Any]) -> None:
+    """A scheduled scan: run it now, or queue it behind the operation holding
+    the Vault (#759). A scan already running is the scan that was due."""
+    result = scan_vault(vault)
+    if result.get("already_running"):
+        with status_lock:
+            scanning = bool((runtime_status.get(int(vault["id"])) or {}).get("scanning"))
+        if not scanning:
+            queue_scan(vault)
 
 
 def scan_all_vaults() -> None:
@@ -6555,7 +6752,7 @@ def scan_all_vaults() -> None:
     for vault in vaults:
         if shutdown_state.requested:
             return
-        scan_vault(vault)
+        _scan_or_queue(vault)
 
 
 AUTO_UPLOAD_POLL_SECONDS = 10
@@ -6569,7 +6766,7 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
     full-scan reconciliation. No in-memory timer is lost on restart.
     """
     lock = scan_lock_for_vault(int(vault["id"]))
-    if not lock.acquire(blocking=False):
+    if not lock.acquire(blocking=False, operation="auto_admission"):
         return 0
     try:
         vault = _current_scan_vault(vault)
@@ -6594,9 +6791,15 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
             # transaction: admission then sees the outcome (#621). During a
             # full scan the scan hashes them and decides at its finalization.
             if not during_scan:
-                _identify_new_local_copies(
-                    vault, root, now=now or datetime.now(timezone.utc),
-                )
+                # Named apart for a Stalled Vault (#759): the step that holds
+                # the Vault longest on a large one.
+                lock.relabel("identify_local_copies")
+                try:
+                    _identify_new_local_copies(
+                        vault, root, now=now or datetime.now(timezone.utc),
+                    )
+                finally:
+                    lock.relabel("auto_admission")
             with db() as connection:
                 from .services.job_admission import lock_vault
                 try:
@@ -6660,7 +6863,7 @@ def scan_vaults_with_cloud_error() -> None:
     for vault in vaults:
         if shutdown_state.requested:
             return
-        scan_vault(vault)
+        _scan_or_queue(vault)
 
 
 def recover_vaults_after_cloud_ready() -> None:
@@ -7063,6 +7266,10 @@ async def _reconcile_vault_after_watcher(vault: dict[str, Any]) -> _WatcherScanO
     """
     try:
         result = await asyncio.wrap_future(_submit_watcher_scan(vault))
+        if result.get("already_running"):
+            # The Vault is busy: the scan waits for it, visibly, and runs as
+            # soon as it is free (#759). It starts after the registration.
+            result = await asyncio.wrap_future(queue_scan(vault))
     except asyncio.CancelledError:
         raise
     except WorkerStopping:
@@ -8198,6 +8405,9 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         claimable_queue_depth, exclude_deferred=True
                     )
                     await asyncio.to_thread(observe_queue_stall, runnable_count)
+                    # Here, not in the thread doing the work: a Vault held by
+                    # stuck background work is still noticed (#759).
+                    await asyncio.to_thread(observe_vault_stalls)
                     stuck_count, stuck_age = await asyncio.to_thread(
                         observe_stuck_lease_jobs
                     )

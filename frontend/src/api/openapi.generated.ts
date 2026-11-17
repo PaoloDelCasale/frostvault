@@ -2584,6 +2584,12 @@ export interface components {
         ScanResponse: {
             message: string;
             message_key: string;
+            /** @description True when the Vault is held by another operation: the scan waits and starts as soon as the Vault is free (#759). */
+            queued: boolean;
+            /** @description The operation holding the Vault, when queued. */
+            waiting_for?: string;
+            /** @description When that operation took the Vault, when queued. */
+            waiting_since?: string;
         } & {
             [key: string]: unknown;
         };
@@ -2633,6 +2639,15 @@ export interface components {
                     reading: number;
                     waiting: number;
                 }[];
+                /** @description A requested full scan waits for the Vault (#759). */
+                scan_queued?: boolean;
+                scan_queued_at?: string | null;
+                /** @description The operation the queued scan waits for (null when the Vault is free). */
+                scan_waiting_for?: string | null;
+                /** @description Since when that operation holds the Vault. */
+                scan_waiting_since?: string | null;
+                /** @description Bytes read by the running verification, partial files included (#759). */
+                verify_bytes_read?: number | null;
             } & {
                 [key: string]: unknown;
             };
@@ -3546,6 +3561,8 @@ export interface components {
             next_stable_at: string | null;
             throughput: components["schemas"]["UploadThroughput"];
             expected_finish: components["schemas"]["ExpectedFinish"] | null;
+            /** @description When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759). */
+            stopped_since: string | null;
         };
         /** @description Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured. */
         UploadThroughput: {

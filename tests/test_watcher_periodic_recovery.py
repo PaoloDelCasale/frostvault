@@ -49,6 +49,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     connection, vault, "periodic", root=Path(vault["source_root"]),
                     allow_chunk_commits=True, finalize_missing=False,
                 )
+                return {"local": 1}
 
             stack.enter_context(patch("app.storage.scan_vault", side_effect=scan))
             runtime = SimpleNamespace(
@@ -90,6 +91,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 (storage, "read_bucket_metrics_once"),
                 (storage, "read_billed_cost_once"),
                 (storage, "observe_queue_stall"),
+                (storage, "observe_vault_stalls"),
                 (storage.health_service, "mark_worker_heartbeat"),
             ):
                 stack.enter_context(patch.object(owner, name))

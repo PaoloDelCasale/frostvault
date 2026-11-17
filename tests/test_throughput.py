@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 
 from app.services import throughput
 from app.services.throughput import (
-    AVERAGE_SECONDS, HISTORY_SECONDS, SAMPLE_SECONDS, ThroughputMeter, annotate, expected_finish,
+    AVERAGE_SECONDS, HISTORY_SECONDS, SAMPLE_SECONDS, STOPPED_SECONDS, ThroughputMeter, annotate,
+    expected_finish,
 )
 
 NOW = datetime(2026, 11, 17, 16, 33, tzinfo=timezone.utc)
@@ -196,6 +197,141 @@ class AnnotateTests(unittest.TestCase):
         result = annotate(activity, meter=self.meter, now=NOW, mono=self.mono)
         self.assertIsNone(result["vaults"][2]["expected_finish"])
         self.assertIsNone(result["global"]["expected_finish"])
+
+
+class StoppedTests(unittest.TestCase):
+    """No progress for five minutes: no finish, stopped since the last progress (#759)."""
+
+    def setUp(self):
+        patcher = patch.dict(throughput.runtime_status, {}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.meter = ThroughputMeter()
+        self.wall0 = NOW.timestamp()
+
+    def sample(self, i, *, held, vault=3, scans=None, held_back=False):
+        self.meter.record(mono=i * 2.0, wall=self.wall0 + i * 2, cut=None,
+                          uploads={vault: row(held=held)}, verification={},
+                          scans=scans, held_back=held_back)
+
+    def activity(self, *, queued=10, stability_wait=0):
+        vault = {"vault_id": 3, "paused": False, **summary(
+            queued={"files": queued, "bytes": queued * MB, "transferred_bytes": 0},
+            stability_wait={"files": stability_wait, "bytes": stability_wait * MB, "transferred_bytes": 0})}
+        return {"global": summary(), "vaults": [vault]}
+
+    def test_a_vault_with_work_and_no_progress_for_five_minutes_has_no_finish(self):
+        # Moving for 3 minutes, then nothing for 5 more.
+        for i in range(90):
+            self.sample(i, held=i * MB)
+        last_progress = self.wall0 + 89 * 2
+        for i in range(90, 90 + STOPPED_SECONDS // SAMPLE_SECONDS + 1):
+            self.sample(i, held=89 * MB)
+        mono = (90 + STOPPED_SECONDS // SAMPLE_SECONDS) * 2.0
+        result = annotate(self.activity(), meter=self.meter, now=NOW, mono=mono)
+        vault = result["vaults"][0]
+        self.assertIsNone(vault["expected_finish"])
+        self.assertEqual(vault["stopped_since"], datetime.fromtimestamp(last_progress, timezone.utc).isoformat())
+        self.assertEqual(result["global"]["stopped_since"], vault["stopped_since"])
+        self.assertIsNone(result["global"]["expected_finish"])
+        # Just under five minutes it still is moving: no stop claimed.
+        result = annotate(self.activity(), meter=self.meter, now=NOW, mono=89 * 2.0 + STOPPED_SECONDS - 2)
+        self.assertIsNone(result["vaults"][0]["stopped_since"])
+        # Progress again ends the stop.
+        self.sample(mono / 2 + 1, held=90 * MB)
+        result = annotate(self.activity(), meter=self.meter, now=NOW, mono=mono + 2)
+        self.assertIsNone(result["vaults"][0]["stopped_since"])
+
+    def test_a_moving_scan_or_held_back_reads_are_not_a_stop(self):
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 10
+        for i in range(steps):
+            self.sample(i, held=0, scans={3: ("scan", "traversal", i * 100, None, None)})
+        mono = (steps - 1) * 2.0
+        self.assertIsNone(annotate(self.activity(), meter=self.meter, now=NOW, mono=mono)["vaults"][0]["stopped_since"])
+        meter = self.meter = ThroughputMeter()
+        for i in range(steps):
+            self.sample(i, held=0, held_back=True)
+        self.assertIsNone(annotate(self.activity(), meter=meter, now=NOW, mono=mono)["vaults"][0]["stopped_since"])
+
+    def test_files_waiting_to_be_stable_are_not_a_stop(self):
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 10
+        for i in range(steps):
+            self.sample(i, held=0)
+        mono = (steps - 1) * 2.0
+        result = annotate(self.activity(queued=0, stability_wait=4), meter=self.meter, now=NOW, mono=mono)
+        self.assertIsNone(result["vaults"][0]["stopped_since"])
+        self.assertIsNone(result["global"]["stopped_since"])
+
+    def test_work_that_appears_after_an_idle_vault_starts_its_own_clock(self):
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 10
+        for i in range(steps):
+            self.sample(i, held=0)
+        mono = (steps - 1) * 2.0
+        annotate(self.activity(queued=0), meter=self.meter, now=NOW, mono=mono)
+        result = annotate(self.activity(), meter=self.meter, now=NOW, mono=mono)
+        self.assertIsNone(result["vaults"][0]["stopped_since"])
+
+    def test_a_long_read_of_one_large_file_is_not_a_stop(self):
+        # A 30 GB video at ~14 MB/s: no file completes for over half an hour,
+        # only the bytes read by the hashing threads move (#759).
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = []
+
+        @contextmanager
+        def connect():
+            yield connection
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 30
+        status = {"scanning": True, "scan_phase": "verification", "scan_id": "s",
+                  "verify_files_total": 1, "verify_files_done": 0,
+                  "verify_bytes_total": 30_000 * MB, "verify_bytes_done": 0, "verify_bytes_read": 0}
+        with patch.dict(throughput.runtime_status, {3: status}, clear=True):
+            for i in range(steps):
+                status["verify_bytes_read"] = i * 28 * MB
+                throughput.sample(connect, meter=self.meter, now=NOW + timedelta(seconds=2 * i),
+                                  mono=i * 2.0, held_back=False)
+            mono = (steps - 1) * 2.0
+            result = annotate(self.activity(queued=0), meter=self.meter, now=NOW, mono=mono)
+            self.assertIsNone(result["vaults"][0]["stopped_since"])
+            # The same read with no byte moving is a stop.
+            for i in range(steps, 2 * steps):
+                throughput.sample(connect, meter=self.meter, now=NOW + timedelta(seconds=2 * i),
+                                  mono=i * 2.0, held_back=False)
+            result = annotate(self.activity(queued=0), meter=self.meter, now=NOW, mono=(2 * steps - 1) * 2.0)
+            self.assertIsNotNone(result["vaults"][0]["stopped_since"])
+
+    def test_a_vault_waiting_in_line_behind_another_is_not_stopped(self):
+        # Vault 3 has only queued files; Vault 4 uploads. Claims are in order
+        # across Vaults, so 3 waits its turn while the installation moves.
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 30
+        for i in range(steps):
+            self.meter.record(mono=i * 2.0, wall=self.wall0 + i * 2, cut=None,
+                              uploads={3: row(), 4: row(held=i * MB)}, verification={})
+        mono = (steps - 1) * 2.0
+        uploading = {"files": 1, "bytes": 10_000 * MB, "transferred_bytes": MB}
+        activity = {"global": summary(), "vaults": [
+            self.activity()["vaults"][0],
+            {"vault_id": 4, "paused": False, **summary(uploading=uploading)}]}
+        result = annotate(activity, meter=self.meter, now=NOW, mono=mono)
+        self.assertEqual([vault["stopped_since"] for vault in result["vaults"]], [None, None])
+        self.assertIsNone(result["global"]["stopped_since"])
+        # A Vault holding a Job that does not move is stopped all the same.
+        activity["vaults"][0] = {"vault_id": 3, "paused": False, **summary(uploading=uploading)}
+        result = annotate(activity, meter=self.meter, now=NOW, mono=mono)
+        self.assertIsNotNone(result["vaults"][0]["stopped_since"])
+        self.assertIsNone(result["vaults"][1]["stopped_since"])
+        self.assertIsNone(result["global"]["stopped_since"])
+
+    def test_a_vault_never_seen_moving_is_stopped_since_the_sampler_started(self):
+        steps = STOPPED_SECONDS // SAMPLE_SECONDS + 10
+        for i in range(steps):
+            self.sample(i, held=0, vault=9)
+        mono = (steps - 1) * 2.0
+        result = annotate(self.activity(), meter=self.meter, now=NOW, mono=mono)
+        self.assertEqual(result["vaults"][0]["stopped_since"],
+                         datetime.fromtimestamp(self.wall0, timezone.utc).isoformat())
+        # Without fresh samples nothing is claimed.
+        self.assertIsNone(annotate(self.activity(), meter=self.meter, now=NOW,
+                                   mono=mono + 60)["vaults"][0]["stopped_since"])
 
 
 class SampleTests(unittest.TestCase):
