@@ -13,6 +13,7 @@ Seams under test (confirmed):
 """
 from __future__ import annotations
 
+from tests.fake_bucket_s3 import fake_vault_buckets
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 
@@ -48,9 +49,8 @@ class ManagedEmptyVaultRootTests(unittest.TestCase):
         self.settings = replace(
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
-            vault_s3_bucket="test-bucket",
-
         )
+        self.s3 = fake_vault_buckets(self)
         for target in ("app.database.settings", "app.services.vaults.settings"):
             patcher = patch(target, self.settings)
             patcher.start()

@@ -39,7 +39,7 @@ def _ready(bucket: system_bucket.SystemBucket | None) -> system_bucket.SystemBuc
             "Recovery Kit is available once a metadata backup has succeeded in the "
             "System Bucket (METADATA_BACKUP_BUCKET, or the one FrostVault creates with "
             "AWS credentials). Until then keep the previous kit: it points to the "
-            "earlier backups in the bucket in VAULT_S3_BUCKET")
+            "earlier backups, in the bucket it names")
     return bucket
 
 
@@ -69,8 +69,8 @@ Never paste the kit/key/credentials into logs, reports, command arguments or cha
 MAIN ROUTE: restore metadata plus files
 BUCKET and REGION below are this kit's system_bucket and region: the System
 Bucket that receives the metadata backups. Backups made before FrostVault had a
-System Bucket stay under system/backups/ in the bucket in VAULT_S3_BUCKET, which
-the previous kit names: keep that kit while you need them.
+System Bucket stay under system/backups/ in the shared Vault bucket, which the
+previous kit names: keep that kit while you need them.
 1. Stop FrostVault. Keep the old database unchanged. Use the matching application
    release and PostgreSQL 16 tools. Obtain AWS access via a private AWS profile.
    On a new server, restore before the first start: the restored catalog names
@@ -142,14 +142,25 @@ PY
    catalog reconstruction exists.
 
 EMERGENCY ROUTE: files only, no usable metadata backup
-The objects are original bytes with readable names under vaults/<uuid>/path.
-The kit intentionally has NO Vault list, file list, catalog or per-Vault secrets.
-Vault content is NOT in the System Bucket: list your account's buckets and set
-BUCKET and REGION to the bucket holding the Vault and its region (the shared
-bucket of older installations):
+The objects are original bytes with readable names: the relative path of each
+file is its key. The kit intentionally has NO Vault list, file list, catalog or
+per-Vault secrets. Vault content is NOT in the System Bucket. List your
+account's buckets:
    aws s3 ls
-Use any authorized S3 tool; first list prefixes, then set PREFIX to vaults/UUID/:
+A Vault created by a release with Vault Buckets has its own bucket, named
+frostvault-<vault name>-<8 random characters>, with the files at the bucket
+ROOT (no prefix). Its tags name the Vault (frostvault:vault is its UUID,
+frostvault:name its name); frostvault-system-* is the System Bucket, not a Vault:
+   aws s3api get-bucket-tagging --bucket "$BUCKET"
+   aws s3api get-bucket-location --bucket "$BUCKET"
+For such a bucket set BUCKET to its name, REGION to its region and PREFIX to
+the empty string:
+   PREFIX=""
+An older Vault keeps the shared bucket of its installation, with its files
+under vaults/<uuid>/ (one folder per Vault). For it set BUCKET and REGION to
+that bucket, list the folders, then set PREFIX to vaults/UUID/:
    aws s3 ls "s3://$BUCKET/vaults/" --region "$REGION"
+Then, with any authorized S3 tool:
    aws s3 ls "s3://$BUCKET/$PREFIX" --recursive --region "$REGION"
    aws s3 cp "s3://$BUCKET/$PREFIX" ./recovered/ --recursive --region "$REGION"
 Use an empty destination. These commands do not remove anything from S3.

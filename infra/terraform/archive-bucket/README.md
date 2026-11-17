@@ -1,7 +1,14 @@
 # Archive bucket Terraform module
 
-Creates one dedicated, private, versioned S3 bucket for a FrostVault
-installation.
+FrostVault creates its own buckets: a Vault Bucket for every new Vault
+(`frostvault-<vault name>-<8 random>`, ADR-0049, #735) and the System Bucket
+for metadata backups. A new installation needs no bucket from this module, only
+the IAM policy in `iam/frostvault-buckets-policy.json` (see [IAM](#iam)).
+
+The module creates one shared, private, versioned S3 bucket: the bucket of an
+installation from before Vault Buckets, whose older Vaults keep their objects
+under `vaults/<uuid>/` in it. Keep it while such Vaults exist; FrostVault reads
+each Vault's bucket from its Vault Target, never from configuration.
 
 ## Baseline
 
@@ -23,24 +30,29 @@ terraform plan
 terraform apply
 ```
 
-After `terraform apply`, copy the `application_env` output into the application
-`.env` (`S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION`).
+The `application_env` output is `AWS_DEFAULT_REGION`, the region of every new
+Vault Bucket. `VAULT_S3_BUCKET` (and its alias `S3_BUCKET`) was removed in
+#735 and is ignored.
 
 ## IAM
 
-See `iam/archive-operator-policy.json` for a least-privilege starting point that
-covers upload, list, version read, restore, tagging, lifecycle management, and
-the accepted single-identity deletion model documented in the project README.
+Attach `iam/frostvault-buckets-policy.json` unchanged to FrostVault's IAM user or
+role. It is everything FrostVault needs in the buckets it creates, scoped to
+`arn:aws:s3:::frostvault-*` and `arn:aws:s3:::frostvault-*/*`:
 
-Replace `${archive_bucket_name}` with your bucket name before attaching the
-policy to an IAM user or role.
+- create, configure and verify a bucket (Block Public Access, versioning,
+  SSE-S3, `BucketOwnerEnforced`, lifecycle, tags, Object Lock configuration);
+- upload, read, list versions, restore, tag and copy objects, and abort
+  incomplete multipart uploads;
+- delete object versions (the accepted single-identity deletion model in the
+  project README: Cloud Deletion, Duplicate Cleanup, Vault Deletion).
 
-Attach `iam/frostvault-buckets-policy.json` as well, unchanged: it lets FrostVault
-create, configure and verify its own buckets, starting with the System Bucket for
-metadata backups (`frostvault-system-<random>`, see
-[docs/metadata-backups.md](../../../docs/metadata-backups.md#system-bucket)). It
-is scoped to `arn:aws:s3:::frostvault-*` and explicitly denies
-`s3:BypassGovernanceRetention`.
+It explicitly denies `s3:BypassGovernanceRetention` and never allows
+`s3:DeleteBucket`: deleting a Vault Bucket belongs to #739.
+
+`iam/archive-operator-policy.json` covers the same object operations on the
+shared bucket of this module. Attach it only while older Vaults use that bucket,
+after replacing `${archive_bucket_name}` with its name.
 
 ## Teardown warning
 

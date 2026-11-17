@@ -46,6 +46,7 @@ import type {
   StatsResponse,
   StorageEstimateRequest,
   StorageEstimateResponse,
+  VaultBucketStatus,
   VaultCreateRequest,
   VaultCreateResponse,
   VaultSelectRequest,
@@ -251,6 +252,10 @@ export function createVault(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function retryVaultBucket(vaultId: number): Promise<VaultBucketStatus> {
+  return apiRequest<VaultBucketStatus>(`/api/vaults/${vaultId}/bucket/retry`, { method: "POST" });
 }
 
 export function selectVault(

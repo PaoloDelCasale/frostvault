@@ -23,8 +23,9 @@ _OBSERVED_SINCE = observed_since_sql(
 
 
 def _object_prefix(vault: dict[str, Any]) -> str:
-    from .vaults import vault_prefix
-    return vault_prefix(vault["uuid"])
+    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
+    from .vault_paths import object_prefix
+    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 def _now_iso() -> str:

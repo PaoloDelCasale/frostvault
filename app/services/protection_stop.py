@@ -110,6 +110,9 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
             reconcile_one(connection, vault_id)
             return status(connection, vault_id)
         raise ValueError("Folder protection has already stopped")
+    if vault["lifecycle"] == "provisioning":
+        # Its bucket is still being created (#735): there is nothing to stop.
+        raise ValueError("The Vault's bucket is still being created")
     if cloud_disposition == "delete" and vault["lifecycle"] != "active":
         raise ValueError("Reconnect must complete before deleting cloud content")
     if has_pending(connection, vault_id) or _active_work(connection, vault_id):

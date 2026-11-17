@@ -1,29 +1,48 @@
 # AWS S3 bucket provisioning and validation
 
-This guide covers the dedicated archive bucket required by issue #8, the
-application preflight checks that validate it before upload or local cleanup,
-and the [buckets FrostVault creates itself](#buckets-frostvault-creates).
+This guide covers the [buckets FrostVault creates itself](#buckets-frostvault-creates)
+(a **Vault Bucket** for every new Vault and the System Bucket), the shared
+archive bucket of installations from before Vault Buckets, and the application
+preflight checks that validate them before upload or local cleanup.
 
-## Provision with Terraform
+## No bucket to provision
 
-Use the module at `infra/terraform/archive-bucket/`:
+Since #735 ([ADR-0049](adr/0049-one-bucket-per-vault.md)) FrostVault creates a
+dedicated Vault Bucket for every new Vault, in `AWS_DEFAULT_REGION`. Give it
+AWS credentials, `AWS_DEFAULT_REGION` and the IAM policy
+[below](#iam-for-frostvault-created-buckets); there is no bucket setting.
+`VAULT_S3_BUCKET` (and its alias `S3_BUCKET`) was removed and is ignored.
 
-1. Choose a globally unique bucket name and region.
-2. Run `terraform init`, `terraform plan`, and `terraform apply`.
-3. Copy the `application_env` output into the application environment:
-   - `AWS_DEFAULT_REGION`
-   - `S3_BUCKET`
-   - `VAULT_S3_BUCKET`
+### Upgrading an installation with a shared bucket
 
-The module enables versioning, blocks public access, enforces bucket-owner object
-ownership, applies SSE-S3 (`AES256`) by default, and aborts incomplete
-multipart uploads after seven days. Object Lock is intentionally **not** enabled.
+An installation from before #735 keeps its shared bucket for the Vaults it
+already has: migration `0010_vault_buckets` records, on their Vault Targets,
+that their objects live under `vaults/<uuid>/` in that bucket, and FrostVault
+reads the bucket from the Vault Target, never from configuration. Nothing in S3
+is moved, copied or renamed, and an existing bucket is never registered as a
+Vault Bucket. Vaults created after the upgrade get their own bucket. When you
+upgrade:
+
+1. Attach `iam/frostvault-buckets-policy.json` (it now also covers the object
+   operations of Vault Buckets). Keep `iam/archive-operator-policy.json` on the
+   shared bucket while older Vaults use it.
+2. Remove `VAULT_S3_BUCKET` and `S3_BUCKET` from the environment; keep
+   `AWS_DEFAULT_REGION`.
+
+The Terraform module at `infra/terraform/archive-bucket/` creates that shared
+bucket. It enables versioning, blocks public access, enforces bucket-owner
+object ownership, applies SSE-S3 (`AES256`) by default, and aborts incomplete
+multipart uploads after seven days. Object Lock is intentionally **not**
+enabled. A new installation does not need it.
 
 ## IAM
 
-Attach `infra/terraform/archive-bucket/iam/archive-operator-policy.json` to the
-archive operator identity. Replace `${archive_bucket_name}` with your bucket
-name. The policy grants:
+FrostVault's identity needs `iam/frostvault-buckets-policy.json`
+([IAM for FrostVault-created buckets](#iam-for-frostvault-created-buckets)).
+For a shared bucket from before #735, attach
+`infra/terraform/archive-bucket/iam/archive-operator-policy.json` as well,
+replacing `${archive_bucket_name}` with its name. Both grant the same object
+operations, on their own buckets:
 
 - bucket list, location, versioning, Block Public Access read, lifecycle, and tagging
   (`s3:GetBucketPublicAccessBlock` is required at bucket scope)
@@ -41,8 +60,6 @@ name. The policy grants:
   itself stays ready; it never suspends the whole installation
 - delete object/version for the accepted single-identity deletion model
 
-Attach `infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json` as
-well, unchanged, for the buckets FrostVault creates (below).
 
 ### Accepted single-identity deletion risk
 
@@ -70,25 +87,47 @@ model requires separating ordinary archive work from permanent purge.
 ## Buckets FrostVault creates
 
 FrostVault creates and verifies its own buckets
-([ADR-0049](adr/0049-one-bucket-per-vault.md)), starting with the **System
-Bucket** for metadata backups, `frostvault-system-<8 random [a-z0-9]>` in
-`AWS_DEFAULT_REGION`, unless `METADATA_BACKUP_BUCKET` names an operator-supplied
-one (see [metadata-backups.md](metadata-backups.md#system-bucket)). Every such
-bucket gets, and is then verified to have:
+([ADR-0049](adr/0049-one-bucket-per-vault.md)):
+
+- a **Vault Bucket** for every new Vault, `frostvault-<slug>-<8 random [a-z0-9]>`
+  in `AWS_DEFAULT_REGION`. The slug is the Vault name in lowercase ASCII
+  (accents dropped, other characters become `-`), at most 40 characters; a
+  name with no letter or digit becomes `vault`, and `system` becomes
+  `system-vault`. The Vault's files are at the bucket **root**: the key of a
+  file is its relative path;
+- the **System Bucket** for metadata backups, `frostvault-system-<8 random [a-z0-9]>`
+  in `AWS_DEFAULT_REGION`, unless `METADATA_BACKUP_BUCKET` names an
+  operator-supplied one (see [metadata-backups.md](metadata-backups.md#system-bucket)).
+
+Every such bucket gets, and is then verified to have:
 
 - all four Block Public Access settings;
 - versioning Enabled;
 - default encryption SSE-S3 (`AES256`);
 - Object Ownership `BucketOwnerEnforced` (ACLs off);
-- FrostVault's lifecycle rules (for the System Bucket: the seven-day abort of
-  incomplete multipart uploads, on the whole bucket). A Vault Bucket's lifecycle
-  must be exactly FrostVault's; on the System Bucket, extra rules the Owner adds
-  (for example a noncurrent-version expiry) are allowed;
-- its `frostvault:*` tags (`frostvault:role=system` for the System Bucket); other
+- FrostVault's lifecycle rules. A Vault Bucket's lifecycle is exactly its
+  Vault's Storage Plan (`frostvault-plan-<uuid>`, no filter, only when the plan
+  has transitions) plus the seven-day abort of incomplete multipart uploads,
+  with `TransitionDefaultMinimumObjectSize` `all_storage_classes_128K`: objects
+  smaller than 128 KiB never transition and stay in Standard. Any other rule
+  fails the verification. On the System Bucket the abort rule is required and
+  extra rules the Owner adds (for example a noncurrent-version expiry) are allowed;
+- its `frostvault:*` tags (`frostvault:vault=<uuid>` and `frostvault:name=<Vault name>`
+  for a Vault Bucket, `frostvault:role=system` for the System Bucket); other
   tags are kept. The System Bucket's tags are applied at creation and not
   required afterwards;
 - no Object Lock, unless a Governance-mode default retention was chosen for it.
   The System Bucket never has one.
+
+A new Vault is `provisioning` until its bucket is created, configured and
+verified; only then is it `active` and selectable. The Vault creation page shows
+the progress; when a step fails the Vault stays saved and provisioning, the page
+and the Overview show the failing step and the S3 error code, a Problem opens
+(the bucket may already exist in the account without being in use), and
+FrostVault retries every 15 minutes, after a restart too. **Retry now** retries
+at once, for example after an IAM fix. FrostVault writes a Vault Bucket's whole
+lifecycle only at its creation and when the Vault's Storage Plan changes (or the
+lifecycle no longer matches it); the rest of the configuration only at creation.
 
 Creation is idempotent and resumable: the name is saved before `CreateBucket`,
 `BucketAlreadyOwnedByYou` counts as created, and the configuration is applied
@@ -103,20 +142,23 @@ provider messages never.
 
 | Statement | Actions |
 | --- | --- |
-| Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:Get/PutBucketOwnershipControls`, `s3:Get/PutBucketObjectLockConfiguration` (a Vault Bucket's Governance Retention Lock only) |
-| Objects (`frostvault-*/*`) | `s3:PutObject`, `s3:GetObject` (metadata backups and their read-back) |
+| Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:ListBucketMultipartUploads`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:Get/PutBucketOwnershipControls`, `s3:Get/PutBucketObjectLockConfiguration` (a Vault Bucket's Governance Retention Lock only) |
+| Objects (`frostvault-*/*`) | `s3:GetObject`, `s3:GetObjectVersion`, `s3:GetObjectTagging`, `s3:GetObjectVersionTagging`, `s3:PutObject`, `s3:PutObjectTagging`, `s3:RestoreObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload` (Vault content, metadata backups and their read-back) |
+| Deletion (`frostvault-*/*`) | `s3:DeleteObject`, `s3:DeleteObjectVersion`: the [accepted single-identity deletion model](#accepted-single-identity-deletion-risk) |
 | Deny | `s3:BypassGovernanceRetention`, always |
 
-FrostVault never holds `s3:BypassGovernanceRetention`, and this policy grants no
-bucket or object deletion. Unlike the shared archive
-bucket, whose settings the application only reads, FrostVault configures the
-buckets it creates, so this policy grants the matching `Put*` actions only on
-`frostvault-*`.
+FrostVault never holds `s3:BypassGovernanceRetention`, and this policy never
+grants `s3:DeleteBucket`: a Vault Bucket outlives its Vault until #739. Unlike
+the shared archive bucket, whose settings the application only reads,
+FrostVault configures the buckets it creates, so this policy grants the
+matching `Put*` actions only on `frostvault-*`.
 
 ## Application preflight
 
 Before cloud upload, recovery, or local cleanup, `validate_cloud_vault()` checks
-the installation-wide readiness gate for the shared Vault bucket. One read-only
+the installation-wide readiness gate: one probe checks the bucket of every
+active Vault (Vault Buckets and a shared bucket alike), so one bucket that
+fails blocks cloud work until it is fixed. One read-only
 `check_bucket_readiness()` probe is allowed at a time across workers/processes;
 a successful result is cached for at most 60 seconds. Probe requests use short
 2-second connect/3-second read timeouts and one SDK attempt; ordinary transfer
@@ -148,7 +190,8 @@ blocked until versioning and **all four bucket-level BPA flags** are confirmed e
 S3-compatible endpoints must implement the same API; there is no CI/provider
 bypass. Grant read permission to the application, not permission to change BPA.
 
-Vault keys are readable `vaults/<uuid>/<relative-path>` and content is stored
+Vault keys are readable: `<relative-path>` at the root of a Vault Bucket,
+`vaults/<uuid>/<relative-path>` in a shared bucket. Content is stored
 without client-side encryption. AWS SSE-S3 (`AES256`) and TLS remain in place;
 metadata backup ciphertext under `system/backups/` in the System Bucket remains
 Fernet-encrypted.
@@ -206,7 +249,10 @@ before a subsequent transition. The AWS waterfall is validated (One Zone-IA
 cannot go to Glacier Instant Retrieval; Standard-IA can go to One Zone-IA).
 See [AWS transition constraints](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html).
 
-The application generates one exact `vaults/<uuid>/` prefix rule per transitioning
+A Vault Bucket's lifecycle is the Vault's alone (see
+[Buckets FrostVault creates](#buckets-frostvault-creates)): its plan rule has no
+filter, and a plan change replaces the whole lifecycle. In a shared bucket the
+application generates one exact `vaults/<uuid>/` prefix rule per transitioning
 Vault (`frostvault-plan-<uuid>`). Existing legacy prefixes are retained exactly
 with the same normalization as the cloud reader/writer, never replaced with an
 invented UUID namespace. Empty/overlapping bucket namespaces stop synchronization
@@ -214,7 +260,9 @@ before any write (including overlap with a Standard Vault). No object retagging
 is necessary. A Standard plan
 removes its transition rule, but does not warm existing cold objects. AWS applies
 transitions asynchronously; old objects can transition shortly after changing a
-plan. Objects below 128 KB do not transition by default. Early replacement can
+plan. Objects below 128 KiB never transition: every lifecycle FrostVault writes
+sets `TransitionDefaultMinimumObjectSize` to `all_storage_classes_128K` (the AWS
+default since September 2024), so they stay in Standard. Early replacement can
 incur minimum-duration fees. Changing a plan never copies or deletes content.
 
 Save attempts bucket synchronization immediately; failure reports `sync_pending`

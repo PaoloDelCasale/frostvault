@@ -12,7 +12,7 @@ from app.services.s3_copy import COPY_TOKEN_KEY
 from tests.upload_provenance_provider import VersionedProvider
 
 
-VAULT = {'s3_bucket': 'bucket', 'uuid': '11111111-1111-1111-1111-111111111111'}
+VAULT = {'s3_bucket': 'bucket', 's3_key_layout': 'vault_prefix', 'uuid': '11111111-1111-1111-1111-111111111111'}
 
 
 class MoveEligibilityTests(unittest.TestCase):

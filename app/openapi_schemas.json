@@ -275,6 +275,7 @@
         "lifecycle": {
           "type": "string",
           "enum": [
+            "provisioning",
             "active",
             "reconnect_required",
             "stopping",
@@ -291,6 +292,22 @@
             "running",
             "failed",
             null
+          ]
+        },
+        "s3_region": {
+          "type": "string"
+        },
+        "dedicated_bucket": {
+          "type": "boolean"
+        },
+        "bucket_provisioning": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/VaultBucketStatus"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -2466,12 +2483,24 @@
         },
         "uuid": {
           "type": "string"
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "provisioning",
+            "active"
+          ]
+        },
+        "bucket": {
+          "$ref": "#/components/schemas/VaultBucketStatus"
         }
       },
       "required": [
         "id",
         "uuid",
-        "name"
+        "name",
+        "lifecycle",
+        "bucket"
       ],
       "type": "object"
     },
@@ -2722,6 +2751,7 @@
         "lifecycle": {
           "type": "string",
           "enum": [
+            "provisioning",
             "active",
             "reconnect_required",
             "stopping",
@@ -3190,6 +3220,7 @@
               "lifecycle": {
                 "type": "string",
                 "enum": [
+                  "provisioning",
                   "active",
                   "reconnect_required",
                   "stopping",
@@ -3601,6 +3632,7 @@
         "lifecycle": {
           "type": "string",
           "enum": [
+            "provisioning",
             "active",
             "reconnect_required",
             "stopping",
@@ -4244,6 +4276,78 @@
         "pricing_effective_at",
         "region",
         "evaluated_at"
+      ]
+    },
+    "VaultBucketStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation.",
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "dedicated": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "creating",
+            "failed",
+            "ready"
+          ]
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "reserved",
+            "created",
+            "configured",
+            null
+          ]
+        },
+        "attempts": {
+          "type": "number"
+        },
+        "last_attempt_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retention_lock_days": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "vault_id",
+        "bucket",
+        "region",
+        "dedicated",
+        "state",
+        "stage",
+        "attempts",
+        "last_attempt_at",
+        "error",
+        "retention_lock_days"
       ]
     }
   }

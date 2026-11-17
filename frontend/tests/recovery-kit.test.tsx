@@ -59,7 +59,7 @@ describe("Installation Recovery Kit", () => {
     const notice = await screen.findByTestId("recovery-kit-awaiting-backup");
     expect(notice).toHaveTextContent("first metadata backup that succeeds in the System Bucket frostvault-system-k3x9q0ab (eu-south-1)");
     expect(notice).toHaveTextContent("keep your previous kit");
-    expect(notice).toHaveTextContent("the bucket in VAULT_S3_BUCKET");
+    expect(notice).toHaveTextContent("in the bucket it names");
     expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
   });
 

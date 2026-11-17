@@ -91,6 +91,7 @@ from .services.vault_paths import (
     safe_local_entry_path,
     object_key_to_path,
     expected_cloud_key,
+    object_prefix,
     is_restore_temporary_name,
 )
 from .services.database_retry import (
@@ -563,18 +564,53 @@ def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
         raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
 
+# Vaults whose bucket must answer for cloud work to run: a provisioning Vault's
+# bucket is still being created and a Tombstone's is left to Vault Deletion.
+_LIVE_BUCKETS_SQL = """
+    SELECT DISTINCT t.bucket, t.region FROM vaults v JOIN vault_targets t ON t.id = v.target_id
+    WHERE v.lifecycle IN ('active', 'reconnect_required', 'stopping')
+    ORDER BY t.bucket, t.region
+"""
+
+
+def _cloud_targets(vault: dict[str, Any]) -> list[tuple[Any, str]]:
+    """The Vault's own bucket first, then every other bucket a live Vault uses.
+
+    Readiness is installation-wide (one gate), and since #735 every new Vault
+    has its own bucket: probing only the caller's bucket would let the gate
+    flip between the Vaults' answers. A catalog that cannot be read leaves the
+    caller's bucket alone; the gate's own publication then fails anyway.
+    """
+    targets: list[tuple[Any, str]] = [
+        (vault.get("s3_bucket"), str(vault.get("s3_region") or settings.aws_region))]
+    try:
+        with db() as connection:
+            rows = connection.execute(_LIVE_BUCKETS_SQL).fetchall()
+    except Exception:
+        rows = []
+    for row in rows:
+        target = (row["bucket"], str(row["region"]))
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
 def _validate_cloud_vault(vault: dict[str, Any]) -> None:
-    bucket = vault.get("s3_bucket")
+    for bucket, region in _cloud_targets(vault):
+        _validate_cloud_bucket(bucket, region)
+
+
+def _validate_cloud_bucket(bucket: Any, region: str) -> None:
     if not bucket or is_placeholder(
         bucket,
         "BUCKET-NAME",
         "REPLACE-WITH-BUCKET-NAME",
     ):
-        raise cloud_preflight_gate.ReadinessFailure("The S3 bucket name is not configured. Set VAULT_S3_BUCKET to the archive bucket")
+        raise cloud_preflight_gate.ReadinessFailure("A Vault has no S3 bucket in its Vault Target")
     result = check_bucket_readiness(
         bucket,
-        region=settings.aws_region,
-        client=s3_client(preflight=True),
+        region=region,
+        client=s3_client(preflight=True, region=region),
     )
     if not result.ok:
         key = failure_message_key(result)
@@ -582,7 +618,7 @@ def _validate_cloud_vault(vault: dict[str, Any]) -> None:
         # can localize it for each viewer (cloud_preflight_gate.remediation_key).
         raise cloud_preflight_gate.ReadinessFailure(
             translate(key, locale="en") if key
-            else "S3 bucket preflight failed: " + preflight_failure_message(result)
+            else f"S3 bucket {bucket} preflight failed: " + preflight_failure_message(result)
         )
 
 
@@ -1438,12 +1474,13 @@ def scan_cloud(
     Provider listings stay outside write transactions. Returns the number of
     known versions the listing showed.
     """
-    from .services.vaults import vault_prefix
+    from .services.vaults import vault_object_prefix
 
     validate_cloud_vault(vault)
     client = s3_client()
     paginator = client.get_paginator("list_object_versions")
-    prefix = vault_prefix(vault["uuid"])
+    # The target's prefix: empty in a Vault Bucket, vaults/<uuid>/ in a shared one.
+    prefix = vault_object_prefix(vault)
     kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": prefix}
     listed: list[tuple[str, str, str]] = []
     latest: dict[str, dict[str, Any]] = {}
@@ -2722,7 +2759,7 @@ def scan_vault(vault: dict[str, Any]) -> dict[str, int]:
                 with db() as connection:
                     result["lifecycle_rules"] = sync_lifecycle_rules_for_bucket(
                         connection,
-                        s3_client(),
+                        s3_client(region=vault.get("s3_region")),
                         bucket=vault["s3_bucket"],
                     )
                     local_access = source_layout.vault_local_access(vault["source_root"])
@@ -3778,7 +3815,8 @@ def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
         timestamp = now_iso()
         jobs = connection.execute(
             f"""
-            SELECT j.*, f.path, v.source_root, t.bucket AS s3_bucket
+            SELECT j.*, f.path, v.source_root, v.uuid AS vault_uuid,
+                   t.bucket AS s3_bucket, t.key_layout AS s3_key_layout
             FROM jobs j
             JOIN files f ON f.id = j.file_id
             JOIN vaults v ON v.id=j.vault_id
@@ -4310,8 +4348,8 @@ def _close_withdrawn_upload(job: dict[str, Any]) -> bool:
 
 
 def _upload_key(job: dict[str, Any]) -> str:
-    """The Vault namespace key of the Job's path: ``vaults/<uuid>/<path>``."""
-    return expected_cloud_key(job["path"], f"vaults/{job['vault_uuid']}")
+    """The Job path's key under its Vault Target's prefix (root or ``vaults/<uuid>/``)."""
+    return expected_cloud_key(job["path"], object_prefix(job["s3_key_layout"], job["vault_uuid"]))
 
 
 @retry_database_unit
@@ -6537,7 +6575,10 @@ def reprobe_cloud_readiness_once() -> None:
         was_blocked = state['status'] == 'blocked'
         # The bucket belongs to the Vault Target (#593): only the projection
         # carries ``s3_bucket``, a bare Vault row would block the gate for good.
-        vault = connection.execute(f"{VAULT_ROW_SQL} ORDER BY v.id LIMIT 1").fetchone()
+        # A provisioning Vault's bucket may not exist yet: never probe it first.
+        vault = connection.execute(
+            f"{VAULT_ROW_SQL} WHERE v.lifecycle IN ('active', 'reconnect_required', 'stopping') "
+            "ORDER BY v.id LIMIT 1").fetchone()
     if vault:
         try:
             validate_cloud_vault(dict(vault))
@@ -7593,6 +7634,8 @@ def _run_scheduled_metadata_backup_once() -> None:
 
 # While FrostVault's System Bucket is not created yet, try again this often.
 SYSTEM_BUCKET_POLL_SECONDS = 15 * 60
+# Unfinished Vault Bucket creations (#735) are retried this often.
+VAULT_BUCKET_POLL_SECONDS = 15 * 60
 
 
 def ensure_system_bucket_once() -> None:
@@ -7615,6 +7658,26 @@ def ensure_system_bucket_once() -> None:
         _report_worker_error("system_bucket", exc)
     else:
         _note_worker_ok("system_bucket")
+
+
+def ensure_vault_buckets_once() -> None:
+    """Resume every unfinished Vault Bucket creation (#735).
+
+    A creation interrupted by a restart, or failed (IAM, network), continues
+    on its saved name; each failure stays recorded on its Vault with a
+    Problem. A Vault that becomes active gets its first scan.
+    """
+    from .services import vault_buckets
+
+    try:
+        states = vault_buckets.resume_all()
+    except Exception as exc:
+        _report_worker_error("vault_buckets", exc)
+        return
+    _note_worker_ok("vault_buckets")
+    for state in states:
+        if state["state"] == "ready" and not shutdown_state.requested:
+            scan_vault({"id": state["vault_id"]})
 
 
 def _verify_latest_metadata_backup_once() -> None:
@@ -7855,6 +7918,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_vault_deletions: float | None = None
     last_duplicate_cleanup: float | None = None
     last_system_bucket: float | None = None
+    last_vault_buckets: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -7898,6 +7962,11 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_system_bucket >= SYSTEM_BUCKET_POLL_SECONDS):
                     last_system_bucket = loop.time()
                     _submit_maintenance("system_bucket", ensure_system_bucket_once)
+                # Unfinished Vault Bucket creations resume soon after a start.
+                if (last_vault_buckets is None
+                        or loop.time() - last_vault_buckets >= VAULT_BUCKET_POLL_SECONDS):
+                    last_vault_buckets = loop.time()
+                    _submit_maintenance("vault_buckets", ensure_vault_buckets_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

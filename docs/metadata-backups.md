@@ -24,8 +24,8 @@ Owner reauthentication is mandatory. The attachment is secret-bearing and
 The kit is offered only once a metadata backup run has succeeded with its
 off-host copy in the current System Bucket (configured or created), so it never
 names a bucket that holds no backup. Until then the Recovery Kit panel says so:
-keep the previous kit, which points to the earlier backups in the bucket in
-`VAULT_S3_BUCKET`.
+keep the previous kit, which points to the earlier backups in the bucket it
+names.
 
 It contains **no catalog, Vault/file list, AWS credentials, database credentials,
 OIDC secrets or per-Vault recovery files**. Plaintext Vault bytes and readable
@@ -79,7 +79,7 @@ internal-error problems/metrics.
 
 New metadata backups go to the installation's **System Bucket**, separate from
 every bucket holding Vault content ([ADR-0049](adr/0049-one-bucket-per-vault.md)).
-`VAULT_S3_BUCKET` no longer receives them.
+A shared bucket of an installation from before Vault Buckets no longer receives them.
 
 - **`METADATA_BACKUP_BUCKET` set:** FrostVault uses that bucket and never changes
   it. Before every backup it verifies that the bucket is in `AWS_DEFAULT_REGION`
@@ -104,12 +104,13 @@ every bucket holding Vault content ([ADR-0049](adr/0049-one-bucket-per-vault.md)
   example a noncurrent-version expiry); a missing or changed check is refused,
   not repaired, and a deleted bucket is not recreated. Later changes of
   `AWS_DEFAULT_REGION` do not move it.
-- **Neither `METADATA_BACKUP_BUCKET`, `VAULT_S3_BUCKET` nor AWS credentials**
-  (placeholders, as in local development): backups stay local-only and there is
-  no Recovery Kit. Until #735 removes it, a non-placeholder `VAULT_S3_BUCKET`
-  alone also requires the off-host copy: missing credentials or IAM permissions
-  then fail each backup (recorded and notified) instead of silently keeping it
-  local-only. `VAULT_S3_BUCKET` never becomes the System Bucket.
+- **Neither `METADATA_BACKUP_BUCKET`, AWS credentials nor any Vault**
+  (placeholders and an empty catalog, as in local development): backups stay
+  local-only and there is no Recovery Kit. Any Vault in the catalog (#735; its
+  bucket, Vault Bucket or shared, holds content the catalog names) alone also
+  requires the off-host copy: missing credentials or IAM permissions then fail
+  each backup (recorded and notified) instead of silently keeping it local-only.
+  No Vault's bucket ever becomes the System Bucket.
   Credentials count when `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are real
   values, or `AWS_PROFILE`, `AWS_WEB_IDENTITY_TOKEN_FILE` or a container
   credentials variable is set; an instance role alone is not probed: set
@@ -127,10 +128,12 @@ grants `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketLocation`, the get/put
 pairs for Block Public Access, versioning, encryption, lifecycle, tagging,
 Object Ownership (`s3:Get/PutBucketOwnershipControls`) and Object Lock
 (`s3:Get/PutBucketObjectLockConfiguration`, used only for a Vault Bucket's
-Governance Retention Lock, never on the System Bucket), and
-`s3:PutObject`/`s3:GetObject` on the objects. It explicitly denies
-`s3:BypassGovernanceRetention`: FrostVault never has it. It grants no bucket or
-object deletion. Ownership of a new bucket is decided by the `CreateBucket`
+Governance Retention Lock, never on the System Bucket), and the object
+operations of Vault Buckets (#735; for metadata backups `s3:PutObject` and
+`s3:GetObject`), listed in
+[aws-s3-bucket.md](aws-s3-bucket.md#iam-for-frostvault-created-buckets). It
+explicitly denies `s3:BypassGovernanceRetention`: FrostVault never has it. It
+never grants `s3:DeleteBucket`. Ownership of a new bucket is decided by the `CreateBucket`
 error codes alone, so no `sts:GetCallerIdentity` or `ExpectedBucketOwner` is
 involved. An operator-supplied `METADATA_BACKUP_BUCKET` outside `frostvault-*`
 needs `s3:GetBucketLocation`, `s3:GetBucketVersioning`,
@@ -140,14 +143,14 @@ and `s3:GetObject` on that bucket instead; FrostVault never configures it.
 ### Upgrading to the System Bucket
 
 - Attach the IAM policy above before upgrading, or set `METADATA_BACKUP_BUCKET`.
-  With `VAULT_S3_BUCKET` set, backups keep requiring the off-host copy: without
+  With any Vault in the catalog, backups keep requiring the off-host copy: without
   the policy each backup fails with `S3 refused s3:CreateBucket (AccessDenied)`
   (the local copy stays on disk) rather than silently becoming local-only.
 - Migration `0008_system_bucket` adds the `system_bucket` row and the nullable
   `metadata_backup_runs.s3_bucket`; it makes no S3 calls and invents nothing for
   earlier runs.
-- Backups made before the upgrade stay under `system/backups/` in the bucket in
-  `VAULT_S3_BUCKET`, where the previous Recovery Kit points: nothing is moved,
+- Backups made before the upgrade stay under `system/backups/` in the shared
+  Vault bucket (`VAULT_S3_BUCKET` before #735), where the previous Recovery Kit points: nothing is moved,
   copied or deleted. Keep them, with the previous kit, as long as you need them.
 - The Recovery Kit now names the System Bucket (format
   `frostvault-recovery-kit-v2`), so its **fingerprint changes**. The new kit is
@@ -179,7 +182,7 @@ the private scratch directory. The downloaded kit includes these steps offline.
 2. Retrieve the independently custodied kit and obtain AWS/database access.
    Download the chosen artifact and `.sha256` sidecar from `system/backups/` in
    the kit's System Bucket (`aws s3 ls` / `aws s3 cp`, not `sync`); backups made
-   before the System Bucket are in the bucket in `VAULT_S3_BUCKET`, named by the previous
+   before the System Bucket are in the shared Vault bucket named by the previous
    kit. On a new server, restore before FrostVault's first start: the restored
    catalog names the System Bucket it created, so no second one is made. Set
    `METADATA_BACKUP_BUCKET` again only if the original installation had it. Export `ARTIFACT` with its local
@@ -294,13 +297,25 @@ policy only after validation.
 ## Emergency route: files only
 
 With no readable metadata backup, use any authorized S3 tool. Original bytes and
-names live at `vaults/<uuid>/<relative-path>`; the master key is not needed for
-those plaintext files. Vault content is not in the System Bucket: list the
-account's buckets (`aws s3 ls`) and set non-secret `BUCKET` and `REGION` to the
-bucket holding the Vault, then choose `PREFIX` from the listing. Download to a new empty destination:
+names are stored as plaintext objects; the master key is not needed for them.
+Vault content is not in the System Bucket: list the account's buckets
+(`aws s3 ls`) and set non-secret `BUCKET` and `REGION` to the bucket holding the
+Vault.
+
+- A **Vault Bucket** (every Vault created since #735) is
+  `frostvault-<vault name>-<8 random>` and holds one Vault at its **root**: the
+  key of a file is its relative path, so `PREFIX=""`. Its tags name the Vault
+  (`aws s3api get-bucket-tagging --bucket "$BUCKET"`: `frostvault:vault` is its
+  UUID, `frostvault:name` its name); `frostvault-system-*` is the System Bucket.
+- An **older Vault** keeps the shared bucket of its installation, with its files
+  at `vaults/<uuid>/<relative-path>`: list `vaults/` and set `PREFIX` to
+  `vaults/<uuid>/`.
+
+Download to a new empty destination:
 
 ```bash
-aws s3 ls "s3://$BUCKET/vaults/" --region "$REGION"
+aws s3api get-bucket-tagging --bucket "$BUCKET" --region "$REGION"   # a Vault Bucket
+aws s3 ls "s3://$BUCKET/vaults/" --region "$REGION"                  # a shared bucket
 aws s3 ls "s3://$BUCKET/$PREFIX" --recursive --region "$REGION"
 aws s3 cp "s3://$BUCKET/$PREFIX" ./recovered/ --recursive --region "$REGION"
 ```

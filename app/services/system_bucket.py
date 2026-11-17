@@ -15,9 +15,8 @@ creation resumes on the same name and never leaves an unknown bucket behind.
 The row records the region the bucket was created in; changing
 ``AWS_DEFAULT_REGION`` later does not move it.
 
-Without ``METADATA_BACKUP_BUCKET``, ``VAULT_S3_BUCKET`` and usable AWS
-credentials there is no System Bucket: metadata backups stay local, as in
-development.
+Without ``METADATA_BACKUP_BUCKET``, usable AWS credentials and any Vault
+there is no System Bucket: metadata backups stay local, as in development.
 """
 from __future__ import annotations
 
@@ -121,28 +120,27 @@ def aws_credentials_configured() -> bool:
     return any(os.getenv(name, "").strip() for name in _CREDENTIAL_SOURCE_VARIABLES)
 
 
-def legacy_shared_bucket_configured(cfg: Any = None) -> bool:
-    """Whether a non-placeholder ``VAULT_S3_BUCKET`` is set.
+def vaults_exist() -> bool:
+    """Whether the catalog holds any Vault, whatever its lifecycle (#735).
 
-    Transitional (#734 -> #735): an installation with the shared Vault bucket
-    stores Vault content in S3, so its metadata backups must leave the server
-    too. Missing credentials or IAM then fail the backup loudly instead of
-    silently downgrading it to local-only. Only this requirement reads
-    ``VAULT_S3_BUCKET``: where backups go never does. #735 removes
-    ``VAULT_S3_BUCKET`` and replaces this check (e.g. with "any Vault exists").
+    A Vault keeps content in its Vault Bucket (a Tombstone too, until its
+    Vault Deletion), so the catalog that names those buckets must leave the
+    server: missing credentials or IAM then fail the backup loudly instead of
+    silently downgrading it to local-only.
     """
-    cfg = cfg if cfg is not None else settings
-    bucket = str(getattr(cfg, "vault_s3_bucket", "") or "").strip()
-    return bool(bucket) and not is_placeholder(
-        bucket, "example-bucket", "BUCKET-NAME", "REPLACE-WITH-BUCKET-NAME")
+    from ..database import db
+
+    with db() as connection:
+        return connection.execute("SELECT 1 FROM vaults LIMIT 1").fetchone() is not None
 
 
 def off_host_required(cfg: Any = None, *,
-                      credentials: Callable[[], bool] | None = None) -> bool:
+                      credentials: Callable[[], bool] | None = None,
+                      vaults: Callable[[], bool] | None = None) -> bool:
     """Whether metadata backups must also reach the System Bucket."""
     return (configured_bucket(cfg) is not None
-            or legacy_shared_bucket_configured(cfg)
-            or (credentials or aws_credentials_configured)())
+            or (credentials or aws_credentials_configured)()
+            or (vaults or vaults_exist)())
 
 
 def spec(name: str, region: str) -> buckets.BucketSpec:

@@ -12,6 +12,11 @@ import { VaultCreatePage } from "@/pages/vault-create";
 const locales = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales");
 const en = JSON.parse(readFileSync(path.join(locales, "en.json"), "utf8")) as Record<string, string>;
 const itCatalog = JSON.parse(readFileSync(path.join(locales, "it.json"), "utf8")) as Record<string, string>;
+const bucket = (state: "ready" | "failed", error: string | null = null) => ({
+  vault_id: 42, bucket: "frostvault-photos-a1b2c3d4", region: "eu-west-1", dedicated: true, state,
+  stage: state === "failed" ? "reserved" : null, attempts: state === "failed" ? 1 : 0,
+  last_attempt_at: null, error, retention_lock_days: null,
+});
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("plaintext Vault creation", () => {
@@ -31,7 +36,7 @@ describe("plaintext Vault creation", () => {
       <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>
     </ApiQueryProvider>);
   }
-  function requests({ adopt = false, fail = false, messages = en, volumesFail = false } = {}) {
+  function requests({ adopt = false, fail = false, messages = en, volumesFail = false, bucketFails = false, retryReady = false } = {}) {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) return Promise.resolve(json({ locale: messages === en ? "en" : "it", locales: ["en", "it"], messages }));
@@ -39,7 +44,11 @@ describe("plaintext Vault creation", () => {
       if (url.startsWith("/api/source-volumes/photos/browse")) return Promise.resolve(json({ volume_alias: "photos", relative_path: "albums", items: [{ name: "2024", relative_path: "albums/2024", navigable: true, selectable: true, occupation: null }] }));
       if (url === "/api/vaults" && init?.method === "POST") return Promise.resolve(fail
         ? json({ message_key: "ui.vault_create.failed", detail: "Invalid name" }, 422)
-        : json({ id: 42, uuid: "vault-uuid", name: "Photos", creation_mode: adopt ? "adopt" : "empty" }, 201));
+        : json({ id: 42, uuid: "vault-uuid", name: "Photos", creation_mode: adopt ? "adopt" : "empty",
+          lifecycle: bucketFails ? "provisioning" : "active",
+          bucket: bucketFails ? bucket("failed", "S3 refused s3:CreateBucket (AccessDenied)") : bucket("ready") }, 201));
+      if (url === "/api/vaults/42/bucket/retry" && init?.method === "POST") return Promise.resolve(json(retryReady
+        ? bucket("ready") : { ...bucket("failed", "S3 refused s3:PutBucketVersioning (AccessDenied)"), stage: "created", attempts: 2 }));
       if (url === "/api/vaults/select") return Promise.resolve(json({ vault_id: 42 }));
       return Promise.reject(new Error(`Unexpected request ${url}`));
     });
@@ -61,6 +70,44 @@ describe("plaintext Vault creation", () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
     expect(payload()).toEqual({ name: "Photos", creation_mode: "empty" });
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/recovery"))).toBe(false);
+  });
+
+  it("explains while the Vault's bucket is being created", async () => {
+    requests();
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText(en["ui.vault_create.bucket_hint"])).toBeInTheDocument();
+    let release: (value: Response) => void = () => {};
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => String(input) === "/api/vaults" && init?.method === "POST"
+      ? new Promise<Response>((resolve) => { release = resolve; }) : base(input, init));
+    await user.type(screen.getByRole("textbox", { name: en["ui.vault_create.name"] }), "Photos");
+    await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
+    expect(await screen.findByTestId("vault-create-progress")).toHaveTextContent(en["ui.vault_create.creating_bucket"]);
+    release(json({ id: 42, uuid: "vault-uuid", name: "Photos", creation_mode: "empty", lifecycle: "active", bucket: bucket("ready") }, 201));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
+  });
+
+  it("keeps a Vault whose bucket failed, shows why, and retries it (#735)", async () => {
+    requests({ bucketFails: true, messages: itCatalog });
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(await screen.findByRole("textbox", { name: itCatalog["ui.vault_create.name"] }), "Photos");
+    await user.click(screen.getByRole("button", { name: itCatalog["ui.vault_create.submit"] }));
+    const panel = await screen.findByTestId("vault-create-bucket-failed");
+    expect(panel).toHaveTextContent(itCatalog["ui.vault_create.bucket_failed_title"]);
+    expect(panel).toHaveTextContent("frostvault-photos-a1b2c3d4: S3 refused s3:CreateBucket (AccessDenied)");
+    expect(panel).toHaveTextContent(itCatalog["vault_bucket.stage_reserved"]);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/vaults/select")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: itCatalog["ui.vault_create.bucket_retry"] }));
+    await waitFor(() => expect(screen.getByTestId("vault-create-bucket-failed")).toHaveTextContent("PutBucketVersioning"));
+    expect(screen.getByTestId("vault-create-bucket-failed")).toHaveTextContent(itCatalog["vault_bucket.stage_created"]);
+
+    requests({ bucketFails: true, retryReady: true, messages: itCatalog });
+    await user.click(screen.getByRole("button", { name: itCatalog["ui.vault_create.bucket_retry"] }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
   });
 
   it("preserves localized validation errors and the form", async () => {

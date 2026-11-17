@@ -53,7 +53,8 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
             SELECT vault_id,count(*) AS requests,sum(selected_count) AS selected_files,
                 sum(processed_count) AS processed_files,sum(admitted_count) AS admitted_files
             FROM bulk_upload_admissions WHERE status='pending' GROUP BY vault_id
-        ) a ON a.vault_id=v.id ORDER BY lower(v.name),v.id"""
+        ) a ON a.vault_id=v.id WHERE v.lifecycle<>'provisioning'
+        ORDER BY lower(v.name),v.id"""
     ).fetchall()
     items = {row["id"]: {"vault_id": row["id"], "vault_name": row["name"],
                          "paused": bool(row.get("paused")), **_empty()} for row in vaults}

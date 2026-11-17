@@ -5,9 +5,11 @@ import {
   browseSourceVolume,
   createVault,
   fetchGeneralSourceVolumes,
+  retryVaultBucket,
   selectVault,
 } from "@/api";
 import type {
+  VaultBucketStatus,
   VaultCreationMode,
 } from "@/api";
 
@@ -45,6 +47,8 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const [submitting, setSubmitting] = useState(false);
   const [volumesFailed, setVolumesFailed] = useState(false);
   const [volumesAttempt, setVolumesAttempt] = useState(0);
+  // A Vault saved while its bucket is not ready yet (#735).
+  const [pending, setPending] = useState<VaultBucketStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,6 +78,32 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
 
   const adoptAvailable = volumeOptions.length > 0;
 
+  function failureText(err: unknown): string {
+    return err instanceof ApiError || err instanceof TypeError
+      ? errorMessage(err, t)
+      : (err instanceof Error && err.message) || t("ui.vault_create.failed");
+  }
+
+  async function openVault(vaultId: number) {
+    await selectVault({ vault_id: vaultId });
+    navigateTo(`/?vault_id=${vaultId}`, onNavigate);
+  }
+
+  async function handleRetry() {
+    if (!pending) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const state = await retryVaultBucket(pending.vault_id);
+      if (state.state === "ready") await openVault(state.vault_id);
+      else setPending(state);
+    } catch (err) {
+      setError(failureText(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -100,14 +130,12 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       }
 
       const vault = await createVault(payload);
-      await selectVault({ vault_id: vault.id });
-      navigateTo(`/?vault_id=${vault.id}`, onNavigate);
+      // Active only once its bucket is created and verified; otherwise the
+      // Vault is saved and FrostVault keeps retrying in the background.
+      if (vault.lifecycle === "active") await openVault(vault.id);
+      else setPending(vault.bucket);
     } catch (err) {
-      setError(
-        err instanceof ApiError || err instanceof TypeError
-          ? errorMessage(err, t)
-          : (err instanceof Error && err.message) || t("ui.vault_create.failed"),
-      );
+      setError(failureText(err));
     } finally {
       setSubmitting(false);
     }
@@ -124,6 +152,26 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
           <p className="text-sm text-muted">{t("ui.vault_create.subtitle", { name: displayName })}</p>
         </div>
         <div className="rounded-panel border border-line bg-surface p-4">
+          {pending ? (
+            <div className="grid gap-3.5">
+              <div className="grid gap-2 rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert" data-testid="vault-create-bucket-failed">
+                <p className="m-0 font-bold">{t("ui.vault_create.bucket_failed_title")}</p>
+                <p className="m-0 break-words">{t("ui.vault_create.bucket_failed", { bucket: pending.bucket, error: pending.error ?? "" })}</p>
+                {pending.stage ? <p className="m-0 text-muted">{t(`vault_bucket.stage_${pending.stage}`)}</p> : null}
+                <p className="m-0">{t("ui.vault_create.bucket_failed_help")}</p>
+              </div>
+              {submitting ? <p className="m-0 text-sm text-muted" role="status">{t("ui.vault_create.creating_bucket")}</p> : null}
+              {error ? <div className="rounded-[10px] bg-red-soft px-3.5 py-3 text-sm text-ink" role="alert">{error}</div> : null}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <Button type="button" variant="primary" disabled={submitting} onClick={() => void handleRetry()}>
+                  {t("ui.vault_create.bucket_retry")}
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => navigateTo("/", onNavigate)}>
+                  {t("ui.vault_create.open_overview")}
+                </Button>
+              </div>
+            </div>
+          ) : (
             <form className="grid gap-3.5" onSubmit={(e) => void handleSubmit(e)}>
               <FormField label={t("ui.vault_create.name")} htmlFor="vault-name">
                 <FormInput
@@ -224,6 +272,9 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                 </div>
               ) : null}
 
+              <p className="m-0 text-sm text-muted">{t("ui.vault_create.bucket_hint")}</p>
+              {submitting ? <p className="m-0 text-sm text-muted" role="status" data-testid="vault-create-progress">{t("ui.vault_create.creating_bucket")}</p> : null}
+
               <div className="flex flex-wrap items-center gap-2.5">
                 <Button type="submit" variant="primary" disabled={submitting}>
                   {t("ui.vault_create.submit")}
@@ -237,6 +288,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                 </Button>
               </div>
             </form>
+          )}
         </div>
       </div>
 

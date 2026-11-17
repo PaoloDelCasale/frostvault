@@ -239,7 +239,7 @@ class SinglePutPayloadTests(unittest.TestCase):
         pass
 
     def run_job(self, origin="manual"):
-        job = {"id": 1, "vault_id": 2, "vault_uuid": "vault", "path": "report.txt",
+        job = {"id": 1, "vault_id": 2, "vault_uuid": "vault", "s3_key_layout": "vault_prefix", "path": "report.txt",
                "source_root": "/sources", "origin": origin}
         return self.execution._run_claimed(job, self.pipeline, lambda: None)
 

@@ -233,7 +233,6 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "FRONTEND_DIST_DIR": str(REPO_ROOT / "frontend" / "dist"),
         "BREAK_GLASS_ALLOWED_CIDRS": "",
         "ARCHIVE_MASTER_KEY": master_key,
-        "S3_BUCKET": "e2e-bucket",
         # An operator-supplied System Bucket: the Recovery Kit names it without
         # any S3 request, and nothing creates one in the fake account (#734).
         "METADATA_BACKUP_BUCKET": "e2e-system-bucket",

@@ -162,8 +162,9 @@ class BucketPreflightTests(unittest.TestCase):
                 self.assertEqual([c.code for c in result.checks], ["bucket.exists"])
                 self.assertEqual(failure_message_key(result), BUCKET_NOT_FOUND_KEY)
                 self.assertIn("does not exist", message)
-                for setting in ("VAULT_S3_BUCKET", "S3_BUCKET", "AWS_DEFAULT_REGION", "create the bucket"):
+                for setting in ("AWS_DEFAULT_REGION", "never recreates it"):
                     self.assertIn(setting, message)
+                self.assertNotIn("VAULT_S3_BUCKET", message)
                 self.assertNotIn("permission", message.lower())
                 self.assertNotIn("s3:HeadBucket", message)
                 self.assertNotIn("provider-secret-fixture", message)

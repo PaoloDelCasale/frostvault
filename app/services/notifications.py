@@ -810,6 +810,15 @@ _DUPLICATE_CLEANUP_RESOLUTION = """
 """
 
 
+# A Vault Bucket not created yet (#735) closes once its Vault left
+# provisioning (``vault_buckets`` closes it on activation; this is the net).
+_VAULT_BUCKET_RESOLUTION = """
+    n.event='vault_bucket_failed' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.lifecycle='provisioning'
+    )
+"""
+
+
 # Problems of a stopped Vault that still need the Owner: a failed Vault
 # Deletion of its Tombstone (#717, ADR-0047).
 STOPPED_VAULT_PROBLEM_EVENTS = frozenset({"vault_deletion_failed"})
@@ -854,6 +863,7 @@ def _problem_resolutions() -> dict[frozenset[str], str]:
         frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
         frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
         frozenset({"duplicate_cleanup_capped"}): _DUPLICATE_CLEANUP_RESOLUTION,
+        frozenset({"vault_bucket_failed"}): _VAULT_BUCKET_RESOLUTION,
     }
 
 

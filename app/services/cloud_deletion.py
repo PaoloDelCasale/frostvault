@@ -37,6 +37,7 @@ from typing import Any
 
 from . import source_layout, vault_relocation
 from .audit_events import record_audit_event
+from .vault_paths import object_prefix
 from .component_health import load_vault_health
 from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
@@ -152,7 +153,8 @@ def _aware(value: Any) -> datetime:
 
 def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
-        """SELECT v.*, t.bucket AS s3_bucket FROM vaults v
+        """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
+                  t.key_layout AS s3_key_layout FROM vaults v
            JOIN vault_targets t ON t.id = v.target_id
            WHERE v.id=%s FOR UPDATE OF v""", (vault_id,)
     ).fetchone()
@@ -162,7 +164,8 @@ def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
 
 
 def _vault_prefix(vault: dict[str, Any]) -> str:
-    return f"vaults/{vault['uuid']}/"
+    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
+    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:

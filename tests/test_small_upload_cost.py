@@ -173,7 +173,7 @@ class SmallUploadCostTests(unittest.TestCase):
         # whole batch (``list_claimable_jobs``); only the claim is per file.
         candidate = self.rows(
             """SELECT j.*, f.path, v.source_root, v.uuid AS vault_uuid, v.name AS vault_name,
-                      v.lifecycle AS vault_lifecycle, t.bucket AS s3_bucket
+                      v.lifecycle AS vault_lifecycle, t.bucket AS s3_bucket, t.key_layout AS s3_key_layout
                FROM jobs j JOIN files f ON f.id=j.file_id JOIN vaults v ON v.id=j.vault_id
                JOIN vault_targets t ON t.id=v.target_id WHERE j.id=%s""", job_id)[0]
         with counted() as run:

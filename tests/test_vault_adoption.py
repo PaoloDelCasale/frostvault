@@ -14,6 +14,7 @@ Seams under test (confirmed):
 """
 from __future__ import annotations
 
+from tests.fake_bucket_s3 import fake_vault_buckets
 from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
@@ -56,9 +57,8 @@ class _AdoptionFixture(unittest.TestCase):
         self.settings = replace(
             Settings(),
             database_dsn=database_dsn(str(self.database_path)),
-            vault_s3_bucket="test-bucket",
-
         )
+        self.s3 = fake_vault_buckets(self)
         for target in (
             "app.database.settings",
             "app.services.vaults.settings",
@@ -108,7 +108,7 @@ class VaultAdoptionHappyPathTests(_AdoptionFixture):
         managed = source_layout.get_managed_root() / vault["uuid"]
         self.assertEqual(Path(vault["source_root"]), managed)
         self.assertTrue(managed.is_dir())
-        self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
+        self.assertEqual((vault["s3_prefix"], vault["s3_key_layout"]), ("", "bucket_root"))
 
     def test_owner_adopts_existing_directory_in_place(self) -> None:
         vault = self._adopt()
@@ -116,8 +116,9 @@ class VaultAdoptionHappyPathTests(_AdoptionFixture):
         self.assertEqual(vault["name"], "Albums Archive")
         self.assertTrue(vault["uuid"])
         self.assertEqual(len(vault["uuid"]), 36)
-        self.assertEqual(vault["s3_prefix"], f"vaults/{vault['uuid']}/")
-        self.assertEqual(vault["s3_bucket"], "test-bucket")
+        self.assertEqual(vault["s3_prefix"], "")
+        self.assertRegex(vault["s3_bucket"], r"^frostvault-albums-archive-[a-z0-9]{8}$")
+        self.assertEqual(vault["lifecycle"], "active")
         self.assertEqual(Path(vault["source_root"]), self.albums.resolve())
         self.assertTrue(Path(vault["source_root"]).is_dir())
         # Adoption never moves, copies, or rewrites existing content.

@@ -100,7 +100,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
             patch("app.storage.s3_client", return_value=client),
         ):
             count = scan_cloud(
-                {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket"},
+                {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket", "s3_key_layout": "vault_prefix"},
                 "2026-07-21T12:00:00+00:00",
                 report=report,
             )

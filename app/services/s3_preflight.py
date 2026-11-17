@@ -121,10 +121,10 @@ def _head_bucket_failure(client: Any, bucket: str, exc: ClientError) -> Prefligh
         return PreflightCheck(
             code="bucket.exists",
             status="fail",
-            message="The configured S3 bucket does not exist",
+            message="The S3 bucket of a Vault does not exist",
             remediation=(
-                "Check VAULT_S3_BUCKET / S3_BUCKET and AWS_DEFAULT_REGION, "
-                "or create the bucket"
+                "Check AWS_DEFAULT_REGION and the AWS account, and that nobody "
+                "deleted the Vault's bucket; FrostVault never recreates it"
             ),
             message_key=BUCKET_NOT_FOUND_KEY,
         )
@@ -198,7 +198,7 @@ def check_bucket_readiness(
                 code="bucket.configured",
                 status="fail",
                 message="The S3 bucket name is not configured",
-                remediation="Set S3_BUCKET / VAULT_S3_BUCKET to your dedicated archive bucket",
+                remediation="Every Vault reads its bucket from its Vault Target",
             )
         )
         return PreflightResult(

@@ -1049,9 +1049,12 @@ export interface paths {
          * Create Owner Vault
          * @description Create a Vault from the UI, the only way Vaults are created (#412).
          *
-         *     The server generates the plaintext storage identity.
-         *     Adoption binds any free directory of a custom Source Volume
-         *     in place and starts an asynchronous local scan.
+         *     The server generates the plaintext storage identity and creates the
+         *     Vault's own Vault Bucket (#735): the Vault is active only once the bucket
+         *     is created and verified. ``bucket`` reports that; when it failed the Vault
+         *     stays ``provisioning``, FrostVault retries in the background and the Owner
+         *     may retry at once. Adoption binds any free directory of a custom Source
+         *     Volume in place and, once active, starts an asynchronous local scan.
          */
         post: operations["create_owner_vault_api_vaults_post"];
         delete?: never;
@@ -1071,6 +1074,49 @@ export interface paths {
         put?: never;
         /** Select Vault */
         post: operations["select_vault_api_vaults_select_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/bucket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Bucket Status
+         * @description The Vault's bucket and, while it is being created, the creation state (#735).
+         */
+        get: operations["vault_bucket_status_api_vaults__vault_id__bucket_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/bucket/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Vault Bucket
+         * @description Retry the creation of a provisioning Vault's bucket now (#735).
+         *
+         *     Idempotent: the same saved name, configuration applied again, then
+         *     verified. A Vault whose bucket is ready is returned unchanged.
+         */
+        post: operations["retry_vault_bucket_api_vaults__vault_id__bucket_retry_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1908,7 +1954,7 @@ export interface components {
             vaults?: {
                 id: number;
                 /** @enum {string} */
-                lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
+                lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
                 monthly_estimate: number;
                 name: string;
                 open_problem_count: number;
@@ -1916,14 +1962,17 @@ export interface components {
             }[];
         };
         GeneralVault: {
+            bucket_provisioning?: components["schemas"]["VaultBucketStatus"] | null;
+            dedicated_bucket?: boolean;
             id: number;
             /** @enum {string} */
-            lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
             name: string;
             paused?: boolean;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
+            s3_region?: string;
             source_root: string;
             uuid: string;
             /** @enum {string|null} */
@@ -2726,6 +2775,21 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation. */
+        VaultBucketStatus: {
+            attempts: number;
+            bucket: string;
+            dedicated: boolean;
+            error: string | null;
+            last_attempt_at: string | null;
+            region: string;
+            retention_lock_days: number | null;
+            /** @enum {string|null} */
+            stage: "reserved" | "created" | "configured" | null;
+            /** @enum {string} */
+            state: "creating" | "failed" | "ready";
+            vault_id: number;
+        };
         VaultCreateRequest: {
             creation_mode?: components["schemas"]["VaultCreationMode"];
             name: string;
@@ -2733,8 +2797,11 @@ export interface components {
             volume_alias?: string;
         };
         VaultCreateResponse: {
+            bucket: components["schemas"]["VaultBucketStatus"];
             creation_mode?: components["schemas"]["VaultCreationMode"];
             id: number;
+            /** @enum {string} */
+            lifecycle: "provisioning" | "active";
             name: string;
             uuid: string;
         };
@@ -2777,7 +2844,7 @@ export interface components {
         VaultDeletionStatus: {
             deletable: boolean;
             /** @enum {string} */
-            lifecycle: "active" | "reconnect_required" | "stopping" | "tombstone";
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
             local_files: number;
             request: {
                 attempts: number;
@@ -2850,7 +2917,7 @@ export interface components {
         VaultListItem: {
             id: number;
             /** @enum {string} */
-            lifecycle?: "active" | "reconnect_required" | "stopping" | "tombstone";
+            lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
             name: string;
             paused?: boolean;
             uuid: string;
@@ -4815,6 +4882,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultSelectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_bucket_status_api_vaults__vault_id__bucket_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultBucketStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_vault_bucket_api_vaults__vault_id__bucket_retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultBucketStatus"];
                 };
             };
             /** @description Validation Error */

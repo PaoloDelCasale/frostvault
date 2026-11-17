@@ -101,6 +101,7 @@ export type UploadReconciliationAction = components["schemas"]["UploadReconcilia
 export type UploadReconciliationResponse = components["schemas"]["UploadReconciliationResponse"];
 export type UploadRemediation = components["schemas"]["UploadRemediation"];
 export type ValidationError = components["schemas"]["ValidationError"];
+export type VaultBucketStatus = components["schemas"]["VaultBucketStatus"];
 export type VaultCreateRequest = components["schemas"]["VaultCreateRequest"];
 export type VaultCreateResponse = components["schemas"]["VaultCreateResponse"];
 export type VaultCreationMode = components["schemas"]["VaultCreationMode"];

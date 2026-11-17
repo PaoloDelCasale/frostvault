@@ -1,10 +1,21 @@
-"""Build and synchronize application-owned S3 lifecycle rules."""
+"""Build and synchronize application-owned S3 lifecycle rules.
+
+Two layouts (ADR-0049). A shared bucket (the bucket of older Vaults) holds one
+prefix-filtered plan rule per Vault, next to rules FrostVault does not own, and
+``sync_bucket_lifecycle_rules`` merges them. A Vault Bucket holds the Vault at
+its root: ``vault_bucket_lifecycle_rules`` is its whole, unfiltered lifecycle.
+
+Every lifecycle FrostVault writes sets ``TransitionDefaultMinimumObjectSize``
+to ``all_storage_classes_128K``: objects smaller than 128 KiB never
+transition and stay in Standard, as the Storage Plan documents.
+"""
 from __future__ import annotations
 
 from typing import Any
 
 from botocore.exceptions import ClientError
 
+from .bucket_provisioning import TRANSITION_MINIMUM_OBJECT_SIZE
 from .lifecycle_profiles import LifecycleProfile
 
 RULE_ID_PREFIX = "frostvault-plan-"
@@ -19,6 +30,31 @@ def incomplete_upload_rule() -> dict[str, Any]:
     return {"ID": ABORT_RULE_ID, "Status": "Enabled",
             "Filter": {"Prefix": "vaults/"},
             "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}
+
+
+def vault_bucket_lifecycle_rules(
+    vault_uuid: str, profile: LifecycleProfile,
+) -> tuple[dict[str, Any], ...]:
+    """The whole lifecycle of a Vault Bucket: its Storage Plan, then the abort rule.
+
+    No filter: the bucket holds only this Vault. Same rule IDs as on a shared
+    bucket, so a rule always names its Vault.
+    """
+    from .lifecycle_profiles import validate_lifecycle_profile
+
+    validation = validate_lifecycle_profile(profile)
+    if not validation.ok:
+        raise ValueError("; ".join(validation.errors))
+    rules: list[dict[str, Any]] = []
+    if profile.transitions:
+        rules.append({
+            "ID": f"{RULE_ID_PREFIX}{vault_uuid}", "Status": "Enabled",
+            "Filter": {"Prefix": ""},
+            "Transitions": [{"Days": transition.days, "StorageClass": transition.storage_class}
+                            for transition in profile.transitions],
+        })
+    rules.append({**incomplete_upload_rule(), "Filter": {"Prefix": ""}})
+    return tuple(rules)
 
 
 class LifecycleRuleLimitExceeded(RuntimeError):
@@ -117,4 +153,5 @@ def sync_bucket_lifecycle_rules(
     client.put_bucket_lifecycle_configuration(
         Bucket=bucket,
         LifecycleConfiguration={"Rules": merged_rules},
+        TransitionDefaultMinimumObjectSize=TRANSITION_MINIMUM_OBJECT_SIZE,
     )

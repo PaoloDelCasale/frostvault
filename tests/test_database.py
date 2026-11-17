@@ -47,7 +47,7 @@ BASELINE_TABLES = {
     "metadata_restore_vaults", "metadata_restore_updates",
 }
 # Tables added by later linear revisions of the chain.
-HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket"}
+HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_bucket_provisioning"}
 
 
 def _tables(path: Path) -> set[str]:
@@ -355,6 +355,25 @@ class StartupGuardTests(_GuardFixture):
                          ("YES", None, "timestamp with time zone"))
         option = columns["vaults", "duplicate_cleanup_beyond_minimum"]
         self.assertEqual((option["is_nullable"], option["column_default"]), ("NO", "false"))
+
+    def test_catalog_of_the_previous_revision_keeps_its_shared_bucket_layout(self) -> None:
+        """#735: an existing Vault keeps its shared bucket and vaults/<uuid>/
+        prefix; nothing is invented (no Retention Lock, no provisioning)."""
+        _migrate_to(self.dsn, "0009_class_entry")
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region) VALUES (1, 's3', 'shared', 'eu-south-1')",
+            "INSERT INTO vaults(id, target_id, name, source_root) VALUES (1, 1, 'Docs', '/sources/docs')")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            target = connection.execute(
+                "SELECT bucket, key_layout, retention_lock_days FROM vault_targets").fetchone()
+            vault = connection.execute("SELECT lifecycle FROM vaults").fetchone()
+            pending = connection.execute(
+                "SELECT COUNT(*) AS n FROM vault_bucket_provisioning").fetchone()
+        self.assertEqual(dict(target), {"bucket": "shared", "key_layout": "vault_prefix",
+                                        "retention_lock_days": None})
+        self.assertEqual((vault["lifecycle"], pending["n"]), ("active", 0))
 
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
@@ -723,6 +742,50 @@ class BaselineSchemaTests(unittest.TestCase):
         self.rejects("UPDATE vaults SET target_id = %s WHERE id = %s", (other, vault["id"]))
         self.rejects("UPDATE vaults SET uuid = %s WHERE id = %s", (uuid.uuid4(), vault["id"]))
         self.rejects("INSERT INTO vault_targets(provider, bucket, region) VALUES ('gcs', 'b', 'r')")
+
+    def test_vault_bucket_targets(self) -> None:
+        """#735: a dedicated target is a frostvault-<slug>-<8> bucket, never the System Bucket."""
+        insert = ("INSERT INTO vault_targets(provider, bucket, region, key_layout, retention_lock_days) "
+                  "VALUES ('s3', %s, 'eu-south-1', %s, %s) RETURNING id")
+        self.execute(insert, ("frostvault-photos-2024-ab12cd34", "bucket_root", None))
+        self.execute(insert, ("frostvault-docs-ab12cd35", "bucket_root", 180))
+        for bucket, layout, days in (
+                ("frostvault-system-ab12cd34", "bucket_root", None),
+                ("frostvault-Photos-ab12cd34", "bucket_root", None),
+                ("other-photos-ab12cd34", "bucket_root", None),
+                ("frostvault-photos-ab12", "bucket_root", None),
+                ("frostvault-" + "a" * 50 + "-ab12cd34", "bucket_root", None),
+                ("frostvault-photos-ab12cd36", "bucket_root", 0),
+                ("shared", "vault_prefix", 30),
+                ("shared", "unknown", None)):
+            with self.subTest(bucket=bucket, layout=layout, days=days):
+                self.rejects(insert, (bucket, layout, days), error=psycopg.errors.CheckViolation)
+        self.assertEqual(self.execute(
+            "INSERT INTO vault_targets(provider, bucket, region) VALUES ('s3', 'legacy', 'r') "
+            "RETURNING key_layout")[0]["key_layout"], "vault_prefix")
+
+    def test_only_a_provisioning_vault_changes_its_target(self) -> None:
+        """#735: a name another account owns is replaced, only before activation."""
+        insert = ("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
+                  "VALUES ('s3', %s, 'eu-south-1', 'bucket_root') RETURNING id")
+        first = self.execute(insert, ("frostvault-docs-aaaaaaaa",))[0]["id"]
+        second = self.execute(insert, ("frostvault-docs-bbbbbbbb",))[0]["id"]
+        third = self.execute(insert, ("frostvault-docs-cccccccc",))[0]["id"]
+        vault = self.vault(target_id=first, lifecycle="provisioning")
+        self.execute("INSERT INTO vault_bucket_provisioning(vault_id, requested_at) VALUES (%s, now())",
+                     (vault["id"],))
+        self.rejects("UPDATE vaults SET paused = true WHERE id = %s", (vault["id"],),
+                     error=psycopg.errors.CheckViolation)
+        self.execute("UPDATE vaults SET target_id = %s WHERE id = %s", (second, vault["id"]))
+        self.rejects("UPDATE vaults SET target_id = %s, lifecycle = 'active' WHERE id = %s",
+                     (third, vault["id"]))
+        self.rejects("UPDATE vault_bucket_provisioning SET stage = 'verified'",
+                     error=psycopg.errors.CheckViolation)
+        self.rejects("UPDATE vault_bucket_provisioning SET last_error = 'AccessDenied'",
+                     error=psycopg.errors.CheckViolation)
+        self.execute("UPDATE vaults SET lifecycle = 'active' WHERE id = %s", (vault["id"],))
+        self.rejects("UPDATE vaults SET target_id = %s WHERE id = %s", (third, vault["id"]))
+        self.rejects("UPDATE vaults SET lifecycle = 'provisioning' WHERE id = %s", (vault["id"],))
 
     def test_vault_lifecycle_combinations(self) -> None:
         vault = self.vault()

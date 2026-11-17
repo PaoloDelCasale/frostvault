@@ -373,7 +373,7 @@ Local setup:
    ```text
    AWS_ACCESS_KEY_ID=...
    AWS_SECRET_ACCESS_KEY=...
-   S3_BUCKET=...
+   AWS_DEFAULT_REGION=...
    ```
 
 3. Never send AWS keys in chat or commit the `.env` file.
@@ -451,7 +451,12 @@ instead of trying other credentials available on the computer.
    names the provider on the sign-in button (for example `Pocket ID`). List your LAN in
    `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
 
-4. Set `VAULT_S3_BUCKET` and `AWS_DEFAULT_REGION` to the versioned, private bucket.
+4. Set `AWS_DEFAULT_REGION` and AWS credentials with the
+   [FrostVault buckets policy](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json):
+   FrostVault creates a private, versioned **Vault Bucket** for every new Vault
+   (`frostvault-<name>-<random>`, see
+   [buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
+   There is no bucket setting; `VAULT_S3_BUCKET` was removed in #735.
 5. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
    outside this server; see [metadata backup custody](docs/metadata-backups.md).
    The backups go to the System Bucket FrostVault creates
@@ -700,17 +705,17 @@ versions after verified uploads; permanent purge uses it too.
 The explicit seven-day delay applies to Owner-requested cloud deletion, not
 verified snapshot replacement or automatic rename cleanup.
 
-FrostVault also creates and configures its own buckets, starting with the System
-Bucket for metadata backups: attach
+FrostVault creates and configures its own buckets, a Vault Bucket for every new
+Vault and the System Bucket for metadata backups: attach
 [`frostvault-buckets-policy.json`](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json),
-scoped to `arn:aws:s3:::frostvault-*`, which never grants
-`s3:BypassGovernanceRetention` (see
+scoped to `arn:aws:s3:::frostvault-*`, which covers the operations above in those
+buckets and never grants `s3:BypassGovernanceRetention` or `s3:DeleteBucket` (see
 [buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
 
-Use the Terraform baseline in
-[`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply
-equivalent versioning, encryption, public-access blocking, ownership, and
-least-privilege controls. See [docs/aws-s3-bucket.md](docs/aws-s3-bucket.md) for
+An installation from before Vault Buckets keeps its shared bucket for its older
+Vaults (objects under `vaults/<uuid>/`); the Terraform baseline in
+[`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) and
+`iam/archive-operator-policy.json` describe that bucket. See [docs/aws-s3-bucket.md](docs/aws-s3-bucket.md) for
 the full model.
 
 ## Container readiness
@@ -816,7 +821,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
 | Diagnostics | `API_DOCS_ENABLED` (default false; isolated development only), `METRICS_TOKEN` (default empty; independent Bearer scraper secret) |
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below); `TZ` (IANA zone such as `Europe/Rome` for notification dates; missing or invalid means UTC, labelled "UTC") |
-| Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
+| Storage | `AWS_DEFAULT_REGION` (the region of every new Vault Bucket; `VAULT_S3_BUCKET` and `S3_BUCKET` were removed in #735) |
 | Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` (optional `METADATA_BACKUP_BUCKET`: an operator-supplied System Bucket; empty lets FrostVault create `frostvault-system-<random>`) |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
 | Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time), `SOURCE_DEVICE_READ_CONCURRENCY` (default 3, 1–16: reads in flight per Source Device, shared by scan verification and uploads; on an Unraid user share each array disk is a device), `SERVER_PRIORITY_IOWAIT_PERCENT` (empty or 0 = off: above this host iowait for 10 s, one read per device and no new uploads until 30 s below; see [ADR-0046](docs/adr/0046-reads-per-source-device.md)) |

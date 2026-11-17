@@ -120,7 +120,9 @@ def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     from .source_layout import vault_local_access
     totals = dict.fromkeys(STATES, 0)
     vaults = []
-    for vault in connection.execute("SELECT * FROM vaults WHERE lifecycle<>'tombstone' ORDER BY id").fetchall():
+    for vault in connection.execute(
+            # A provisioning Vault has no bucket and no files yet (#735).
+            "SELECT * FROM vaults WHERE lifecycle NOT IN ('tombstone', 'provisioning') ORDER BY id").fetchall():
         health = load_vault_health(connection, vault["id"])
         # The same per-path rule as browse, stats and the release gate (#684).
         scope = unconfirmed_scope(

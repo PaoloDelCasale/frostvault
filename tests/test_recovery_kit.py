@@ -39,7 +39,7 @@ class BackupRunsConnection:
 class RecoveryKitTests(unittest.TestCase):
     def setUp(self):
         self.config = replace(Settings(), archive_master_key=Fernet.generate_key().decode(),
-                              vault_s3_bucket="shared-bucket", metadata_backup_bucket="",
+                              metadata_backup_bucket="",
                               aws_region="eu-south-1")
         self.bucket = SystemBucket("frostvault-system-abcd1234", "eu-south-1", "created")
 
@@ -64,7 +64,7 @@ class RecoveryKitTests(unittest.TestCase):
         changed = replace(self.config, archive_master_key=Fernet.generate_key().decode())
         self.assertNotEqual(current, self.fingerprint(changed))
         self.assertEqual(current, self.fingerprint())
-        self.assertEqual(current, self.fingerprint(replace(self.config, vault_s3_bucket="other")))
+        self.assertEqual(current, self.fingerprint(replace(self.config, s3_download_max_concurrency=7)))
         self.assertEqual(len(current), 24)
 
     def test_fingerprint_changes_with_the_system_bucket_and_its_region(self):
@@ -118,7 +118,8 @@ class RecoveryKitTests(unittest.TestCase):
         with self.assertRaises(recovery_kit.RecoveryKitUnavailable) as caught:
             recovery_kit.build_recovery_kit(configured, bucket=None)
         self.assertIn("keep the previous kit", str(caught.exception))
-        self.assertIn("the bucket in VAULT_S3_BUCKET", str(caught.exception))
+        self.assertIn("in the bucket it names", str(caught.exception))
+        self.assertNotIn("VAULT_S3_BUCKET", str(caught.exception))
         # A backup in another bucket (the shared one, or a previous System Bucket) does not count.
         backups.append("shared-bucket")
         self.assertTrue(recovery_kit.kit_status(connection, configured)["awaiting_backup"])
@@ -134,7 +135,19 @@ class RecoveryKitTests(unittest.TestCase):
                          (False, None, False))
 
     def test_the_kit_instructions_point_to_the_previous_kit_for_older_backups(self):
-        self.assertIn("the bucket in VAULT_S3_BUCKET", recovery_kit.INSTRUCTIONS)
+        self.assertIn("in the shared Vault bucket, which the\nprevious kit names", recovery_kit.INSTRUCTIONS)
+        self.assertNotIn("VAULT_S3_BUCKET", recovery_kit.INSTRUCTIONS)
+
+    def test_the_emergency_route_covers_vault_buckets_and_the_legacy_prefix(self):
+        """#735: a Vault Bucket keeps the files at its root; older Vaults keep vaults/<uuid>/."""
+        route = recovery_kit.INSTRUCTIONS[recovery_kit.INSTRUCTIONS.index("EMERGENCY ROUTE"):]
+        self.assertIn("frostvault-<vault name>-<8 random characters>", route)
+        self.assertIn("ROOT (no prefix)", route)
+        self.assertIn("get-bucket-tagging", route)
+        self.assertIn('PREFIX=""', route)
+        self.assertIn("vaults/<uuid>/", route)
+        self.assertIn('aws s3 cp "s3://$BUCKET/$PREFIX" ./recovered/ --recursive', route)
+        self.assertNotIn(" rm ", route)
 
     def test_key_fields_are_redacted_defensively(self):
         result = redact_sensitive({"ARCHIVE_MASTER_KEY": self.config.archive_master_key, "nested": {"master_key": "value"}})

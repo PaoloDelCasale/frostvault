@@ -117,8 +117,8 @@ class LocalizedRemediationTests(unittest.TestCase):
     def test_both_catalogs_explain_the_missing_bucket_without_a_permission(self):
         self.assertNotEqual(self.english, self.italian)
         for text in (self.english, self.italian):
-            for setting in ('VAULT_S3_BUCKET', 'S3_BUCKET', 'AWS_DEFAULT_REGION'):
-                self.assertIn(setting, text)
+            self.assertIn('AWS_DEFAULT_REGION', text)
+            self.assertNotIn('VAULT_S3_BUCKET', text)
             self.assertNotIn('s3:HeadBucket', text)
             # The notification body appends ". Jobs remain queued…".
             self.assertFalse(text.endswith('.'))

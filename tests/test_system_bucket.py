@@ -50,7 +50,7 @@ class MemoryStore:
 
 def settings(**changes):
     return replace(Settings(), **{"aws_region": "eu-south-1", "metadata_backup_bucket": "",
-                                  "vault_s3_bucket": "", **changes})
+                                  **changes})
 
 
 class CreatedSystemBucketTests(unittest.TestCase):
@@ -193,10 +193,9 @@ class CreatedSystemBucketTests(unittest.TestCase):
             lock.__enter__.side_effect = AssertionError("creation lock taken")
             self.assertEqual(self.ensure(), bucket)
 
-    def test_the_shared_vault_bucket_never_becomes_the_system_bucket(self):
-        bucket = self.ensure(settings(vault_s3_bucket="shared-bucket"))
+    def test_the_system_bucket_is_always_a_created_frostvault_system_bucket(self):
+        bucket = self.ensure(settings())
         self.assertRegex(bucket.name, r"^frostvault-system-[a-z0-9]{8}$")
-        self.assertNotIn("shared-bucket", [name for _, name in self.s3.calls])
 
     def test_a_lost_race_never_reports_ready(self):
         self.s3.fail["put_bucket_tagging"] = "SlowDown"
@@ -289,22 +288,22 @@ class OffHostRequirementTests(unittest.TestCase):
 
     def test_configured_bucket_or_credentials_require_off_host_copies(self):
         none = lambda: False  # noqa: E731
-        self.assertFalse(system_bucket.off_host_required(settings(vault_s3_bucket=""),
-                                                         credentials=none))
+        self.assertFalse(system_bucket.off_host_required(settings(), credentials=none,
+                                                         vaults=none))
         self.assertTrue(system_bucket.off_host_required(
-            settings(metadata_backup_bucket="my-backups", vault_s3_bucket=""), credentials=none))
-        self.assertTrue(system_bucket.off_host_required(settings(vault_s3_bucket=""),
-                                                        credentials=lambda: True))
+            settings(metadata_backup_bucket="my-backups"), credentials=none, vaults=none))
+        self.assertTrue(system_bucket.off_host_required(settings(), credentials=lambda: True,
+                                                        vaults=none))
 
-    def test_the_shared_vault_bucket_still_requires_off_host_copies_until_735(self):
-        """An upgrade with VAULT_S3_BUCKET never silently goes local-only."""
+    def test_any_vault_requires_off_host_copies(self):
+        """#735: a catalog naming Vault Buckets never silently goes local-only."""
         none = lambda: False  # noqa: E731
-        self.assertTrue(system_bucket.off_host_required(
-            settings(vault_s3_bucket="shared-bucket"), credentials=none))
-        for value in ("", "example-bucket", "BUCKET-NAME", "REPLACE-WITH-BUCKET-NAME"):
-            with self.subTest(value=value):
-                self.assertFalse(system_bucket.off_host_required(
-                    settings(vault_s3_bucket=value), credentials=none))
+        self.assertTrue(system_bucket.off_host_required(settings(), credentials=none,
+                                                        vaults=lambda: True))
+
+    def test_vault_setting_is_gone(self):
+        """#735: VAULT_S3_BUCKET is removed; the environment variable does nothing."""
+        self.assertFalse(hasattr(Settings(), "vault_s3_bucket"))
 
     def test_credentials_from_the_environment_without_probing_aws(self):
         cases = [

@@ -1581,6 +1581,7 @@
                 },
                 "lifecycle": {
                   "enum": [
+                    "provisioning",
                     "active",
                     "reconnect_required",
                     "stopping",
@@ -1619,11 +1620,25 @@
       "GeneralVault": {
         "additionalProperties": false,
         "properties": {
+          "bucket_provisioning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultBucketStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dedicated_bucket": {
+            "type": "boolean"
+          },
           "id": {
             "type": "number"
           },
           "lifecycle": {
             "enum": [
+              "provisioning",
               "active",
               "reconnect_required",
               "stopping",
@@ -1647,6 +1662,9 @@
             "type": "string"
           },
           "s3_prefix": {
+            "type": "string"
+          },
+          "s3_region": {
             "type": "string"
           },
           "source_root": {
@@ -4582,6 +4600,78 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VaultBucketStatus": {
+        "additionalProperties": false,
+        "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation.",
+        "properties": {
+          "attempts": {
+            "type": "number"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "dedicated": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": "string"
+          },
+          "retention_lock_days": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "stage": {
+            "enum": [
+              "reserved",
+              "created",
+              "configured",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "creating",
+              "failed",
+              "ready"
+            ],
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "vault_id",
+          "bucket",
+          "region",
+          "dedicated",
+          "state",
+          "stage",
+          "attempts",
+          "last_attempt_at",
+          "error",
+          "retention_lock_days"
+        ],
+        "type": "object"
+      },
       "VaultCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4606,11 +4696,21 @@
       "VaultCreateResponse": {
         "additionalProperties": false,
         "properties": {
+          "bucket": {
+            "$ref": "#/components/schemas/VaultBucketStatus"
+          },
           "creation_mode": {
             "$ref": "#/components/schemas/VaultCreationMode"
           },
           "id": {
             "type": "number"
+          },
+          "lifecycle": {
+            "enum": [
+              "provisioning",
+              "active"
+            ],
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -4622,7 +4722,9 @@
         "required": [
           "id",
           "uuid",
-          "name"
+          "name",
+          "lifecycle",
+          "bucket"
         ],
         "type": "object"
       },
@@ -4774,6 +4876,7 @@
           },
           "lifecycle": {
             "enum": [
+              "provisioning",
               "active",
               "reconnect_required",
               "stopping",
@@ -5074,6 +5177,7 @@
           },
           "lifecycle": {
             "enum": [
+              "provisioning",
               "active",
               "reconnect_required",
               "stopping",
@@ -8217,7 +8321,7 @@
         "summary": "List Vaults"
       },
       "post": {
-        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the plaintext storage identity.\nAdoption binds any free directory of a custom Source Volume\nin place and starts an asynchronous local scan.",
+        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the plaintext storage identity and creates the\nVault's own Vault Bucket (#735): the Vault is active only once the bucket\nis created and verified. ``bucket`` reports that; when it failed the Vault\nstays ``provisioning``, FrostVault retries in the background and the Owner\nmay retry at once. Adoption binds any free directory of a custom Source\nVolume in place and, once active, starts an asynchronous local scan.",
         "operationId": "create_owner_vault_api_vaults_post",
         "requestBody": {
           "content": {
@@ -8290,6 +8394,86 @@
           }
         },
         "summary": "Select Vault"
+      }
+    },
+    "/api/vaults/{vault_id}/bucket": {
+      "get": {
+        "description": "The Vault's bucket and, while it is being created, the creation state (#735).",
+        "operationId": "vault_bucket_status_api_vaults__vault_id__bucket_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultBucketStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Bucket Status"
+      }
+    },
+    "/api/vaults/{vault_id}/bucket/retry": {
+      "post": {
+        "description": "Retry the creation of a provisioning Vault's bucket now (#735).\n\nIdempotent: the same saved name, configuration applied again, then\nverified. A Vault whose bucket is ready is returned unchanged.",
+        "operationId": "retry_vault_bucket_api_vaults__vault_id__bucket_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultBucketStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Vault Bucket"
       }
     },
     "/api/vaults/{vault_id}/duplicate-cleanup": {

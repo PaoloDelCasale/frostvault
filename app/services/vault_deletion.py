@@ -2,7 +2,8 @@
 
 ADR-0047. Only a Tombstone can be deleted. The Owner confirms with the exact
 Vault name, a reason and a fresh authentication, after a preview from a live
-listing of the Vault's prefix ``vaults/{uuid}/``. The same seven-day delay as
+listing of the Vault's prefix: the whole Vault Bucket of a Vault created since
+#735 (ADR-0049), ``vaults/{uuid}/`` in the shared bucket of an older Vault. The same seven-day delay as
 Delayed Cloud Deletion follows (``vault_deletions.run_after``); until then the
 request can be cancelled.
 
@@ -39,6 +40,7 @@ from .cost_estimates import list_prices
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .minimum_storage import class_entry, remaining_cost
 from .vault_moves import MINIMUM_DAYS
+from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
 
 PROBLEM_EVENT = "vault_deletion_failed"
 # A running deletion refreshes its heartbeat at least once per listed page; one
@@ -87,7 +89,18 @@ def _aware(value: Any) -> datetime:
 
 
 def vault_prefix(vault: dict[str, Any]) -> str:
-    """The Vault's own prefix, from its parsed UUID: never empty or partial."""
+    """The Vault's own prefix, from its Vault Target: never partial.
+
+    Empty only for a dedicated Vault Bucket, which holds nothing but this
+    Vault; in a shared bucket ``vaults/<parsed uuid>/``. The bucket itself is
+    never deleted here (#739).
+    """
+    if vault["s3_key_layout"] == KEY_LAYOUT_BUCKET_ROOT:
+        if not str(vault.get("s3_bucket") or "").startswith("frostvault-"):
+            raise VaultDeletionError("A Vault Bucket is always named frostvault-*")
+        return ""
+    if vault["s3_key_layout"] != KEY_LAYOUT_VAULT_PREFIX:
+        raise VaultDeletionError("Unknown Vault Target key layout")
     parsed = uuid.UUID(str(vault["uuid"]))
     return f"vaults/{parsed}/"
 
@@ -109,6 +122,11 @@ class PrefixInventory:
 
 def _inside(prefix: str, key: Any) -> str:
     text = str(key or "")
+    if prefix == "":
+        # A dedicated Vault Bucket: every key of the bucket is the Vault's.
+        if not text:
+            raise _PrefixViolation("The listing named an empty key")
+        return text
     if not prefix.startswith("vaults/") or not text.startswith(prefix) or text == prefix.rstrip("/"):
         raise _PrefixViolation("The listing named a key outside the Vault prefix")
     return text
@@ -255,7 +273,8 @@ def summarize(inventory: PrefixInventory, *, executes_at: datetime,
 
 def _vault_row(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
-        """SELECT v.*, t.bucket AS s3_bucket FROM vaults v
+        """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
+                  t.key_layout AS s3_key_layout FROM vaults v
            JOIN vault_targets t ON t.id = v.target_id WHERE v.id=%s""", (vault_id,)).fetchone()
     if row is None:
         raise LookupError("Vault not found")

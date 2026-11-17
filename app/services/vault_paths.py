@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 RESTORE_TEMPORARY_RE = re.compile(
     r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\.[A-Za-z0-9]{8}|\..+\.partial)?"
@@ -102,6 +103,26 @@ def object_key_to_path(
         return safe_relative_path(relative).as_posix()
     except ValueError:
         return None
+
+
+KEY_LAYOUT_VAULT_PREFIX = "vault_prefix"
+KEY_LAYOUT_BUCKET_ROOT = "bucket_root"
+
+
+def object_prefix(key_layout: Any, vault_uuid: Any) -> str:
+    """A Vault's object prefix from its Vault Target's ``key_layout`` (ADR-0049).
+
+    ``''`` in a dedicated Vault Bucket, ``vaults/<uuid>/`` in the shared bucket
+    of an older Vault. An unknown layout fails closed instead of guessing.
+    """
+    if key_layout == KEY_LAYOUT_BUCKET_ROOT:
+        return ""
+    if key_layout == KEY_LAYOUT_VAULT_PREFIX:
+        text = str(vault_uuid or "").strip()
+        if not text or "/" in text:
+            raise ValueError("A shared-bucket Vault prefix needs the Vault UUID")
+        return f"vaults/{text}/"
+    raise ValueError("Unknown Vault Target key layout")
 
 
 def expected_cloud_key(logical_path: str, prefix_value: str) -> str:

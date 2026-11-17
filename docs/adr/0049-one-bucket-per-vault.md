@@ -41,3 +41,17 @@ permissions. Bucket creation is idempotent and resumable; a created but
 unregistered bucket opens a Problem instead of being silently orphaned. Vault
 Deletion removes the bucket only when the Owner ticks it and the bucket is
 empty.
+
+## Implementation notes (#735)
+
+- A Vault Target records its `key_layout`: `bucket_root` (a Vault Bucket, prefix
+  empty) or `vault_prefix` (the shared bucket of an older Vault, prefix
+  `vaults/<uuid>/`). Every key is built from the target's prefix.
+- A new Vault is `provisioning` until its bucket is verified; the reserved name
+  is saved first, and a name another account owns is replaced (the only change
+  of target a Vault may make, and only while provisioning).
+- Every lifecycle FrostVault writes sets `TransitionDefaultMinimumObjectSize`
+  to `all_storage_classes_128K`: objects smaller than 128 KiB stay in Standard.
+- The readiness gate stays installation-wide and probes the bucket of every
+  live Vault.
+- Off-host metadata backups are required as soon as any Vault exists.

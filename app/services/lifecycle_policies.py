@@ -1,4 +1,4 @@
-"""Persist and synchronize exactly one prefix-scoped storage plan per Vault."""
+"""Persist and synchronize exactly one Storage Plan per Vault (shared or Vault Bucket)."""
 from __future__ import annotations
 
 from typing import Any
@@ -36,18 +36,34 @@ def set_vault_plan(
 
 
 def sync_lifecycle_rules_for_bucket(connection: Any, client: Any, *, bucket: str) -> int:
+    """Write the Storage Plans of the Vaults in ``bucket``; returns plan rules.
+
+    A Vault Bucket (``bucket_root``) holds one Vault at its root: its whole
+    lifecycle is that Vault's plan, rewritten only when it differs
+    (``vault_buckets.sync_lifecycle``). A shared bucket of older Vaults gets
+    one prefix-filtered rule per Vault, merged with rules FrostVault does not
+    own.
+    """
     from .s3_lifecycle_rules import (
         build_vault_lifecycle_rule,
         sync_bucket_lifecycle_rules,
         validate_vault_prefixes,
     )
 
+    layouts = {row["key_layout"] for row in connection.execute(
+        "SELECT key_layout FROM vault_targets WHERE bucket=%s", (bucket,)).fetchall()}
+    if layouts == {"bucket_root"}:
+        from . import vault_buckets
+
+        return vault_buckets.sync_lifecycle(connection, client, bucket=bucket)
+    if layouts - {"vault_prefix"}:
+        raise ValueError("The bucket's Vault Targets do not agree on one key layout")
     rows = connection.execute(
         """
         SELECT v.uuid, 'vaults/' || v.uuid::text || '/' AS s3_prefix,
                v.storage_plan::text AS storage_plan_json
         FROM vaults v JOIN vault_targets t ON t.id = v.target_id
-        WHERE t.bucket=%s ORDER BY v.uuid
+        WHERE t.bucket=%s AND t.key_layout='vault_prefix' ORDER BY v.uuid
         """,
         (bucket,),
     ).fetchall()
