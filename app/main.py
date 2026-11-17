@@ -72,6 +72,7 @@ from .services import bucket_metrics as bucket_metrics_service
 from .services import billed_cost as billed_cost_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
+from .services import vault_exclusions
 from .oidc import (
     IdentityRejected,
     OidcError,
@@ -102,6 +103,7 @@ from .services.restore_estimates import (
     normalize_restore_tier,
 )
 from .services.operation_policies import (
+    AUTO_UPLOAD_EXCLUSIONS,
     OperationPolicy,
     get_policy,
     blocking_path_for,
@@ -823,6 +825,25 @@ class OperationPolicyUpdate(BaseModel):
     stability_seconds: int = Field(default=300, ge=0)
     include_globs: list[str] = Field(default_factory=list)
     exclude_globs: list[str] = Field(default_factory=list)
+
+
+class OperationPolicyGlobEdit(BaseModel):
+    """Add or remove one glob, atomically against the stored policy (#754)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: Literal["include_globs", "exclude_globs"]
+    action: Literal["add", "remove"]
+    glob: str = Field(min_length=1, max_length=2048)
+
+
+class VaultItemExclusion(BaseModel):
+    """Exclude one Vault file or folder by its own rule (#754)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    is_directory: bool = False
 
 
 class GlobPreviewRequest(BaseModel):
@@ -3638,8 +3659,7 @@ def reconnect_vault_root(
 def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
     with db() as connection:
         policy = get_policy(connection, vault["id"])
-        return {**policy.as_dict(), "global_upload_verification": settings.upload_verification,
-                "effective_upload_verification": policy.effective_upload_verification()}
+    return _operation_policy_response(policy)
 
 
 def _look_inside_released_folders(vault: dict[str, Any], current: Any) -> None:
@@ -3656,28 +3676,36 @@ def _look_inside_released_folders(vault: dict[str, Any], current: Any) -> None:
         request_full_scan(dict(vault))
 
 
-@app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
-def update_vault_operation_policy(
-    action: OperationPolicyUpdate,
+def _save_operation_policy(
+    vault: dict[str, Any],
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
-    user: dict[str, Any] = Depends(current_user),
-):
+    change: Any,
+    *,
+    event: str = "vault_operation_policy_updated",
+    **audit_fields: Any,
+) -> OperationPolicy:
+    """Apply ``change(stored_policy) -> new_policy`` atomically and audit it.
+
+    Every save of a Vault policy goes through here: the read, the change and the
+    write are serialized per Vault, so an independent panel or a one-rule edit
+    never replays a stale value. A change of the globs refreshes the directory
+    rollups; dropping a folder rule makes the Vault look inside again.
+    """
     with db() as connection:
         try:
             # Independent panels must never replay a stale local-release value
             # when saving upload rules. Serialize read/merge/write per Vault.
             connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
             before = get_policy(connection, vault["id"])
-            values = before.as_dict()
-            values.update(action.model_dump(exclude_unset=True))
-            stored = set_policy(connection, vault["id"], OperationPolicy(**values))
+            stored = set_policy(connection, vault["id"], change(before))
             if (before.include_globs, before.exclude_globs) != (stored.include_globs, stored.exclude_globs):
                 # Excluded is derived from these globs (#498); refresh the
                 # durable directory rollups, never the catalog evidence.
                 request_vault_rebuild(connection, vault["id"])
             # The Vault may look inside folders it did not observe (ADR-0044).
             narrowed_folders = excluded_folders(before).narrowed_by(excluded_folders(stored))
+        except vault_exclusions.RuleNotFound as exc:
+            raise HTTPException(409, "The rule is no longer in the Vault policy") from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except LookupError as exc:
@@ -3686,17 +3714,234 @@ def update_vault_operation_policy(
                 raise HTTPException(409, "Vault is no longer protected") from exc
             raise HTTPException(404, "Vault not found") from exc
         audit_log(
-            "vault_operation_policy_updated",
+            event,
             connection=connection,
             vault_id=vault["id"],
             actor=_actor(request),
             outcome="updated",
             policy=stored.as_dict(),
+            **audit_fields,
         )
     if narrowed_folders:
         _look_inside_released_folders(vault, excluded_folders(stored))
-    return {**stored.as_dict(), "global_upload_verification": settings.upload_verification,
-            "effective_upload_verification": stored.effective_upload_verification()}
+    return stored
+
+
+def _operation_policy_response(policy: OperationPolicy) -> dict[str, Any]:
+    return {**policy.as_dict(), "global_upload_verification": settings.upload_verification,
+            "effective_upload_verification": policy.effective_upload_verification(),
+            "fixed_exclude_globs": list(AUTO_UPLOAD_EXCLUSIONS)}
+
+
+@app.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
+def update_vault_operation_policy(
+    action: OperationPolicyUpdate,
+    request: Request,
+    vault: dict[str, Any] = Depends(current_vault),
+    user: dict[str, Any] = Depends(current_user),
+):
+    update = action.model_dump(exclude_unset=True)
+
+    def change(before: OperationPolicy) -> OperationPolicy:
+        return OperationPolicy(**{**before.as_dict(), **update})
+
+    return _operation_policy_response(_save_operation_policy(vault, request, change))
+
+
+@app.post("/api/vault/operation-policy/globs", response_model=response_model("OperationPolicy"))
+def edit_vault_operation_glob(
+    action: OperationPolicyGlobEdit,
+    request: Request,
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """Add or remove one include/exclude glob against the stored policy (#754).
+
+    Adding a glob already present changes nothing; removing one that is no
+    longer there is refused with 409, so a stale view cannot replace the list.
+    """
+
+    def change(before: OperationPolicy) -> OperationPolicy:
+        return vault_exclusions.edit_glob(before, action.field, action.action, action.glob)
+
+    stored = _save_operation_policy(
+        vault, request, change, event=f"vault_operation_glob_{'added' if action.action == 'add' else 'removed'}",
+        field=action.field, glob=action.glob.strip(),
+    )
+    return _operation_policy_response(stored)
+
+
+_DISK_READ_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    "unavailable": (409, "The Vault folder is not available on disk"),
+    "missing": (404, "Folder not found on disk"),
+    "unreadable": (409, "Folder cannot be read"),
+}
+
+
+def _disk_read_http_error(exc: vault_exclusions.DiskReadError) -> HTTPException:
+    status_code, message = _DISK_READ_ERROR_STATUS.get(exc.reason, (409, "Folder cannot be read"))
+    return HTTPException(status_code, message)
+
+
+def _vault_item_path(path: str) -> str:
+    return safe_relative_path(path).as_posix().rstrip("/")
+
+
+@app.get(
+    "/api/vault/excluded-folders",
+    response_model=response_model("ExcludedFolderListing"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def vault_excluded_folders(
+    directory: str = "",
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """One Vault level read from disk for its Excluded Folders (#754, ADR-0044).
+
+    Outside an Excluded Folder it lists the subfolders a folder rule covers;
+    inside one it lists the level's entries, never catalogued nor fingerprinted.
+    """
+    directory = normalize_directory(directory, api=True)
+    with db() as connection:
+        policy = get_policy(connection, vault["id"])
+    try:
+        return vault_exclusions.directory_listing(vault, policy, directory)
+    except vault_exclusions.DiskReadError as exc:
+        raise _disk_read_http_error(exc) from exc
+
+
+def _item_exclusion(policy: OperationPolicy, path: str, is_directory: bool) -> dict[str, Any]:
+    rule = vault_exclusions.own_rule(path, is_directory=is_directory)
+    present = rule is not None and rule in policy.exclude_globs
+    reasons = vault_exclusions.exclusion_reasons(policy, path, is_directory=is_directory)
+    return {
+        "path": path,
+        "is_directory": is_directory,
+        "own_rule": rule,
+        "own_rule_present": present,
+        "excluded": reasons["excluded"],
+        "rules": [item for item in reasons["rules"] if item != rule],
+        "fixed": reasons["fixed"],
+        "not_included": reasons["not_included"],
+    }
+
+
+@app.get(
+    "/api/vault/exclusions/item",
+    response_model=response_model("VaultItemExclusionStatus"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def vault_item_exclusion(
+    path: str,
+    is_directory: bool = False,
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """Which rules exclude one item, and its own rule (#754)."""
+    path = _vault_item_path(path)
+    with db() as connection:
+        policy = get_policy(connection, vault["id"])
+    return _item_exclusion(policy, path, is_directory)
+
+
+@app.get(
+    "/api/vault/exclusions/inclusion-preview",
+    response_model=response_model("VaultInclusionPreview"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def vault_inclusion_preview(
+    path: str,
+    is_directory: bool = False,
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """What «Include again» would upload, counted from disk now (#754).
+
+    Only when the item's own rule is what excludes it: the counts honour the
+    policy without that rule and stop after a time budget (``complete`` false
+    means a minimum). Otherwise only the broader rules are returned.
+    """
+    path = _vault_item_path(path)
+    with db() as connection:
+        policy = get_policy(connection, vault["id"])
+    status = _item_exclusion(policy, path, is_directory)
+    result: dict[str, Any] = {**status, "includable": False, "files": None, "bytes": None,
+                              "complete": None, "estimate": None, "folder_rule": False}
+    if not status["own_rule_present"]:
+        return result
+    after = vault_exclusions.edit_glob(policy, "exclude_globs", "remove", status["own_rule"])
+    remaining = _item_exclusion(after, path, is_directory)
+    result.update(
+        rules=remaining["rules"], fixed=remaining["fixed"], not_included=remaining["not_included"],
+        includable=True, folder_rule=is_directory,
+    )
+    try:
+        measured = vault_exclusions.measure_upload(vault, after, path, is_directory=is_directory)
+    except vault_exclusions.DiskReadError:
+        # The rule can still be removed; the amount is unknown.
+        return result
+    result.update(measured)
+    result["estimate"] = estimate_storage_month(
+        list_prices(settings.aws_region), size_bytes=measured["bytes"], storage_class="STANDARD",
+    ).as_dict()
+    return result
+
+
+@app.post(
+    "/api/vault/exclusions/exclude",
+    response_model=response_model("OperationPolicy"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def exclude_vault_item(
+    action: VaultItemExclusion,
+    request: Request,
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """«Exclude from the Vault»: add the item's own rule (#754).
+
+    A folder gets ``path/**`` (an Excluded Folder), a file its exact path. Cloud
+    copies stay; the files become Excluded.
+    """
+    path = _vault_item_path(action.path)
+    rule = vault_exclusions.own_rule(path, is_directory=action.is_directory)
+    if rule is None:
+        raise HTTPException(422, "The name contains glob characters; edit the exclusion rules instead")
+
+    def change(before: OperationPolicy) -> OperationPolicy:
+        return vault_exclusions.edit_glob(before, "exclude_globs", "add", rule)
+
+    stored = _save_operation_policy(
+        vault, request, change, event="vault_item_excluded", path=path,
+        is_directory=action.is_directory, glob=rule,
+    )
+    return _operation_policy_response(stored)
+
+
+@app.post(
+    "/api/vault/exclusions/include",
+    response_model=response_model("OperationPolicy"),
+    responses=LOGICAL_PATH_ERROR_RESPONSES,
+)
+def include_vault_item(
+    action: VaultItemExclusion,
+    request: Request,
+    vault: dict[str, Any] = Depends(current_vault),
+):
+    """«Include again»: remove the item's own rule, and only that (#754).
+
+    A broader rule is never removed from here (409): it is edited in the
+    Exclusions panel.
+    """
+    path = _vault_item_path(action.path)
+    rule = vault_exclusions.own_rule(path, is_directory=action.is_directory)
+    if rule is None:
+        raise HTTPException(409, "The item has no rule of its own; edit the exclusion rules instead")
+
+    def change(before: OperationPolicy) -> OperationPolicy:
+        return vault_exclusions.edit_glob(before, "exclude_globs", "remove", rule)
+
+    stored = _save_operation_policy(
+        vault, request, change, event="vault_item_included", path=path,
+        is_directory=action.is_directory, glob=rule,
+    )
+    return _operation_policy_response(stored)
 
 
 @app.post("/api/vault/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))

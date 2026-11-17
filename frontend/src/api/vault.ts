@@ -1,5 +1,5 @@
 import { apiRequest } from "./client";
-import type { ArchiveListItem, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, OperationPolicy, RecoverEstimateResponse, JobsResponse, FileJobHistoryResponse, JobRecord, GeneralVault } from "./types";
+import type { ArchiveListItem, ExcludedFolderListing, FileOperationPayload, FileOperationResponse, FileVersionsResponse, FilesResponse, GlobPreviewRequest, GlobPreviewResponse, OperationPolicy, OperationPolicyGlobEdit, RecoverEstimateResponse, JobsResponse, FileJobHistoryResponse, JobRecord, GeneralVault, VaultInclusionPreview } from "./types";
 
 /** An immutable request scope. Never reads or changes the Session's selection.
  * The URL, including its scope, survives CSRF/reauth retries unchanged. */
@@ -15,6 +15,14 @@ export function vaultApi(vaultId: number) {
     details: (path: string) => request<ArchiveListItem>(`/api/files/detail?path=${encodeURIComponent(path)}`),
     versions: (path: string) => request<FileVersionsResponse>(`/api/files/versions?path=${encodeURIComponent(path)}`),
     policy: () => request<OperationPolicy>("/api/vault/operation-policy"),
+    /** One level read from disk: Excluded Folders, or the entries inside one (#754). */
+    excludedFolders: (directory: string) => request<ExcludedFolderListing>(`/api/vault/excluded-folders?directory=${encodeURIComponent(directory)}`),
+    /** Adds or removes one glob against the stored policy; never replaces a list. */
+    editGlob: (edit: OperationPolicyGlobEdit) => post<OperationPolicy>("/api/vault/operation-policy/globs", edit),
+    previewGlobs: (payload: GlobPreviewRequest) => post<GlobPreviewResponse>("/api/vault/operation-policy/preview-globs", payload),
+    inclusionPreview: (path: string, isDirectory: boolean) => request<VaultInclusionPreview>(`/api/vault/exclusions/inclusion-preview?path=${encodeURIComponent(path)}&is_directory=${isDirectory}`),
+    exclude: (path: string, isDirectory: boolean) => post<OperationPolicy>("/api/vault/exclusions/exclude", { path, is_directory: isDirectory }),
+    include: (path: string, isDirectory: boolean) => post<OperationPolicy>("/api/vault/exclusions/include", { path, is_directory: isDirectory }),
     jobs: (options: { actions?: string[]; activeOnly?: boolean; path?: string; groupsBeforeId?: number } = {}) => {
       const params = new URLSearchParams();
       options.actions?.forEach((action) => params.append("action", action));

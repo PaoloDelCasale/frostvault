@@ -984,6 +984,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vault/excluded-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Excluded Folders
+         * @description One Vault level read from disk for its Excluded Folders (#754, ADR-0044).
+         *
+         *     Outside an Excluded Folder it lists the subfolders a folder rule covers;
+         *     inside one it lists the level's entries, never catalogued nor fingerprinted.
+         */
+        get: operations["vault_excluded_folders_api_vault_excluded_folders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/exclude": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exclude Vault Item
+         * @description «Exclude from the Vault»: add the item's own rule (#754).
+         *
+         *     A folder gets ``path/**`` (an Excluded Folder), a file its exact path. Cloud
+         *     copies stay; the files become Excluded.
+         */
+        post: operations["exclude_vault_item_api_vault_exclusions_exclude_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/include": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Include Vault Item
+         * @description «Include again»: remove the item's own rule, and only that (#754).
+         *
+         *     A broader rule is never removed from here (409): it is edited in the
+         *     Exclusions panel.
+         */
+        post: operations["include_vault_item_api_vault_exclusions_include_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/inclusion-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Inclusion Preview
+         * @description What «Include again» would upload, counted from disk now (#754).
+         *
+         *     Only when the item's own rule is what excludes it: the counts honour the
+         *     policy without that rule and stop after a time budget (``complete`` false
+         *     means a minimum). Otherwise only the broader rules are returned.
+         */
+        get: operations["vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/exclusions/item": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Item Exclusion
+         * @description Which rules exclude one item, and its own rule (#754).
+         */
+        get: operations["vault_item_exclusion_api_vault_exclusions_item_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vault/lifecycle": {
         parameters: {
             query?: never;
@@ -1032,6 +1145,29 @@ export interface paths {
         /** Update Vault Operation Policy */
         put: operations["update_vault_operation_policy_api_vault_operation_policy_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vault/operation-policy/globs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit Vault Operation Glob
+         * @description Add or remove one include/exclude glob against the stored policy (#754).
+         *
+         *     Adding a glob already present changes nothing; removing one that is no
+         *     longer there is refused with 409, so a stale view cannot replace the list.
+         */
+        post: operations["edit_vault_operation_glob_api_vault_operation_policy_globs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1936,6 +2072,17 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @description An entry read from disk inside an Excluded Folder: not catalogued, not protected. */
+        DiskListingEntry: {
+            modified_at: string;
+            name: string;
+            path: string;
+            size: number | null;
+            /** @enum {string} */
+            type: "file" | "directory";
+        } & {
+            [key: string]: unknown;
+        };
         DuplicateCleanupStatus: {
             /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
             beyond_minimum: boolean;
@@ -2018,6 +2165,25 @@ export interface components {
             enabled?: boolean | null;
             /** Grace Days */
             grace_days?: number | null;
+        };
+        ExcludedFolder: {
+            name: string;
+            path: string;
+            rule: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder. */
+        ExcludedFolderListing: {
+            directory: string;
+            entries: components["schemas"]["DiskListingEntry"][];
+            /** @description The folder rule that covers this directory; null outside an Excluded Folder. */
+            excluded_by: string | null;
+            folders: components["schemas"]["ExcludedFolder"][];
+            total_entries: number;
+            truncated: boolean;
+        } & {
+            [key: string]: unknown;
         };
         /** FileAction */
         FileAction: {
@@ -2534,6 +2700,8 @@ export interface components {
             /** @enum {string} */
             effective_upload_verification?: "s3_checksum" | "read_back";
             exclude_globs: string[];
+            /** @description Fixed noise exclusions applied to every Vault; read only. */
+            fixed_exclude_globs?: string[];
             /** @enum {string} */
             global_upload_verification?: "s3_checksum" | "read_back";
             include_globs: string[];
@@ -2547,6 +2715,24 @@ export interface components {
             upload_verification?: "s3_checksum" | "read_back" | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * OperationPolicyGlobEdit
+         * @description Add or remove one glob, atomically against the stored policy (#754).
+         */
+        OperationPolicyGlobEdit: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "add" | "remove";
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "include_globs" | "exclude_globs";
+            /** Glob */
+            glob: string;
         };
         /**
          * OperationPolicyUpdate
@@ -3286,6 +3472,59 @@ export interface components {
             verification_fallback_reason?: string | null;
             /** @enum {string|null} */
             verification_method?: "s3_checksum" | "read_back" | null;
+        } & {
+            [key: string]: unknown;
+        };
+        VaultInclusionPreview: {
+            bytes: number | null;
+            /** @description False when the disk walk stopped at its time budget: the counts are a minimum. */
+            complete: boolean | null;
+            estimate: components["schemas"]["StorageEstimateResponse"] | null;
+            excluded: boolean;
+            files: number | null;
+            /** @description Fixed noise exclusions that match the item. */
+            fixed: string[];
+            /** @description Removing the rule makes the Vault look inside the folder again with a full scan. */
+            folder_rule: boolean;
+            includable: boolean;
+            is_directory: boolean;
+            /** @description The include globs do not match the item. */
+            not_included: boolean;
+            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            own_rule: string | null;
+            own_rule_present: boolean;
+            path: string;
+            /** @description Other exclude globs that exclude the item. */
+            rules: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * VaultItemExclusion
+         * @description Exclude one Vault file or folder by its own rule (#754).
+         */
+        VaultItemExclusion: {
+            /**
+             * Is Directory
+             * @default false
+             */
+            is_directory: boolean;
+            /** Path */
+            path: string;
+        };
+        VaultItemExclusionStatus: {
+            excluded: boolean;
+            /** @description Fixed noise exclusions that match the item. */
+            fixed: string[];
+            is_directory: boolean;
+            /** @description The include globs do not match the item. */
+            not_included: boolean;
+            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            own_rule: string | null;
+            own_rule_present: boolean;
+            path: string;
+            /** @description Other exclude globs that exclude the item. */
+            rules: string[];
         } & {
             [key: string]: unknown;
         };
@@ -4973,6 +5212,174 @@ export interface operations {
             };
         };
     };
+    vault_excluded_folders_api_vault_excluded_folders_get: {
+        parameters: {
+            query?: {
+                directory?: string;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExcludedFolderListing"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    exclude_vault_item_api_vault_exclusions_exclude_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultItemExclusion"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    include_vault_item_api_vault_exclusions_include_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VaultItemExclusion"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get: {
+        parameters: {
+            query: {
+                path: string;
+                is_directory?: boolean;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultInclusionPreview"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    vault_item_exclusion_api_vault_exclusions_item_get: {
+        parameters: {
+            query: {
+                path: string;
+                is_directory?: boolean;
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultItemExclusionStatus"];
+                };
+            };
+            /** @description The logical path is empty, absolute, or traverses outside the Vault */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     own_vault_lifecycle_api_vault_lifecycle_get: {
         parameters: {
             query?: {
@@ -5148,6 +5555,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OperationPolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationPolicy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_vault_operation_glob_api_vault_operation_policy_globs_post: {
+        parameters: {
+            query?: {
+                vault_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationPolicyGlobEdit"];
             };
         };
         responses: {
