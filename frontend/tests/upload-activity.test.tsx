@@ -5,7 +5,7 @@ import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiCli
 import type { UploadActivityResponse, UploadActivitySummary, UploadThroughput } from "@/api/types";
 import { UploadActivity } from "@/components/UploadActivity";
 import { formatBytes } from "@/pages/archive/format";
-import { expectedFinishShort, expectedFinishText } from "@/lib/throughput";
+import { expectedFinishShort, expectedFinishText, stoppedShort, stoppedText } from "@/lib/throughput";
 import { jsonResponse, loadCatalog } from "./vault-settings-harness";
 import { translate } from "@/i18n/translate";
 
@@ -15,7 +15,7 @@ const empty = (): UploadActivitySummary => ({
   uploading: { files: 0, bytes: 0, transferred_bytes: 0 },
   verifying: { files: 0, bytes: 0, transferred_bytes: 0 },
   awaiting_admission_files: 0, next_stable_at: null,
-  throughput: measured(), expected_finish: null,
+  throughput: measured(), expected_finish: null, stopped_since: null,
 });
 /** Speeds as the sampler reports them (#755); none measured by default. */
 function measured(upload: Partial<UploadThroughput["upload"]> = {}, history: UploadThroughput["history"] = []): UploadThroughput {
@@ -181,6 +181,21 @@ describe("aggregate upload activity", () => {
     const rate = screen.getAllByTestId("activity-rate")[0];
     expect(rate).toHaveTextContent("Upload to the cloud: now 13.2 MB/s · 105.6 Mbit/s · 14.1 files/s · last 5 min average 12.0 MB/s");
     expect(screen.getAllByTestId("sparkline-upload")[0]).toHaveAccessibleName(t("estimate.history_label", { minutes: 15, peak: "13.0 MB/s" }));
+  });
+
+  it("says since when nothing has moved instead of a finish (#759)", async () => {
+    const activity = empty();
+    activity.queued = { files: 89729, bytes: 90 * 1024 ** 3, transferred_bytes: 0 };
+    const since = new Date(Date.now() - 20 * 60_000).toISOString();
+    activity.stopped_since = since;
+    show(activity);
+    const indicator = await screen.findByTestId("upload-indicator");
+    expect(indicator).toHaveAccessibleName(t("activity.indicator_stopped", {
+      count: 89729, size: formatBytes(90 * 1024 ** 3), time: stoppedShort(since) }));
+    await openPanel();
+    expect(screen.getAllByTestId("activity-stopped")[0]).toHaveTextContent(stoppedText(since, t));
+    expect(screen.getAllByTestId("activity-stopped")[0]).toHaveTextContent(/^Stopped since /);
+    expect(screen.queryByTestId("activity-finish")).not.toBeInTheDocument();
   });
 
   it("shows the speed now without a finish before the average is measured (#755)", async () => {

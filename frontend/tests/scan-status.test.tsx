@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ScanStatus } from "@/components/ScanStatus";
-import { formatNumber } from "@/pages/archive/format";
+import { formatNumber, formatTimeOfDay } from "@/pages/archive/format";
 
 // Echo the key and its params, so the test reads what the component asked for.
 const t = (key: string, params?: Record<string, string | number>) =>
@@ -13,6 +13,27 @@ describe("ScanStatus (#691, #711)", () => {
   it("renders nothing for an idle, healthy Vault", () => {
     const { container } = render(<ScanStatus runtime={{ scanning: false, last_error_source: null }} t={t} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("says what a queued scan waits for and since when (#759)", () => {
+    const since = "2026-11-17T17:30:00Z";
+    render(<ScanStatus t={t} runtime={{
+      scanning: false, scan_queued: true, scan_queued_at: "2026-11-17T17:45:00Z",
+      scan_waiting_for: "identify_local_copies", scan_waiting_since: since,
+    }} />);
+    expect(screen.getByTestId("scan-queued")).toHaveTextContent(`vault.scan.queued ${JSON.stringify({
+      operation: "vault.operation.identify_local_copies", time: formatTimeOfDay(new Date(since)) })}`);
+    expect(screen.queryByTestId("scan-in-progress")).toBeNull();
+  });
+
+  it("names an unknown operation generically, and a free Vault as a scan about to start (#759)", () => {
+    const { unmount } = render(<ScanStatus t={t} runtime={{
+      scanning: false, scan_queued: true, scan_waiting_for: "mystery", scan_waiting_since: "2026-11-17T17:30:00Z",
+    }} />);
+    expect(screen.getByTestId("scan-queued")).toHaveTextContent("vault.operation.other");
+    unmount();
+    render(<ScanStatus t={t} runtime={{ scanning: false, scan_queued: true, scan_waiting_for: null, scan_waiting_since: null }} />);
+    expect(screen.getByTestId("scan-queued")).toHaveTextContent("vault.scan.queued_starting");
   });
 
   it("lists the phases in order with their state (#711)", () => {

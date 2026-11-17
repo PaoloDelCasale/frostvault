@@ -474,6 +474,13 @@ def throttled() -> bool:
     return server_priority().throttled
 
 
+def throttled_if_started() -> bool:
+    """Whether reads are held back, without starting the load monitor."""
+    with _lock:
+        priority = _priority
+    return bool(priority is not None and priority.throttled)
+
+
 def _current_limit() -> int:
     return 1 if throttled() else configured_limit()
 

@@ -614,6 +614,7 @@ class BacklogObservationTests(unittest.TestCase):
                 stack.enter_context(patch.object(storage, "_refill_until_deadline", refill))
                 depth_reads = stack.enter_context(patch.object(storage, "claimable_queue_depth", return_value=depth))
                 stall = stack.enter_context(patch.object(storage, "observe_queue_stall"))
+                stack.enter_context(patch.object(storage, "observe_vault_stalls"))
                 with self.assertRaises(asyncio.CancelledError):
                     await storage._background_loop(asyncio.get_running_loop(), asyncio.Event())
                 self.aggregate_flushes = storage._submit_directory_aggregates.call_count

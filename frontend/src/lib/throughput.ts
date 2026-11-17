@@ -39,6 +39,23 @@ export function expectedFinishText(finish: ExpectedFinish, t: Translate, now = n
   });
 }
 
+/**
+ * A Vault with work but no progress for five minutes has no expected finish:
+ * «Fermo dalle 17:38», from its last progress (#759).
+ */
+export function stoppedText(since: string, t: Translate, now = new Date()): string {
+  const at = new Date(since);
+  const today = at.toDateString() === now.toDateString();
+  return t(today ? "estimate.stopped_today" : "estimate.stopped_earlier",
+    { time: formatTimeOfDay(at), date: formatDayMonth(at) });
+}
+
+/** The last progress for a tight label: «17:38», or «mer 17:38» when not today. */
+export function stoppedShort(since: string, now = new Date()): string {
+  const at = new Date(since);
+  return formatTimeOfDay(at, { weekday: at.toDateString() !== now.toDateString() });
+}
+
 /** The finish for a tight label: «06:30», or «mer 06:30» when not today. */
 export function expectedFinishShort(finish: ExpectedFinish, now = new Date()): string {
   const { at, day } = finishMoment(finish, now);

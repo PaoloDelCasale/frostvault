@@ -14,6 +14,11 @@ average used for estimates (last :data:`AVERAGE_SECONDS`, both phases) and a
 history for a sparkline. A Vault's expected finish is the later of its two
 phases at their average, with the phase that limits it.
 
+The meter also keeps when each Vault last made progress (#759): bytes or files
+sent, bytes verified, or a running scan moving. A Vault with work that should
+move and no progress for :data:`STOPPED_SECONDS` has no expected finish: it is
+shown stopped since its last progress instead.
+
 Each sample reads bounded SQL aggregates only: the held upload Jobs and those
 completed since the previous sample, through their partial indexes. Never
 files or Job rows.
@@ -45,6 +50,9 @@ HISTORY_STEP_SECONDS = 30
 SETTLE_LAG_SECONDS = 10
 # Samples older than this mean the sampler stopped: no speed is claimed.
 STALE_SECONDS = 15
+# No progress for this long: the expected finish is unknown, the Vault is
+# stopped since its last progress (#759).
+STOPPED_SECONDS = 5 * 60
 PHASES = ("upload", "verification")
 _HELD = ("uploading", "verifying", "cleaning")
 
@@ -84,6 +92,10 @@ class _Series:
     raw_files: int | None = None
     scan_id: str | None = None
     scan_done: int = 0
+    # (monotonic, wall) of the last progress, and the running scan's position.
+    last_progress: tuple[float, float] | None = None
+    scan_marker: tuple | None = None
+    working: bool | None = None
 
 
 class ThroughputMeter:
@@ -94,12 +106,14 @@ class ThroughputMeter:
         self._vaults: dict[int, _Series] = {}
         self._total = _Series()
         self._cut: datetime | None = None
+        self._started: tuple[float, float] | None = None
 
     def reset(self) -> None:
         with self._lock:
             self._vaults.clear()
             self._total = _Series()
             self._cut = None
+            self._started = None
 
     def window(self, now: datetime) -> tuple[datetime, datetime]:
         """The (since, cut] interval of completions the next sample settles."""
@@ -110,16 +124,25 @@ class ThroughputMeter:
 
     def record(self, *, mono: float, wall: float, cut: datetime | None,
                uploads: dict[int, dict[str, int]],
-               verification: dict[int, tuple[str | None, int]]) -> None:
+               verification: dict[int, tuple[str | None, int]],
+               scans: dict[int, tuple] | None = None, held_back: bool = False) -> None:
         """Add one sample. ``uploads`` holds the query row of each Vault with
         upload activity; ``verification`` the running scan id and the bytes it
-        verified, for each Vault in the runtime status."""
+        verified, for each Vault in the runtime status; ``scans`` the position
+        of each running scan (a scan finalizing always moves). ``held_back``
+        means Server Priority holds the reads: a choice, not a stop."""
+        scans = scans or {}
         with self._lock:
             if cut is not None:
                 self._cut = cut
+            if self._started is None:
+                self._started = (mono, wall)
             moved = {"bytes": 0, "files": 0, "verification": 0}
-            for vault_id in set(self._vaults) | set(uploads) | set(verification):
-                series = self._vaults.setdefault(vault_id, _Series())
+            for vault_id in set(self._vaults) | set(uploads) | set(verification) | set(scans):
+                if vault_id not in self._vaults:
+                    # A Vault first seen moves from now, not from the start.
+                    self._vaults[vault_id] = _Series(last_progress=(mono, wall))
+                series = self._vaults[vault_id]
                 row = uploads.get(vault_id) or {}
                 series.settled_bytes += int(row.get("settled_bytes") or 0)
                 series.settled_files += int(row.get("settled_files") or 0)
@@ -137,6 +160,12 @@ class ThroughputMeter:
                     series.scan_id, series.scan_done = scan_id, int(done)
                 else:
                     series.scan_id, series.scan_done = None, 0
+                marker = scans.get(vault_id)
+                scan_moved = marker is not None and (
+                    marker != series.scan_marker or "finalization" in marker)
+                series.scan_marker = marker
+                if held_back or step_bytes or step_files or step_verified or scan_moved:
+                    series.last_progress = (mono, wall)
                 series.upload_bytes += step_bytes
                 series.upload_files += step_files
                 series.verification_bytes += step_verified
@@ -151,6 +180,29 @@ class ThroughputMeter:
             total.verification_bytes += moved["verification"]
             total.samples.append((mono, wall, total.upload_bytes, total.upload_files,
                                   total.verification_bytes))
+
+    def stopped_since(self, vault_id: int, *, working: bool, mono: float) -> str | None:
+        """When a Vault with work that should move last made progress, once
+        that is :data:`STOPPED_SECONDS` ago; else None (#759).
+
+        Work that appears after the Vault was seen idle starts its clock.
+        Without fresh samples nothing is claimed.
+        """
+        with self._lock:
+            series = self._vaults.get(int(vault_id))
+            if series is None:
+                if self._started is None:
+                    return None
+                series = self._vaults[int(vault_id)] = _Series(last_progress=self._started)
+            if working and series.working is False:
+                series.last_progress = (mono, time.time())
+            series.working = working
+            latest = self._total.samples[-1][0] if self._total.samples else None
+            last = series.last_progress
+        if (not working or last is None or latest is None or mono - latest > STALE_SECONDS
+                or mono - last[0] < STOPPED_SECONDS):
+            return None
+        return datetime.fromtimestamp(last[1], timezone.utc).isoformat()
 
     def snapshot(self, vault_id: int | None, *, mono: float | None = None) -> dict[str, Any]:
         """Speeds of one Vault, or of the installation with ``vault_id=None``."""
@@ -270,38 +322,58 @@ def _verification_left(vault_id: int) -> int:
     return max(0, int(total or 0) - int(done or 0))
 
 
+def _should_move(vault: dict[str, Any], verification_left: int) -> bool:
+    """Work that should be moving: files to upload or verify, or a disk read.
+    Files still waiting to be stable wait by design."""
+    return verification_left > 0 or any(
+        int((vault.get(stage) or {}).get("files") or 0) > 0
+        for stage in ("queued", "uploading", "verifying"))
+
+
 def annotate(activity: dict[str, Any], *, meter: "ThroughputMeter | None" = None,
              now: datetime | None = None, mono: float | None = None) -> dict[str, Any]:
-    """Add each Vault's and the installation's speeds and expected finish."""
+    """Add each Vault's and the installation's speeds and expected finish,
+    or since when a Vault with work has not moved (#759)."""
     meter = meter or METER
     now = now or datetime.now(timezone.utc)
     mono = time.monotonic() if mono is None else mono
     finishes: list[dict[str, Any] | None] = []
+    stops: list[str | None] = []
     for vault in activity.get("vaults") or []:
         measured = meter.snapshot(int(vault["vault_id"]), mono=mono)
         vault["throughput"] = measured
         upload_left = 0 if vault.get("paused") else upload_bytes_left(vault)
         verification_left = _verification_left(int(vault["vault_id"]))
-        finish = None if vault.get("paused") else expected_finish(
+        working = not vault.get("paused") and _should_move(vault, verification_left)
+        stopped = meter.stopped_since(int(vault["vault_id"]), working=working, mono=mono)
+        finish = None if vault.get("paused") or stopped else expected_finish(
             now=now, upload_left=upload_left,
             upload_average=measured["upload"]["average_bytes_per_second"],
             verification_left=verification_left,
             verification_average=measured["verification"]["average_bytes_per_second"])
         vault["expected_finish"] = finish
+        vault["stopped_since"] = stopped
         if not vault.get("paused") and (upload_left > 0 or verification_left > 0):
             finishes.append(finish)
+        if working:
+            stops.append(stopped)
     total = activity.get("global")
     if isinstance(total, dict):
         total["throughput"] = meter.snapshot(None, mono=mono)
+        # The installation stops when every Vault with work has stopped, at
+        # the last progress among them.
+        total["stopped_since"] = max(stops) if stops and all(stops) else None  # type: ignore[type-var]
         # The installation finishes with its last Vault; unknown while any
         # working Vault's finish is.
         total["expected_finish"] = (max(finishes, key=lambda finish: finish["seconds"])
-                                    if finishes and all(finishes) else None)
+                                    if finishes and all(finishes) and not total["stopped_since"]
+                                    else None)
     return activity
 
 
 def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None,
-           now: datetime | None = None, mono: float | None = None) -> None:
+           now: datetime | None = None, mono: float | None = None,
+           held_back: bool | None = None) -> None:
     """Record one sample: one bounded aggregate query plus the runtime status."""
     meter = meter or METER
     now = now or datetime.now(timezone.utc)
@@ -314,8 +386,18 @@ def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None
             int(vault_id): (status.get("scan_id"), int(status.get("verify_bytes_done") or 0))
             if status.get("scanning") and status.get("scan_phase") == "verification" else (None, 0)
             for vault_id, status in runtime_status.items()}
+        # Where each running scan is: a scan walking or finalizing moves too.
+        scans = {
+            int(vault_id): (status.get("scan_id"), status.get("scan_phase"),
+                            status.get("traversal_files_seen"), status.get("verify_bytes_done"),
+                            status.get("verify_files_done"))
+            for vault_id, status in runtime_status.items() if status.get("scanning")}
+    if held_back is None:
+        from .source_devices import throttled_if_started
+        held_back = throttled_if_started()
     meter.record(mono=time.monotonic() if mono is None else mono, wall=now.timestamp(),
-                 cut=cut, uploads=uploads, verification=verification)
+                 cut=cut, uploads=uploads, verification=verification, scans=scans,
+                 held_back=held_back)
 
 
 METER = ThroughputMeter()

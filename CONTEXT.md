@@ -289,6 +289,14 @@ A queue with runnable Jobs, nothing running and no claim for five minutes.
 Reported as a protected metric and an Owner problem.
 _Avoid_: Deadlock, Hang
 
+**Stalled Vault**:
+A Vault whose background work (automatic admission, identifying new Local
+Copies) has held it for longer than ten minutes, so scans and uploads wait
+behind it. Reported as an Owner Problem naming the work and since when; it
+clears when the work ends. A full scan that is making progress is not a Stalled
+Vault.
+_Avoid_: Hung vault, Deadlock
+
 **Server Priority**:
 An optional installation-wide setting that slows FrostVault down while the
 server's disks are very busy: one read per Source Device and no new uploads
@@ -300,6 +308,8 @@ The time of day a Vault's work is expected to end: the later of its upload to
 the cloud and its reading from the disk (fingerprint verification), each at its
 average speed over the last five minutes, named with the phase that limits it.
 With one phase active, that phase. Unknown until an active phase is measured.
+Unknown as well when no phase has made progress for five minutes: the Vault is
+then shown stopped since it last advanced.
 _Avoid_: ETA, Time left, Remaining time
 
 **Cost Estimate**:
