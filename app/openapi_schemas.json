@@ -4664,6 +4664,494 @@
         "measured"
       ],
       "description": "A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket."
+    },
+    "BillingExportStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure.",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "unavailable",
+            "checking",
+            "not_configured",
+            "waiting",
+            "ok",
+            "error"
+          ],
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
+        },
+        "bucket": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The System Bucket the export is delivered to."
+        },
+        "prefix": {
+          "type": "string",
+          "description": "The S3 path prefix of the export in the System Bucket."
+        },
+        "checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_check_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When FrostVault last read the export (only when ok)."
+        },
+        "exported_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When AWS delivered the newest manifest that was read."
+        },
+        "data_through": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The newest usage end in the export, never after exported_at."
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The billing currency (ISO 4217)."
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_unreachable",
+            "s3_throttled",
+            "s3_server_error",
+            "credentials",
+            "access_denied",
+            "s3_refused",
+            "parquet",
+            "missing_column",
+            "not_gzip_csv",
+            "short_row",
+            "cost_not_number",
+            "currency_missing",
+            "mixed_currencies",
+            "manifest_invalid",
+            "manifest_too_large",
+            "manifest_foreign_bucket",
+            "manifest_outside_folder",
+            "no_data_files",
+            "internal",
+            null
+          ],
+          "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
+        },
+        "error_detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An S3 action and AWS error code, column or currency names: never a provider message."
+        },
+        "periods": {
+          "type": "array",
+          "description": "Billing periods read, newest first; empty unless state is ok.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "period": {
+                "type": "string",
+                "description": "YYYY-MM"
+              },
+              "total": {
+                "type": "number",
+                "description": "Every row of the period: Vaults and installation."
+              },
+              "vaults_total": {
+                "type": "number",
+                "description": "The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill."
+              },
+              "vaults": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "vault_id": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "categories": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Billed amounts by category, in the billing currency; every category is present.",
+                      "properties": {
+                        "storage": {
+                          "type": "number"
+                        },
+                        "requests": {
+                          "type": "number"
+                        },
+                        "transitions": {
+                          "type": "number"
+                        },
+                        "retrievals": {
+                          "type": "number"
+                        },
+                        "data_transfer": {
+                          "type": "number"
+                        },
+                        "other": {
+                          "type": "number"
+                        },
+                        "credits": {
+                          "type": "number",
+                          "description": "Credits, refunds and discounts of the bucket (negative)."
+                        }
+                      },
+                      "required": [
+                        "storage",
+                        "requests",
+                        "transitions",
+                        "retrievals",
+                        "data_transfer",
+                        "other",
+                        "credits"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "vault_id",
+                    "name",
+                    "bucket",
+                    "total",
+                    "categories"
+                  ]
+                }
+              },
+              "installation": {
+                "type": "array",
+                "description": "The System Bucket and shared buckets of older Vaults: not attributed to one Vault.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "shared"
+                      ]
+                    },
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "categories": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Billed amounts by category, in the billing currency; every category is present.",
+                      "properties": {
+                        "storage": {
+                          "type": "number"
+                        },
+                        "requests": {
+                          "type": "number"
+                        },
+                        "transitions": {
+                          "type": "number"
+                        },
+                        "retrievals": {
+                          "type": "number"
+                        },
+                        "data_transfer": {
+                          "type": "number"
+                        },
+                        "other": {
+                          "type": "number"
+                        },
+                        "credits": {
+                          "type": "number",
+                          "description": "Credits, refunds and discounts of the bucket (negative)."
+                        }
+                      },
+                      "required": [
+                        "storage",
+                        "requests",
+                        "transitions",
+                        "retrievals",
+                        "data_transfer",
+                        "other",
+                        "credits"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "role",
+                    "bucket",
+                    "total",
+                    "categories"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "period",
+              "total",
+              "vaults_total",
+              "vaults",
+              "installation"
+            ]
+          }
+        }
+      },
+      "required": [
+        "state",
+        "bucket",
+        "prefix",
+        "checked_at",
+        "next_check_at",
+        "read_at",
+        "exported_at",
+        "data_through",
+        "currency",
+        "stale",
+        "error_code",
+        "error_detail",
+        "periods"
+      ]
+    },
+    "VaultBilledCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737).",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "unavailable",
+            "checking",
+            "not_configured",
+            "waiting",
+            "ok",
+            "error"
+          ],
+          "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
+        },
+        "bucket": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The System Bucket the export is delivered to."
+        },
+        "prefix": {
+          "type": "string",
+          "description": "The S3 path prefix of the export in the System Bucket."
+        },
+        "checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_check_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When FrostVault last read the export (only when ok)."
+        },
+        "exported_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When AWS delivered the newest manifest that was read."
+        },
+        "data_through": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The newest usage end in the export, never after exported_at."
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The billing currency (ISO 4217)."
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "s3_unreachable",
+            "s3_throttled",
+            "s3_server_error",
+            "credentials",
+            "access_denied",
+            "s3_refused",
+            "parquet",
+            "missing_column",
+            "not_gzip_csv",
+            "short_row",
+            "cost_not_number",
+            "currency_missing",
+            "mixed_currencies",
+            "manifest_invalid",
+            "manifest_too_large",
+            "manifest_foreign_bucket",
+            "manifest_outside_folder",
+            "no_data_files",
+            "internal",
+            null
+          ],
+          "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
+        },
+        "error_detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An S3 action and AWS error code, column or currency names: never a provider message."
+        },
+        "vault_id": {
+          "type": "number"
+        },
+        "vault_bucket": {
+          "type": "string"
+        },
+        "shared": {
+          "type": "boolean",
+          "description": "The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export."
+        },
+        "periods": {
+          "type": "array",
+          "description": "Newest first; empty unless state is ok, and for a shared bucket.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "period": {
+                "type": "string",
+                "description": "YYYY-MM"
+              },
+              "total": {
+                "type": "number"
+              },
+              "categories": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Billed amounts by category, in the billing currency; every category is present.",
+                "properties": {
+                  "storage": {
+                    "type": "number"
+                  },
+                  "requests": {
+                    "type": "number"
+                  },
+                  "transitions": {
+                    "type": "number"
+                  },
+                  "retrievals": {
+                    "type": "number"
+                  },
+                  "data_transfer": {
+                    "type": "number"
+                  },
+                  "other": {
+                    "type": "number"
+                  },
+                  "credits": {
+                    "type": "number",
+                    "description": "Credits, refunds and discounts of the bucket (negative)."
+                  }
+                },
+                "required": [
+                  "storage",
+                  "requests",
+                  "transitions",
+                  "retrievals",
+                  "data_transfer",
+                  "other",
+                  "credits"
+                ]
+              }
+            },
+            "required": [
+              "period",
+              "total",
+              "categories"
+            ]
+          }
+        }
+      },
+      "required": [
+        "state",
+        "bucket",
+        "prefix",
+        "checked_at",
+        "next_check_at",
+        "read_at",
+        "exported_at",
+        "data_through",
+        "currency",
+        "stale",
+        "error_code",
+        "error_detail",
+        "vault_id",
+        "vault_bucket",
+        "shared",
+        "periods"
+      ]
     }
   }
 }

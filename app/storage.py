@@ -7643,6 +7643,8 @@ SYSTEM_BUCKET_POLL_SECONDS = 15 * 60
 # failed one is retried RETRY_SECONDS after its last attempt, and a verified
 # one becomes active once its versioning has settled (a minute's precision).
 VAULT_BUCKET_POLL_SECONDS = 60
+# Whether a look at the billing export is due (#738): one database read.
+BILLED_COST_POLL_SECONDS = 15 * 60
 
 
 def ensure_system_bucket_once() -> None:
@@ -7665,6 +7667,22 @@ def ensure_system_bucket_once() -> None:
         _report_worker_error("system_bucket", exc)
     else:
         _note_worker_ok("system_bucket")
+
+
+def read_billed_cost_once() -> None:
+    """Look for and read the billing export when a look is due (#738).
+
+    ``run_due`` records every export or S3 failure as a quiet status, never a
+    Problem; only an unusable catalog lands here, and is only logged: the
+    other workers already report it. Shutdown stops a read, like the
+    CloudWatch sizes (#737), without recording it.
+    """
+    from .services import billed_cost
+
+    try:
+        billed_cost.run_due(should_stop=lambda: shutdown_state.requested)
+    except Exception as exc:  # noqa: BLE001 - logged, retried at the next poll
+        worker_error_store.log_worker_error("billed_cost", exc)
 
 
 def ensure_vault_buckets_once() -> None:
@@ -7978,6 +7996,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_system_bucket: float | None = None
     last_vault_buckets: float | None = None
     last_bucket_metrics: float | None = None
+    last_billed_cost: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -8032,6 +8051,12 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_bucket_metrics >= bucket_metrics_service.POLL_SECONDS):
                     last_bucket_metrics = loop.time()
                     _submit_maintenance("bucket_metrics", read_bucket_metrics_once)
+                # Billed Cost (#738): the export is read at most once a day,
+                # from the persisted last look; the poll only asks if one is due.
+                if (last_billed_cost is None
+                        or loop.time() - last_billed_cost >= BILLED_COST_POLL_SECONDS):
+                    last_billed_cost = loop.time()
+                    _submit_maintenance("billed_cost", read_billed_cost_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

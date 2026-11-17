@@ -48,7 +48,8 @@ BASELINE_TABLES = {
 }
 # Tables added by later linear revisions of the chain.
 HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_bucket_provisioning",
-                                 "vault_bucket_metric_days", "vault_bucket_metric_reads"}
+                                 "vault_bucket_metric_days", "vault_bucket_metric_reads",
+                                 "billing_export_status", "billed_cost_periods", "billed_costs"}
 
 
 def _tables(path: Path) -> set[str]:
@@ -655,7 +656,7 @@ class BaselineSchemaTests(unittest.TestCase):
         self.assertEqual(referenced, {
             "vault_targets", "vaults", "files", "archive_versions", "job_groups", "jobs",
             "notifications", "upload_snapshots", "upload_attempts", "bulk_upload_admissions",
-            "cleanup_batches", "upload_remediations", "copy_attempts",
+            "cleanup_batches", "upload_remediations", "copy_attempts", "billed_cost_periods",
         })
         # No per-user attribution survives anywhere (#586).
         attribution = {

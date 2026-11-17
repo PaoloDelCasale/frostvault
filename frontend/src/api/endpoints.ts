@@ -12,6 +12,8 @@ import type {
   GeneralVaultReconnectResponse,
   MetadataBackupVerification,
   MinimumStorageSummary,
+  BillingExportStatus,
+  VaultBilledCost,
   RecoveryKitStatus,
   VaultCloudUsage,
   StopProtectionPayload,
@@ -504,6 +506,16 @@ export function fetchMinimumStorage(vaultId: number): Promise<MinimumStorageSumm
 /** The catalog's Cost Estimate next to the CloudWatch sizes of the Vault Bucket (#737). */
 export function fetchVaultCloudUsage(vaultId: number): Promise<VaultCloudUsage> {
   return apiRequest<VaultCloudUsage>(`/api/vaults/${vaultId}/cloud-usage`);
+}
+
+/** The Vault's Billed Cost from the AWS billing export (#738), never a Cost Estimate. */
+export function fetchVaultBilledCost(vaultId: number): Promise<VaultBilledCost> {
+  return apiRequest<VaultBilledCost>(`/api/vaults/${vaultId}/billed-cost`);
+}
+
+/** The billing export's status and every known bucket's Billed Cost (#738). */
+export function fetchBillingExport(): Promise<BillingExportStatus> {
+  return apiRequest<BillingExportStatus>("/api/billing-export");
 }
 
 /** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */

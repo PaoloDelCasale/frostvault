@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/billing-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Billing Export Status
+         * @description The billing export's status and every known bucket's Billed Cost (#738).
+         */
+        get: operations["billing_export_status_api_billing_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/catalog/events": {
         parameters: {
             query?: never;
@@ -1080,6 +1100,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/billed-cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Billed Cost
+         * @description The Vault's Billed Cost from the billing export (#738), by billing
+         *     period and category, with the export's status; never a Cost Explorer call.
+         */
+        get: operations["vault_billed_cost_api_vaults__vault_id__billed_cost_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/bucket": {
         parameters: {
             query?: never;
@@ -1616,6 +1657,81 @@ export interface components {
             [key: string]: unknown;
         };
         AuthMethod: string | null;
+        /** @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure. */
+        BillingExportStatus: {
+            /** @description The System Bucket the export is delivered to. */
+            bucket: string | null;
+            checked_at: string | null;
+            /** @description The billing currency (ISO 4217). */
+            currency: string | null;
+            /** @description The newest usage end in the export, never after exported_at. */
+            data_through: string | null;
+            /**
+             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
+             * @enum {string|null}
+             */
+            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
+            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_detail: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
+            exported_at: string | null;
+            next_check_at: string | null;
+            /** @description Billing periods read, newest first; empty unless state is ok. */
+            periods: {
+                /** @description The System Bucket and shared buckets of older Vaults: not attributed to one Vault. */
+                installation: {
+                    bucket: string;
+                    /** @description Billed amounts by category, in the billing currency; every category is present. */
+                    categories: {
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
+                        data_transfer: number;
+                        other: number;
+                        requests: number;
+                        retrievals: number;
+                        storage: number;
+                        transitions: number;
+                    };
+                    /** @enum {string} */
+                    role: "system" | "shared";
+                    total: number;
+                }[];
+                /** @description YYYY-MM */
+                period: string;
+                /** @description Every row of the period: Vaults and installation. */
+                total: number;
+                vaults: {
+                    bucket: string;
+                    /** @description Billed amounts by category, in the billing currency; every category is present. */
+                    categories: {
+                        /** @description Credits, refunds and discounts of the bucket (negative). */
+                        credits: number;
+                        data_transfer: number;
+                        other: number;
+                        requests: number;
+                        retrievals: number;
+                        storage: number;
+                        transitions: number;
+                    };
+                    name: string | null;
+                    total: number;
+                    vault_id: number;
+                }[];
+                /** @description The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill. */
+                vaults_total: number;
+            }[];
+            /** @description The S3 path prefix of the export in the System Bucket. */
+            prefix: string;
+            /** @description When FrostVault last read the export (only when ok). */
+            read_at: string | null;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
+            /**
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
+             * @enum {string}
+             */
+            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
+        };
         BulkUploadAdmissionActivity: {
             admitted_files: number;
             processed_files: number;
@@ -2822,6 +2938,58 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737). */
+        VaultBilledCost: {
+            /** @description The System Bucket the export is delivered to. */
+            bucket: string | null;
+            checked_at: string | null;
+            /** @description The billing currency (ISO 4217). */
+            currency: string | null;
+            /** @description The newest usage end in the export, never after exported_at. */
+            data_through: string | null;
+            /**
+             * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
+             * @enum {string|null}
+             */
+            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
+            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_detail: string | null;
+            /** @description When AWS delivered the newest manifest that was read. */
+            exported_at: string | null;
+            next_check_at: string | null;
+            /** @description Newest first; empty unless state is ok, and for a shared bucket. */
+            periods: {
+                /** @description Billed amounts by category, in the billing currency; every category is present. */
+                categories: {
+                    /** @description Credits, refunds and discounts of the bucket (negative). */
+                    credits: number;
+                    data_transfer: number;
+                    other: number;
+                    requests: number;
+                    retrievals: number;
+                    storage: number;
+                    transitions: number;
+                };
+                /** @description YYYY-MM */
+                period: string;
+                total: number;
+            }[];
+            /** @description The S3 path prefix of the export in the System Bucket. */
+            prefix: string;
+            /** @description When FrostVault last read the export (only when ok). */
+            read_at: string | null;
+            /** @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export. */
+            shared: boolean;
+            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            stale: boolean;
+            /**
+             * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
+             * @enum {string}
+             */
+            state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
+            vault_bucket: string;
+            vault_id: number;
+        };
         /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification). */
         VaultBucketStatus: {
             /** @description When a verified bucket's Vault becomes active (settling only). */
@@ -3173,6 +3341,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    billing_export_status_api_billing_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingExportStatus"];
                 };
             };
         };
@@ -5009,6 +5197,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultSelectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_billed_cost_api_vaults__vault_id__billed_cost_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VaultBilledCost"];
                 };
             };
             /** @description Validation Error */

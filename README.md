@@ -723,6 +723,16 @@ Vaults (objects under `vaults/<uuid>/`); the Terraform baseline in
 `iam/archive-operator-policy.json` describe that bucket. See [docs/aws-s3-bucket.md](docs/aws-s3-bucket.md) for
 the full model.
 
+## Billed Cost from the AWS billing export
+
+Each Vault shows its **Billed Cost**, what AWS actually charged for its Vault
+Bucket, next to and apart from the Cost Estimate. It comes from an AWS Data
+Exports CUR 2.0 export (gzip CSV, with resource IDs) that the Owner sets up once
+in the AWS Billing console, delivered to the System Bucket under `billing/cur/`;
+FrostVault reads it at most once a day and never calls the Cost Explorer API.
+Without it only Cost Estimates are shown. Steps, bucket policy and IAM:
+[docs/billed-cost.md](docs/billed-cost.md).
+
 ## Container readiness
 
 The image defines a healthcheck inherited by both Compose templates. Every 30s
