@@ -446,6 +446,80 @@ class CountTests(DuplicateCleanupFixture):
         self.assertEqual(self.status()["last_outcome"]["unseen_count"], 1)
 
 
+class MinimumStorageTests(DuplicateCleanupFixture):
+    """#731: deleting within the Minimum Storage Duration saves nothing."""
+
+    def in_deep_archive(self, file_id: str, *, days: float) -> None:
+        """The current version entered DEEP_ARCHIVE ``days`` ago (recorded)."""
+        with self.db() as connection:
+            connection.execute(
+                """UPDATE archive_versions SET storage_class='DEEP_ARCHIVE',
+                       storage_class_since=now() - make_interval(secs => %s)
+                   WHERE id=(SELECT current_version_id FROM files WHERE id=%s)""",
+                (days * 86400, file_id))
+
+    def test_off_by_default_it_schedules_them_and_says_what_they_still_bill(self) -> None:
+        photo = self.moved("photo.jpg", PHOTO)
+        self.in_deep_archive(photo, days=10)
+        self.in_deep_archive(self.moved("video.mp4", VIDEO), days=400)
+        self.configure()
+        status = self.status()
+        self.assertEqual((status["beyond_minimum"], status["held"]), (False, None))
+        minimum = status["minimum_storage"]
+        self.assertEqual((minimum["count"], minimum["bytes"], minimum["estimated_count"]), (1, len(PHOTO), 0))
+        self.assertIsInstance(minimum["remaining_cost"], float, "a few bytes cost ~0 at list prices")
+        self.assertEqual([c["storage_class"] for c in minimum["by_storage_class"]], ["DEEP_ARCHIVE"])
+        since = self.rows("""SELECT v.storage_class_since FROM files f JOIN archive_versions v
+                             ON v.id=f.current_version_id WHERE f.id=%s""", photo)[0]["storage_class_since"]
+        self.assertEqual(minimum["savings_from"], (since + timedelta(days=180)).isoformat())
+
+        outcome = self.run_cleanup()
+        self.assertEqual((outcome["outcome"], outcome["file_count"]), ("scheduled", 2))
+        self.assertEqual((outcome["minimum_count"], outcome["minimum_bytes"]), (1, len(PHOTO)))
+        self.assertIsInstance(outcome["minimum_cost"], float)
+        self.assertNotIn("held_count", outcome)
+
+    def test_beyond_minimum_holds_back_the_duplicates_still_within_it(self) -> None:
+        self.in_deep_archive(self.moved("photo.jpg", PHOTO), days=10)
+        self.in_deep_archive(self.moved("video.mp4", VIDEO), days=400)
+        self.configure(beyond_minimum=True)
+        status = self.status()
+        self.assertTrue(status["beyond_minimum"])
+        self.assertEqual(status["held"], {"count": 1, "bytes": len(PHOTO)})
+        self.assertEqual(status["ready"], {"count": 1, "bytes": len(VIDEO)})
+
+        outcome = self.run_cleanup()
+        self.assertEqual((outcome["outcome"], outcome["file_count"], outcome["held_count"], outcome["held_bytes"]),
+                         ("scheduled", 1, 1, len(PHOTO)))
+        self.assertEqual(self.scheduled_paths(outcome["group_id"]), ["old/video.mp4"])
+        self.assertNotIn("minimum_count", outcome, "nothing scheduled is within its minimum")
+
+    def test_a_minimum_ending_before_the_execution_is_not_held(self) -> None:
+        # 175 days in: the seven-day delay takes it past the 180-day minimum.
+        self.in_deep_archive(self.moved("photo.jpg", PHOTO), days=175)
+        self.configure(beyond_minimum=True)
+        self.assertEqual(self.status()["held"], {"count": 0, "bytes": 0})
+        self.assertEqual(self.run_cleanup()["file_count"], 1)
+
+    def test_only_held_duplicates_schedule_nothing_and_say_so(self) -> None:
+        self.in_deep_archive(self.moved("photo.jpg", PHOTO), days=1)
+        self.configure(beyond_minimum=True)
+        outcome = self.run_cleanup()
+        self.assertEqual((outcome["outcome"], outcome["file_count"], outcome["held_count"]), ("none", 0, 1))
+        self.assertEqual(self.count("SELECT 1 FROM jobs WHERE action='cloud-purge'"), 0)
+        self.assertEqual(self.status()["last_outcome"]["held_count"], 1)
+
+    def test_small_objects_stay_standard_and_are_never_held(self) -> None:
+        self.moved("photo.jpg", PHOTO)  # a few bytes, STANDARD
+        self.configure(beyond_minimum=True)
+        status = self.status()
+        self.assertEqual((status["held"], status["minimum_storage"]["count"]), ({"count": 0, "bytes": 0}, 0))
+
+    def test_an_invalid_value_is_refused(self) -> None:
+        with self.assertRaises(duplicate_cleanup.DuplicateCleanupError):
+            self.configure(beyond_minimum="yes")
+
+
 class HttpTests(DuplicateCleanupFixture):
 
     def setUp(self):
@@ -500,6 +574,32 @@ class HttpTests(DuplicateCleanupFixture):
         self.assertEqual(off.status_code, 200, off.text)
         self.assertFalse(off.json()["enabled"])
         missing = self.client.get("/api/vaults/999/duplicate-cleanup")
+        self.assertEqual(missing.status_code, 404, missing.text)
+
+    def test_waiting_for_the_minimum_needs_no_fresh_authentication_but_stopping_to_wait_does(self) -> None:
+        self.configure()
+        self.reauth(datetime(2000, 1, 1, tzinfo=timezone.utc))
+        on = self.client.put(self.url, json={"beyond_minimum": True}, headers=self.headers)
+        self.assertEqual(on.status_code, 200, on.text)
+        self.assertTrue(on.json()["beyond_minimum"])
+        self.assertIn("minimum_storage", on.json())
+        off = self.client.put(self.url, json={"beyond_minimum": False}, headers=self.headers)
+        self.assertEqual(off.status_code, 403, off.text)
+        self.assertEqual(off.json()["error"], "reauth_required")
+        mixed = self.client.put(self.url, json={"beyond_minimum": True, "grace_days": 3}, headers=self.headers)
+        self.assertEqual(mixed.status_code, 403, mixed.text)
+        empty = self.client.put(self.url, json={}, headers=self.headers)
+        self.assertEqual(empty.status_code, 403, empty.text)
+
+    def test_the_vault_summary_is_served_and_a_missing_vault_is_not_found(self) -> None:
+        self.moved("photo.jpg", PHOTO)
+        summary = self.client.get("/api/vaults/2/minimum-storage")
+        self.assertEqual(summary.status_code, 200, summary.text)
+        body = summary.json()
+        self.assertEqual(body["by_storage_class"][0]["storage_class"], "STANDARD")
+        self.assertEqual(body["remaining_cost"], 0)
+        self.assertTrue(body["currency"])
+        missing = self.client.get("/api/vaults/999/minimum-storage")
         self.assertEqual(missing.status_code, 404, missing.text)
 
 

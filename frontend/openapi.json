@@ -53,10 +53,24 @@
               "null"
             ]
           },
+          "expected_storage_class": {
+            "description": "The colder class the Storage Plan expects by now, while the transition is not observed yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
           "integrity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minimum_storage_until": {
+            "description": "When the Minimum Storage Duration of the class ends; null for a class without one.",
             "type": [
               "string",
               "null"
@@ -102,6 +116,17 @@
               "string",
               "null"
             ]
+          },
+          "storage_class_since": {
+            "description": "Class Entry: when the version entered storage_class (or expected_storage_class).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_class_since_estimated": {
+            "description": "The Class Entry is estimated from created_at and the Storage Plan, not recorded.",
+            "type": "boolean"
           },
           "upload_verification_requested": {
             "enum": [
@@ -346,6 +371,16 @@
           },
           "fingerprint": {
             "type": "string"
+          },
+          "minimum_storage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MinimumStorageDeletion"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "enum": [
@@ -706,6 +741,10 @@
       "DuplicateCleanupStatus": {
         "additionalProperties": false,
         "properties": {
+          "beyond_minimum": {
+            "description": "Schedule only duplicates beyond their Minimum Storage Duration (#731).",
+            "type": "boolean"
+          },
           "cap_bytes": {
             "type": "number"
           },
@@ -747,6 +786,30 @@
           "grace_days_min": {
             "type": "number"
           },
+          "held": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With beyond_minimum on: duplicates the next run keeps until their minimum ends."
+          },
           "last_outcome": {
             "anyOf": [
               {
@@ -764,6 +827,21 @@
                   "group_id": {
                     "type": "string"
                   },
+                  "held_bytes": {
+                    "type": "number"
+                  },
+                  "held_count": {
+                    "type": "number"
+                  },
+                  "minimum_bytes": {
+                    "type": "number"
+                  },
+                  "minimum_cost": {
+                    "type": "number"
+                  },
+                  "minimum_count": {
+                    "type": "number"
+                  },
                   "outcome": {
                     "enum": [
                       "scheduled",
@@ -775,6 +853,12 @@
                   },
                   "run_after": {
                     "type": "string"
+                  },
+                  "savings_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "unseen_count": {
                     "type": "number"
@@ -801,6 +885,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "minimum_storage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MinimumStorageDeletion"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "next_run_at": {
@@ -972,7 +1066,10 @@
           "waiting",
           "ready",
           "unseen",
-          "totals"
+          "totals",
+          "beyond_minimum",
+          "held",
+          "minimum_storage"
         ],
         "type": "object"
       },
@@ -980,6 +1077,17 @@
         "additionalProperties": false,
         "description": "Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value.",
         "properties": {
+          "beyond_minimum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beyond Minimum"
+          },
           "cap_bytes": {
             "anyOf": [
               {
@@ -2531,6 +2639,227 @@
           "pending_run_id",
           "automatic",
           "next_verification_at"
+        ],
+        "type": "object"
+      },
+      "MinimumStorageDeletion": {
+        "additionalProperties": false,
+        "description": "Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731).",
+        "properties": {
+          "by_storage_class": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bytes": {
+                  "type": "number"
+                },
+                "count": {
+                  "type": "number"
+                },
+                "minimum_days": {
+                  "type": "number"
+                },
+                "remaining_cost": {
+                  "type": "number"
+                },
+                "storage_class": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "storage_class",
+                "minimum_days",
+                "count",
+                "bytes",
+                "remaining_cost"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "bytes": {
+            "type": "number"
+          },
+          "count": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "disclaimer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimated_count": {
+            "description": "How many of them have an estimated Class Entry.",
+            "type": "number"
+          },
+          "evaluated_at": {
+            "type": "string"
+          },
+          "pricing_effective_at": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "remaining_cost": {
+            "type": "number"
+          },
+          "savings_from": {
+            "description": "When the last Minimum Storage Duration of these files ends: deleting from then saves.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "bytes",
+          "remaining_cost",
+          "savings_from",
+          "estimated_count",
+          "by_storage_class",
+          "currency",
+          "pricing_effective_at",
+          "region",
+          "evaluated_at"
+        ],
+        "type": "object"
+      },
+      "MinimumStorageSummary": {
+        "additionalProperties": false,
+        "description": "Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices.",
+        "properties": {
+          "by_storage_class": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "beyond": {
+                  "additionalProperties": false,
+                  "description": "Versions beyond it, or in a class without one.",
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "count": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "bytes"
+                  ],
+                  "type": "object"
+                },
+                "estimated_count": {
+                  "type": "number"
+                },
+                "minimum_days": {
+                  "type": "number"
+                },
+                "remaining_cost": {
+                  "type": "number"
+                },
+                "storage_class": {
+                  "type": "string"
+                },
+                "within": {
+                  "additionalProperties": false,
+                  "description": "Versions still within the Minimum Storage Duration.",
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "count": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "bytes"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "storage_class",
+                "minimum_days",
+                "within",
+                "beyond",
+                "remaining_cost",
+                "estimated_count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "disclaimer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimated_count": {
+            "description": "Versions with a minimum whose Class Entry is estimated from the Storage Plan.",
+            "type": "number"
+          },
+          "evaluated_at": {
+            "type": "string"
+          },
+          "pricing_effective_at": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "releases": {
+            "description": "Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bytes": {
+                  "type": "number"
+                },
+                "count": {
+                  "type": "number"
+                },
+                "month": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "month",
+                "count",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "remaining_cost": {
+            "type": "number"
+          },
+          "vault_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "vault_id",
+          "by_storage_class",
+          "remaining_cost",
+          "releases",
+          "estimated_count",
+          "currency",
+          "pricing_effective_at",
+          "region",
+          "evaluated_at"
         ],
         "type": "object"
       },
@@ -4314,6 +4643,9 @@
                 "byte_count": {
                   "type": "number"
                 },
+                "early_deletion_byte_count": {
+                  "type": "number"
+                },
                 "early_deletion_cost": {
                   "type": "number"
                 },
@@ -4354,7 +4686,16 @@
           "delete_marker_count": {
             "type": "number"
           },
+          "early_deletion_byte_count": {
+            "type": "number"
+          },
           "early_deletion_cost": {
+            "type": "number"
+          },
+          "early_deletion_estimated_count": {
+            "type": "number"
+          },
+          "early_deletion_version_count": {
             "type": "number"
           },
           "executes_at": {
@@ -4374,6 +4715,12 @@
           },
           "region": {
             "type": "string"
+          },
+          "savings_from": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "version_count": {
             "type": "number"
@@ -7984,7 +8331,7 @@
         "summary": "Duplicate Cleanup Status"
       },
       "put": {
-        "description": "Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).\n\nTurning it on or changing its grace period or cap needs a fresh\nauthentication; turning it off never does.",
+        "description": "Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).\n\nTurning it on or changing its grace period or cap needs a fresh\nauthentication; turning it off never does, nor does making it wait for\nthe Minimum Storage Duration (#731), since both only delete less.",
         "operationId": "update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put",
         "parameters": [
           {
@@ -8030,6 +8377,46 @@
           }
         },
         "summary": "Update Duplicate Cleanup"
+      }
+    },
+    "/api/vaults/{vault_id}/minimum-storage": {
+      "get": {
+        "description": "Minimum Storage Duration of a Vault's versions (#731): per storage class,\nthose within and beyond it, what the minimum still bills and, month by\nmonth, when the versions within it are released. A list-price estimate.",
+        "operationId": "minimum_storage_summary_api_vaults__vault_id__minimum_storage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MinimumStorageSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Minimum Storage Summary"
       }
     },
     "/api/vaults/{vault_id}/pause": {

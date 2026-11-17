@@ -99,6 +99,9 @@ class DeletionPreview:
     duplicate_count: int = 0
     duplicate_bytes: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
+    # The scheduled files still within their Minimum Storage Duration at the
+    # earliest execution, and what deleting them then still bills (#731).
+    minimum_storage: dict[str, Any] | None = None
 
     @property
     def no_local_copy_count(self) -> int:
@@ -118,7 +121,8 @@ class DeletionPreview:
                     no_local_copy_count=self.no_local_copy_count,
                     no_local_copy_bytes=self.no_local_copy_bytes,
                     skipped={reason: int(self.skipped.get(reason, 0)) for reason in SKIP_REASONS},
-                    skipped_count=sum(int(n) for n in self.skipped.values()))
+                    skipped_count=sum(int(n) for n in self.skipped.values()),
+                    minimum_storage=self.minimum_storage)
 
 
 @dataclass(frozen=True)
@@ -245,7 +249,9 @@ _FILE_SQL = """
     SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.local_presence,
            f.held_version_id, f.replacing_version_id, f.current_version_id,
            cur.integrity, cur.availability, cur.object_key, cur.provider_version_id,
-           cur.size, COALESCE(att.outcome, cpy.outcome) AS attempt_outcome,
+           cur.size, cur.storage_class, cur.storage_class_since,
+           cur.created_at AS version_created_at, cur.copy_attempt_id IS NOT NULL AS copied,
+           COALESCE(att.outcome, cpy.outcome) AS attempt_outcome,
            COALESCE(att.landed_version_id, cpy.landed_version_id) AS landed_version_id,
            EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
                      AND other.id IS DISTINCT FROM f.current_version_id) AS other_versions,
@@ -477,6 +483,8 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
 _CLASSIFY_SQL = """
 WITH c AS MATERIALIZED (
     SELECT f.id AS file_id, f.path, f.current_version_id, cur.size, f.local_seen_at,
+      cur.storage_class, cur.storage_class_since, cur.created_at AS version_created_at,
+      cur.copy_attempt_id IS NOT NULL AS copied,
       CASE
         WHEN f.local_presence IS NOT NULL AND f.local_presence <> 'missing' THEN 'present_locally'
         WHEN f.current_version_id IS NULL THEN 'not_verified'
@@ -507,10 +515,12 @@ WITH c AS MATERIALIZED (
     LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
     WHERE f.vault_id = %s AND f.path <> '' AND {selection}
 )
-SELECT file_id, path, current_version_id, size, local_seen_at, reason, NULL::bigint AS n
+SELECT file_id, path, current_version_id, size, local_seen_at, storage_class,
+       storage_class_since, version_created_at, copied, reason, NULL::bigint AS n
 FROM c WHERE reason = 'eligible'
 UNION ALL
-SELECT NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c WHERE reason <> 'eligible'
+SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, reason, count(*) FROM c
+WHERE reason <> 'eligible'
 GROUP BY reason
 """
 
@@ -539,6 +549,19 @@ def _duplicate_ids(connection: Any, vault: dict[str, Any], file_ids: list[str]) 
               AND {PROTECTED_SQL} AND NOT ({blocked})""",
         [file_ids, *blocked_params]).fetchall()
     return {str(r["file_id"]) for r in rows}
+
+
+def minimum_storage_summary(connection: Any, vault: dict[str, Any], files: list[dict[str, Any]],
+                            *, now: datetime | None = None) -> dict[str, Any]:
+    """What ``files`` still bill for their Minimum Storage Duration when deleted
+    at the earliest execution, after the delay (#731): a Cost Estimate."""
+    from . import minimum_storage
+    from .lifecycle_policies import load_vault_plan
+
+    moment = now or datetime.now(timezone.utc)
+    return minimum_storage.deletion_summary(
+        files, plan=load_vault_plan(connection, int(vault["id"])), now=moment,
+        at=moment + timedelta(seconds=DELETION_DELAY_SECONDS))
 
 
 def _fingerprint(files: list[dict[str, Any]]) -> str:
@@ -583,7 +606,8 @@ def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size(chosen), fingerprint=_fingerprint(chosen), mode=mode,
         duplicates_only=duplicates_only, eligible_count=len(eligible), eligible_bytes=size(eligible),
-        duplicate_count=len(duplicate_rows), duplicate_bytes=size(duplicate_rows), skipped=skipped)
+        duplicate_count=len(duplicate_rows), duplicate_bytes=size(duplicate_rows), skipped=skipped,
+        minimum_storage=minimum_storage_summary(connection, vault, chosen))
     return chosen, preview
 
 
@@ -705,11 +729,14 @@ class Sighting:
 
     ``ready``: seen at or before the cut-off; ``waiting``: seen after it;
     ``unseen``: never seen locally, so never a candidate of the automatic
-    cleanup (no invented time ever makes it one).
+    cleanup (no invented time ever makes it one). ``held``: seen long enough
+    ago but still within their Minimum Storage Duration at the earliest
+    execution, kept back when the cleanup waits for it (#731).
     """
     ready: list[dict[str, Any]]
     waiting: list[dict[str, Any]]
     unseen: list[dict[str, Any]]
+    held: list[dict[str, Any]] = field(default_factory=list)
 
 
 def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime) -> Sighting:
@@ -722,23 +749,40 @@ def split_by_sighting(rows: list[dict[str, Any]], seen_before: datetime) -> Sigh
     return Sighting(ready, waiting, unseen)
 
 
-def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before: str
+def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before: str,
+                         beyond_minimum: bool = False, now: datetime | None = None,
                          ) -> tuple[DeletionPreview, Sighting]:
     """The Cloud Duplicates an automatic run would schedule (#726, ADR-0048).
 
     Those of :func:`cloud_duplicates` whose Local Copy was last seen at or
     before ``seen_before`` (``Sighting.ready``), with their preview; a file
     without another protected local copy is never among them. The waiting
-    and never-seen Cloud Duplicates are returned too (#729).
+    and never-seen Cloud Duplicates are returned too (#729). With
+    ``beyond_minimum`` a duplicate still within its Minimum Storage Duration
+    at the earliest execution is held back (``Sighting.held``, #731).
     """
+    from . import minimum_storage
+    from .lifecycle_policies import load_vault_plan
+
     rows, skipped = cloud_duplicates(connection, vault)
     sighting = split_by_sighting(rows, _aware(seen_before))
+    moment = now or datetime.now(timezone.utc)
+    if beyond_minimum and sighting.ready:
+        plan = load_vault_plan(connection, int(vault["id"]))
+        executes = moment + timedelta(seconds=DELETION_DELAY_SECONDS)
+        ready: list[dict[str, Any]] = []
+        held: list[dict[str, Any]] = []
+        for row in sighting.ready:
+            (ready if minimum_storage.beyond_minimum(row, plan=plan, at=executes, now=moment)
+             else held).append(row)
+        sighting = Sighting(ready, sighting.waiting, sighting.unseen, held)
     chosen = sighting.ready
     size = sum(int(r["size"] or 0) for r in chosen)
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
         duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
-        duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped)
+        duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped,
+        minimum_storage=minimum_storage_summary(connection, vault, chosen, now=moment))
     return preview, sighting
 
 

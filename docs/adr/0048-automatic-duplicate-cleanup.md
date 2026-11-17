@@ -54,3 +54,16 @@ With the cleanup on, Cloud Duplicates leave the cloud about a week after the
 grace period without the Owner's action, while every deletion stays visible
 and cancellable for seven days. A cleanup left on can only remove content that
 is still present and protected elsewhere in the same Vault.
+
+## Amendment: waiting for the Minimum Storage Duration (#731, 2026-11-17)
+
+Deleting a duplicate still within its Minimum Storage Duration saves nothing:
+AWS bills the remaining days anyway. The status therefore says how many
+current duplicates are still within it at the earliest deletion and what
+deleting them would still bill (a list-price estimate). A per-Vault option,
+**only beyond the Minimum Storage Duration**, off by default, makes a run
+schedule only the duplicates whose minimum has ended by their earliest
+execution; the others are held and counted, and qualify at a later run.
+Turning the option on needs no fresh authentication, like turning the cleanup
+off, because it only deletes less; turning it off does.
+

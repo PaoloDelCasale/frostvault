@@ -3,6 +3,7 @@ import { useEffect, useId, useState, type FormEvent } from "react";
 import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api/types";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
+import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { Button } from "@/components/ui/button";
 
 import { formatBytes, pickDurationUnit } from "./format";
@@ -155,6 +156,7 @@ export function CloudPurgeDialog({
           <p className="text-sm font-semibold" data-testid="cloud-purge-nothing">{t("ui.cloud_purge_nothing")}</p>
         ) : null}
         {preview && !previewing && (preview.object_count > 0 || preview.mode === "selection") ? <DeletionSummary preview={preview} t={t} /> : null}
+        {preview && !previewing && preview.object_count > 0 ? <MinimumStorageNote amount={preview.minimum_storage} t={t} testId="cloud-purge-minimum" /> : null}
         {settings?.purge_delay_seconds != null ? (
           <p className="text-sm text-muted" data-testid="cloud-purge-delay">
             {t("ui.cloud_purge_delay", {

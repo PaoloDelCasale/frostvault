@@ -61,6 +61,23 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat(pageLocale()).format(value);
 }
 
+/**
+ * A count always grouped, four-digit ones too: «1.900» / «1,900» (#729, #731).
+ * Italian leaves four digits ungrouped by default.
+ */
+export function formatGroupedCount(value: number, locale?: string): string {
+  const options = { maximumFractionDigits: 0, useGrouping: true } as const;
+  try { return new Intl.NumberFormat(locale ?? pageLocale(), options).format(value); } catch { return new Intl.NumberFormat("en", options).format(value); }
+}
+
+/** A calendar month (`2027-05`, UTC) in the page language: «maggio 2027». */
+export function formatMonth(value: string, locale?: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  return date.toLocaleDateString(locale ?? pageLocale(), { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
 /** Human date and time in the page language; "—" when absent or invalid. */
 export function formatDateTime(value: unknown, locale?: string): string {
   if (typeof value !== "string" || !value) return "—";
@@ -77,6 +94,17 @@ export function formatDate(value: unknown, locale?: string): string {
   if (Number.isNaN(date.getTime())) return value;
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
   return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", ...(dateOnly ? { timeZone: "UTC" } : {}) });
+}
+
+/**
+ * A calendar date read in UTC, like the month-by-month release (`2027-05`):
+ * the end of a Minimum Storage Duration falls on the same day everywhere (#731).
+ */
+export function formatUtcDate(value: unknown, locale?: string): string {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(locale ?? pageLocale(), { dateStyle: "medium", timeZone: "UTC" });
 }
 
 export type MoneyOptions = { currency?: string; locale?: string; signed?: boolean };
@@ -97,6 +125,15 @@ export function formatMoney(value: number | string | null | undefined, { currenc
     money = new Intl.NumberFormat(locale ?? pageLocale(), { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: signed ? "exceptZero" : "auto" });
   }
   return !signed && amount > 0 && amount < 0.01 ? `< ${money.format(0.01)}` : money.format(amount);
+}
+
+/**
+ * An estimated amount: «~3,42 €». An amount already shown as «< 0,01 €» gets
+ * no «~», which would read «~< 0,01 €» (#731).
+ */
+export function formatApproxMoney(value: number | string | null | undefined, options: MoneyOptions = {}): string {
+  const money = formatMoney(value, options);
+  return money === "—" || money.startsWith("<") ? money : `~${money}`;
 }
 
 /** A euro amount (see {@link formatMoney}). */

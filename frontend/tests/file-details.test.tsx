@@ -8,12 +8,13 @@ import { jsonResponse } from "./vault-settings-harness";
 const t = (key: string) => key;
 const stale = { type: "file" as const, name: "same.jpg", path: "same.jpg", state: "cloud_only" };
 let purgeFailure: Record<string, unknown> | null = null;
+let versionExtra: Record<string, unknown> = {};
 function setup(state: string, local: boolean, conflict = false, reconciliation = false, remediation = false, extra: Record<string, unknown> = {}, pending = false) {
   const calls: string[] = [];
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
     if (url.startsWith("/api/files/detail")) return jsonResponse({ ...stale, state, local_exists: local, cloud_exists: true, cloud_only_conflict: conflict, ...extra });
-    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified" }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
+    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified", ...versionExtra }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
     if (url.startsWith("/api/files/jobs")) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
     if (url.startsWith("/api/jobs/")) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
@@ -25,7 +26,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
   render(<ApiQueryProvider client={createAppQueryClient()}><FileDetails target={{ item: stale, vaultId: 2, vaultName: "Second" }} t={t} onClose={vi.fn()} onRecover={vi.fn()} onRefresh={vi.fn()} /></ApiQueryProvider>);
   return calls;
 }
-afterEach(() => { resetApiClientForTests(); purgeFailure = null; });
+afterEach(() => { resetApiClientForTests(); purgeFailure = null; versionExtra = {}; });
 describe("deliberate file Details", () => {
   it("separates verified cloud cleanup from changed Local Copy protection and offers exact resume", async () => {
     const calls = setup("pending", true, false, false, true);
@@ -37,6 +38,22 @@ describe("deliberate file Details", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
     await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
     expect(calls.some((url) => url.startsWith("/api/upload?"))).toBe(false);
+  });
+  it("shows the class the storage plan expects when the transition is not observed yet (#731)", async () => {
+    versionExtra = { expected_storage_class: "DEEP_ARCHIVE", storage_class_since: "2026-11-02T00:00:00+00:00",
+      storage_class_since_estimated: true, minimum_storage_until: "2027-05-01T23:30:00+00:00" };
+    setup("cloud_only", false);
+    const summary = await screen.findByTestId("details-summary");
+    expect(within(summary).getByTestId("expected-storage-class")).toHaveTextContent("storage.DEEP_ARCHIVE");
+    expect(within(summary).getByText("details.expected_class_help")).toBeInTheDocument();
+    expect(within(summary).getByTestId("minimum-storage-until")).toHaveTextContent("(details.estimated)");
+  });
+  it("shows no expected class when the recorded class is the projection", async () => {
+    versionExtra = { expected_storage_class: null, minimum_storage_until: null };
+    setup("cloud_only", false);
+    const summary = await screen.findByTestId("details-summary");
+    expect(within(summary).queryByTestId("expected-storage-class")).toBeNull();
+    expect(within(summary).queryByTestId("minimum-storage-until")).toBeNull();
   });
   it("explains an excluded file as neither pending nor a problem", async () => {
     setup("excluded", true);

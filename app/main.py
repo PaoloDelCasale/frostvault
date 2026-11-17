@@ -67,6 +67,7 @@ from .services import vault_relocation as vault_relocation_service
 from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
+from .services import minimum_storage as minimum_storage_service
 from .services import watch_plan
 from .services.excluded_folders import excluded_folders
 from .oidc import (
@@ -760,6 +761,8 @@ class DuplicateCleanupUpdate(BaseModel):
     grace_days: int | None = Field(default=None, ge=1, le=90)
     cap_files: int | None = Field(default=None, ge=1, le=1_000_000)
     cap_bytes: int | None = Field(default=None, ge=1, le=1024 ** 5)
+    # Schedule only duplicates beyond their Minimum Storage Duration (#731).
+    beyond_minimum: bool | None = None
 
 
 class LifecycleTransitionUpdate(BaseModel):
@@ -1530,7 +1533,7 @@ def _vault_deletion_preview(vault_id: int) -> dict[str, Any]:
         client = s3_client()
     except Exception as exc:
         raise vault_deletion_service.VaultDeletionListingError("S3 is not configured") from exc
-    return vault_deletion_service.preview(client, target)
+    return vault_deletion_service.preview(client, target, database=db)
 
 
 @app.get("/api/vaults/{vault_id}/vault-deletion", response_model=response_model("VaultDeletionStatus"))
@@ -1617,10 +1620,12 @@ def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, requ
     """Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
 
     Turning it on or changing its grace period or cap needs a fresh
-    authentication; turning it off never does.
+    authentication; turning it off never does, nor does making it wait for
+    the Minimum Storage Duration (#731), since both only delete less.
     """
     values = action.model_dump(exclude_none=True)
-    if values != {"enabled": False}:
+    narrowing = {("enabled", False), ("beyond_minimum", True)}
+    if not values or not set(values.items()) <= narrowing:
         require_recent_reauth(request, user)
     try:
         with db() as connection:
@@ -1628,6 +1633,18 @@ def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, requ
                 connection, vault_id=vault_id, actor=_actor(request), values=values)
     except (LookupError, ValueError) as exc:
         raise _duplicate_cleanup_error(exc) from exc
+
+
+@app.get("/api/vaults/{vault_id}/minimum-storage", response_model=response_model("MinimumStorageSummary"))
+def minimum_storage_summary(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    """Minimum Storage Duration of a Vault's versions (#731): per storage class,
+    those within and beyond it, what the minimum still bills and, month by
+    month, when the versions within it are released. A list-price estimate."""
+    try:
+        with db() as connection:
+            return minimum_storage_service.load_vault_summary(connection, vault_id)
+    except LookupError as exc:
+        raise LocalizedHTTPError(404, "api.minimum_storage.not_found") from exc
 
 
 @app.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))

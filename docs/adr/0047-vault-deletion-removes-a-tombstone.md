@@ -38,3 +38,35 @@ hand or the rows in SQL leaves the catalog inconsistent.
 The Tombstone is no longer the end of a Vault's life; history survives only
 in the audit log and older metadata backups. Recovery of a deleted Vault's
 cloud content is impossible by design.
+
+## Amendment: the early-deletion cost counts from the Class Entry (#731, 2026-11-17)
+
+A version enters DEEP_ARCHIVE days or months after its upload when a Storage
+Plan transitions it, so `LastModified` overstated how much of the minimum had
+passed. The preview now counts each listed version's Minimum Storage Duration
+from its Class Entry: the recorded `storage_class_since` while the catalog
+records the same class the listing shows; otherwise an estimate from the
+Storage Plan and the version's creation (the catalog's `created_at`, or
+`LastModified` for a version the catalog never knew), counted as estimated.
+The preview also states how many versions and bytes are still within their
+minimum, and from when deleting them would start to save.
+
+How `storage_class_since` is recorded: a direct PUT or a server-side copy
+enters its class when created; afterwards an observation (cloud scan, catalog
+audit, restore check) moves it to the observation's instant only when it sees
+another class than the recorded one (compared case-insensitively). An unknown
+recorded class keeps it NULL. A version written before #731 (NULL entry)
+observed late in the class its Storage Plan predicts by then (the last
+transition whose days + 1 have elapsed since `created_at`; never an object
+under 128 KiB) keeps it NULL: the plan estimate, `created_at` + days + 1,
+labelled as estimated, is closer to the truth than the instant of a first
+observation that may come months after the transition. A version with a
+recorded entry follows the normal rule.
+
+Without a recorded entry the estimate is `created_at` for a version written
+straight into its class (a copy, or an object under 128 KiB outside
+STANDARD). Only the current version of a file, or the one replacing it, is
+projected into a colder class whose transition is due but not observed: the
+lifecycle has no noncurrent-version transitions, so a superseded version
+stays in its recorded class.
+

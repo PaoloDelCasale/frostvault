@@ -29,7 +29,7 @@ from psycopg.rows import tuple_row
 SCHEMA_REVISIONS = (
     "0001_baseline", "0002_file_ownership", "0003_job_admitted_generation",
     "0004_local_part_digests", "0005_vault_deletions", "0006_duplicate_cleanup",
-    "0007_duplicate_cleanup_totals", "0008_system_bucket",
+    "0007_duplicate_cleanup_totals", "0008_system_bucket", "0009_class_entry",
 )
 SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 

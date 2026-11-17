@@ -56,6 +56,32 @@ function setup({ status = idle as unknown, previewReply = { body: preview } as R
 }
 
 describe("Vault Deletion of a Tombstone (#717)", () => {
+  // #731: counted from the Class Entry; an older stored preview has no counts and no line.
+  it("says how many versions are still within their minimum duration and from when deleting saves", async () => {
+    setup({ previewReply: { body: { ...preview, early_deletion_version_count: 1200, early_deletion_byte_count: 2 * 1024 ** 3,
+      savings_from: "2027-05-15T10:00:00+00:00", early_deletion_estimated_count: 0,
+      by_storage_class: preview.by_storage_class.map((entry) => ({ ...entry, early_deletion_byte_count: entry.early_deletion_version_count ? 2 * 1024 ** 3 : 0 })) } } });
+    const line = await screen.findByTestId("vault-deletion-minimum");
+    expect(line).toHaveTextContent("1,200 versions (2.0 GiB) have been in Deep Archive for less than 180 days.");
+    expect(line).toHaveTextContent(/Deleting them now saves nothing: AWS still bills the remaining days \(~€4\.50\)\. Savings start on May 15, 2027\./);
+    expect(line).toHaveTextContent("Estimate from AWS list prices, not from your bill.");
+  });
+
+  it("names estimated entries as versions, not files", async () => {
+    setup({ previewReply: { body: { ...preview, early_deletion_version_count: 1200, early_deletion_byte_count: 2 * 1024 ** 3,
+      savings_from: "2027-05-15T10:00:00+00:00", early_deletion_estimated_count: 1200,
+      by_storage_class: preview.by_storage_class.map((entry) => ({ ...entry, early_deletion_byte_count: entry.early_deletion_version_count ? 2 * 1024 ** 3 : 0 })) } } });
+    const line = await screen.findByTestId("vault-deletion-minimum");
+    expect(line).toHaveTextContent("Class entry estimated from the storage plan for 1,200 versions.");
+    expect(line).not.toHaveTextContent(/1,200 files/);
+  });
+
+  it("shows no minimum duration line for a preview stored before it", async () => {
+    setup();
+    await screen.findByTestId("vault-deletion-preview");
+    expect(screen.queryByTestId("vault-deletion-minimum")).toBeNull();
+  });
+
   it("shows the live preview and requires the exact name and a reason before scheduling", async () => {
     const user = userEvent.setup(); const { calls } = setup();
     const summary = await screen.findByTestId("vault-deletion-preview");

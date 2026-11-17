@@ -19,6 +19,12 @@ The status also counts, live, the Cloud Duplicates there are now, those still
 in their wait and those never seen locally (which the cleanup never deletes),
 and reads the totals already deleted automatically, kept on the Vault so they
 outlive the history retention of their Jobs (#729).
+
+Deleting a version within its Minimum Storage Duration saves nothing: the
+status says how many Cloud Duplicates are still within it and what deleting
+them still bills (#731). With ``beyond_minimum`` (off by default) a run
+schedules only the duplicates whose minimum has ended by the time they would
+be deleted; the others stay held, at no extra cost, until it ends.
 """
 from __future__ import annotations
 
@@ -30,8 +36,9 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from ..i18n import DEFAULT_LOCALE, translate
-from . import cloud_deletion
+from . import cloud_deletion, minimum_storage
 from .audit_events import record_audit_event
+from .lifecycle_policies import load_vault_plan
 
 POLL_SECONDS = 300.0
 RUN_INTERVAL = timedelta(days=1)
@@ -67,6 +74,7 @@ def _settings(row: dict[str, Any]) -> dict[str, Any]:
         "grace_days": int(row["duplicate_cleanup_grace_days"]),
         "cap_files": int(row["duplicate_cleanup_cap_files"]),
         "cap_bytes": int(row["duplicate_cleanup_cap_bytes"]),
+        "beyond_minimum": bool(row["duplicate_cleanup_beyond_minimum"]),
     }
 
 
@@ -94,8 +102,14 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
     run would take; ``unseen``: those whose Local Copy was never seen, which
     the cleanup never deletes. All None when nothing can be proven now (a
     stopped Vault, an unavailable or replaced root, unconfirmed observations).
+
+    ``minimum_storage``: the current duplicates still within their Minimum
+    Storage Duration at the earliest deletion, and what deleting them then
+    still bills (#731). ``held``: with ``beyond_minimum`` on, those seen long
+    enough ago that the next run keeps for that reason (None when off).
     """
-    unknown = {"current": None, "waiting": None, "ready": None, "unseen": None}
+    unknown = {"current": None, "waiting": None, "ready": None, "unseen": None,
+               "held": None, "minimum_storage": None}
     if row["lifecycle"] != "active" or row.get("root_released_at"):
         return unknown
     try:
@@ -104,6 +118,17 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
         return unknown
     grace = timedelta(days=int(row["duplicate_cleanup_grace_days"]))
     sighting = cloud_deletion.split_by_sighting(rows, now - grace)
+    plan = load_vault_plan(connection, int(row["id"]))
+    executes = now + timedelta(seconds=cloud_deletion.DELETION_DELAY_SECONDS)
+    ready, held = sighting.ready, None
+    if row["duplicate_cleanup_beyond_minimum"]:
+        beyond: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
+        for item in ready:
+            (beyond if minimum_storage.beyond_minimum(item, plan=plan, at=executes, now=now)
+             else kept).append(item)
+        held = _amount(kept)
+        ready = beyond
     waiting = sighting.waiting
     first = min((r["local_seen_at"] for r in waiting), default=None)
     first_eligible = first + grace if first is not None else None
@@ -111,10 +136,12 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
     if first_eligible is not None and next_run is not None:
         earliest = _earliest_run(next_run, first_eligible) + timedelta(
             seconds=cloud_deletion.DELETION_DELAY_SECONDS)
-    return {"current": _amount(rows), "ready": _amount(sighting.ready),
+    return {"current": _amount(rows), "ready": _amount(ready),
             "waiting": {**_amount(waiting), "first_eligible_at": _iso(first_eligible),
                         "earliest_deletion_at": _iso(earliest)},
-            "unseen": _amount(sighting.unseen)}
+            "unseen": _amount(sighting.unseen), "held": held,
+            "minimum_storage": minimum_storage.deletion_summary(
+                rows, plan=plan, at=executes, now=now)}
 
 
 def _totals(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -184,11 +211,15 @@ def update_settings(connection: Any, *, vault_id: int, actor: str,
         value = merged[name]
         if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
             raise DuplicateCleanupError(f"{name} must be between {minimum} and {maximum}", name)
+    if not isinstance(merged["beyond_minimum"], bool):
+        raise DuplicateCleanupError("beyond_minimum must be true or false")
     connection.execute(
         """UPDATE vaults SET duplicate_cleanup_enabled=%s, duplicate_cleanup_grace_days=%s,
-               duplicate_cleanup_cap_files=%s, duplicate_cleanup_cap_bytes=%s
+               duplicate_cleanup_cap_files=%s, duplicate_cleanup_cap_bytes=%s,
+               duplicate_cleanup_beyond_minimum=%s
            WHERE id=%s""",
-        (merged["enabled"], merged["grace_days"], merged["cap_files"], merged["cap_bytes"], vault_id))
+        (merged["enabled"], merged["grace_days"], merged["cap_files"], merged["cap_bytes"],
+         merged["beyond_minimum"], vault_id))
     if not merged["enabled"]:
         _set_capped_problem(connection, vault_id, active=False)
     if merged != current:
@@ -241,7 +272,8 @@ def run_vault(connection: Any, vault_id: int, *, now: datetime) -> dict[str, Any
     seen_before = (now - timedelta(days=settings["grace_days"])).isoformat()
     try:
         preview, sighting = cloud_deletion.automatic_duplicates(
-            connection, vault, seen_before=seen_before)
+            connection, vault, seen_before=seen_before,
+            beyond_minimum=settings["beyond_minimum"], now=now)
     except cloud_deletion.CloudDeletionError as exc:
         # Nothing can be proven today (an unreadable root, unconfirmed
         # observations): schedule nothing and try again tomorrow.
@@ -254,6 +286,10 @@ def run_vault(connection: Any, vault_id: int, *, now: datetime) -> dict[str, Any
     waits = {"waiting_count": len(sighting.waiting),
              "waiting_bytes": sum(int(r["size"] or 0) for r in sighting.waiting),
              "unseen_count": len(sighting.unseen)}
+    if settings["beyond_minimum"]:
+        # Held until their Minimum Storage Duration ends (#731).
+        waits.update(held_count=len(sighting.held),
+                     held_bytes=sum(int(r["size"] or 0) for r in sighting.held))
     if not files:
         _set_capped_problem(connection, vault_id, active=False)
         return _finish(connection, vault_id, now,
@@ -268,6 +304,12 @@ def run_vault(connection: Any, vault_id: int, *, now: datetime) -> dict[str, Any
         return _finish(connection, vault_id, now,
                        {"outcome": "capped", "file_count": count, "byte_count": size, **waits})
     _set_capped_problem(connection, vault_id, active=False)
+    minimum = preview.minimum_storage or {}
+    if minimum.get("count"):
+        # What the scheduled duplicates still bill for their minimum (#731).
+        waits.update(minimum_count=int(minimum["count"]), minimum_bytes=int(minimum["bytes"]),
+                     minimum_cost=float(minimum["remaining_cost"]),
+                     savings_from=minimum.get("savings_from"))
     scheduled = cloud_deletion.schedule_automatic_duplicates(
         connection, vault=vault, files=files, preview=preview, requested_at=now.isoformat(),
         reason=translate("duplicate_cleanup.reason", locale=DEFAULT_LOCALE))

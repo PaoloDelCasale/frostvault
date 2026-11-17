@@ -321,6 +321,41 @@ class StartupGuardTests(_GuardFixture):
                     "INSERT INTO metadata_backup_runs(created_at, reason, backend, status, s3_bucket) "
                     "VALUES (now(), 'manual', 'postgresql', 'succeeded', 'frostvault-system-abcd1234')")
 
+    def test_catalog_of_the_previous_revision_gets_no_invented_class_entry(self) -> None:
+        """#731: every existing version keeps a NULL Class Entry (never
+        recorded, estimated at read time) and the cleanup's minimum option is off."""
+        _migrate_to(self.dsn, "0008_system_bucket")
+        file_id = "00000000-0000-0000-0000-0000000000f2"
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region) VALUES (1, 's3', 'b', 'eu-south-1')")
+        self.execute(
+            "INSERT INTO vaults(id, target_id, name, source_root, duplicate_cleanup_enabled) "
+            "VALUES (1, 1, 'Docs', '/sources/docs', true)")
+        self.execute(
+            f"INSERT INTO files(id, vault_id, path, path_since) VALUES ('{file_id}', 1, 'a.jpg', now())")
+        self.execute(
+            "INSERT INTO archive_versions(file_id, object_key, provider_version_id, size, storage_class, created_at) "
+            f"VALUES ('{file_id}', 'vaults/x/a.jpg', 'v1', 10, 'DEEP_ARCHIVE', now() - interval '200 days')")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            version = connection.execute(
+                "SELECT storage_class, storage_class_since FROM archive_versions").fetchone()
+            vault = connection.execute(
+                "SELECT duplicate_cleanup_enabled, duplicate_cleanup_beyond_minimum FROM vaults WHERE id=1").fetchone()
+            columns = {(row["table_name"], row["column_name"]): row for row in connection.execute(
+                "SELECT table_name, column_name, is_nullable, column_default, data_type "
+                "FROM information_schema.columns WHERE (table_name, column_name) IN "
+                "(('archive_versions', 'storage_class_since'), ('vaults', 'duplicate_cleanup_beyond_minimum'))"
+            ).fetchall()}
+        self.assertEqual(dict(version), {"storage_class": "DEEP_ARCHIVE", "storage_class_since": None})
+        self.assertEqual(dict(vault), {"duplicate_cleanup_enabled": True, "duplicate_cleanup_beyond_minimum": False})
+        since = columns["archive_versions", "storage_class_since"]
+        self.assertEqual((since["is_nullable"], since["column_default"], since["data_type"]),
+                         ("YES", None, "timestamp with time zone"))
+        option = columns["vaults", "duplicate_cleanup_beyond_minimum"]
+        self.assertEqual((option["is_nullable"], option["column_default"]), ("NO", "false"))
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade

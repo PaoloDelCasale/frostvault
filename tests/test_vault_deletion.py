@@ -171,6 +171,49 @@ class VaultDeletionTests(VaultDeletionFixture):
         self.assertEqual(summary["early_deletion_cost"], classes["DEEP_ARCHIVE"]["early_deletion_cost"])
         self.assertEqual(self.provider.deleted, [])
 
+    def test_the_early_deletion_counts_from_the_class_entry_not_the_upload(self) -> None:
+        """#731: uploaded 200 days ago, in Deep Archive only for 10 days: still
+        within its minimum, though LastModified says otherwise."""
+        self.stop()
+        now = datetime.now(timezone.utc)
+        [version] = self.rows("""SELECT av.object_key, av.provider_version_id FROM archive_versions av
+                                 JOIN files f ON f.id=av.file_id WHERE f.vault_id=2""")
+        key = (version["object_key"], version["provider_version_id"])
+        self.provider.classes[key] = "DEEP_ARCHIVE"
+        self.provider.modified[key] = now - timedelta(days=200)
+        with self.db() as connection:
+            connection.execute(
+                """UPDATE archive_versions SET storage_class='DEEP_ARCHIVE', created_at=%s,
+                       storage_class_since=%s WHERE object_key=%s AND provider_version_id=%s""",
+                (now - timedelta(days=200), now - timedelta(days=10), *key))
+
+        without_catalog = self.preview()
+        self.assertEqual(without_catalog["early_deletion_version_count"], 1, "only the stray, from LastModified")
+
+        summary = vault_deletion.preview(self.provider, self.target(), database=self.db, now=now)
+        deep = {c["storage_class"]: c for c in summary["by_storage_class"]}["DEEP_ARCHIVE"]
+        self.assertEqual((deep["early_deletion_version_count"], deep["early_deletion_byte_count"]),
+                         (2, len(A) + STRAY))
+        self.assertEqual((summary["early_deletion_version_count"], summary["early_deletion_byte_count"]),
+                         (2, len(A) + STRAY))
+        self.assertEqual(summary["early_deletion_estimated_count"], 1, "the stray's entry is estimated")
+        stray_written = self.provider.modified[self.prefix + "stray/old.bin", self.stray]
+        self.assertEqual(summary["savings_from"], (stray_written + timedelta(days=180)).isoformat())
+        self.assertGreaterEqual(summary["early_deletion_cost"], without_catalog["early_deletion_cost"])
+
+        # A class the catalog did not record is estimated. This object is
+        # under 128 KiB, which no lifecycle rule moves: it was written
+        # straight into Deep Archive 200 days ago and is beyond its minimum
+        # (the plan estimate of larger objects: tests.test_minimum_storage).
+        with self.db() as connection:
+            connection.execute("UPDATE archive_versions SET storage_class='STANDARD' WHERE object_key=%s", (key[0],))
+            connection.execute(
+                """UPDATE vaults SET storage_plan='{"transitions": [{"days": 30, "storage_class": "DEEP_ARCHIVE"}]}'::jsonb
+                   WHERE id=2""")
+        planned = vault_deletion.preview(self.provider, self.target(), database=self.db, now=now)
+        self.assertEqual((planned["early_deletion_version_count"], planned["early_deletion_estimated_count"]), (1, 1),
+                         "only the stray: the small object entered Deep Archive when written")
+
     def test_a_failed_listing_gives_no_preview(self) -> None:
         self.stop()
 
