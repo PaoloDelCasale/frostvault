@@ -248,7 +248,8 @@ class FirstScanTests(unittest.TestCase):
                 patch.object(storage, "_report_worker_error") as report, \
                 patch.object(storage, "_submit_watcher_scan") as submit:
             storage.ensure_vault_buckets_once()
-        ok.assert_not_called()
+        # Only the Vault that ran closes its own Problem; the loop-wide one stays open.
+        ok.assert_called_once_with("vault_buckets", 8)
         self.assertEqual((report.call_args.args[0], report.call_args.args[2]), ("vault_buckets", 7))
         submit.assert_called_once_with({"id": 8})
 
