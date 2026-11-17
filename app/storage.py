@@ -63,6 +63,7 @@ from .services.directory_aggregates import (
 from .services.lifecycle_policies import sync_lifecycle_rules_for_bucket
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
+from .services import system_bucket as system_bucket_service
 from .services import metrics as metrics_service
 # Helpers extracted from this module.  Names storage itself no longer calls
 # stay importable here because tests and ``app.main`` reach them through
@@ -530,7 +531,9 @@ class _ThrottledByteProgress:
         self._report()
 
 
-def s3_client(*, preflight: bool = False, non_idempotent: bool = False):
+def s3_client(*, preflight: bool = False, non_idempotent: bool = False,
+              region: str | None = None):
+    """The shared client for AWS_DEFAULT_REGION, or for ``region`` (System Bucket)."""
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     if is_placeholder(
@@ -543,7 +546,7 @@ def s3_client(*, preflight: bool = False, non_idempotent: bool = False):
         "REPLACE-WITH-SECRET-KEY",
     ):
         raise RuntimeError("AWS credentials are not configured in the .env file")
-    return _cached_s3_client(region=settings.aws_region, preflight=preflight,
+    return _cached_s3_client(region=region or settings.aws_region, preflight=preflight,
                              non_idempotent=non_idempotent, factory=boto3.client)
 
 
@@ -7557,7 +7560,7 @@ def _run_scheduled_metadata_backup_once() -> None:
                 connection,
                 reason="scheduled",
                 backup_dir=settings.metadata_backup_dir,
-                object_store=metadata_backup_service.default_object_store(),
+                object_store_factory=metadata_backup_service.default_object_store,
                 retention=runtime.metadata_backup_retention,
                 s3_prefix=runtime.metadata_backup_s3_prefix,
             )
@@ -7575,6 +7578,32 @@ def _run_scheduled_metadata_backup_once() -> None:
                 )
         except Exception:
             pass
+
+
+# While FrostVault's System Bucket is not created yet, try again this often.
+SYSTEM_BUCKET_POLL_SECONDS = 15 * 60
+
+
+def ensure_system_bucket_once() -> None:
+    """Create the System Bucket ahead of the first backup (#734).
+
+    The Recovery Kit names it, so it should exist soon after an upgrade, not
+    only after the next daily backup. Once created, only backups verify it
+    again; an operator-supplied METADATA_BACKUP_BUCKET is left to them. With
+    scheduled backups off, a manual backup creates it.
+    """
+    try:
+        if (_runtime_settings().metadata_backup_interval_seconds <= 0
+                or not metadata_backup_service.off_host_backup_configured()
+                or system_bucket_service.configured_bucket() is not None):
+            return
+        saved = system_bucket_service.DatabaseStore().load()
+        if saved is None or not saved.ready:
+            system_bucket_service.ensure()
+    except Exception as exc:
+        _report_worker_error("system_bucket", exc)
+    else:
+        _note_worker_ok("system_bucket")
 
 
 def _verify_latest_metadata_backup_once() -> None:
@@ -7815,6 +7844,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_aggregates: float | None = None
     last_vault_deletions: float | None = None
     last_duplicate_cleanup: float | None = None
+    last_system_bucket: float | None = None
     clean_cycles = 0
     try:
         while True:
@@ -7854,6 +7884,10 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_duplicate_cleanup >= duplicate_cleanup_service.POLL_SECONDS):
                     last_duplicate_cleanup = loop.time()
                     _submit_maintenance("duplicate_cleanup", run_duplicate_cleanup_once)
+                if (last_system_bucket is None
+                        or loop.time() - last_system_bucket >= SYSTEM_BUCKET_POLL_SECONDS):
+                    last_system_bucket = loop.time()
+                    _submit_maintenance("system_bucket", ensure_system_bucket_once)
                 # Backlog is measured independently from the selected batch: an
                 # active lease is no longer claimable, while every remaining due
                 # queued row is visible even when concurrency is small. Stuck

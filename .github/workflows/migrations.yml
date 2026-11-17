@@ -498,6 +498,7 @@ jobs:
             tests.test_s3_client_endpoint \
             tests.test_s3_prefix_cleanup \
             tests.test_s3_integrity_integration \
+            tests.test_bucket_provisioning \
             -v
       - name: Surface leftover prefix cleanup
         if: always()

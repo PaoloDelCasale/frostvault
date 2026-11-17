@@ -20,6 +20,9 @@ allow time for validation and a coordinated fix before disclosure.
 ## Security expectations
 
 - Never commit credentials, private keys, session tokens, or production data.
-- Use short-lived AWS credentials and least-privilege IAM policies.
+- Use short-lived AWS credentials and least-privilege IAM policies. The buckets
+  FrostVault creates itself (the System Bucket for metadata backups) need only
+  `infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json`, scoped to
+  `arn:aws:s3:::frostvault-*`; never grant `s3:BypassGovernanceRetention`.
 - Keep security-sensitive changes isolated and covered by regression tests.
 - Do not weaken CI security gates without a documented, time-bounded exception.

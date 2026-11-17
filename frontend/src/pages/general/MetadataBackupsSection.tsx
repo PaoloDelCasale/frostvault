@@ -133,6 +133,25 @@ function expectedVerification(
     : t("general.metadata_backups_verification_disabled");
 }
 
+/** Where the off-host copies go: the System Bucket, or why there is none (#734). */
+function SystemBucketSummary({ status }: { status: MetadataBackupStatus }) {
+  const { t } = useI18n();
+  const bucket = status.system_bucket;
+  const text = bucket
+    ? t(bucket.ready
+        ? "general.metadata_backups_system_bucket"
+        : "general.metadata_backups_system_bucket_pending",
+      { name: bucket.name, region: bucket.region })
+    : status.off_host === false
+      ? t("general.metadata_backups_local_only_mode")
+      : status.off_host
+        ? t("general.metadata_backups_system_bucket_missing")
+        : null;
+  return text ? <p className="mt-2 break-words text-sm" data-testid="metadata-backups-system-bucket">
+    {text}
+  </p> : null;
+}
+
 /** The last verified backup and, when newer, the most recent one (#648). */
 function VerificationSummary({ verification }: { verification: MetadataBackupVerification }) {
   const { t } = useI18n();
@@ -266,6 +285,7 @@ export function MetadataBackupsSection() {
         <p className="mt-1 text-sm text-muted">
           {t("general.metadata_backups_subtitle")}
         </p>
+        {status ? <SystemBucketSummary status={status} /> : null}
         {status?.verification ? <VerificationSummary verification={status.verification} /> : null}
       </div>
 

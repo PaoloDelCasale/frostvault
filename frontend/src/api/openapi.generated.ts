@@ -2313,6 +2313,14 @@ export interface components {
                 backup_created_at: string;
                 updated_files: number;
             } | null;
+            /** @description The System Bucket the kit names (#734); null while the kit is unavailable. */
+            system_bucket?: {
+                name: string;
+                /** @enum {string} */
+                origin: "configured" | "created";
+                ready: boolean;
+                region: string;
+            } | null;
         } & {
             [key: string]: unknown;
         };

@@ -1,7 +1,8 @@
 # AWS S3 bucket provisioning and validation
 
-This guide covers the dedicated archive bucket required by issue #8 and the
-application preflight checks that validate it before upload or local cleanup.
+This guide covers the dedicated archive bucket required by issue #8, the
+application preflight checks that validate it before upload or local cleanup,
+and the [buckets FrostVault creates itself](#buckets-frostvault-creates).
 
 ## Provision with Terraform
 
@@ -40,6 +41,9 @@ name. The policy grants:
   itself stays ready; it never suspends the whole installation
 - delete object/version for the accepted single-identity deletion model
 
+Attach `infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json` as
+well, unchanged, for the buckets FrostVault creates (below).
+
 ### Accepted single-identity deletion risk
 
 The initial product accepts one IAM identity for ordinary archive operations and
@@ -62,6 +66,45 @@ Mitigations built into the application:
 
 Prefer a dedicated deletion role and stricter IAM boundaries when your threat
 model requires separating ordinary archive work from permanent purge.
+
+## Buckets FrostVault creates
+
+FrostVault creates and verifies its own buckets
+([ADR-0049](adr/0049-one-bucket-per-vault.md)), starting with the **System
+Bucket** for metadata backups, `frostvault-system-<8 random [a-z0-9]>` in
+`AWS_DEFAULT_REGION`, unless `METADATA_BACKUP_BUCKET` names an operator-supplied
+one (see [metadata-backups.md](metadata-backups.md#system-bucket)). Every such
+bucket gets, and is then verified to have:
+
+- all four Block Public Access settings;
+- versioning Enabled;
+- default encryption SSE-S3 (`AES256`);
+- a lifecycle that is exactly FrostVault's (for the System Bucket: only the
+  seven-day abort of incomplete multipart uploads, on the whole bucket);
+- its `frostvault:*` tags (`frostvault:role=system` for the System Bucket); other
+  tags are kept;
+- no Object Lock, unless a Governance-mode default retention was chosen for it.
+  The System Bucket never has one.
+
+Creation is idempotent and resumable: the name is saved before `CreateBucket`, a
+bucket the account already owns counts as created, and the configuration is
+applied again and verified on the next attempt. Provider error codes are shown,
+provider messages never.
+
+### IAM for FrostVault-created buckets
+
+`iam/frostvault-buckets-policy.json` is scoped to `arn:aws:s3:::frostvault-*`:
+
+| Statement | Actions |
+| --- | --- |
+| Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:GetBucketObjectLockConfiguration` |
+| Objects (`frostvault-*/*`) | `s3:PutObject`, `s3:GetObject` (metadata backups and their read-back) |
+| Deny | `s3:BypassGovernanceRetention`, always |
+
+FrostVault never holds `s3:BypassGovernanceRetention`. Unlike the shared archive
+bucket, whose settings the application only reads, FrostVault configures the
+buckets it creates, so this policy grants the matching `Put*` actions only on
+`frostvault-*`.
 
 ## Application preflight
 
@@ -100,7 +143,8 @@ bypass. Grant read permission to the application, not permission to change BPA.
 
 Vault keys are readable `vaults/<uuid>/<relative-path>` and content is stored
 without client-side encryption. AWS SSE-S3 (`AES256`) and TLS remain in place;
-metadata backup ciphertext under `system/backups/` remains Fernet-encrypted.
+metadata backup ciphertext under `system/backups/` in the System Bucket remains
+Fernet-encrypted.
 Anyone with authorized object-read credentials can read photos and names: use
 MFA and a bucket-scoped IAM policy. No real bucket configuration is changed by
 an application migration or preflight.
@@ -258,7 +302,8 @@ Job retry policy. Verify `s3:AbortMultipartUpload` permission before deployment.
 - Deleting the bucket does **not** restore local copies removed after verified
   cloud upload; keep independent backups of the database and `ARCHIVE_MASTER_KEY`
   (see [metadata-backups.md](metadata-backups.md) for automated encrypted metadata
-  backups under `system/backups/` and separate master-key custody).
+  backups under `system/backups/` in the System Bucket and separate master-key
+  custody). Metadata backups made before the System Bucket stay in this bucket.
 - Glacier restores cannot be cancelled after AWS accepts the request; plan
   retention transitions accordingly.
 

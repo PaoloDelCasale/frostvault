@@ -123,9 +123,19 @@ export type MetadataBackupRun = {
   digest_sha256: string | null;
   database_sha256: string | null;
   s3_key: string | null;
+  /** Bucket of the off-host copy; null for local-only and pre-#734 runs. */
+  s3_bucket?: string | null;
   size_bytes: number | null;
   error_message: string | null;
   verified_at: string | null;
+};
+
+/** The installation's System Bucket for metadata backups (#734). */
+export type SystemBucket = {
+  name: string;
+  region: string;
+  origin: "configured" | "created";
+  ready: boolean;
 };
 
 export type MetadataBackupStatus = {
@@ -135,6 +145,10 @@ export type MetadataBackupStatus = {
   failed_count: number;
   /** Last verified backup and next automatic verification (#648). */
   verification?: MetadataBackupVerification;
+  /** Where off-host copies go; null while there is none (#734). */
+  system_bucket?: SystemBucket | null;
+  /** Whether backups must also reach the System Bucket. */
+  off_host?: boolean;
 };
 
 export type MetadataBackupsResponse = {

@@ -8,17 +8,26 @@ from cryptography.fernet import Fernet
 
 from app.config import Settings
 from app.services import recovery_kit
+from app.services.system_bucket import SystemBucket
 from app.services.audit_events import redact_sensitive, REDACTED
 
 
 class RecoveryKitTests(unittest.TestCase):
     def setUp(self):
         self.config = replace(Settings(), archive_master_key=Fernet.generate_key().decode(),
-                              vault_s3_bucket="test-bucket", aws_region="eu-south-1")
+                              vault_s3_bucket="shared-bucket", metadata_backup_bucket="",
+                              aws_region="eu-south-1")
+        self.bucket = SystemBucket("frostvault-system-abcd1234", "eu-south-1", "created")
+
+    def fingerprint(self, config=None, bucket=None):
+        return recovery_kit.kit_fingerprint(config or self.config, bucket=bucket or self.bucket)
 
     def test_kit_is_independent_of_catalog_and_excludes_all_other_credentials(self):
-        kit = json.loads(recovery_kit.build_recovery_kit(self.config))
-        self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "bucket", "region", "instructions"})
+        kit = json.loads(recovery_kit.build_recovery_kit(self.config, bucket=self.bucket))
+        self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "system_bucket", "region", "instructions"})
+        self.assertEqual((kit["format"], kit["system_bucket"], kit["region"]),
+                         ("frostvault-recovery-kit-v2", "frostvault-system-abcd1234", "eu-south-1"))
+        self.assertNotIn("shared-bucket", json.dumps(kit))
         self.assertTrue(kit["ARCHIVE_MASTER_KEY"] == self.config.archive_master_key)
         self.assertIn("s3api list-object-versions", kit["instructions"])
         self.assertIn("s3api restore-object", kit["instructions"])
@@ -27,28 +36,48 @@ class RecoveryKitTests(unittest.TestCase):
         self.assertNotIn("sync ", kit["instructions"])
 
     def test_fingerprint_changes_with_master_key_not_catalog_or_aws_credentials(self):
-        current = recovery_kit.kit_fingerprint(self.config)
+        current = self.fingerprint()
         changed = replace(self.config, archive_master_key=Fernet.generate_key().decode())
-        self.assertNotEqual(current, recovery_kit.kit_fingerprint(changed))
-        self.assertEqual(current, recovery_kit.kit_fingerprint(self.config))
+        self.assertNotEqual(current, self.fingerprint(changed))
+        self.assertEqual(current, self.fingerprint())
+        self.assertEqual(current, self.fingerprint(replace(self.config, vault_s3_bucket="other")))
         self.assertEqual(len(current), 24)
+
+    def test_fingerprint_changes_with_the_system_bucket_and_its_region(self):
+        """#734: a new System Bucket asks for custody again."""
+        current = self.fingerprint()
+        for bucket in (SystemBucket("frostvault-system-zzzz9999", "eu-south-1", "created"),
+                       SystemBucket("frostvault-system-abcd1234", "eu-west-1", "created")):
+            self.assertNotEqual(current, self.fingerprint(bucket=bucket))
+
+    def test_kit_is_unavailable_until_the_system_bucket_is_ready(self):
+        pending = SystemBucket("frostvault-system-abcd1234", "eu-south-1", "created", ready=False)
+        for bucket in (None, pending):
+            with self.subTest(bucket=bucket), self.assertRaises(recovery_kit.RecoveryKitUnavailable) as caught:
+                recovery_kit.build_recovery_kit(self.config, bucket=bucket)
+            self.assertIn("System Bucket", str(caught.exception))
+
+    def test_the_configured_bucket_is_named_without_a_database(self):
+        configured = replace(self.config, metadata_backup_bucket="my-backups")
+        self.assertEqual(recovery_kit.current_bucket(None, configured),
+                         SystemBucket("my-backups", "eu-south-1", "configured"))
 
     def test_key_normalization_matches_metadata_backup_key_handling(self):
         padded = replace(self.config, archive_master_key=" \n" + self.config.archive_master_key + "\n ")
-        self.assertEqual(recovery_kit.kit_fingerprint(padded), recovery_kit.kit_fingerprint(self.config))
-        self.assertTrue(json.loads(recovery_kit.build_recovery_kit(padded))["ARCHIVE_MASTER_KEY"] == self.config.archive_master_key)
-        with self.assertRaises(recovery_kit.RecoveryKitUnavailable):
-            recovery_kit.build_recovery_kit(replace(self.config, vault_s3_bucket="BUCKET-NAME"))
+        self.assertEqual(self.fingerprint(padded), self.fingerprint())
+        self.assertTrue(json.loads(recovery_kit.build_recovery_kit(padded, bucket=self.bucket))["ARCHIVE_MASTER_KEY"] == self.config.archive_master_key)
 
     def test_invalid_key_fails_without_exposing_material(self):
         with self.assertRaises(recovery_kit.RecoveryKitUnavailable) as caught:
-            recovery_kit.build_recovery_kit(replace(self.config, archive_master_key="invalid-test-material"))
+            recovery_kit.build_recovery_kit(replace(self.config, archive_master_key="invalid-test-material"),
+                                            bucket=self.bucket)
         self.assertNotIn("invalid-test-material", str(caught.exception))
 
     def test_stale_custody_is_rejected_before_any_database_write(self):
         connection = Mock()
+        configured = replace(self.config, metadata_backup_bucket="my-backups")
         with self.assertRaises(ValueError):
-            recovery_kit.acknowledge_custody(connection, "0" * 24, self.config)
+            recovery_kit.acknowledge_custody(connection, "0" * 24, configured)
         connection.execute.assert_not_called()
 
     def test_key_fields_are_redacted_defensively(self):

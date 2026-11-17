@@ -440,6 +440,9 @@ instead of trying other credentials available on the computer.
 4. Set `VAULT_S3_BUCKET` and `AWS_DEFAULT_REGION` to the versioned, private bucket.
 5. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
    outside this server; see [metadata backup custody](docs/metadata-backups.md).
+   The backups go to the System Bucket FrostVault creates
+   (`frostvault-system-<random>`), or to the bucket named by the optional
+   `METADATA_BACKUP_BUCKET`; see [System Bucket](docs/metadata-backups.md#system-bucket).
 
 Example database creation, run as a PostgreSQL administrator:
 
@@ -683,6 +686,13 @@ versions after verified uploads; permanent purge uses it too.
 The explicit seven-day delay applies to Owner-requested cloud deletion, not
 verified snapshot replacement or automatic rename cleanup.
 
+FrostVault also creates and configures its own buckets, starting with the System
+Bucket for metadata backups: attach
+[`frostvault-buckets-policy.json`](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json),
+scoped to `arn:aws:s3:::frostvault-*`, which never grants
+`s3:BypassGovernanceRetention` (see
+[buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
+
 Use the Terraform baseline in
 [`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) or apply
 equivalent versioning, encryption, public-access blocking, ownership, and
@@ -793,7 +803,7 @@ must be replaced before the corresponding integration is used. Important groups:
 | Diagnostics | `API_DOCS_ENABLED` (default false; isolated development only), `METRICS_TOKEN` (default empty; independent Bearer scraper secret) |
 | Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below); `TZ` (IANA zone such as `Europe/Rome` for notification dates; missing or invalid means UTC, labelled "UTC") |
 | Storage | `S3_BUCKET`, `VAULT_S3_BUCKET`, `AWS_DEFAULT_REGION` |
-| Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
+| Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` (optional `METADATA_BACKUP_BUCKET`: an operator-supplied System Bucket; empty lets FrostVault create `frostvault-system-<random>`) |
 | Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
 | Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time), `SOURCE_DEVICE_READ_CONCURRENCY` (default 3, 1–16: reads in flight per Source Device, shared by scan verification and uploads; on an Unraid user share each array disk is a device), `SERVER_PRIORITY_IOWAIT_PERCENT` (empty or 0 = off: above this host iowait for 10 s, one read per device and no new uploads until 30 s below; see [ADR-0046](docs/adr/0046-reads-per-source-device.md)) |
 

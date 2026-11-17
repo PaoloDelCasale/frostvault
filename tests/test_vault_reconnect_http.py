@@ -29,7 +29,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             insert_owner(connection)
         configured = replace(settings, database_dsn=database_dsn(str(self.db_path)), cookie_secure=False,
-                             archive_master_key=Fernet.generate_key().decode(), vault_s3_bucket="test-bucket",
+                             archive_master_key=Fernet.generate_key().decode(), metadata_backup_bucket="test-bucket",
                              frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))))
         for target in ("app.main.settings", "app.database.settings", "app.sessions.settings", "app.services.recovery_kit.settings"):
             patcher = patch(target, configured); patcher.start(); self.addCleanup(patcher.stop)
@@ -99,7 +99,8 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["cache-control"], "no-store")
         kit = response.json()
-        self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "bucket", "region", "instructions"})
+        self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "system_bucket", "region", "instructions"})
+        self.assertEqual(kit["system_bucket"], "test-bucket")
         self.assertTrue(kit["ARCHIVE_MASTER_KEY"] == self.settings.archive_master_key)
         with PostgresConnection(str(self.db_path)) as connection:
             event = connection.execute("SELECT detail::text AS detail FROM audit_events WHERE event='recovery_kit_downloaded'").fetchone()
@@ -110,6 +111,8 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         client, headers = self.client_for()
         status = client.get("/api/recovery-kit").json()
         self.assertFalse(status["custody_acknowledged"])
+        self.assertEqual(status["system_bucket"], {"name": "test-bucket", "region": self.settings.aws_region,
+                                                   "origin": "configured", "ready": True})
         self.assertNotIn(self.settings.archive_master_key, json.dumps(status))
         payload = {"fingerprint": status["fingerprint"]}
         self.assertEqual(client.post("/api/recovery-kit/custody", json=payload).status_code, 403)

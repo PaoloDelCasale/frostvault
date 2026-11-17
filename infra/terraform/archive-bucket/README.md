@@ -35,6 +35,13 @@ the accepted single-identity deletion model documented in the project README.
 Replace `${archive_bucket_name}` with your bucket name before attaching the
 policy to an IAM user or role.
 
+Attach `iam/frostvault-buckets-policy.json` as well, unchanged: it lets FrostVault
+create, configure and verify its own buckets, starting with the System Bucket for
+metadata backups (`frostvault-system-<random>`, see
+[docs/metadata-backups.md](../../../docs/metadata-backups.md#system-bucket)). It
+is scoped to `arn:aws:s3:::frostvault-*` and explicitly denies
+`s3:BypassGovernanceRetention`.
+
 ## Teardown warning
 
 `terraform destroy` removes the bucket only when it is empty. A versioned archive

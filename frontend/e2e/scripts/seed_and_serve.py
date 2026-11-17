@@ -228,6 +228,9 @@ def _apply_env(paths: dict[str, Path]) -> None:
         "BREAK_GLASS_ALLOWED_CIDRS": "",
         "ARCHIVE_MASTER_KEY": master_key,
         "S3_BUCKET": "e2e-bucket",
+        # An operator-supplied System Bucket: the Recovery Kit names it without
+        # any S3 request, and nothing creates one in the fake account (#734).
+        "METADATA_BACKUP_BUCKET": "e2e-system-bucket",
         "AWS_ACCESS_KEY_ID": "test",
         "AWS_SECRET_ACCESS_KEY": "test",
         "AWS_DEFAULT_REGION": "eu-south-1",

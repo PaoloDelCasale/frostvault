@@ -3107,6 +3107,37 @@
               "object",
               "null"
             ]
+          },
+          "system_bucket": {
+            "description": "The System Bucket the kit names (#734); null while the kit is unavailable.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "origin": {
+                "enum": [
+                  "configured",
+                  "created"
+                ],
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "region": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "region",
+              "origin",
+              "ready"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [

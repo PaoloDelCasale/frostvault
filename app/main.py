@@ -1954,8 +1954,10 @@ def download_recovery_kit(
     user: dict[str, Any] = Depends(current_user),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
+    with db() as connection:
+        bucket = recovery_kit_service.current_bucket(connection)
     try:
-        payload = recovery_kit_service.build_recovery_kit()
+        payload = recovery_kit_service.build_recovery_kit(bucket=bucket)
     except recovery_kit_service.RecoveryKitUnavailable as exc:
         raise HTTPException(409, str(exc)) from None
     with db() as connection:
@@ -2004,7 +2006,7 @@ def run_metadata_backup(
                 connection,
                 reason="manual",
                 backup_dir=settings.metadata_backup_dir,
-                object_store=metadata_backup_service.default_object_store(),
+                object_store_factory=metadata_backup_service.default_object_store,
                 retention=_runtime_settings().metadata_backup_retention,
                 s3_prefix=_runtime_settings().metadata_backup_s3_prefix,
             )

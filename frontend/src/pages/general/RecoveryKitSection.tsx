@@ -53,6 +53,9 @@ export function RecoveryKitSection() {
       <Panel className="grid gap-3 p-5">
         {status?.configured ? <>
           <p className="break-all">{t("recovery_kit.fingerprint")}: <code>{status.fingerprint}</code></p>
+          {status.system_bucket ? <p className="break-all" data-testid="recovery-kit-system-bucket">
+            {t("recovery_kit.system_bucket", { name: status.system_bucket.name, region: status.system_bucket.region })}
+          </p> : null}
           <Button className="w-fit" disabled={busy} onClick={() => void download()}>{t("recovery_kit.download")}</Button>
           {status.custody_acknowledged
             ? <p role="status">{t("recovery_kit.acknowledged")}</p>

@@ -19,6 +19,7 @@ describe("Installation Recovery Kit", () => {
   it("shows one fingerprint-bound custody action and a durable dated file-count warning", async () => {
     const fingerprint = "a".repeat(24);
     const status = { configured: true, fingerprint, custody_acknowledged: false, acknowledged_at: null,
+      system_bucket: { name: "frostvault-system-k3x9q0ab", region: "eu-south-1", origin: "created", ready: true },
       metadata_restore: { backup_created_at: "2026-11-02T10:00:00Z", updated_files: 42 } };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -33,6 +34,8 @@ describe("Installation Recovery Kit", () => {
     configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
     renderSection();
     expect(await screen.findByText(fingerprint)).toBeInTheDocument();
+    expect(screen.getByTestId("recovery-kit-system-bucket"))
+      .toHaveTextContent("System Bucket: frostvault-system-k3x9q0ab (eu-south-1)");
     const warning = screen.getByTestId("metadata-restore-warning");
     expect(warning).toHaveTextContent(/Nov 2, 2026, \d{1,2}:\d{2}\s?[AP]M/);
     expect(warning).not.toHaveTextContent("2026-11-02T");
