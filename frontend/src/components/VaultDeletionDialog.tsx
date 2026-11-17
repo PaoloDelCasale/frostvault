@@ -95,6 +95,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
   const [preview, setPreview] = useState<Preview>({ state: "loading" });
   const [confirmation, setConfirmation] = useState("");
   const [reason, setReason] = useState("");
+  const [deleteBucket, setDeleteBucket] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -139,6 +140,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
     setPreview({ state: "loading" });
     setConfirmation("");
     setReason("");
+    setDeleteBucket(false);
     setError("");
     void load();
   }, [open, load]);
@@ -164,7 +166,9 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    await act(() => requestVaultDeletion(vaultId, { confirmation, reason }));
+    // Only a dedicated Vault Bucket (empty prefix) can be deleted (#739).
+    const dedicated = preview.state === "ready" && preview.value.prefix === "";
+    await act(() => requestVaultDeletion(vaultId, { confirmation, reason, delete_bucket: dedicated && deleteBucket }));
   }
 
   async function cancel() {
@@ -198,9 +202,13 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
           <p data-testid="vault-deletion-countdown">{left ? t("vault_deletion.countdown", { time: left }) : t("vault_deletion.countdown_due")}</p>
         </> : null}
         {request.status === "running" ? <p>{t("vault_deletion.running")}</p> : null}
+        {request.preview?.prefix === "" ? <p className="text-sm" data-testid="vault-deletion-bucket">
+          {t(request.delete_bucket ? "vault_deletion.bucket_delete" : "vault_deletion.bucket_keep")}
+        </p> : null}
         {request.status === "failed" ? <>
           <p role="alert">{t("vault_deletion.failed")}</p>
           {leftovers > 0 ? <p>{t("vault_deletion.failed_leftover", { count: leftovers })}</p> : null}
+          {request.failure?.reason === "bucket_identity" ? <p>{t("vault_deletion.failed_bucket_identity")}</p> : null}
           <p className="text-sm text-muted">{t("vault_deletion.failed_help")}</p>
         </> : null}
         {request.preview ? <PreviewSummary preview={request.preview} t={t} locale={locale} /> : null}
@@ -224,6 +232,14 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
           <p className="text-sm">{t("vault_deletion.scope", { prefix: ready.prefix })}</p>
           <PreviewSummary preview={ready} t={t} locale={locale} />
           <p className="text-sm">{t("vault_deletion.delay", { delay })}</p>
+          {ready.prefix === "" ? <div className="grid gap-1" data-testid="vault-deletion-delete-bucket">
+            <label className="flex items-center gap-2">
+              <input className="size-5 accent-[var(--green)]" type="checkbox" checked={deleteBucket}
+                onChange={(event) => setDeleteBucket(event.target.checked)} />
+              {t("vault_deletion.delete_bucket")}
+            </label>
+            <p className="text-xs text-muted">{t("vault_deletion.delete_bucket_help")}</p>
+          </div> : null}
         </> : null}
         <FormField label={t("vault_deletion.confirmation", { vault: vaultName })} htmlFor="vault-deletion-confirmation">
           <FormInput id="vault-deletion-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)}

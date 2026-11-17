@@ -244,7 +244,8 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
 def due_vaults(connection: Any, *, now: datetime) -> list[dict[str, Any]]:
     """Every Vault with its own Vault Bucket whose retry cadence has passed.
 
-    Never read first, then the oldest attempt first.
+    Never read first, then the oldest attempt first. A Vault whose bucket a
+    Vault Deletion has deleted is never read again (#739).
     """
     moment = _utc(now)
     return [dict(row) for row in connection.execute(
@@ -252,6 +253,8 @@ def due_vaults(connection: Any, *, now: datetime) -> list[dict[str, Any]]:
            FROM vaults v JOIN vault_targets t ON t.id = v.target_id
            LEFT JOIN vault_bucket_metric_reads r ON r.vault_id = v.id
            WHERE t.key_layout = %s AND v.lifecycle <> 'provisioning'
+             AND NOT EXISTS (SELECT 1 FROM vault_deletions d
+                             WHERE d.vault_id = v.id AND d.bucket_deleted_at IS NOT NULL)
              AND (r.attempted_at IS NULL
                   OR (r.outcome = 'ok' AND r.attempted_at <= %s)
                   OR (r.outcome <> 'ok' AND r.attempted_at <= %s))

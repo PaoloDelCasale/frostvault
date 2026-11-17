@@ -528,7 +528,7 @@ def cancel_creation(vault_id: int, *, actor: str = "owner",
     Vault row goes with its provisioning state and Problems, which releases
     its root; an empty managed directory is removed, an adopted folder is
     never touched. The reserved target stays (Vault Targets are immutable).
-    A bucket already created is not deleted (no ``s3:DeleteBucket``, #739):
+    A bucket already created is not deleted (only a Vault Deletion may, #739):
     the outcome and the audit record name it for the Owner to remove by hand.
     """
     from .audit_events import record_audit_event

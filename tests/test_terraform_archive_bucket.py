@@ -61,15 +61,20 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
                 self.assertEqual((statement["Effect"], actions, resources),
                                  ("Allow", ["cloudwatch:GetMetricStatistics"], ["*"]))
                 continue
-            self.assertTrue(all(resource.startswith("arn:aws:s3:::frostvault-*")
+            self.assertTrue(all(resource.startswith("arn:aws:s3:::frostvault-")
                                 for resource in resources), resources)
             if statement["Effect"] == "Allow":
                 allowed.update(actions)
+            elif statement.get("Sid") == "NeverDeleteTheSystemBucket":
+                # #739: DeleteBucket is for Vault Buckets only; the System
+                # Bucket (no Vault Bucket name starts so) is never deleted.
+                self.assertEqual((actions, resources),
+                                 (["s3:DeleteBucket"], ["arn:aws:s3:::frostvault-system-*"]))
             else:
                 self.assertEqual(actions, ["s3:BypassGovernanceRetention"])
         self.assertNotIn("s3:BypassGovernanceRetention", allowed)
-        # Deleting a Vault Bucket belongs to #739: never allowed here.
-        self.assertNotIn("s3:DeleteBucket", allowed)
+        # #739: an empty Vault Bucket is deleted on request, only on frostvault-*.
+        self.assertIn("s3:DeleteBucket", allowed)
         self.assertNotIn("cloudwatch:GetMetricData", allowed)
         self.assertFalse(any("*" in action for action in allowed))
         for action in ("s3:CreateBucket", "s3:PutBucketPublicAccessBlock",

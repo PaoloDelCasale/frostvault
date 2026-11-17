@@ -719,7 +719,7 @@ FrostVault creates and configures its own buckets, a Vault Bucket for every new
 Vault and the System Bucket for metadata backups: attach
 [`frostvault-buckets-policy.json`](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json),
 scoped to `arn:aws:s3:::frostvault-*`, which covers the operations above in those
-buckets and never grants `s3:BypassGovernanceRetention` or `s3:DeleteBucket` (see
+buckets, grants `s3:DeleteBucket` only for an emptied Vault Bucket the Owner asked to delete (#739), never `s3:BypassGovernanceRetention` (see
 [buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
 Its one statement on `"*"` is `cloudwatch:GetMetricStatistics`: once a day
 FrostVault reads the bytes per storage class and the object count of every

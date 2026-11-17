@@ -136,8 +136,8 @@ Governance Retention Lock, never on the System Bucket), and the object
 operations of Vault Buckets (#735; for metadata backups `s3:PutObject` and
 `s3:GetObject`), listed in
 [aws-s3-bucket.md](aws-s3-bucket.md#iam-for-frostvault-created-buckets). It
-explicitly denies `s3:BypassGovernanceRetention`: FrostVault never has it. It
-never grants `s3:DeleteBucket`. Ownership of a new bucket is decided by the `CreateBucket`
+explicitly denies `s3:BypassGovernanceRetention`: FrostVault never has it. Its
+`s3:DeleteBucket` serves only Vault Deletion (#739); the System Bucket is never deleted. Ownership of a new bucket is decided by the `CreateBucket`
 error codes alone, so no `sts:GetCallerIdentity` or `ExpectedBucketOwner` is
 involved. An operator-supplied `METADATA_BACKUP_BUCKET` outside `frostvault-*`
 needs `s3:GetBucketLocation`, `s3:GetBucketVersioning`,

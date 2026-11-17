@@ -52,8 +52,8 @@ role. It is everything FrostVault needs in the buckets it creates, scoped to
   resource, so this one statement is on `"*"`; it grants no other CloudWatch
   action (`GetMetricData` is always billed and never used).
 
-It explicitly denies `s3:BypassGovernanceRetention` and never allows
-`s3:DeleteBucket`: deleting a Vault Bucket belongs to #739.
+It explicitly denies `s3:BypassGovernanceRetention`. `s3:DeleteBucket` on
+`frostvault-*` deletes an emptied Vault Bucket only when the Owner asked (#739).
 
 `iam/archive-operator-policy.json` covers the same object operations on the
 shared bucket of this module. Attach it only while older Vaults use that bucket,

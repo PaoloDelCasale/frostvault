@@ -141,8 +141,7 @@ verification.
 **Cancel creation** removes a Vault that is still `provisioning` from the
 catalog, after reauthentication, and releases its folder (an empty managed
 folder is removed; an adopted folder and local files are never touched). A
-bucket FrostVault already created is **not** deleted (the policy has no
-`s3:DeleteBucket`): the outcome and the audit record (`vault.creation_cancelled`)
+bucket FrostVault already created is **not** deleted: the outcome and the audit record (`vault.creation_cancelled`)
 name it, and say whether it was created or only possibly reached AWS, so the
 Owner can check and remove it by hand. The bucket's `frostvault:vault` tag
 still names the cancelled Vault's UUID. FrostVault writes a Vault Bucket's whole
@@ -228,8 +227,9 @@ The same `s3:ListBucket` and `s3:GetObject` let FrostVault read the AWS billing
 export under `billing/cur/` in the System Bucket ([billed-cost.md](billed-cost.md));
 no Cost Explorer (`ce:*`) permission is used.
 
-FrostVault never holds `s3:BypassGovernanceRetention`, and this policy never
-grants `s3:DeleteBucket`: a Vault Bucket outlives its Vault until #739. Unlike
+FrostVault never holds `s3:BypassGovernanceRetention`. `s3:DeleteBucket` is
+used only by a Vault Deletion whose Owner ticked «also delete the bucket», once
+the bucket is empty and tagged with that Vault (#739). Unlike
 the shared archive bucket, whose settings the application only reads,
 FrostVault configures the buckets it creates, so this policy grants the
 matching `Put*` actions only on `frostvault-*`.

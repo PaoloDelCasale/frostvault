@@ -33,6 +33,15 @@ run is not a failure: the request goes back to ``pending`` with
 date), runs again from the earliest one (at most once a day) and removes the
 Vault only once a listing proves the bucket empty. The preview says how many
 versions will still be locked at the earliest execution and until when.
+
+Vault Bucket (#739): before a dedicated Vault Bucket is emptied, its name must
+start with ``frostvault-`` and its tag ``frostvault:vault`` must name this
+Vault's UUID; otherwise nothing in it is touched and the run fails. Only when
+the Owner ticked «also delete the bucket» (``delete_bucket``), and only once a
+listing proves it empty (no version, delete marker or upload: with a Retention
+Lock that is after the last RetainUntilDate), is DeleteBucket called. The
+shared bucket of an older Vault is never deleted. The audit says whether the
+bucket was deleted or kept.
 """
 from __future__ import annotations
 
@@ -52,6 +61,7 @@ from .cost_estimates import list_prices
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .minimum_storage import class_entry, remaining_cost
 from .vault_moves import MINIMUM_DAYS
+from .vault_buckets import TAG_VAULT
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
 
 PROBLEM_EVENT = "vault_deletion_failed"
@@ -91,6 +101,27 @@ class _PrefixViolation(VaultDeletionError):
     """A listing named a key outside the Vault's prefix."""
 
 
+class _BucketIdentityError(VaultDeletionError):
+    """The Vault Bucket does not prove it belongs to this Vault (#739)."""
+
+
+def check_bucket_identity(client: Any, *, bucket: str, vault_uuid: str) -> None:
+    """A dedicated Vault Bucket is ``frostvault-*`` tagged with this Vault's UUID.
+
+    Any other name, a missing or different tag, or an unreadable tag set
+    refuses: nothing in the bucket is touched (#739).
+    """
+    if not str(bucket or "").startswith("frostvault-"):
+        raise _BucketIdentityError("A Vault Bucket is always named frostvault-*")
+    try:
+        tag_set = client.get_bucket_tagging(Bucket=bucket).get("TagSet") or []
+    except Exception as exc:
+        raise _BucketIdentityError("The Vault Bucket tags could not be read") from exc
+    tags = {str(t.get("Key")): str(t.get("Value")) for t in tag_set}
+    if tags.get(TAG_VAULT) != str(uuid.UUID(str(vault_uuid))):
+        raise _BucketIdentityError("The Vault Bucket is not tagged with this Vault")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -106,8 +137,8 @@ def vault_prefix(vault: dict[str, Any]) -> str:
     """The Vault's own prefix, from its Vault Target: never partial.
 
     Empty only for a dedicated Vault Bucket, which holds nothing but this
-    Vault; in a shared bucket ``vaults/<parsed uuid>/``. The bucket itself is
-    never deleted here (#739).
+    Vault; in a shared bucket ``vaults/<parsed uuid>/``. Only a dedicated
+    bucket can be deleted, and only when the Owner asked (#739).
     """
     if vault["s3_key_layout"] == KEY_LAYOUT_BUCKET_ROOT:
         if not str(vault.get("s3_bucket") or "").startswith("frostvault-"):
@@ -394,14 +425,20 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
             "retained_count": request.get("retained_count"),
             "retained_until": _iso(request.get("retained_until")),
             "next_attempt_at": _iso(request["run_after"]) if request.get("retained_count") else None,
+            # The Owner ticked «also delete the bucket» (#739).
+            "delete_bucket": bool(request.get("delete_bucket")),
         }
     return result
 
 
 def request_deletion(connection: Any, *, vault_id: int, actor: str, confirmation: str,
                      reason: str, preview_summary: dict[str, Any],
-                     requested_at: str) -> dict[str, Any]:
-    """Record the Owner's consent, one per Vault, runnable after the delay."""
+                     requested_at: str, delete_bucket: bool = False) -> dict[str, Any]:
+    """Record the Owner's consent, one per Vault, runnable after the delay.
+
+    ``delete_bucket`` (#739) is offered only for a dedicated Vault Bucket: the
+    shared bucket of an older Vault is never deleted.
+    """
     vault = lock_vault(connection, vault_id)
     require_tombstone(vault)
     if confirmation != vault["name"]:
@@ -417,13 +454,16 @@ def request_deletion(connection: Any, *, vault_id: int, actor: str, confirmation
         raise VaultDeletionError("Wait for active Jobs of this Vault to end", "active_jobs")
     if preview_summary.get("prefix") != vault_prefix(vault):
         raise VaultDeletionError("The preview does not describe this Vault")
+    if delete_bucket and vault["s3_key_layout"] != KEY_LAYOUT_BUCKET_ROOT:
+        raise VaultDeletionError("Only a dedicated Vault Bucket can be deleted", "shared_bucket")
     requested = _aware(requested_at)
     pending_until = requested + timedelta(seconds=DELETION_DELAY_SECONDS)
     connection.execute(
         """INSERT INTO vault_deletions(vault_id, status, actor, reason, requested_at,
-                                       run_after, preview)
-           VALUES (%s, 'pending', %s, %s, %s, %s, %s)""",
-        (vault_id, actor, reason.strip(), requested, pending_until, Jsonb(preview_summary)))
+                                       run_after, preview, delete_bucket)
+           VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s)""",
+        (vault_id, actor, reason.strip(), requested, pending_until, Jsonb(preview_summary),
+         bool(delete_bucket)))
     record_audit_event(connection, event="folder_protection.vault_deletion_requested",
                        actor=actor, vault_id=vault_id, outcome="requested",
                        vault_uuid=str(vault["uuid"]), vault_name=vault["name"],
@@ -431,8 +471,15 @@ def request_deletion(connection: Any, *, vault_id: int, actor: str, confirmation
                        preview={k: preview_summary.get(k) for k in (
                            "object_count", "version_count", "delete_marker_count",
                            "multipart_upload_count", "byte_count", "early_deletion_cost")},
-                       local_data="retained")
+                       bucket=_bucket_plan(vault, bool(delete_bucket)), local_data="retained")
     return status(connection, vault_id)
+
+
+def _bucket_plan(vault: dict[str, Any], delete_bucket: bool) -> str:
+    """What happens to the bucket: ``shared`` (never deleted), ``delete`` or ``keep``."""
+    if vault["s3_key_layout"] != KEY_LAYOUT_BUCKET_ROOT:
+        return "shared"
+    return "delete" if delete_bucket else "keep"
 
 
 def _close_problem(connection: Any, vault_id: int) -> None:
@@ -637,6 +684,8 @@ def _failure_detail(exc: BaseException) -> dict[str, Any]:
             detail["error_code"] = str(code)[:100]
     if isinstance(exc, _PrefixViolation):
         detail["reason"] = "outside_prefix"
+    elif isinstance(exc, _BucketIdentityError):
+        detail["reason"] = "bucket_identity"
     elif isinstance(exc, VaultDeletionError):
         detail["reason"] = "provider_refused"
     else:
@@ -719,8 +768,18 @@ def execute(database: Database, client_factory: Callable[[], Any], vault_id: int
             raise VaultDeletionError("Only a Vault Tombstone can be deleted")
         bucket, prefix = vault["s3_bucket"], vault_prefix(vault)
         lock_days = vault.get("s3_retention_lock_days")
+        dedicated = vault["s3_key_layout"] == KEY_LAYOUT_BUCKET_ROOT
+        delete_bucket = dedicated and bool(request.get("delete_bucket"))
+        bucket_gone = request.get("bucket_deleted_at") is not None
+    if bucket_gone:
+        # A run that deleted the bucket stopped before the catalog: nothing
+        # reads the bucket again.
+        return _remove_vault(database, vault_id, prefix=prefix, progress=progress,
+                             bucket_outcome="deleted")
     try:
         client = client_factory()
+        if dedicated:
+            check_bucket_identity(client, bucket=bucket, vault_uuid=str(vault["uuid"]))
         _delete_prefix(client, database, vault_id=vault_id, bucket=bucket, prefix=prefix,
                        progress=progress, retention_lock_days=lock_days)
         leftover = list_prefix(client, bucket=bucket, prefix=prefix)
@@ -739,6 +798,27 @@ def execute(database: Database, client_factory: Callable[[], Any], vault_id: int
             "leftover_markers": len(leftover.markers),
             "leftover_uploads": len(leftover.uploads)})
         return False
+    if delete_bucket:
+        # Proven empty just now: no version, delete marker or upload (#739).
+        try:
+            check_bucket_identity(client, bucket=bucket, vault_uuid=str(vault["uuid"]))
+            client.delete_bucket(Bucket=bucket)
+        except Exception as exc:
+            _record_failure(database, vault_id=vault_id, progress=progress,
+                            failure={**_failure_detail(exc), "bucket": "kept"})
+            return False
+        with database() as connection:
+            connection.execute(
+                """UPDATE vault_deletions SET bucket_deleted_at=now()
+                   WHERE vault_id=%s AND delete_bucket""", (vault_id,))
+    return _remove_vault(database, vault_id, prefix=prefix, progress=progress,
+                         bucket_outcome=("deleted" if delete_bucket
+                                         else "kept" if dedicated else "shared"))
+
+
+def _remove_vault(database: Database, vault_id: int, *, prefix: str, progress: _Progress,
+                  bucket_outcome: str) -> bool:
+    """The Vault and its catalog leave the database; the audit names the bucket's fate."""
     with database() as connection:
         vault = lock_vault(connection, vault_id)
         request = _request_row(connection, vault_id, lock=True)
@@ -757,7 +837,8 @@ def execute(database: Database, client_factory: Callable[[], Any], vault_id: int
                            deleted_bytes=progress.bytes,
                            aborted_uploads=progress.uploads,
                            files=counts["files"], archive_versions=counts["archive_versions"],
-                           jobs=counts["jobs"], executed_by="system", local_data="retained")
+                           jobs=counts["jobs"], executed_by="system", local_data="retained",
+                           bucket=bucket_outcome)
         connection.execute("DELETE FROM vaults WHERE id=%s", (vault_id,))
     return True
 
