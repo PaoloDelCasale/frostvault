@@ -11,6 +11,10 @@ def notification_path(vault_id: int | None, params: dict[str, Any]) -> str:
         # Overview's archived list (#717).
         return "/#archived"
     query: dict[str, str] = {"vault_id": str(vault_id)}
+    if params.get("retention_lock"):
+        # Delete Markers on a Vault Bucket with a Retention Lock (#736).
+        query["settings"] = "1"
+        return "/?" + urlencode(query)
     if params.get("duplicate_cleanup") and not params.get("group_id"):
         # A capped Automatic Duplicate Cleanup (#726) is confirmed by hand from
         # the Vault's Cloud-only files, with «Duplicates only».

@@ -36,6 +36,7 @@ from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
 from . import source_directories, vault_buckets
 from .bucket_provisioning import RetentionLock
+from .retention_lock import CHOICES as RETENTION_LOCK_CHOICES
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX, object_prefix
 from .source_layout import ensure_managed_directory, managed_vault_path
 from .vault_relocation import enroll_vault_root_identity
@@ -51,6 +52,7 @@ PREFIX_SQL = (
 # The cloud location of a Vault row, read from its Vault Target (#593, #735).
 TARGET_COLUMNS_SQL = (
     "t.bucket AS s3_bucket, t.region AS s3_region, t.key_layout AS s3_key_layout, "
+    "t.retention_lock_days AS s3_retention_lock_days, "
     f"{PREFIX_SQL} AS s3_prefix"
 )
 
@@ -123,6 +125,8 @@ def list_vault_inventory(connection: Any) -> list[dict[str, Any]]:
         item = {field: row[field] for field in _VAULT_INVENTORY_FIELDS}
         item["uuid"] = str(row["uuid"])
         item["dedicated_bucket"] = row["s3_key_layout"] == KEY_LAYOUT_BUCKET_ROOT
+        # The Governance Retention Lock of its Vault Bucket, fixed at creation (#736).
+        item["retention_lock_days"] = row["s3_retention_lock_days"]
         released = row["root_released_at"]
         item["root_released_at"] = released.isoformat() if released else None
         item["vault_deletion_status"] = deletions.get(int(row["id"]))
@@ -146,7 +150,8 @@ def create_vault(
     ``volume_alias`` and ``relative_path`` naming a free directory inside a
     custom Source Volume. Callers never supply S3 identity or absolute
     filesystem paths. ``retention_lock`` is the optional Governance Retention
-    Lock of the new bucket (#736 exposes it); it cannot change afterwards.
+    Lock of the new bucket (#736, ADR-0050): 30, 90, 180 or 365 days; it
+    cannot change afterwards.
 
     The Vault, its reserved bucket name and its root are committed first; the
     bucket is then created and verified (``vault_buckets.provision``). The
@@ -160,6 +165,8 @@ def create_vault(
     clean_name = name.strip()
     if not clean_name:
         raise InvalidVaultName("Vault name is required")
+    if retention_lock is not None and retention_lock.days not in RETENTION_LOCK_CHOICES:
+        raise InvalidVaultName("A Retention Lock lasts 30, 90, 180 or 365 days")
 
     if create_mode == "adopt":
         if not (volume_alias or "").strip():

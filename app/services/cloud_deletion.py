@@ -24,6 +24,15 @@ only Cloud Duplicates. Its members are revoked one by one: at execution, a
 file that is no longer a valid Cloud Duplicate is skipped and recorded, and
 the rest of the group proceeds. Anything about the Vault itself still cancels
 the whole group, as for the Owner's requests, which stay all-or-nothing.
+
+Retention Lock (#736, ADR-0050): in a Vault Bucket with a Governance Retention
+Lock a consented Current may still be locked when the delay elapses. It is not
+deleted early (FrostVault has no bypass) and its Job does not fail: it waits
+``pending_delay`` again, «deletable from» its RetainUntilDate (``defer_locked``),
+and the group runs again from the earliest such date. The consent and its
+checks are unchanged; the Owner can still cancel what is left. The preview
+says how many of the files will still be locked at the earliest execution and
+until when.
 """
 from __future__ import annotations
 
@@ -35,7 +44,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-from . import source_layout, vault_relocation
+from psycopg.types.json import Jsonb
+
+from . import retention_lock, source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .vault_paths import object_prefix
 from .component_health import load_vault_health
@@ -103,6 +114,9 @@ class DeletionPreview:
     # The scheduled files still within their Minimum Storage Duration at the
     # earliest execution, and what deleting them then still bills (#731).
     minimum_storage: dict[str, Any] | None = None
+    # The scheduled files a Retention Lock still holds at the earliest
+    # execution, and until when (#736); None without a Retention Lock.
+    retention_lock: dict[str, Any] | None = None
 
     @property
     def no_local_copy_count(self) -> int:
@@ -123,7 +137,7 @@ class DeletionPreview:
                     no_local_copy_bytes=self.no_local_copy_bytes,
                     skipped={reason: int(self.skipped.get(reason, 0)) for reason in SKIP_REASONS},
                     skipped_count=sum(int(n) for n in self.skipped.values()),
-                    minimum_storage=self.minimum_storage)
+                    minimum_storage=self.minimum_storage, retention_lock=self.retention_lock)
 
 
 @dataclass(frozen=True)
@@ -154,7 +168,8 @@ def _aware(value: Any) -> datetime:
 def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
         """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
-                  t.key_layout AS s3_key_layout FROM vaults v
+                  t.key_layout AS s3_key_layout,
+                  t.retention_lock_days AS s3_retention_lock_days FROM vaults v
            JOIN vault_targets t ON t.id = v.target_id
            WHERE v.id=%s FOR UPDATE OF v""", (vault_id,)
     ).fetchone()
@@ -567,6 +582,17 @@ def minimum_storage_summary(connection: Any, vault: dict[str, Any], files: list[
         at=moment + timedelta(seconds=DELETION_DELAY_SECONDS))
 
 
+def retention_lock_summary(vault: dict[str, Any], files: list[dict[str, Any]],
+                           *, now: datetime | None = None) -> dict[str, Any] | None:
+    """How many of ``files`` a Retention Lock still holds at the earliest
+    execution, after the delay, and until when (#736): estimated from each
+    Current's creation and the bucket default days. None without a lock."""
+    moment = now or datetime.now(timezone.utc)
+    return retention_lock.summarize(
+        files, days=vault.get("s3_retention_lock_days"),
+        at=moment + timedelta(seconds=DELETION_DELAY_SECONDS), created="version_created_at")
+
+
 def _fingerprint(files: list[dict[str, Any]]) -> str:
     members = sorted(f"{f['file_id']}:{f['current_version_id']}" for f in files)
     return hashlib.sha256("\n".join(members).encode()).hexdigest()
@@ -610,7 +636,8 @@ def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
         len(chosen), len(chosen), 0, size(chosen), fingerprint=_fingerprint(chosen), mode=mode,
         duplicates_only=duplicates_only, eligible_count=len(eligible), eligible_bytes=size(eligible),
         duplicate_count=len(duplicate_rows), duplicate_bytes=size(duplicate_rows), skipped=skipped,
-        minimum_storage=minimum_storage_summary(connection, vault, chosen))
+        minimum_storage=minimum_storage_summary(connection, vault, chosen),
+        retention_lock=retention_lock_summary(vault, chosen))
     return chosen, preview
 
 
@@ -785,7 +812,8 @@ def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before:
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
         duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
         duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped,
-        minimum_storage=minimum_storage_summary(connection, vault, chosen, now=moment))
+        minimum_storage=minimum_storage_summary(connection, vault, chosen, now=moment),
+        retention_lock=retention_lock_summary(vault, chosen, now=moment))
     return preview, sighting
 
 
@@ -823,8 +851,10 @@ def _group_jobs(connection: Any, vault_id: int, group_id: str) -> list[dict[str,
 
 def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
                           actor: str, cancelled_at: str) -> CancelledDeletion:
+    """Cancel what of a group still waits: before it starts, or the files a
+    Retention Lock deferred after the rest was deleted (#736)."""
     lock_vault(connection, vault_id)
-    rows = _group_jobs(connection, vault_id, group_id)
+    rows = [r for r in _group_jobs(connection, vault_id, group_id) if r["status"] not in TERMINAL]
     if not rows or any(r["status"] != "pending_delay" or r["leased"] for r in rows):
         raise CloudDeletionError("Deletion has started or is no longer cancellable")
     _cancel_rows(connection, rows, at=cancelled_at, actor=actor,
@@ -1102,6 +1132,46 @@ def _count_automatic_deletions(connection: Any, *, vault_id: int, group_id: str,
            WHERE v.id = %s AND r.group_id = %s AND r.automatic""",
         (len(completed), sum(int(r["total_bytes"] or 0) for r in completed), at,
          vault_id, group_id))
+
+
+def defer_locked(connection: Any, *, vault_id: int, group_id: str,
+                 deferred: dict[int, datetime], at: str) -> None:
+    """Put the members a Retention Lock still holds back to ``pending_delay`` (#736).
+
+    Each Job says «deletable from» its own RetainUntilDate; the group runs again
+    from the earliest one (a group is claimed only when every waiting member is
+    due), deletes what is unlocked by then and defers the rest again. Their
+    open grants are revoked and their leases released: the next claim
+    revalidates the consent from scratch. The caller holds the Vault row and
+    the group claim. Nothing fails and nothing is cancelled.
+    """
+    if not deferred:
+        return
+    ids = sorted(int(job_id) for job_id in deferred)
+    rows = connection.execute(
+        """SELECT id, file_id FROM jobs WHERE id = ANY(%s::bigint[]) AND vault_id=%s
+             AND group_id=%s AND action='cloud-purge' AND status='cleaning'""",
+        (ids, vault_id, group_id)).fetchall()
+    if len(rows) != len(ids):
+        raise CloudDeletionError("A deferred deletion is no longer claimed")
+    revoke_grants(connection, group_id=group_id, file_ids=[str(r["file_id"]) for r in rows])
+    # Never sooner than an hour: a date S3 still enforces is not retried in a loop.
+    run_after = max(min(deferred.values()),
+                    datetime.now(timezone.utc) + timedelta(seconds=retention_lock.POLL_SECONDS))
+    for job_id in ids:
+        day = deferred[job_id].date().isoformat()
+        connection.execute(
+            """UPDATE jobs SET status='pending_delay', run_after=%s,
+                   message=%s, message_key='job.cloud_purge_deferred', message_params=%s,
+                   updated_at=%s
+               WHERE id=%s""",
+            (run_after, f"Retention Lock: deletable from {day}", Jsonb({"until": day}),
+             at, job_id))
+    connection.execute("DELETE FROM job_leases WHERE job_id = ANY(%s::bigint[])", (ids,))
+    record_audit_event(connection, event="cloud_deletion.deferred", actor="system",
+                       vault_id=vault_id, outcome="deferred", group_id=group_id,
+                       deferred=len(ids), deletable_from=run_after.isoformat(),
+                       deletable_until=max(deferred.values()).isoformat(), job_ids=ids[:100])
 
 
 def record_failed(connection: Any, *, failures: list[tuple[dict[str, Any], str]],

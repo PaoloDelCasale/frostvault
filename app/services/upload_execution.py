@@ -313,7 +313,7 @@ class UploadExecution:
                            AS linked_version_id, {RESUME_NEEDED_SQL} AS cleanup_pending,
                            {provenance.KEY_WRITTEN_SQL} AS key_written
                     FROM files f JOIN jobs j ON j.id=%s WHERE f.id=%s""",
-                (key, key, job["id"], job["file_id"])).fetchone()
+                (key, key, key, job["id"], job["file_id"])).fetchone()
             version = _linked_version(connection, job, attempt, observation)
             if version is not None:
                 catalog.link_job_version(job["id"], version.id)

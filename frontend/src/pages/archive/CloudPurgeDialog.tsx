@@ -4,6 +4,7 @@ import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api/types";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
+import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { Button } from "@/components/ui/button";
 
 import { formatBytes, pickDurationUnit } from "./format";
@@ -157,6 +158,7 @@ export function CloudPurgeDialog({
         ) : null}
         {preview && !previewing && (preview.object_count > 0 || preview.mode === "selection") ? <DeletionSummary preview={preview} t={t} /> : null}
         {preview && !previewing && preview.object_count > 0 ? <MinimumStorageNote amount={preview.minimum_storage} t={t} testId="cloud-purge-minimum" /> : null}
+        {preview && !previewing && preview.object_count > 0 ? <RetentionLockNote amount={preview.retention_lock} t={t} testId="cloud-purge-retention-lock" /> : null}
         {settings?.purge_delay_seconds != null ? (
           <p className="text-sm text-muted" data-testid="cloud-purge-delay">
             {t("ui.cloud_purge_delay", {

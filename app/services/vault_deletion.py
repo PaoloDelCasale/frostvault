@@ -22,6 +22,17 @@ catalog rows leave the database, in one transaction, with one audit event
 ``folder_protection.vault_deleted``. A failure (an S3 error or leftovers) keeps
 the Tombstone and its catalog, marks the request ``failed`` and opens a
 Problem; the Owner may retry it at once, without a new delay, or cancel it.
+
+Retention Lock (#736, ADR-0050): in a Vault Bucket with a Governance Retention
+Lock a version is locked until its RetainUntilDate and FrostVault has no
+bypass. A version whose estimated date (``LastModified`` plus the bucket
+default days) is still ahead is not sent; a refused DELETE is explained by the
+version's observed retention. When only such locked versions are left, the
+run is not a failure: the request goes back to ``pending`` with
+``retained_count`` versions «deletable from» ``retained_until`` (the latest
+date), runs again from the earliest one (at most once a day) and removes the
+Vault only once a listing proves the bucket empty. The preview says how many
+versions will still be locked at the earliest execution and until when.
 """
 from __future__ import annotations
 
@@ -34,6 +45,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from . import retention_lock
 from .audit_events import record_audit_event
 from .cloud_deletion import DELETION_DELAY_SECONDS, ConfirmationRequired, lock_vault
 from .cost_estimates import list_prices
@@ -51,6 +63,8 @@ POLL_SECONDS = 30.0
 _DELETE_BATCH = 1000
 # Catalog lookups of listed versions, per query.
 _LOOKUP_BATCH = 10000
+# A deferred Vault Deletion lists its bucket again at most this often (#736).
+DEFERRED_RETRY_SECONDS = 24 * 60 * 60
 
 Database = Callable[[], AbstractContextManager[Any]]
 
@@ -208,11 +222,14 @@ def _version_entry(version: dict[str, Any], catalog: dict[tuple[str, str], dict[
 def summarize(inventory: PrefixInventory, *, executes_at: datetime,
               plan: LifecycleProfile | None = None,
               catalog: dict[tuple[str, str], dict[str, Any]] | None = None,
-              now: datetime | None = None) -> dict[str, Any]:
+              now: datetime | None = None,
+              retention_lock_days: int | None = None) -> dict[str, Any]:
     """The preview: counts, bytes per storage class and early-deletion cost.
 
     The cost is estimated at the earliest execution (after the delay), from
-    each version's Class Entry (#731) and the bundled list prices.
+    each version's Class Entry (#731) and the bundled list prices. With a
+    Retention Lock, ``retention_lock`` counts the versions still locked then
+    and until when, from each version's ``LastModified`` (#736).
     """
     prices = list_prices()
     plan = plan or LifecycleProfile()
@@ -265,6 +282,9 @@ def summarize(inventory: PrefixInventory, *, executes_at: datetime,
         "region": prices.region,
         "executes_at": executes_at.isoformat(),
         "delay_seconds": DELETION_DELAY_SECONDS,
+        "retention_lock": retention_lock.summarize(
+            inventory.versions, days=retention_lock_days, at=executes_at,
+            created="last_modified"),
     }
 
 
@@ -274,7 +294,8 @@ def summarize(inventory: PrefixInventory, *, executes_at: datetime,
 def _vault_row(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
         """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
-                  t.key_layout AS s3_key_layout FROM vaults v
+                  t.key_layout AS s3_key_layout,
+                  t.retention_lock_days AS s3_retention_lock_days FROM vaults v
            JOIN vault_targets t ON t.id = v.target_id WHERE v.id=%s""", (vault_id,)).fetchone()
     if row is None:
         raise LookupError("Vault not found")
@@ -299,7 +320,8 @@ def deletion_target(connection: Any, vault_id: int) -> dict[str, Any]:
     plan = connection.execute(
         "SELECT storage_plan::text AS plan FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     return {"vault_id": vault_id, "name": vault["name"], "bucket": vault["s3_bucket"],
-            "prefix": vault_prefix(vault), "storage_plan": plan["plan"] if plan else None}
+            "prefix": vault_prefix(vault), "storage_plan": plan["plan"] if plan else None,
+            "retention_lock_days": vault.get("s3_retention_lock_days")}
 
 
 def catalog_versions(connection: Any, vault_id: int,
@@ -341,7 +363,7 @@ def preview(client: Any, target: dict[str, Any], *, now: datetime | None = None,
             catalog = catalog_versions(connection, int(target["vault_id"]), inventory.versions)
     return summarize(inventory, executes_at=moment + timedelta(seconds=DELETION_DELAY_SECONDS),
                      plan=profile_from_json(target.get("storage_plan")), catalog=catalog,
-                     now=moment)
+                     now=moment, retention_lock_days=target.get("retention_lock_days"))
 
 
 def _iso(value: Any) -> str | None:
@@ -368,6 +390,10 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
             "failure": request["failure"], "preview": request["preview"],
             "cancellable": request["status"] in {"pending", "failed"},
             "retryable": request["status"] == "failed",
+            # Locked versions left after a run (#736): «deletable from».
+            "retained_count": request.get("retained_count"),
+            "retained_until": _iso(request.get("retained_until")),
+            "next_attempt_at": _iso(request["run_after"]) if request.get("retained_count") else None,
         }
     return result
 
@@ -428,7 +454,8 @@ def cancel(connection: Any, *, vault_id: int, actor: str) -> dict[str, Any]:
                        actor=actor, vault_id=vault_id, outcome="cancelled",
                        vault_uuid=str(vault["uuid"]), vault_name=vault["name"],
                        previous_status=request["status"],
-                       completed_deletions_not_undone=request["status"] == "failed")
+                       completed_deletions_not_undone=(request["status"] == "failed"
+                                                       or bool(request.get("retained_count"))))
     _close_problem(connection, vault_id)
     return status(connection, vault_id)
 
@@ -478,6 +505,8 @@ class _Progress:
     markers: int = 0
     uploads: int = 0
     bytes: int = 0
+    # Versions a Retention Lock keeps, by (key, VersionId): until when (#736).
+    locked: dict[tuple[str, str], datetime] = field(default_factory=dict)
 
 
 def _heartbeat(database: Database, vault_id: int) -> None:
@@ -490,26 +519,70 @@ def _heartbeat(database: Database, vault_id: int) -> None:
         raise VaultDeletionError("The Vault Deletion is no longer running")
 
 
-def _delete_batch(client: Any, bucket: str, prefix: str, items: list[dict[str, Any]]) -> None:
+def _delete_batch(client: Any, bucket: str, prefix: str, items: list[dict[str, Any]],
+                  *, locked: dict[tuple[str, str], datetime] | None = None) -> set[tuple[str, str]]:
+    """Delete ``items`` by exact VersionId; returns what a Retention Lock refused.
+
+    With ``locked`` (a Vault with a Retention Lock) a refused version whose
+    observed retention is still ahead is recorded there instead of failing the
+    run (#736); any other refusal fails it.
+    """
+    refused: set[tuple[str, str]] = set()
     for offset in range(0, len(items), _DELETE_BATCH):
         batch = items[offset:offset + _DELETE_BATCH]
         objects = [{"Key": _inside(prefix, item["key"]), "VersionId": item["version_id"]}
                    for item in batch]
+        if not objects:
+            continue
         response = client.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
-        if (response or {}).get("Errors"):
+        errors = (response or {}).get("Errors") or []
+        if errors and locked is None:
             raise VaultDeletionError("The provider refused to delete some versions")
+        moment = datetime.now(timezone.utc)
+        for error in errors:
+            key, version = str(error.get("Key") or ""), str(error.get("VersionId") or "")
+            try:
+                until = retention_lock.refused_until(
+                    client, bucket=bucket, key=_inside(prefix, key), version_id=version,
+                    code=str(error.get("Code") or ""), now=moment) if key and version else None
+            except retention_lock.VersionGone:
+                continue
+            if until is None:
+                raise VaultDeletionError("The provider refused to delete some versions")
+            locked[(key, version)] = until  # type: ignore[index]
+            refused.add((key, version))
+    return refused
 
 
 def _delete_prefix(client: Any, database: Database, *, vault_id: int, bucket: str,
-                   prefix: str, progress: _Progress) -> None:
-    """Delete everything listed under the prefix, page by page."""
+                   prefix: str, progress: _Progress,
+                   retention_lock_days: int | None = None) -> None:
+    """Delete everything listed under the prefix, page by page.
+
+    With a Retention Lock a version whose estimated RetainUntilDate is still
+    ahead is not sent, and one S3 refuses as locked is kept (#736): both are
+    recorded in ``progress.locked``.
+    """
     for page in _version_pages(client, bucket, prefix):
         # Validate the whole page before naming any of it.
         versions, markers = _page_items(prefix, page)
-        _delete_batch(client, bucket, prefix, versions + markers)
-        progress.versions += len(versions)
+        sendable = versions
+        if retention_lock_days:
+            moment = datetime.now(timezone.utc)
+            sendable = []
+            for version in versions:
+                until = retention_lock.locked_at(version.get("last_modified"),
+                                                 retention_lock_days, moment)
+                if until is None:
+                    sendable.append(version)
+                else:
+                    progress.locked[(version["key"], version["version_id"])] = until
+        refused = _delete_batch(client, bucket, prefix, sendable + markers,
+                                locked=progress.locked if retention_lock_days else None)
+        deleted = [v for v in sendable if (v["key"], v["version_id"]) not in refused]
+        progress.versions += len(deleted)
         progress.markers += len(markers)
-        progress.bytes += sum(v["size"] for v in versions)
+        progress.bytes += sum(v["size"] for v in deleted)
         _heartbeat(database, vault_id)
     for page in _upload_pages(client, bucket, prefix):
         uploads = [{"key": _inside(prefix, item.get("Key")), "upload_id": str(item["UploadId"])}
@@ -596,6 +669,43 @@ def _record_failure(database: Database, *, vault_id: int, failure: dict[str, Any
                             + int(failure.get("leftover_uploads", 0))})
 
 
+def _record_deferral(database: Database, *, vault_id: int, progress: _Progress) -> None:
+    """Only locked versions are left: wait for them, never a failure (#736).
+
+    The request goes back to ``pending``; it runs again from the earliest
+    RetainUntilDate, at most once a day, and says until when the last version
+    stays locked. The Tombstone and its catalog stay until the bucket is empty.
+    """
+    from .notifications import set_problem
+    first = min(progress.locked.values())
+    last = max(progress.locked.values())
+    run_after = max(first, datetime.now(timezone.utc) + timedelta(seconds=DEFERRED_RETRY_SECONDS))
+    with database() as connection:
+        vault = lock_vault(connection, vault_id)
+        request = _request_row(connection, vault_id, lock=True)
+        if request is None or request["status"] != "running":
+            return
+        connection.execute(
+            """UPDATE vault_deletions SET status='pending', heartbeat_at=NULL,
+                   proven_empty_at=NULL, run_after=%s, retained_until=%s, retained_count=%s
+               WHERE vault_id=%s""", (run_after, last, len(progress.locked), vault_id))
+        record_audit_event(connection, event="folder_protection.vault_deletion_deferred",
+                           actor="system", vault_id=vault_id, outcome="deferred",
+                           vault_uuid=str(vault["uuid"]), vault_name=vault["name"],
+                           deleted_versions=progress.versions, deleted_markers=progress.markers,
+                           aborted_uploads=progress.uploads, retained_versions=len(progress.locked),
+                           deletable_from=first.isoformat(), deletable_until=last.isoformat(),
+                           next_attempt_at=run_after.isoformat())
+        # A deferral is not a failure: an earlier failure's Problem closes.
+        set_problem(connection, key=f"vault_deletion:{vault_id}", event=PROBLEM_EVENT,
+                    vault_id=vault_id, active=False)
+
+
+def _only_locked(leftover: PrefixInventory, progress: _Progress) -> bool:
+    return (bool(progress.locked) and not leftover.markers and not leftover.uploads
+            and all((v["key"], v["version_id"]) in progress.locked for v in leftover.versions))
+
+
 def execute(database: Database, client_factory: Callable[[], Any], vault_id: int) -> bool:
     """Run one claimed Vault Deletion. True when the Vault left the catalog."""
     progress = _Progress()
@@ -608,14 +718,20 @@ def execute(database: Database, client_factory: Callable[[], Any], vault_id: int
             # The CHECK and trigger make this unreachable; fail closed anyway.
             raise VaultDeletionError("Only a Vault Tombstone can be deleted")
         bucket, prefix = vault["s3_bucket"], vault_prefix(vault)
+        lock_days = vault.get("s3_retention_lock_days")
     try:
         client = client_factory()
         _delete_prefix(client, database, vault_id=vault_id, bucket=bucket, prefix=prefix,
-                       progress=progress)
+                       progress=progress, retention_lock_days=lock_days)
         leftover = list_prefix(client, bucket=bucket, prefix=prefix)
     except Exception as exc:
         _record_failure(database, vault_id=vault_id, failure=_failure_detail(exc),
                         progress=progress)
+        return False
+    if not leftover.empty and _only_locked(leftover, progress):
+        progress.locked = {(v["key"], v["version_id"]): progress.locked[(v["key"], v["version_id"])]
+                           for v in leftover.versions}
+        _record_deferral(database, vault_id=vault_id, progress=progress)
         return False
     if not leftover.empty:
         _record_failure(database, vault_id=vault_id, progress=progress, failure={

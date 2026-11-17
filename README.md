@@ -222,6 +222,16 @@ and Cloud-only Conflicts remain held back.
   say how many versions are still within it and what deleting them still
   bills. All amounts are list-price estimates, not your AWS bill. The duplicate
   cleanup can wait for the minimum to end (off by default).
+- **Retention Lock** (#736, optional): a new Vault can get S3 Object Lock in
+  Governance mode with a default retention of 30, 90, 180 or 365 days, chosen
+  only on the creation page and never changeable afterwards. It protects
+  against stolen keys and ransomware: FrostVault never holds
+  `s3:BypassGovernanceRetention`, so no one using its keys can delete a locked
+  version early. Superseded versions, «Delete from cloud», Automatic Duplicate
+  Cleanup and Vault Deletion wait for the RetainUntilDate («deletable from …»)
+  instead of failing, and their previews say how many files stay locked and
+  until when. A Delete Marker in such a bucket is a Problem. See
+  [Retention Lock](docs/aws-s3-bucket.md#retention-lock-optional-per-vault).
 - Lifecycle synchronization preserves external bucket rules and the seven-day
   incomplete-multipart abort rule. Changing a plan never deletes cloud content.
 - **Delete from cloud** is available only for **Cloud-only** files (or folders

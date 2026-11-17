@@ -3280,7 +3280,8 @@ class ArchiveCatalog:
         items = self.connection.execute(
             """
             SELECT j.id, j.vault_id, j.file_id, j.group_id, j.archive_version_id,
-                   j.origin, f.path, av.object_key, av.provider_version_id, av.size
+                   j.origin, f.path, av.object_key, av.provider_version_id, av.size,
+                   av.created_at AS version_created_at
             FROM jobs j
             JOIN files f ON f.id = j.file_id
             LEFT JOIN archive_versions av ON av.id = j.archive_version_id

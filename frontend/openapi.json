@@ -688,6 +688,16 @@
           "object_count": {
             "type": "number"
           },
+          "retention_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionLockPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "skipped": {
             "additionalProperties": {
               "type": "number"
@@ -1244,6 +1254,16 @@
                   "bytes"
                 ],
                 "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionLockPreview"
               },
               {
                 "type": "null"
@@ -1941,6 +1961,12 @@
           },
           "paused": {
             "type": "boolean"
+          },
+          "retention_lock_days": {
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "root_released_at": {
             "type": [
@@ -3855,6 +3881,119 @@
         ],
         "type": "object"
       },
+      "RetentionLockPreview": {
+        "additionalProperties": false,
+        "description": "Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier.",
+        "properties": {
+          "days": {
+            "type": "number"
+          },
+          "locked_bytes": {
+            "type": "number"
+          },
+          "locked_count": {
+            "type": "number"
+          },
+          "locked_from": {
+            "description": "When the first of them can be deleted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "locked_until": {
+            "description": "When the last of them can be deleted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "GOVERNANCE"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "days",
+          "mode",
+          "locked_count",
+          "locked_bytes",
+          "locked_from",
+          "locked_until"
+        ],
+        "type": "object"
+      },
+      "RetentionLockStatus": {
+        "additionalProperties": false,
+        "description": "A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate.",
+        "properties": {
+          "days": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "GOVERNANCE",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retained": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "number"
+                  },
+                  "deletable_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "deletable_until": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes",
+                  "deletable_from",
+                  "deletable_until"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vault_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "vault_id",
+          "days",
+          "mode",
+          "retained"
+        ],
+        "type": "object"
+      },
       "RetryFailedUploadsResponse": {
         "properties": {
           "item_count": {
@@ -5454,6 +5593,20 @@
           "relative_path": {
             "type": "string"
           },
+          "retention_lock_days": {
+            "description": "The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards.",
+            "enum": [
+              30,
+              90,
+              180,
+              365,
+              null
+            ],
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "volume_alias": {
             "type": "string"
           }
@@ -5621,6 +5774,16 @@
           "region": {
             "type": "string"
           },
+          "retention_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionLockPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "savings_from": {
             "type": [
               "string",
@@ -5714,6 +5877,13 @@
                       "null"
                     ]
                   },
+                  "next_attempt_at": {
+                    "description": "When the deletion runs again for them.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "pending_until": {
                     "type": "string"
                   },
@@ -5725,6 +5895,20 @@
                   },
                   "requested_at": {
                     "type": "string"
+                  },
+                  "retained_count": {
+                    "description": "Locked versions left after a run (#736): the request waits for them.",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "retained_until": {
+                    "description": "When the last of them can be deleted.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "retryable": {
                     "type": "boolean"
@@ -6247,6 +6431,23 @@
               }
             ],
             "title": "Relative Path"
+          },
+          "retention_lock_days": {
+            "anyOf": [
+              {
+                "enum": [
+                  30,
+                  90,
+                  180,
+                  365
+                ],
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Lock Days"
           },
           "volume_alias": {
             "anyOf": [
@@ -9143,7 +9344,7 @@
         "summary": "List Vaults"
       },
       "post": {
-        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the plaintext storage identity and creates the\nVault's own Vault Bucket (#735): the Vault is active only once the bucket\nis created and verified. ``bucket`` reports that; when it failed the Vault\nstays ``provisioning``, FrostVault retries in the background and the Owner\nmay retry at once. Adoption binds any free directory of a custom Source\nVolume in place and, once active, starts an asynchronous local scan.",
+        "description": "Create a Vault from the UI, the only way Vaults are created (#412).\n\nThe server generates the plaintext storage identity and creates the\nVault's own Vault Bucket (#735): the Vault is active only once the bucket\nis created and verified. ``bucket`` reports that; when it failed the Vault\nstays ``provisioning``, FrostVault retries in the background and the Owner\nmay retry at once. Adoption binds any free directory of a custom Source\nVolume in place and, once active, starts an asynchronous local scan.\n``retention_lock_days`` gives the bucket a Governance Retention Lock\n(#736, ADR-0050), fixed for the Vault's life.",
         "operationId": "create_owner_vault_api_vaults_post",
         "requestBody": {
           "content": {
@@ -9671,6 +9872,46 @@
           }
         },
         "summary": "Resume Vault"
+      }
+    },
+    "/api/vaults/{vault_id}/retention-lock": {
+      "get": {
+        "description": "The Vault's Retention Lock and the superseded versions it holds back (#736).\n\n``days`` is null for a Vault without one. ``retained`` counts the versions\nwaiting for their RetainUntilDate before FrostVault deletes them.",
+        "operationId": "vault_retention_lock_api_vaults__vault_id__retention_lock_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vault_id",
+            "required": true,
+            "schema": {
+              "title": "Vault Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionLockStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vault Retention Lock"
       }
     },
     "/api/vaults/{vault_id}/stop-protection": {

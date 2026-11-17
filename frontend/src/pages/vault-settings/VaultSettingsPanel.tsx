@@ -16,6 +16,7 @@ import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { MinimumStoragePanel } from "./MinimumStoragePanel";
 import { RetentionPanel } from "./RetentionPanel";
+import { RetentionLockPanel } from "./RetentionLockPanel";
 import { UploadVerificationPanel } from "./UploadVerificationPanel";
 import { errorMessage } from "@/lib/errorMessage";
 
@@ -106,6 +107,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
       more={<><p>{t("duplicate_cleanup.how")}</p><p>{t("duplicate_cleanup.never_only_cloud")}</p></>}>
       <DuplicateCleanupPanel vaultId={vaultId} paused={vault?.paused} onNotice={show} />
     </SettingsSection>}
+    {vault?.retention_lock_days ? <SettingsSection id="retention-lock" highlighted={highlight === "retention-lock"} title={t("retention_lock.title")} summary={t("retention_lock.summary")}
+      more={<><p>{t("retention_lock.how")}</p><p>{t("retention_lock.delete_markers")}</p></>}>
+      <RetentionLockPanel vaultId={vaultId} />
+    </SettingsSection> : null}
     <SettingsSection id="plan" highlighted={highlight === "plan"} title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
       <details className="rounded-card border border-line"><summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("settings.plan_open")}</summary>
         <div className="border-t border-line p-3"><LifecyclePanel vaultId={vaultId} onNotice={show} /></div></details>

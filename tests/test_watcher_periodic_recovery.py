@@ -83,6 +83,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 (storage, "process_directory_aggregate_maintenance"),
                 (storage.protection_stop_service, "reconcile_all"),
                 (storage, "run_vault_deletions_once"),
+                (storage, "run_retained_versions_once"),
                 (storage, "run_duplicate_cleanup_once"),
                 (storage, "ensure_system_bucket_once"),
                 (storage, "ensure_vault_buckets_once"),
@@ -116,7 +117,8 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([call.args[0] for call in submit.call_args_list
                               if call.args[0] not in {"vault_deletion", "duplicate_cleanup",
                                                       "system_bucket", "vault_buckets",
-                                                      "bucket_metrics", "billed_cost"}],
+                                                      "bucket_metrics", "billed_cost",
+                                                      "retained_versions"}],
                              ["scan", "scan"])
             queries = [call.args[0] for call in connection.execute.call_args_list]
             self.assertTrue(any("v.lifecycle='active'" in sql for sql in queries))

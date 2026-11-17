@@ -76,6 +76,25 @@ describe("Vault Deletion of a Tombstone (#717)", () => {
     expect(line).not.toHaveTextContent(/1,200 files/);
   });
 
+  // #736: a Retention Lock defers locked versions, never fails the deletion.
+  it("says how many versions a Retention Lock still holds and from when they can be deleted", async () => {
+    setup({ previewReply: { body: { ...preview, retention_lock: { days: 180, mode: "GOVERNANCE", locked_count: 3,
+      locked_bytes: 1024 ** 3, locked_from: "2027-02-01T10:00:00+00:00", locked_until: "2027-04-01T10:00:00+00:00" } } } });
+    const line = await screen.findByTestId("vault-deletion-retention-lock");
+    expect(line).toHaveTextContent("Retention Lock: 3 versions (1.0 GiB) will still be locked.");
+    expect(line).toHaveTextContent("Deletable from Feb 1, 2027 (the last from Apr 1, 2027)");
+  });
+
+  it("shows a deferred deletion as waiting for its locked versions, not as failed", async () => {
+    setup({ status: { ...pending, request: { ...request, attempts: 1, retained_count: 2,
+      retained_until: "2027-04-01T10:00:00+00:00", next_attempt_at: "2027-02-01T10:00:00+00:00" } } });
+    const waiting = await screen.findByTestId("vault-deletion-retained");
+    expect(waiting).toHaveTextContent("Only 2 versions under Retention Lock are left: the last is deletable from Apr 1, 2027.");
+    expect(waiting).toHaveTextContent("this is not an error");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByTestId("vault-deletion-countdown")).toBeNull();
+  });
+
   it("shows no minimum duration line for a preview stored before it", async () => {
     setup();
     await screen.findByTestId("vault-deletion-preview");

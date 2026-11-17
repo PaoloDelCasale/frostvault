@@ -131,6 +131,7 @@ from .services import cloud_deletion as cloud_deletion_service
 from .services import vault_moves
 from .services import vault_buckets as vault_buckets_service
 from .services import write_access
+from .services.bucket_provisioning import RetentionLock
 from .services.vaults import (
     VAULT_ROW_SQL,
     InvalidVaultName,
@@ -629,6 +630,9 @@ class VaultSelfServiceCreate(BaseModel):
     creation_mode: str = Field(default="empty", pattern="^(empty|adopt)$")
     volume_alias: str | None = Field(default=None, min_length=1, max_length=120)
     relative_path: str | None = Field(default=None, max_length=1024)
+    # The new Vault Bucket's Governance Retention Lock in days, or none (#736).
+    # Chosen only here: it cannot be changed from FrostVault afterwards.
+    retention_lock_days: Literal[30, 90, 180, 365] | None = None
 
 
 class FileAction(BaseModel):
@@ -1443,6 +1447,8 @@ def create_owner_vault(
     stays ``provisioning``, FrostVault retries in the background and the Owner
     may retry at once. Adoption binds any free directory of a custom Source
     Volume in place and, once active, starts an asynchronous local scan.
+    ``retention_lock_days`` gives the bucket a Governance Retention Lock
+    (#736, ADR-0050), fixed for the Vault's life.
     """
     try:
         vault = create_vault(
@@ -1450,6 +1456,8 @@ def create_owner_vault(
             creation_mode=action.creation_mode,
             volume_alias=action.volume_alias,
             relative_path=action.relative_path,
+            retention_lock=(RetentionLock(days=action.retention_lock_days)
+                            if action.retention_lock_days else None),
         )
     except VaultProvisioningUnavailable:
         return _vault_create_error(request, 503, "api.vault_provisioning_unavailable")
@@ -1482,6 +1490,21 @@ def vault_bucket_status(vault_id: int, _: dict[str, Any] = Depends(current_user)
     if state is None:
         raise HTTPException(404, "Vault not found")
     return state
+
+
+@app.get("/api/vaults/{vault_id}/retention-lock", response_model=response_model("RetentionLockStatus"))
+def vault_retention_lock(vault_id: int, _: dict[str, Any] = Depends(current_user)):
+    """The Vault's Retention Lock and the superseded versions it holds back (#736).
+
+    ``days`` is null for a Vault without one. ``retained`` counts the versions
+    waiting for their RetainUntilDate before FrostVault deletes them.
+    """
+    from .services import retention_lock as retention_lock_service
+    with db() as connection:
+        if connection.execute("SELECT 1 FROM vaults WHERE id=%s", (vault_id,)).fetchone() is None:
+            raise HTTPException(404, "Vault not found")
+        state = retention_lock_service.status(connection, vault_id)
+    return {"vault_id": vault_id, "days": None, "mode": None, "retained": None, **(state or {})}
 
 
 @app.post("/api/vaults/{vault_id}/bucket/retry", response_model=response_model("VaultBucketStatus"))

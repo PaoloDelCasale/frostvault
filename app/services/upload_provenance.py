@@ -101,10 +101,11 @@ def provider_identity(client: Any) -> str:
 
 
 # Whether the catalog ever wrote, or may have written, the object key of the
-# ``files f`` row's path (one %s: that key). Every holder of the path counts:
-# the file itself and the files Path History shows there before it. Any
-# Archive Version at the key, any upload attempt of the path and any copy to
-# the key say yes; only a key the catalog never sent to says no (ADR-0038).
+# ``files f`` row's path (three %s, each that key). Every holder of the path
+# counts: the file itself and the files Path History shows there before it.
+# Any Archive Version at the key, any upload attempt of the path, any copy to
+# the key and any version a Retention Lock holds back there (#736) say yes;
+# only a key the catalog never sent to says no (ADR-0038).
 KEY_WRITTEN_SQL = """(EXISTS (SELECT 1 FROM archive_versions kv WHERE kv.object_key = %s)
     OR EXISTS (SELECT 1 FROM upload_attempts ka JOIN upload_snapshots ks ON ks.id = ka.snapshot_id
                WHERE ka.file_id IN (SELECT f.id UNION ALL
@@ -115,7 +116,10 @@ KEY_WRITTEN_SQL = """(EXISTS (SELECT 1 FROM archive_versions kv WHERE kv.object_
                WHERE kc.file_id IN (SELECT f.id UNION ALL
                                     SELECT h.file_id FROM file_path_history h
                                     WHERE h.vault_id = f.vault_id AND h.path = f.path)
-                 AND kc.destination_key = %s))"""
+                 AND kc.destination_key = %s)
+    -- A version a Retention Lock holds back at the key (#736).
+    OR EXISTS (SELECT 1 FROM retained_versions kr
+               WHERE kr.vault_id = f.vault_id AND kr.object_key = %s))"""
 
 
 def presumed_empty_inventory() -> dict[str, list[str]]:

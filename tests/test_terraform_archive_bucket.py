@@ -78,8 +78,13 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
                        "s3:GetBucketObjectLockConfiguration",
                        "s3:PutBucketObjectLockConfiguration",
                        "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls",
-                       "s3:PutObject", "s3:GetObject"):
+                       "s3:PutObject", "s3:GetObject",
+                       # #736: a refused DELETE of a locked version is explained
+                       # by its retention, read but never changed or bypassed.
+                       "s3:GetObjectRetention"):
             self.assertIn(action, allowed)
+        for action in ("s3:PutObjectRetention", "s3:PutObjectLegalHold"):
+            self.assertNotIn(action, allowed)
         # #735: everything a Vault does in its Vault Bucket, as on the shared bucket.
         operator = json.loads((MODULE_ROOT / "iam" / "archive-operator-policy.json")
                               .read_text(encoding="utf-8"))

@@ -1075,6 +1075,8 @@ export interface paths {
          *     stays ``provisioning``, FrostVault retries in the background and the Owner
          *     may retry at once. Adoption binds any free directory of a custom Source
          *     Volume in place and, once active, starts an asynchronous local scan.
+         *     ``retention_lock_days`` gives the bucket a Governance Retention Lock
+         *     (#736, ADR-0050), fixed for the Vault's life.
          */
         post: operations["create_owner_vault_api_vaults_post"];
         delete?: never;
@@ -1306,6 +1308,29 @@ export interface paths {
         put?: never;
         /** Resume Vault */
         post: operations["resume_vault_api_vaults__vault_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/retention-lock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vault Retention Lock
+         * @description The Vault's Retention Lock and the superseded versions it holds back (#736).
+         *
+         *     ``days`` is null for a Vault without one. ``retained`` counts the versions
+         *     waiting for their RetainUntilDate before FrostVault deletes them.
+         */
+        get: operations["vault_retention_lock_api_vaults__vault_id__retention_lock_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1801,6 +1826,7 @@ export interface components {
             no_local_copy_bytes: number;
             no_local_copy_count: number;
             object_count: number;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
             skipped: {
                 conflict?: number;
                 no_exact_version?: number;
@@ -1960,6 +1986,7 @@ export interface components {
                 bytes: number;
                 count: number;
             } | null;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
             totals: {
                 deleted_bytes: number;
                 deleted_count: number;
@@ -2132,6 +2159,7 @@ export interface components {
             lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
             name: string;
             paused?: boolean;
+            retention_lock_days?: number | null;
             root_released_at?: string | null;
             s3_bucket?: string;
             s3_prefix: string;
@@ -2667,6 +2695,31 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @description Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier. */
+        RetentionLockPreview: {
+            days: number;
+            locked_bytes: number;
+            locked_count: number;
+            /** @description When the first of them can be deleted. */
+            locked_from: string | null;
+            /** @description When the last of them can be deleted. */
+            locked_until: string | null;
+            /** @enum {string} */
+            mode: "GOVERNANCE";
+        };
+        /** @description A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate. */
+        RetentionLockStatus: {
+            days: number | null;
+            /** @enum {string|null} */
+            mode: "GOVERNANCE" | null;
+            retained: {
+                bytes: number;
+                count: number;
+                deletable_from: string | null;
+                deletable_until: string | null;
+            } | null;
+            vault_id: number;
+        };
         RetryFailedUploadsResponse: {
             item_count: number;
         };
@@ -3080,6 +3133,11 @@ export interface components {
             creation_mode?: components["schemas"]["VaultCreationMode"];
             name: string;
             relative_path?: string;
+            /**
+             * @description The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards.
+             * @enum {number|null}
+             */
+            retention_lock_days?: 30 | 90 | 180 | 365 | null;
             volume_alias?: string;
         };
         VaultCreateResponse: {
@@ -3126,6 +3184,7 @@ export interface components {
             prefix: string;
             pricing_effective_at: string;
             region: string;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
             savings_from?: string | null;
             version_count: number;
         };
@@ -3148,10 +3207,16 @@ export interface components {
                 failure: {
                     [key: string]: unknown;
                 } | null;
+                /** @description When the deletion runs again for them. */
+                next_attempt_at?: string | null;
                 pending_until: string;
                 preview: components["schemas"]["VaultDeletionPreview"];
                 reason: string;
                 requested_at: string;
+                /** @description Locked versions left after a run (#736): the request waits for them. */
+                retained_count?: number | null;
+                /** @description When the last of them can be deleted. */
+                retained_until?: string | null;
                 retryable: boolean;
                 /** @enum {string} */
                 status: "pending" | "running" | "failed";
@@ -3308,6 +3373,8 @@ export interface components {
             name: string;
             /** Relative Path */
             relative_path?: string | null;
+            /** Retention Lock Days */
+            retention_lock_days?: (30 | 90 | 180 | 365) | null;
             /** Volume Alias */
             volume_alias?: string | null;
         };
@@ -5546,6 +5613,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VaultPauseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vault_retention_lock_api_vaults__vault_id__retention_lock_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionLockStatus"];
                 };
             };
             /** @description Validation Error */
