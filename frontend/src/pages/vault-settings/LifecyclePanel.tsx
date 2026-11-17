@@ -11,7 +11,7 @@ import { LIFECYCLE_CLASSES, validStoragePlan, type DraftTransition } from "./sto
 import { VaultMovePanel } from "./VaultMovePanel";
 import { errorMessage } from "@/lib/errorMessage";
 
-const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early"];
+const PRESETS = ["standard_only", "economical", "archive_tiered", "deep_archive_early", "recent_backups"];
 
 export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t, ready } = useI18n();

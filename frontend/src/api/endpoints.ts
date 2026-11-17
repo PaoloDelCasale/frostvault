@@ -8,6 +8,8 @@ import type { ApiDownload } from "./client";
 import type {
   DuplicateCleanupStatus,
   DuplicateCleanupUpdate,
+  MirrorCleanupStatus,
+  MirrorCleanupUpdate,
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,
   MetadataBackupVerification,
@@ -495,6 +497,18 @@ export function fetchDuplicateCleanup(vaultId: number): Promise<DuplicateCleanup
 /** Turning it on or changing its wait and caps needs a fresh authentication. */
 export function updateDuplicateCleanup(vaultId: number, payload: DuplicateCleanupUpdate): Promise<DuplicateCleanupStatus> {
   return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`, {
+    method: "PUT", body: JSON.stringify(payload),
+  });
+}
+
+/** Mirror Cleanup of one Vault (#771, ADR-0052). */
+export function fetchMirrorCleanup(vaultId: number): Promise<MirrorCleanupStatus> {
+  return apiRequest<MirrorCleanupStatus>(`/api/vaults/${vaultId}/mirror-cleanup`);
+}
+
+/** Turning it on or making it delete more needs a fresh authentication. */
+export function updateMirrorCleanup(vaultId: number, payload: MirrorCleanupUpdate): Promise<MirrorCleanupStatus> {
+  return apiRequest<MirrorCleanupStatus>(`/api/vaults/${vaultId}/mirror-cleanup`, {
     method: "PUT", body: JSON.stringify(payload),
   });
 }

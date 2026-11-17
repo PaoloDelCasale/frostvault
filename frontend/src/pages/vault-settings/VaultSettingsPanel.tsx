@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
 import { CloudUsagePanel } from "./CloudUsagePanel";
 import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
+import { MirrorCleanupPanel } from "./MirrorCleanupPanel";
 import { ExclusionsPanel } from "./ExclusionsPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { MinimumStoragePanel } from "./MinimumStoragePanel";
@@ -110,6 +111,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     {!stopped && <SettingsSection id="duplicates" highlighted={highlight === "duplicates"} title={t("duplicate_cleanup.title")} summary={t("duplicate_cleanup.summary")}
       more={<><p>{t("duplicate_cleanup.how")}</p><p>{t("duplicate_cleanup.never_only_cloud")}</p></>}>
       <DuplicateCleanupPanel vaultId={vaultId} paused={vault?.paused} onNotice={show} />
+    </SettingsSection>}
+    {!stopped && <SettingsSection id="mirror" highlighted={highlight === "mirror"} title={t("mirror_cleanup.title")} summary={t("mirror_cleanup.summary")}
+      more={<><p>{t("mirror_cleanup.how")}</p><p>{t("mirror_cleanup.only_copy")}</p></>}>
+      <MirrorCleanupPanel vaultId={vaultId} paused={vault?.paused} onNotice={show} />
     </SettingsSection>}
     {vault?.retention_lock_days ? <SettingsSection id="retention-lock" highlighted={highlight === "retention-lock"} title={t("retention_lock.title")} summary={t("retention_lock.summary")}
       more={<><p>{t("retention_lock.how")}</p><p>{t("retention_lock.delete_markers")}</p></>}>

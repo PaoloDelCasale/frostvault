@@ -172,7 +172,8 @@ def status(connection: Any, vault_id: int, *, now: datetime | None = None) -> di
         """SELECT j.group_id, count(*) AS file_count, COALESCE(sum(j.total_bytes), 0) AS byte_count,
                   min(j.run_after) AS run_after, bool_and(j.status = 'pending_delay') AS cancellable
            FROM jobs j JOIN cloud_purge_requests r ON r.group_id = j.group_id
-           WHERE j.vault_id=%s AND r.automatic AND j.action='cloud-purge'
+           WHERE j.vault_id=%s AND r.automatic AND NOT r.mirror_cleanup
+             AND j.action='cloud-purge'
              AND j.status NOT IN ('completed','failed','cancelled')
            GROUP BY j.group_id ORDER BY min(j.run_after), j.group_id""",
         (vault_id,)).fetchall()

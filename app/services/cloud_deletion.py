@@ -25,6 +25,12 @@ file that is no longer a valid Cloud Duplicate is skipped and recorded, and
 the rest of the group proceeds. Anything about the Vault itself still cancels
 the whole group, as for the Owner's requests, which stay all-or-nothing.
 
+Mirror Cleanup (#771, ADR-0052) schedules automatic requests too, marked
+``mirror_cleanup``: its members are any Cloud-only files (a Cloud Duplicate
+or the only copy of its content) whose Local Copy was last seen long enough
+ago, optionally under chosen folders. They are revoked one by one like any
+automatic member, without the Cloud Duplicate check.
+
 Retention Lock (#736, ADR-0050): in a Vault Bucket with a Governance Retention
 Lock a consented Current may still be locked when the delay elapses. It is not
 deleted early (FrostVault has no bypass) and its Job does not fail: it waits
@@ -701,7 +707,8 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
 
 def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any]],
                     preview: DeletionPreview, group_path: str, actor: str, requested: datetime,
-                    requested_at: str, reason: str, origin: str) -> ScheduledDeletion:
+                    requested_at: str, reason: str, origin: str,
+                    mirror: bool = False) -> ScheduledDeletion:
     """One group, its request and one pending Job per file, then the audit record."""
     pending_until = (requested + timedelta(seconds=DELETION_DELAY_SECONDS)).isoformat()
     group_id = str(uuid.uuid4())
@@ -709,9 +716,11 @@ def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any
         "INSERT INTO job_groups(id, vault_id, path, created_at) VALUES (%s, %s, %s, %s)",
         (group_id, vault_id, group_path, requested_at))
     connection.execute(
-        """INSERT INTO cloud_purge_requests(group_id, reason, stop_protection, automatic)
-           VALUES (%s, %s, %s, %s)""",
-        (group_id, reason.strip(), origin == "stop-protection", origin == "automatic"))
+        """INSERT INTO cloud_purge_requests(group_id, reason, stop_protection, automatic,
+                                            mirror_cleanup)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (group_id, reason.strip(), origin == "stop-protection", origin == "automatic",
+         origin == "automatic" and mirror))
     rows = connection.execute(
         """INSERT INTO jobs(vault_id, file_id, archive_version_id, group_id, action, status,
                             origin, total_bytes, requested_at, updated_at, run_after)
@@ -729,7 +738,8 @@ def _record_consent(connection: Any, *, vault_id: int, files: list[dict[str, Any
                        paths=sorted(f["path"] for f in files)[:100], reason=reason.strip(),
                        pending_until=pending_until, preview=preview.as_dict(),
                        stop_protection=origin == "stop-protection",
-                       automatic=origin == "automatic")
+                       automatic=origin == "automatic",
+                       mirror_cleanup=origin == "automatic" and mirror)
     return ScheduledDeletion(group_id, job_ids, preview, pending_until)
 
 
@@ -759,6 +769,46 @@ def cloud_duplicates(connection: Any,
     if present:
         skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
     return [r for r in chosen if r["path"] not in present], skipped
+
+
+def _in_folders_sql(folders: list[str]) -> tuple[str, list[Any]]:
+    """Files under any of ``folders`` (relative to the Vault root); all when empty.
+
+    ``starts_with`` treats SQL wildcards in folder names literally.
+    """
+    if not folders:
+        return "TRUE", []
+    return ("EXISTS (SELECT 1 FROM unnest(%s::text[]) AS d(path)"
+            " WHERE starts_with(f.path, d.path || '/'))", [list(folders)])
+
+
+def cloud_only_files(connection: Any, vault: dict[str, Any], *,
+                     folders: list[str] | None = None,
+                     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Every Cloud-only file a deletion could schedule now, under ``folders``
+    (the whole Vault when empty): the candidates of the Mirror Cleanup (#771).
+
+    The eligible files of the manual «Delete from cloud» preview: Cloud
+    Duplicates and files with no other copy alike. Files already in pending
+    work (another deletion group, of either cleanup or of the Owner) are
+    skipped as ``pending_work``; local absence is then proven for the rest.
+    Each row carries ``local_seen_at`` (None when never seen locally).
+    """
+    if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
+        raise CloudDeletionError("Protection observations are not confirmed")
+    where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
+    scope, scope_params = _in_folders_sql(list(folders or []))
+    rows = connection.execute(_CLASSIFY_SQL.format(selection=f"{where} AND {scope}"),
+                              [_vault_prefix(vault), int(vault["id"]), *params,
+                               *scope_params]).fetchall()
+    eligible = [r for r in rows if r["reason"] == "eligible"]
+    # Always called, even with nothing left to check: an unreadable root must
+    # raise, so a count of zero is never a guess (#729).
+    present = _present_paths(vault, [r["path"] for r in eligible])
+    skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
+    if present:
+        skipped["present_locally"] = skipped.get("present_locally", 0) + len(present)
+    return [r for r in eligible if r["path"] not in present], skipped
 
 
 @dataclass(frozen=True)
@@ -799,10 +849,32 @@ def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before:
     ``beyond_minimum`` a duplicate still within its Minimum Storage Duration
     at the earliest execution is held back (``Sighting.held``, #731).
     """
+    rows, skipped = cloud_duplicates(connection, vault)
+    return _automatic(connection, vault, rows, skipped, seen_before=seen_before,
+                      beyond_minimum=beyond_minimum, now=now, duplicates_only=True)
+
+
+def automatic_mirror(connection: Any, vault: dict[str, Any], *, seen_before: str,
+                     folders: list[str] | None = None, beyond_minimum: bool = False,
+                     now: datetime | None = None) -> tuple[DeletionPreview, Sighting]:
+    """The Cloud-only files a Mirror Cleanup run would schedule (#771, ADR-0052).
+
+    Those of :func:`cloud_only_files` under ``folders`` whose Local Copy was
+    last seen at or before ``seen_before``; a file never seen locally never is.
+    With ``beyond_minimum`` a file still within its Minimum Storage Duration at
+    the earliest execution is held back, as in the Duplicate Cleanup.
+    """
+    rows, skipped = cloud_only_files(connection, vault, folders=folders)
+    return _automatic(connection, vault, rows, skipped, seen_before=seen_before,
+                      beyond_minimum=beyond_minimum, now=now, duplicates_only=False)
+
+
+def _automatic(connection: Any, vault: dict[str, Any], rows: list[dict[str, Any]],
+               skipped: dict[str, int], *, seen_before: str, beyond_minimum: bool,
+               now: datetime | None, duplicates_only: bool) -> tuple[DeletionPreview, Sighting]:
     from . import minimum_storage
     from .lifecycle_policies import load_vault_plan
 
-    rows, skipped = cloud_duplicates(connection, vault)
     sighting = split_by_sighting(rows, _aware(seen_before))
     moment = now or datetime.now(timezone.utc)
     if beyond_minimum and sighting.ready:
@@ -818,8 +890,9 @@ def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before:
     size = sum(int(r["size"] or 0) for r in chosen)
     preview = DeletionPreview(
         len(chosen), len(chosen), 0, size, fingerprint=_fingerprint(chosen), mode="automatic",
-        duplicates_only=True, eligible_count=len(chosen), eligible_bytes=size,
-        duplicate_count=len(chosen), duplicate_bytes=size, skipped=skipped,
+        duplicates_only=duplicates_only, eligible_count=len(chosen), eligible_bytes=size,
+        duplicate_count=len(chosen) if duplicates_only else 0,
+        duplicate_bytes=size if duplicates_only else 0, skipped=skipped,
         minimum_storage=minimum_storage_summary(connection, vault, chosen, now=moment),
         retention_lock=retention_lock_summary(vault, chosen, now=moment))
     return preview, sighting
@@ -827,11 +900,13 @@ def automatic_duplicates(connection: Any, vault: dict[str, Any], *, seen_before:
 
 def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
                                   files: list[dict[str, Any]], preview: DeletionPreview,
-                                  requested_at: str, reason: str) -> ScheduledDeletion:
+                                  requested_at: str, reason: str,
+                                  mirror: bool = False) -> ScheduledDeletion:
     """Record one automatic Delayed Cloud Deletion of ``files`` (#726).
 
     The caller holds the Vault lock and resolved ``files`` with
-    :func:`automatic_duplicates` in this transaction. The same seven-day delay
+    :func:`automatic_duplicates` (or, with ``mirror``, :func:`automatic_mirror`,
+    #771) in this transaction. The same seven-day delay
     and execution checks as the Owner's requests apply. The audit actor is
     ``system``; the request, its Jobs (origin ``automatic``) and the audit
     record say it was automatic.
@@ -846,7 +921,8 @@ def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
                     check_local=False)
     return _record_consent(connection, vault_id=int(vault["id"]), files=files, preview=preview,
                            group_path="", actor="system", requested=_aware(requested_at),
-                           requested_at=requested_at, reason=reason, origin="automatic")
+                           requested_at=requested_at, reason=reason, origin="automatic",
+                           mirror=mirror)
 
 
 def _group_jobs(connection: Any, vault_id: int, group_id: str) -> list[dict[str, Any]]:
@@ -940,7 +1016,8 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
         files = {str(f["file_id"]): f for f in _files_by_id(
             connection, [str(r["file_id"]) for r in active])}
         if request.get("automatic"):
-            invalid = _automatic_invalid(connection, vault, active, files, group_id)
+            invalid = _automatic_invalid(connection, vault, active, files, group_id,
+                                         mirror=bool(request.get("mirror_cleanup")))
             dropped = [r for r in active if str(r["file_id"]) in invalid]
             if dropped:
                 _revoke_members(connection, dropped, invalid, files, at=at)
@@ -960,11 +1037,13 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
 
 
 def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict[str, Any]],
-                       files: dict[str, dict[str, Any]], group_id: str) -> dict[str, str]:
+                       files: dict[str, dict[str, Any]], group_id: str, *,
+                       mirror: bool = False) -> dict[str, str]:
     """``{file_id: why}`` for the members of an automatic group that no longer qualify.
 
     Each member must still be exactly what it consented to, Cloud-only with no
-    other work, absent locally and a Cloud Duplicate. What concerns the whole
+    other work, absent locally and, unless the group is a Mirror Cleanup's
+    (#771), a Cloud Duplicate. What concerns the whole
     Vault (unconfirmed observations, an unreadable root) raises instead and
     cancels the group.
     """
@@ -991,6 +1070,8 @@ def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict
         if files[file_id]["path"] in present:
             invalid[file_id] = "A selected file is present on the server"
     remaining = [file_id for file_id in remaining if file_id not in invalid]
+    if mirror:
+        return invalid
     duplicates = _duplicate_ids(connection, vault, remaining)
     for file_id in remaining:
         if file_id not in duplicates:
@@ -1130,16 +1211,19 @@ def _count_automatic_deletions(connection: Any, *, vault_id: int, group_id: str,
     """
     if not completed:
         return
-    connection.execute(
-        """UPDATE vaults v SET
-               duplicate_cleanup_deleted_count = COALESCE(v.duplicate_cleanup_deleted_count, 0) + %s,
-               duplicate_cleanup_deleted_bytes = COALESCE(v.duplicate_cleanup_deleted_bytes, 0) + %s,
-               duplicate_cleanup_last_deleted_at = GREATEST(v.duplicate_cleanup_last_deleted_at,
-                                                            %s::timestamptz)
-           FROM cloud_purge_requests r
-           WHERE v.id = %s AND r.group_id = %s AND r.automatic""",
-        (len(completed), sum(int(r["total_bytes"] or 0) for r in completed), at,
-         vault_id, group_id))
+    # Each cleanup keeps its own totals: a Mirror Cleanup's members (#771)
+    # never add to the Duplicate Cleanup's, nor the reverse.
+    for kind, mirror in (("duplicate_cleanup", False), ("mirror_cleanup", True)):
+        connection.execute(
+            f"""UPDATE vaults v SET
+                   {kind}_deleted_count = COALESCE(v.{kind}_deleted_count, 0) + %s,
+                   {kind}_deleted_bytes = COALESCE(v.{kind}_deleted_bytes, 0) + %s,
+                   {kind}_last_deleted_at = GREATEST(v.{kind}_last_deleted_at, %s::timestamptz)
+               FROM cloud_purge_requests r
+               WHERE v.id = %s AND r.group_id = %s AND r.automatic
+                 AND r.mirror_cleanup = %s""",
+            (len(completed), sum(int(r["total_bytes"] or 0) for r in completed), at,
+             vault_id, group_id, mirror))
 
 
 def defer_locked(connection: Any, *, vault_id: int, group_id: str,

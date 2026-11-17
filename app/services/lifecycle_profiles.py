@@ -55,6 +55,8 @@ GUIDED_PROFILES = {
         LifecycleTransition(365, "DEEP_ARCHIVE"),
     )),
     "deep_archive_early": LifecycleProfile((LifecycleTransition(0, "DEEP_ARCHIVE"),)),
+    # Rotating backups kept a few weeks and restored at once (#771).
+    "recent_backups": LifecycleProfile((LifecycleTransition(0, "GLACIER_IR"),)),
 }
 
 

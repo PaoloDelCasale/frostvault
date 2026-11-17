@@ -103,7 +103,8 @@ _Avoid_: Protection suspended, Protezione sospesa, Suspended
 
 **Delayed Cloud Deletion**:
 The Owner's explicit permanent removal of Cloud-only content after a seven-day
-cancellable delay; it never removes Local Copies or follows an SMB deletion.
+cancellable delay; it never removes Local Copies and never follows a deletion
+on the server on its own, except through the Owner's opt-in Mirror Cleanup.
 _Avoid_: Purge now, Hide, Sync deletion
 
 **Cloud Duplicate**:
@@ -119,7 +120,18 @@ day, the Cloud Duplicates whose Local Copy was last seen long enough ago as one
 Delayed Cloud Deletion, with the same delay and cancellation. It never schedules
 a Cloud-only file without such a copy, and above its cap it schedules nothing
 and asks the Owner to confirm by hand.
-_Avoid_: Auto-purge, Sync deletion, Deduplication, Mirror cleanup
+_Avoid_: Auto-purge, Sync deletion, Deduplication, Mirror Cleanup
+
+**Mirror Cleanup**:
+An opt-in, per-Vault setting under which FrostVault itself schedules, once a
+day, the Cloud-only files whose Local Copy was last seen long enough ago,
+optionally only under chosen folders, as one Delayed Cloud Deletion, with the
+same delay and cancellation. Unlike Automatic Duplicate Cleanup it deletes the
+only remaining copy of that content, so the cloud then mirrors the server and
+no longer protects against a deletion on the server; it suits copies that are
+already backups. A file never seen locally is never scheduled, and above its
+cap it schedules nothing and asks the Owner to confirm by hand.
+_Avoid_: Sync deletion, Auto-purge, Automatic Duplicate Cleanup, Retention
 
 **Vault Tombstone**:
 The non-operational Vault and retained identity/history after Stop Protection

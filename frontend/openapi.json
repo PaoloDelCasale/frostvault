@@ -1113,6 +1113,93 @@
         }
       }
     },
+    "/api/vaults/{vault_id}/mirror-cleanup": {
+      "get": {
+        "summary": "Mirror Cleanup Status",
+        "operationId": "mirror_cleanup_status_api_vaults__vault_id__mirror_cleanup_get",
+        "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MirrorCleanupStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Mirror Cleanup",
+        "description": "Change the Mirror Cleanup of a Vault (#771, ADR-0052).\n\nA change that could delete more (turning it on, a shorter wait, higher\ncaps, broader folders, no longer waiting for the Minimum Storage Duration)\nneeds a fresh authentication; one that only deletes less never does.",
+        "operationId": "update_mirror_cleanup_api_vaults__vault_id__mirror_cleanup_put",
+        "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Vault Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MirrorCleanupUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MirrorCleanupStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/vaults/{vault_id}/minimum-storage": {
       "get": {
         "summary": "Minimum Storage Summary",
@@ -6653,6 +6740,478 @@
           "region",
           "evaluated_at"
         ]
+      },
+      "MirrorCleanupStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "grace_days": {
+            "type": "number"
+          },
+          "cap_files": {
+            "type": "number"
+          },
+          "cap_bytes": {
+            "type": "number"
+          },
+          "folders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "grace_days_min": {
+            "type": "number"
+          },
+          "grace_days_max": {
+            "type": "number"
+          },
+          "last_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "scheduled",
+                      "none",
+                      "capped",
+                      "skipped"
+                    ]
+                  },
+                  "at": {
+                    "type": "string"
+                  },
+                  "file_count": {
+                    "type": "number"
+                  },
+                  "byte_count": {
+                    "type": "number"
+                  },
+                  "group_id": {
+                    "type": "string"
+                  },
+                  "run_after": {
+                    "type": "string"
+                  },
+                  "waiting_count": {
+                    "type": "number"
+                  },
+                  "waiting_bytes": {
+                    "type": "number"
+                  },
+                  "unseen_count": {
+                    "type": "number"
+                  },
+                  "held_count": {
+                    "type": "number"
+                  },
+                  "held_bytes": {
+                    "type": "number"
+                  },
+                  "minimum_count": {
+                    "type": "number"
+                  },
+                  "minimum_bytes": {
+                    "type": "number"
+                  },
+                  "minimum_cost": {
+                    "type": "number"
+                  },
+                  "savings_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "at"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cloud_life": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "days_after_disappearance": {
+                "type": "number"
+              },
+              "storage_class": {
+                "type": "string"
+              },
+              "class_from_day": {
+                "type": "number"
+              },
+              "minimum_days": {
+                "type": "number"
+              },
+              "minimum_until_day": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "beyond_minimum": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "days_after_disappearance",
+              "storage_class",
+              "class_from_day",
+              "minimum_days",
+              "minimum_until_day",
+              "beyond_minimum"
+            ]
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "group_id": {
+                  "type": "string"
+                },
+                "file_count": {
+                  "type": "number"
+                },
+                "byte_count": {
+                  "type": "number"
+                },
+                "run_after": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cancellable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "group_id",
+                "file_count",
+                "byte_count",
+                "run_after",
+                "cancellable"
+              ]
+            }
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  },
+                  "first_eligible_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "earliest_deletion_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes",
+                  "first_eligible_at",
+                  "earliest_deletion_at"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unseen": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "deleted_count": {
+                    "type": "number"
+                  },
+                  "deleted_bytes": {
+                    "type": "number"
+                  },
+                  "last_deleted_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "deleted_count",
+                  "deleted_bytes",
+                  "last_deleted_at"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beyond_minimum": {
+            "type": "boolean",
+            "description": "Schedule only duplicates beyond their Minimum Storage Duration (#731)."
+          },
+          "held": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With beyond_minimum on: duplicates the next run keeps until their minimum ends."
+          },
+          "minimum_storage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MinimumStorageDeletion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetentionLockPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "grace_days",
+          "cap_files",
+          "cap_bytes",
+          "folders",
+          "grace_days_min",
+          "grace_days_max",
+          "last_run_at",
+          "next_run_at",
+          "last_outcome",
+          "cloud_life",
+          "pending",
+          "current",
+          "waiting",
+          "ready",
+          "unseen",
+          "totals",
+          "beyond_minimum",
+          "held",
+          "minimum_storage"
+        ]
+      },
+      "MirrorCleanupUpdate": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "grace_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 180.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grace Days"
+          },
+          "cap_files": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Files"
+          },
+          "cap_bytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1125899906842624.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Bytes"
+          },
+          "folders": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folders"
+          },
+          "beyond_minimum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beyond Minimum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MirrorCleanupUpdate",
+        "description": "Mirror Cleanup settings of one Vault (#771); omitted fields keep their value."
       },
       "NotificationReadAction": {
         "properties": {

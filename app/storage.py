@@ -134,6 +134,7 @@ from .services import vault_moves
 from .services import protection_stop as protection_stop_service
 from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
+from .services import mirror_cleanup as mirror_cleanup_service
 from .services import bucket_metrics as bucket_metrics_service
 from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
@@ -8288,6 +8289,17 @@ def run_duplicate_cleanup_once() -> int:
     return ran
 
 
+def run_mirror_cleanup_once() -> int:
+    """Run the due Mirror Cleanups (#771); returns how many Vaults ran."""
+    try:
+        ran = mirror_cleanup_service.run_due(db)
+    except Exception as exc:
+        _report_worker_error("mirror_cleanup", exc)
+        return 0
+    _note_worker_ok("mirror_cleanup")
+    return ran
+
+
 def read_bucket_metrics_once() -> int:
     """Read the CloudWatch sizes of every due Vault Bucket (#737); returns how many.
 
@@ -8340,6 +8352,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     last_vault_deletions: float | None = None
     last_retained_versions: float | None = None
     last_duplicate_cleanup: float | None = None
+    last_mirror_cleanup: float | None = None
     last_system_bucket: float | None = None
     last_vault_buckets: float | None = None
     last_bucket_metrics: float | None = None
@@ -8388,6 +8401,11 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_duplicate_cleanup >= duplicate_cleanup_service.POLL_SECONDS):
                     last_duplicate_cleanup = loop.time()
                     _submit_maintenance("duplicate_cleanup", run_duplicate_cleanup_once)
+                # Mirror Cleanup (#771): the same daily cadence, its own last run.
+                if (last_mirror_cleanup is None
+                        or loop.time() - last_mirror_cleanup >= mirror_cleanup_service.POLL_SECONDS):
+                    last_mirror_cleanup = loop.time()
+                    _submit_maintenance("mirror_cleanup", run_mirror_cleanup_once)
                 if (last_system_bucket is None
                         or loop.time() - last_system_bucket >= SYSTEM_BUCKET_POLL_SECONDS):
                     last_system_bucket = loop.time()

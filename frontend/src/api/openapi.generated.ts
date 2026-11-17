@@ -529,6 +529,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/vaults/{vault_id}/mirror-cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Mirror Cleanup Status */
+        get: operations["mirror_cleanup_status_api_vaults__vault_id__mirror_cleanup_get"];
+        /**
+         * Update Mirror Cleanup
+         * @description Change the Mirror Cleanup of a Vault (#771, ADR-0052).
+         *
+         *     A change that could delete more (turning it on, a shorter wait, higher
+         *     caps, broader folders, no longer waiting for the Minimum Storage Duration)
+         *     needs a fresh authentication; one that only deletes less never does.
+         */
+        put: operations["update_mirror_cleanup_api_vaults__vault_id__mirror_cleanup_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vaults/{vault_id}/minimum-storage": {
         parameters: {
             query?: never;
@@ -2373,6 +2398,100 @@ export interface components {
             region: string;
             disclaimer?: string | null;
             evaluated_at: string;
+        };
+        MirrorCleanupStatus: {
+            enabled: boolean;
+            grace_days: number;
+            cap_files: number;
+            cap_bytes: number;
+            folders: string[];
+            grace_days_min: number;
+            grace_days_max: number;
+            last_run_at: string | null;
+            next_run_at: string | null;
+            last_outcome: {
+                /** @enum {string} */
+                outcome: "scheduled" | "none" | "capped" | "skipped";
+                at: string;
+                file_count?: number;
+                byte_count?: number;
+                group_id?: string;
+                run_after?: string;
+                waiting_count?: number;
+                waiting_bytes?: number;
+                unseen_count?: number;
+                held_count?: number;
+                held_bytes?: number;
+                minimum_count?: number;
+                minimum_bytes?: number;
+                minimum_cost?: number;
+                savings_from?: string | null;
+            } | null;
+            cloud_life: {
+                days_after_disappearance: number;
+                storage_class: string;
+                class_from_day: number;
+                minimum_days: number;
+                minimum_until_day: number | null;
+                beyond_minimum: boolean;
+            };
+            pending: {
+                group_id: string;
+                file_count: number;
+                byte_count: number;
+                run_after: string | null;
+                cancellable: boolean;
+            }[];
+            current: {
+                count: number;
+                bytes: number;
+            } | null;
+            waiting: {
+                count: number;
+                bytes: number;
+                first_eligible_at: string | null;
+                earliest_deletion_at: string | null;
+            } | null;
+            ready: {
+                count: number;
+                bytes: number;
+            } | null;
+            unseen: {
+                count: number;
+                bytes: number;
+            } | null;
+            totals: {
+                deleted_count: number;
+                deleted_bytes: number;
+                last_deleted_at: string | null;
+            } | null;
+            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
+            beyond_minimum: boolean;
+            /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
+            held: {
+                count: number;
+                bytes: number;
+            } | null;
+            minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
+            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
+        };
+        /**
+         * MirrorCleanupUpdate
+         * @description Mirror Cleanup settings of one Vault (#771); omitted fields keep their value.
+         */
+        MirrorCleanupUpdate: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Grace Days */
+            grace_days?: number | null;
+            /** Cap Files */
+            cap_files?: number | null;
+            /** Cap Bytes */
+            cap_bytes?: number | null;
+            /** Folders */
+            folders?: string[] | null;
+            /** Beyond Minimum */
+            beyond_minimum?: boolean | null;
         };
         /** NotificationReadAction */
         NotificationReadAction: {
@@ -4581,6 +4700,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DuplicateCleanupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mirror_cleanup_status_api_vaults__vault_id__mirror_cleanup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MirrorCleanupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_mirror_cleanup_api_vaults__vault_id__mirror_cleanup_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MirrorCleanupUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MirrorCleanupStatus"];
                 };
             };
             /** @description Validation Error */

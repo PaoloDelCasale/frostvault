@@ -396,6 +396,51 @@ class StartupGuardTests(_GuardFixture):
                 "(SELECT COUNT(*) FROM vault_bucket_metric_reads) AS reads").fetchone()
         self.assertEqual(dict(counts), {"days": 0, "reads": 0})
 
+    def test_catalog_of_the_previous_revision_gets_mirror_cleanup_off(self) -> None:
+        """#771: every Vault starts with Mirror Cleanup off, never run, no totals,
+        and every existing automatic request stays the Duplicate Cleanup's."""
+        _migrate_to(self.dsn, "0016_rename_missing_size_idx")
+        group = "00000000-0000-0000-0000-000000000003"
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region, key_layout) "
+            "VALUES (1, 's3', 'frostvault-docs-ab12cd34', 'eu-south-1', 'bucket_root')",
+            "INSERT INTO vaults(id, target_id, name, source_root, duplicate_cleanup_enabled) "
+            "VALUES (1, 1, 'Docs', '/sources/docs', true)",
+            f"INSERT INTO job_groups(id, vault_id, path, created_at) VALUES ('{group}', 1, '', now())",
+            f"INSERT INTO cloud_purge_requests(group_id, reason, automatic) VALUES ('{group}', 'auto', true)")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            vault = connection.execute(
+                """SELECT duplicate_cleanup_enabled, mirror_cleanup_enabled, mirror_cleanup_grace_days,
+                          mirror_cleanup_cap_files, mirror_cleanup_cap_bytes, mirror_cleanup_folders,
+                          mirror_cleanup_beyond_minimum, mirror_cleanup_last_run_at,
+                          mirror_cleanup_last_outcome, mirror_cleanup_deleted_count,
+                          mirror_cleanup_deleted_bytes, mirror_cleanup_last_deleted_at
+                   FROM vaults WHERE id=1""").fetchone()
+            request = connection.execute(
+                "SELECT automatic, mirror_cleanup FROM cloud_purge_requests").fetchone()
+            for bad in ("mirror_cleanup_grace_days=0", "mirror_cleanup_grace_days=181",
+                        "mirror_cleanup_cap_files=0", "mirror_cleanup_cap_bytes=0",
+                        "mirror_cleanup_folders='{\"\"}'", "mirror_cleanup_deleted_count=1",
+                        "mirror_cleanup_last_outcome='[]'"):
+                with self.subTest(bad=bad), self.assertRaises(psycopg.errors.CheckViolation):
+                    connection.execute(f"UPDATE vaults SET {bad} WHERE id=1")
+                connection.rollback()
+            connection.execute("UPDATE vaults SET mirror_cleanup_grace_days=180 WHERE id=1")
+            connection.rollback()
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute("UPDATE cloud_purge_requests SET automatic=false, mirror_cleanup=true")
+            connection.rollback()
+        self.assertEqual(dict(vault), {
+            "duplicate_cleanup_enabled": True, "mirror_cleanup_enabled": False,
+            "mirror_cleanup_grace_days": 7, "mirror_cleanup_cap_files": 5000,
+            "mirror_cleanup_cap_bytes": 50 * 1024 ** 3, "mirror_cleanup_folders": [],
+            "mirror_cleanup_beyond_minimum": False, "mirror_cleanup_last_run_at": None,
+            "mirror_cleanup_last_outcome": None, "mirror_cleanup_deleted_count": None,
+            "mirror_cleanup_deleted_bytes": None, "mirror_cleanup_last_deleted_at": None})
+        self.assertEqual(dict(request), {"automatic": True, "mirror_cleanup": False})
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade

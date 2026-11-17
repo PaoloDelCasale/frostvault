@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
 import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import { defaultBillingExport, defaultCloudUsage, defaultDuplicateCleanup, defaultMinimumStorage, defaultVaultBilledCost, jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { defaultBillingExport, defaultCloudUsage, defaultDuplicateCleanup, defaultMirrorCleanup, defaultMinimumStorage, defaultVaultBilledCost, jsonResponse, loadCatalog } from "./vault-settings-harness";
 
 const vaults = [{ id: 1, uuid: "first", name: "First" }, { id: 2, uuid: "second", name: "Second" }];
 const location = () => `${window.location.pathname}${window.location.search}`;
@@ -23,6 +23,7 @@ describe("Owner app routing and shell (#512)", () => {
       const url = String(input); calls.push(url);
       if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en","it"], vault: { ...vaults[0], delete_enabled: true, cloud_deletion_enabled: true } });
       if (/^\/api\/vaults\/\d+\/duplicate-cleanup/.test(url)) return jsonResponse(defaultDuplicateCleanup);
+      if (/^\/api\/vaults\/\d+\/mirror-cleanup/.test(url)) return jsonResponse(defaultMirrorCleanup);
       if (/^\/api\/vaults\/\d+\/minimum-storage/.test(url)) return jsonResponse(defaultMinimumStorage);
       if (/^\/api\/vaults\/\d+\/cloud-usage/.test(url)) return jsonResponse(defaultCloudUsage);
       if (/^\/api\/vaults\/\d+\/billed-cost/.test(url)) return jsonResponse(defaultVaultBilledCost);
