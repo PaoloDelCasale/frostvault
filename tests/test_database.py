@@ -47,7 +47,7 @@ BASELINE_TABLES = {
     "metadata_restore_vaults", "metadata_restore_updates",
 }
 # Tables added by later linear revisions of the chain.
-HEAD_TABLES = BASELINE_TABLES | {"vault_deletions"}
+HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket"}
 
 
 def _tables(path: Path) -> set[str]:
@@ -302,6 +302,24 @@ class StartupGuardTests(_GuardFixture):
         self.assertEqual(len(columns), 3)
         for column in columns.values():
             self.assertEqual((column["is_nullable"], column["column_default"]), ("YES", None))
+
+    def test_catalog_of_the_previous_revision_gets_no_invented_system_bucket(self) -> None:
+        """#734: an upgrade creates no System Bucket row, and earlier off-host
+        runs keep s3_bucket NULL: their shared bucket was never recorded."""
+        _migrate_to(self.dsn, "0007_duplicate_cleanup_totals")
+        self.execute(
+            "INSERT INTO metadata_backup_runs(created_at, reason, backend, status, s3_key) "
+            "VALUES (now(), 'scheduled', 'postgresql', 'succeeded', 'system/backups/a.bak.enc')")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM system_bucket").fetchone()["n"], 0)
+            run = connection.execute("SELECT s3_key, s3_bucket FROM metadata_backup_runs").fetchone()
+            self.assertEqual(dict(run), {"s3_key": "system/backups/a.bak.enc", "s3_bucket": None})
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute(
+                    "INSERT INTO metadata_backup_runs(created_at, reason, backend, status, s3_bucket) "
+                    "VALUES (now(), 'manual', 'postgresql', 'succeeded', 'frostvault-system-abcd1234')")
 
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")

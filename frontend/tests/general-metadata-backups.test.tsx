@@ -188,7 +188,7 @@ function integrityResponse(run: MetadataBackupRun = INTEGRITY_RUN) {
 }
 
 function renderSection() {
-  render(
+  return render(
     <ApiQueryProvider client={createAppQueryClient()}>
       <I18nProvider>
         <MetadataBackupsSection />
@@ -350,6 +350,35 @@ describe("MetadataBackupsSection", () => {
     const summary = await screen.findByTestId("metadata-backups-verification");
     expect(summary).toHaveTextContent("Last verified metadata backup: Not yet available");
     expect(summary).toHaveTextContent("automatic verification disabled");
+  });
+
+  it("names the System Bucket that receives off-host copies, or why there is none (#734)", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ system_bucket: { name: "frostvault-system-k3x9q0ab", region: "eu-south-1", origin: "created", ready: true }, off_host: true },
+        "Off-host copies go to system/backups/ in the System Bucket frostvault-system-k3x9q0ab (eu-south-1)."],
+      [{ system_bucket: { name: "frostvault-system-k3x9q0ab", region: "eu-south-1", origin: "created", ready: false }, off_host: true },
+        "FrostVault is creating the System Bucket frostvault-system-k3x9q0ab (eu-south-1)"],
+      [{ system_bucket: null, off_host: true }, "FrostVault creates the System Bucket"],
+      [{ system_bucket: null, off_host: false }, "backups stay on this server"],
+    ];
+    for (const [extra, text] of cases) {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/i18n/catalog")) {
+          return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
+        }
+        if (url === "/api/general/metadata-backups") {
+          const response = integrityResponse({ ...INTEGRITY_RUN });
+          return jsonResponse({ ...response, status: { ...response.status, ...extra } });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      configureApiClient({ fetch: fetchMock });
+      const { unmount } = renderSection();
+      expect(await screen.findByTestId("metadata-backups-system-bucket")).toHaveTextContent(text);
+      unmount();
+      resetApiClientForTests();
+    }
   });
 
   it("keeps a synchronous run visibly pending, refreshes, and surfaces POST errors", async () => {

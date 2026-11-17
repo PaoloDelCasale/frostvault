@@ -9,7 +9,7 @@ Seams under test (confirmed for this issue):
 - ``app.services.metadata_backups.store_backup_to_object_store``
   — injectable ObjectStore boundary for encrypted ``system/backups/``
 - ``app.services.metadata_backups.verify_restore_isolated``
-  — restore into a temporary database without touching live DB or vault S3
+  — restore into a temporary database without touching the live DB
 - ``app.services.metadata_backups.default_object_store``
   — public ObjectStore factory for configured off-host backup (BUG-010)
 - ``app.storage._verify_latest_metadata_backup_once``
@@ -220,9 +220,8 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             insert_owner(connection, display_name="Admin")
         self.master_key = Fernet.generate_key().decode("ascii")
-        self.store = RecordingObjectStore()
 
-    def test_verify_restore_isolated_does_not_touch_live_db_or_vault_objects(self) -> None:
+    def test_verify_restore_isolated_does_not_touch_the_live_db(self) -> None:
         artifact = metadata_backups.create_metadata_backup(
             reason="manual",
             backup_dir=self.backup_dir,
@@ -230,24 +229,16 @@ class IsolatedRestoreVerificationTests(unittest.TestCase):
             database_dsn=database_dsn(str(self.db_path)),
             config_snapshot={"scan_interval": 3600},
         )
-        # Poison the object store with a vault key that must never be touched.
-        self.store.objects["vaults/abc/file.bin"] = b"do-not-touch"
         live_before = database_state(self.db_path)
 
         result = metadata_backups.verify_restore_isolated(
             artifact["path"],
             master_key=self.master_key,
             work_dir=self.root / "verify",
-            object_store=self.store,
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["owner_count"], 1)
         self.assertEqual(database_state(self.db_path), live_before)
-        self.assertEqual(self.store.objects["vaults/abc/file.bin"], b"do-not-touch")
-        self.assertEqual(
-            [key for key in self.store.objects if key.startswith("vaults/")],
-            ["vaults/abc/file.bin"],
-        )
 
 
 class MetadataVerifyRunBindingTests(unittest.TestCase):
@@ -375,13 +366,13 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
 
         Seam: ``default_object_store()`` — public factory used by admin/manual
         backup and the scheduled worker.
-        With ``vault_s3_bucket`` set and ``s3_client`` failing at the AWS
+        With ``metadata_backup_bucket`` set and ``s3_client`` failing at the AWS
         boundary, must raise ``BackupError`` rather than return ``None`` (which
         aliases failure as “S3 unset” and yields silent local-only success).
         """
         configured = replace(
             __import__("app.config", fromlist=["settings"]).settings,
-            vault_s3_bucket="frostvault-backups",
+            metadata_backup_bucket="frostvault-backups",
         )
         with (
             patch.object(metadata_backups, "settings", configured),
@@ -397,14 +388,78 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
         self.assertIn("unavailable", str(ctx.exception).lower())
         self.assertNotIn("AWS credentials", str(ctx.exception))
 
-    def test_bug_010_unset_or_placeholder_bucket_returns_none(self) -> None:
-        """Unset and documented placeholder buckets deliberately mean local-only."""
+    def test_bug_010_unset_or_placeholder_bucket_without_credentials_returns_none(self) -> None:
+        """No METADATA_BACKUP_BUCKET and no AWS credentials deliberately mean local-only."""
         base = __import__("app.config", fromlist=["settings"]).settings
         for bucket in ("", "example-bucket", "REPLACE-WITH-A-BUCKET"):
             with self.subTest(bucket=bucket):
-                configured = replace(base, vault_s3_bucket=bucket)
-                with patch.object(metadata_backups, "settings", configured):
+                configured = replace(base, metadata_backup_bucket=bucket, vault_s3_bucket="")
+                with (
+                    patch.object(metadata_backups, "settings", configured),
+                    patch.object(metadata_backups.system_bucket,
+                                 "aws_credentials_configured", return_value=False),
+                ):
                     self.assertIsNone(metadata_backups.default_object_store())
+
+    def test_the_shared_vault_bucket_no_longer_selects_the_backup_bucket(self) -> None:
+        """#734: backups go to the System Bucket, never to VAULT_S3_BUCKET."""
+        base = __import__("app.config", fromlist=["settings"]).settings
+        configured = replace(base, vault_s3_bucket="shared-bucket", metadata_backup_bucket="")
+        system = metadata_backups.system_bucket.SystemBucket(
+            "frostvault-system-abcd1234", "eu-south-1", "created")
+        client = object()
+        with (
+            patch.object(metadata_backups, "settings", configured),
+            patch.object(metadata_backups.system_bucket,
+                         "aws_credentials_configured", return_value=True),
+            patch.object(metadata_backups.system_bucket, "ensure", return_value=system) as ensure,
+            patch("app.storage.s3_client", return_value=client) as s3_client,
+        ):
+            store = metadata_backups.default_object_store()
+        ensure.assert_called_once_with(configured)
+        s3_client.assert_called_once_with(region="eu-south-1")
+        self.assertEqual(store.bucket, "frostvault-system-abcd1234")
+
+    def test_the_shared_vault_bucket_still_requires_an_off_host_copy(self) -> None:
+        """S1: an upgrade with VAULT_S3_BUCKET but no credentials/IAM fails loudly."""
+        base = __import__("app.config", fromlist=["settings"]).settings
+        configured = replace(base, vault_s3_bucket="shared-bucket", metadata_backup_bucket="")
+        refusal = metadata_backups.system_bucket.SystemBucketUnavailable(
+            "Creating System Bucket frostvault-system-abcd1234 did not finish: "
+            "S3 refused s3:CreateBucket (AccessDenied). FrostVault retries with the same name")
+        with (
+            patch.object(metadata_backups, "settings", configured),
+            patch.object(metadata_backups.system_bucket,
+                         "aws_credentials_configured", return_value=False),
+            patch.object(metadata_backups.system_bucket, "ensure", side_effect=refusal) as ensure,
+        ):
+            self.assertTrue(metadata_backups.off_host_backup_configured())
+            resolved = metadata_backups.resolve_object_store()
+        ensure.assert_called_once_with(configured)
+        self.assertIsNone(resolved.store)
+        self.assertIsInstance(resolved.error, metadata_backups.ObjectStoreUnavailableError)
+        self.assertEqual(str(resolved.error), str(refusal))
+
+    def test_resolving_never_leaks_an_unexpected_error(self) -> None:
+        def broken():
+            raise RuntimeError("provider detail with an account id")
+
+        resolved = metadata_backups.resolve_object_store(broken)
+        self.assertEqual(str(resolved.error),
+                         "Configured metadata backup object store is unavailable")
+
+    def test_a_refused_system_bucket_keeps_its_clear_message(self) -> None:
+        base = __import__("app.config", fromlist=["settings"]).settings
+        configured = replace(base, metadata_backup_bucket="my-backups")
+        refusal = metadata_backups.system_bucket.SystemBucketUnavailable(
+            "METADATA_BACKUP_BUCKET refused: Versioning is disabled, not enabled")
+        with (
+            patch.object(metadata_backups, "settings", configured),
+            patch.object(metadata_backups.system_bucket, "ensure", side_effect=refusal),
+        ):
+            with self.assertRaises(metadata_backups.ObjectStoreUnavailableError) as ctx:
+                metadata_backups.default_object_store()
+        self.assertEqual(str(ctx.exception), str(refusal))
 
 
 class BackupOrchestrationNotificationTests(unittest.TestCase):
@@ -421,6 +476,49 @@ class BackupOrchestrationNotificationTests(unittest.TestCase):
             insert_owner(connection, display_name="Admin")
         self.master_key = Fernet.generate_key().decode("ascii")
         self.store = RecordingObjectStore()
+
+    def test_off_host_copy_records_the_system_bucket(self) -> None:
+        """#734: the run names the bucket of its off-host copy."""
+        self.store.bucket = "frostvault-system-abcd1234"
+        with PostgresConnection(str(self.db_path)) as connection:
+            result = metadata_backups.run_metadata_backup(
+                connection,
+                reason="manual",
+                backup_dir=self.backup_dir,
+                master_key=self.master_key,
+                database_dsn=database_dsn(str(self.db_path)),
+                config_snapshot={"scan_interval": 3600},
+                object_store=metadata_backups.resolve_object_store(lambda: self.store),
+                retention=5,
+            )
+            run = metadata_backups.list_backup_artifacts(connection)[0]
+        self.assertEqual(result["s3_bucket"], "frostvault-system-abcd1234")
+        self.assertEqual((run["s3_bucket"], run["s3_key"]),
+                         ("frostvault-system-abcd1234", result["s3_key"]))
+        self.assertTrue(run["s3_key"].startswith("system/backups/"))
+
+    def test_a_refused_system_bucket_is_a_recorded_notified_failure(self) -> None:
+        refusal = metadata_backups.ObjectStoreUnavailableError(
+            "METADATA_BACKUP_BUCKET refused: Versioning is disabled, not enabled")
+
+        with PostgresConnection(str(self.db_path)) as connection:
+            with self.assertRaises(metadata_backups.ObjectStoreUnavailableError):
+                metadata_backups.run_metadata_backup(
+                    connection,
+                    reason="scheduled",
+                    backup_dir=self.backup_dir,
+                    master_key=self.master_key,
+                    database_dsn=database_dsn(str(self.db_path)),
+                    config_snapshot={"scan_interval": 3600},
+                    object_store=metadata_backups.ResolvedObjectStore(error=refusal),
+                    retention=5,
+                )
+            run = metadata_backups.list_backup_artifacts(connection)[0]
+            notes = connection.execute("SELECT body FROM notifications").fetchall()
+        self.assertEqual((run["status"], run["error_message"]), ("failed", str(refusal)))
+        self.assertTrue(any(str(refusal) in row["body"] for row in notes))
+        # The local artifact is kept, as after a failed upload; nothing was rotated.
+        self.assertEqual(len(list(self.backup_dir.glob("*.bak.enc"))), 1)
 
     def test_failed_backup_records_status_and_notifies_admins(self) -> None:
         with PostgresConnection(str(self.db_path)) as connection:

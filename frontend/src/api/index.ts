@@ -80,6 +80,7 @@ export type {
   MetadataBackupStatus,
   MetadataBackupsResponse,
   MetadataBackupDownload,
+  SystemBucket,
 } from "./endpoints";
 
 export { createLatestRequestScope } from "./latest";

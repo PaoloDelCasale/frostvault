@@ -45,6 +45,36 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
         self.assertIn("s3:ListBucketVersions", actions)
         self.assertIn("s3:ListBucketMultipartUploads", actions)
 
+    def test_frostvault_buckets_policy_is_scoped_and_never_bypasses_retention(self) -> None:
+        """#734 (ADR-0049): FrostVault creates and configures only frostvault-* buckets."""
+        policy_path = MODULE_ROOT / "iam" / "frostvault-buckets-policy.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        allowed: set[str] = set()
+        for statement in policy["Statement"]:
+            resources = statement["Resource"]
+            resources = resources if isinstance(resources, list) else [resources]
+            self.assertTrue(all(resource.startswith("arn:aws:s3:::frostvault-*")
+                                for resource in resources), resources)
+            actions = statement["Action"]
+            actions = actions if isinstance(actions, list) else [actions]
+            if statement["Effect"] == "Allow":
+                allowed.update(actions)
+            else:
+                self.assertEqual(actions, ["s3:BypassGovernanceRetention"])
+        self.assertNotIn("s3:BypassGovernanceRetention", allowed)
+        # Deletion of buckets and objects belongs to #735/#739, not to #734.
+        for action in ("s3:DeleteBucket", "s3:DeleteObject", "s3:DeleteObjectVersion"):
+            self.assertNotIn(action, allowed)
+        self.assertFalse(any("*" in action for action in allowed))
+        for action in ("s3:CreateBucket", "s3:PutBucketPublicAccessBlock",
+                       "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
+                       "s3:PutLifecycleConfiguration", "s3:PutBucketTagging",
+                       "s3:GetBucketObjectLockConfiguration",
+                       "s3:PutBucketObjectLockConfiguration",
+                       "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls",
+                       "s3:PutObject", "s3:GetObject"):
+            self.assertIn(action, allowed)
+
     def test_github_oidc_ci_policy_is_prefix_scoped(self) -> None:
         policy_path = MODULE_ROOT / "iam" / "github-oidc-ci-policy.json"
         raw = policy_path.read_text(encoding="utf-8")

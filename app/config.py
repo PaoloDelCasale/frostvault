@@ -160,7 +160,7 @@ class Settings:
     archive_master_key: str = os.getenv("ARCHIVE_MASTER_KEY", "")
 
     # Encrypted metadata database backups (issue #15). Artifacts land on a
-    # dedicated local volume and under the encrypted system/backups/ S3 prefix.
+    # dedicated local volume and under system/backups/ in the System Bucket.
     # The master key seals artifacts but is never written into them.
     metadata_backup_dir: str = os.getenv("METADATA_BACKUP_DIR", "/data/backups")
     metadata_backup_retention: int = max(
@@ -177,6 +177,9 @@ class Settings:
         1, int(os.getenv("NOTIFICATION_RETENTION_DAYS", "30"))
     )
     audit_retention_days: int = max(1, int(os.getenv("AUDIT_RETENTION_DAYS", "90")))
+    # Optional operator-supplied System Bucket (#734, ADR-0049): verified,
+    # never changed. Empty: FrostVault creates frostvault-system-<random>.
+    metadata_backup_bucket: str = os.getenv("METADATA_BACKUP_BUCKET", "").strip()
     metadata_backup_s3_prefix: str = os.getenv(
         "METADATA_BACKUP_S3_PREFIX", "system/backups/"
     )

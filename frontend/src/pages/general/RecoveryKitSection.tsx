@@ -53,11 +53,18 @@ export function RecoveryKitSection() {
       <Panel className="grid gap-3 p-5">
         {status?.configured ? <>
           <p className="break-all">{t("recovery_kit.fingerprint")}: <code>{status.fingerprint}</code></p>
+          {status.system_bucket ? <p className="break-all" data-testid="recovery-kit-system-bucket">
+            {t("recovery_kit.system_bucket", { name: status.system_bucket.name, region: status.system_bucket.region })}
+          </p> : null}
           <Button className="w-fit" disabled={busy} onClick={() => void download()}>{t("recovery_kit.download")}</Button>
           {status.custody_acknowledged
             ? <p role="status">{t("recovery_kit.acknowledged")}</p>
             : <Button className="w-fit" disabled={busy} variant="secondary" onClick={() => void acknowledge()}>{t("recovery_kit.acknowledge")}</Button>}
-        </> : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
+        </> : status?.awaiting_backup && status.system_bucket
+          ? <p role="alert" data-testid="recovery-kit-awaiting-backup">
+            {t("recovery_kit.awaiting_backup", { name: status.system_bucket.name, region: status.system_bucket.region })}
+          </p>
+          : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
         {status?.metadata_restore ? <p role="alert" data-testid="metadata-restore-warning">
           {t("recovery_kit.restore_warning", { date: formatDateTime(status.metadata_restore.backup_created_at), count: status.metadata_restore.updated_files })}
         </p> : null}

@@ -3078,6 +3078,10 @@
               "null"
             ]
           },
+          "awaiting_backup": {
+            "description": "A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734).",
+            "type": "boolean"
+          },
           "configured": {
             "type": "boolean"
           },
@@ -3102,6 +3106,37 @@
             "required": [
               "backup_created_at",
               "updated_files"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "system_bucket": {
+            "description": "The current System Bucket (#734), ready or not; null while there is none.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "origin": {
+                "enum": [
+                  "configured",
+                  "created"
+                ],
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "region": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "region",
+              "origin",
+              "ready"
             ],
             "type": [
               "object",

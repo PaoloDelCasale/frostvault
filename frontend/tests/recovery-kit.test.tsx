@@ -19,6 +19,7 @@ describe("Installation Recovery Kit", () => {
   it("shows one fingerprint-bound custody action and a durable dated file-count warning", async () => {
     const fingerprint = "a".repeat(24);
     const status = { configured: true, fingerprint, custody_acknowledged: false, acknowledged_at: null,
+      system_bucket: { name: "frostvault-system-k3x9q0ab", region: "eu-south-1", origin: "created", ready: true },
       metadata_restore: { backup_created_at: "2026-11-02T10:00:00Z", updated_files: 42 } };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -33,6 +34,8 @@ describe("Installation Recovery Kit", () => {
     configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
     renderSection();
     expect(await screen.findByText(fingerprint)).toBeInTheDocument();
+    expect(screen.getByTestId("recovery-kit-system-bucket"))
+      .toHaveTextContent("System Bucket: frostvault-system-k3x9q0ab (eu-south-1)");
     const warning = screen.getByTestId("metadata-restore-warning");
     expect(warning).toHaveTextContent(/Nov 2, 2026, \d{1,2}:\d{2}\s?[AP]M/);
     expect(warning).not.toHaveTextContent("2026-11-02T");
@@ -40,6 +43,24 @@ describe("Installation Recovery Kit", () => {
     await userEvent.click(screen.getByRole("button", { name: /I have stored/i }));
     expect(await screen.findByText("Custody confirmed for the current kit.")).toBeInTheDocument();
     expect(screen.getByTestId("metadata-restore-warning")).toBeInTheDocument();
+  });
+
+  it("explains that the kit waits for a backup in the System Bucket and to keep the previous kit", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/i18n/catalog")) return json({ locale: "en", locales: ["en", "it"], messages });
+      if (url === "/api/recovery-kit") return json({ configured: false, fingerprint: null, awaiting_backup: true,
+        system_bucket: { name: "frostvault-system-k3x9q0ab", region: "eu-south-1", origin: "created", ready: true },
+        custody_acknowledged: false, acknowledged_at: null, metadata_restore: null });
+      throw new Error(`Unexpected request ${url}`);
+    });
+    configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
+    renderSection();
+    const notice = await screen.findByTestId("recovery-kit-awaiting-backup");
+    expect(notice).toHaveTextContent("first metadata backup that succeeds in the System Bucket frostvault-system-k3x9q0ab (eu-south-1)");
+    expect(notice).toHaveTextContent("keep your previous kit");
+    expect(notice).toHaveTextContent("the bucket in VAULT_S3_BUCKET");
+    expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
   });
 
   it("reports stale custody without displaying or logging any kit material", async () => {

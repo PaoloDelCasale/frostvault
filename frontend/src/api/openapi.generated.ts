@@ -2306,12 +2306,22 @@ export interface components {
         };
         RecoveryKitStatus: {
             acknowledged_at: string | null;
+            /** @description A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734). */
+            awaiting_backup?: boolean;
             configured: boolean;
             custody_acknowledged: boolean;
             fingerprint: string | null;
             metadata_restore: {
                 backup_created_at: string;
                 updated_files: number;
+            } | null;
+            /** @description The current System Bucket (#734), ready or not; null while there is none. */
+            system_bucket?: {
+                name: string;
+                /** @enum {string} */
+                origin: "configured" | "created";
+                ready: boolean;
+                region: string;
             } | null;
         } & {
             [key: string]: unknown;
