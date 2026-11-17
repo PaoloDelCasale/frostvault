@@ -61,6 +61,23 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat(pageLocale()).format(value);
 }
 
+/**
+ * A count always grouped, four-digit ones too: «1.900» / «1,900» (#729, #731).
+ * Italian leaves four digits ungrouped by default.
+ */
+export function formatGroupedCount(value: number, locale?: string): string {
+  const options = { maximumFractionDigits: 0, useGrouping: true } as const;
+  try { return new Intl.NumberFormat(locale ?? pageLocale(), options).format(value); } catch { return new Intl.NumberFormat("en", options).format(value); }
+}
+
+/** A calendar month (`2027-05`, UTC) in the page language: «maggio 2027». */
+export function formatMonth(value: string, locale?: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  return date.toLocaleDateString(locale ?? pageLocale(), { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
 /** Human date and time in the page language; "—" when absent or invalid. */
 export function formatDateTime(value: unknown, locale?: string): string {
   if (typeof value !== "string" || !value) return "—";

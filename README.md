@@ -208,6 +208,20 @@ and Cloud-only Conflicts remain held back.
   in Operations; cancellation retains copies and does not undo finished movement.
   Reconnect and Stop Protection require these Jobs to finish or be cancelled.
   See [copy/restart safety and limitations](docs/adr/0021-vault-wide-colder-moves.md).
+- **Minimum storage duration** (#731): STANDARD_IA (30 days), GLACIER_IR and
+  GLACIER (90) and DEEP_ARCHIVE (180) bill a version for those days from its **Class Entry**,
+  not from its upload, even if it is deleted earlier. Migration **0009**
+  records the Class Entry (`archive_versions.storage_class_since`) from then
+  on: a direct PUT or copy enters its class when written; an observed class
+  change (listing, audit, restore check) moves it. Existing versions are not
+  backfilled: their entry is estimated as upload + plan transition days + 1
+  and marked as estimated. Objects under 128 KB stay Standard. The Vault's
+  **Minimum storage duration** settings section shows, per class, the versions
+  within and beyond it, the remaining minimum cost and the month-by-month
+  release; «Delete from cloud», Automatic Duplicate Cleanup and Vault Deletion
+  say how many versions are still within it and what deleting them still
+  bills. All amounts are list-price estimates, not your AWS bill. The duplicate
+  cleanup can wait for the minimum to end (off by default).
 - Lifecycle synchronization preserves external bucket rules and the seven-day
   incomplete-multipart abort rule. Changing a plan never deletes cloud content.
 - **Delete from cloud** is available only for **Cloud-only** files (or folders

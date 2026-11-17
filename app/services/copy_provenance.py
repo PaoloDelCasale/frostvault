@@ -380,8 +380,11 @@ def _record_landed(w: Any, job: dict[str, Any], attempt: Attempt, version: str) 
                    WHERE id=%s AND settled_at IS NULL""", (version, attempt.id))
             connection.execute(
                 """INSERT INTO archive_versions(file_id, object_key, provider_version_id, size,
-                       storage_class, availability, availability_checked_at, copy_attempt_id)
+                       storage_class, storage_class_since, availability, availability_checked_at,
+                       copy_attempt_id)
                    SELECT file_id, destination_key, landed_version_id, size, storage_class,
+                          -- Copied straight into its class: it enters it when created (#731).
+                          CASE WHEN storage_class IS NOT NULL THEN now() END,
                           'available', now(), id
                    FROM copy_attempts WHERE id=%s AND outcome='landed'
                    ON CONFLICT (copy_attempt_id) DO NOTHING""", (attempt.id,))

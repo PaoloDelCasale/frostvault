@@ -1076,6 +1076,8 @@ class ArchiveCatalog:
         ``upload_attempt_id`` names the landed upload attempt that produced it:
         its snapshot is the version's expected proof (#588), and the database
         refuses any key, size or VersionId other than the attempt's.
+        A version written straight into ``storage_class`` enters it when it
+        is created: that is its Class Entry (``storage_class_since``, #731).
         """
         if not provider_version_id:
             raise ValueError("A provider VersionId is required")
@@ -1089,9 +1091,12 @@ class ArchiveCatalog:
             ), version AS (
                 INSERT INTO archive_versions(
                     file_id, object_key, provider_version_id, size, storage_class,
-                    availability, availability_checked_at, created_at, upload_attempt_id
+                    storage_class_since, availability, availability_checked_at,
+                    created_at, upload_attempt_id
                 )
-                SELECT target.id, %s, %s, %s, %s, 'available', %s, %s, %s FROM target
+                SELECT target.id, %s, %s, %s, %s,
+                       CASE WHEN %s::text IS NOT NULL THEN %s::timestamptz END,
+                       'available', %s, %s, %s FROM target
                 RETURNING id, file_id
             )
             UPDATE files f
@@ -1103,7 +1108,7 @@ class ArchiveCatalog:
             """,
             (
                 vault_file_id, object_key, provider_version_id, size,
-                storage_class, stamp, stamp, upload_attempt_id, stamp,
+                storage_class, storage_class, stamp, stamp, stamp, upload_attempt_id, stamp,
             ),
         ).fetchone()
         if row is None:
@@ -1797,23 +1802,30 @@ class ArchiveCatalog:
         ``state`` is ``restoring``, ``available`` or None (no restore needed or
         observed); ``expiry`` is the provider's expiry of the temporary copy,
         kept only while it is available. Integrity and availability are never
-        touched (#594).
+        touched (#594). A ``storage_class`` other than the recorded one moves
+        the Class Entry to ``checked_at`` (#731).
         """
         if state == "not_requested":
             state = None
+        from .services.minimum_storage import observed_since_sql
+
+        checked = _required_timestamp(checked_at)
+        since = observed_since_sql("av.storage_class", "%s::text",
+                                   "av.storage_class_since", "%s::timestamptz")
         row = self.connection.execute(
-            """
+            f"""
             UPDATE archive_versions av
             SET restore_state=%s,
                 restore_expiry=CASE WHEN %s::text='available' THEN %s::timestamptz END,
                 restore_checked_at=%s,
+                storage_class_since={since},
                 storage_class=COALESCE(%s, av.storage_class)
             FROM files f
             WHERE av.id=%s AND f.id=av.file_id
             RETURNING f.vault_id, f.id AS file_id
             """,
-            (state, state, _restore_expiry(expiry), _required_timestamp(checked_at),
-             storage_class, archive_version_id),
+            (state, state, _restore_expiry(expiry), checked, storage_class, storage_class,
+             checked, storage_class, archive_version_id),
         ).fetchone()
         if row is not None:
             self._mark_file_aggregates_dirty(int(row["vault_id"]), str(row["file_id"]))
@@ -1837,7 +1849,7 @@ class ArchiveCatalog:
                    av.size, av.storage_class, av.plaintext_sha256, av.integrity,
                    av.availability, av.availability_checked_at, av.verified_at,
                    av.restore_state, av.restore_expiry, av.verification_method, av.verification_fallback,
-                   av.verification_egress_bytes, av.created_at,
+                   av.verification_egress_bytes, av.created_at, av.storage_class_since,
                    ({_REQUESTED_VERIFICATION_SQL.replace("cur.", "av.")})
                        AS upload_verification_requested
             FROM files f
@@ -1852,7 +1864,8 @@ class ArchiveCatalog:
             (vault_id, path),
         ).fetchall()
         versions = []
-        for row in rows:
+        entries = self._class_entries(vault_id, rows)
+        for row, entry in zip(rows, entries):
             recoverable = (
                 row["role"] == "current"
                 and row["integrity"] == "verified"
@@ -1873,6 +1886,11 @@ class ArchiveCatalog:
                 "restore_state": row["restore_state"],
                 "restore_expiry": row["restore_expiry"],
                 "created_at": row["created_at"],
+                # Class Entry and Minimum Storage Duration (#731).
+                "storage_class_since": entry.since,
+                "storage_class_since_estimated": entry.estimated,
+                "expected_storage_class": entry.storage_class if entry.expected else None,
+                "minimum_storage_until": entry.minimum_until,
                 "upload_verification_requested": row["upload_verification_requested"],
                 "verification_method": row["verification_method"],
                 "verification_fallback_reason": row["verification_fallback"],
@@ -1885,6 +1903,22 @@ class ArchiveCatalog:
                 ),
             })
         return versions
+
+    def _class_entries(self, vault_id: int, rows: list[dict[str, Any]]) -> list[Any]:
+        """The Class Entry of each version row, estimated from the Vault's
+        Storage Plan when none is recorded (#731)."""
+        from .services.lifecycle_profiles import profile_from_json
+        from .services.minimum_storage import class_entry
+
+        if not rows:
+            return []
+        vault = self.connection.execute(
+            "SELECT storage_plan::text AS plan FROM vaults WHERE id=%s", (vault_id,)).fetchone()
+        plan = profile_from_json(vault["plan"] if vault else None)
+        now = datetime.now(timezone.utc)
+        return [class_entry(storage_class=row["storage_class"], since=row["storage_class_since"],
+                            created_at=row["created_at"], size=row["size"], plan=plan, now=now)
+                for row in rows]
 
     def list_file_rows(
         self,

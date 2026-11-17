@@ -1480,11 +1480,16 @@ def scan_cloud(
         batch = listed[offset : offset + CLOUD_SCAN_WRITE_BATCH_SIZE]
         with db() as connection:
             # The listed storage class of an exact known version is
-            # observation of that version, like its availability.
+            # observation of that version, like its availability. Its Class
+            # Entry moves to now only when the class changed (#731).
             known = connection.execute(
                 """
                 UPDATE archive_versions av
-                SET storage_class = item.storage_class
+                SET storage_class = item.storage_class,
+                    storage_class_since = CASE
+                        WHEN av.storage_class IS NOT NULL
+                             AND av.storage_class <> item.storage_class THEN now()
+                        ELSE av.storage_class_since END
                 FROM unnest(%s::text[], %s::text[], %s::text[])
                      AS item(object_key, version_id, storage_class),
                      files f

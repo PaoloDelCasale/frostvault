@@ -34,7 +34,7 @@ describe("Automatic Duplicate Cleanup settings", () => {
     await user.click(toggle);
     await waitFor(() => expect(updates).toEqual([{ enabled: true }]));
     expect(toggle).toBeChecked();
-    expect(await within(section).findByTestId("saved-indicator")).toHaveTextContent("Saved");
+    expect((await within(section).findAllByTestId("saved-indicator"))[0]).toHaveTextContent("Saved");
     expect(within(section).getByLabelText("Wait before a file counts as a duplicate (days)")).toHaveValue("7");
     expect(within(section).getByLabelText("File cap per run")).toHaveValue("5,000");
     expect(within(section).getByLabelText("Size cap per run (GiB)")).toHaveValue("50");
@@ -217,6 +217,60 @@ describe("Automatic Duplicate Cleanup settings", () => {
     expect(await screen.findByLabelText("Soglia di file per esecuzione")).toHaveValue("12.500");
   });
 
+  // #731: deleting within the Minimum Storage Duration saves nothing.
+  it("says how many duplicates are still within their minimum duration and what deleting them still bills", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup, enabled: true, current: { count: 2149, bytes: 6.3 * 1024 ** 3 },
+        minimum_storage: {
+          count: 1900, bytes: 5.8 * 1024 ** 3, remaining_cost: 0.0312, savings_from: "2027-05-15T10:00:00+00:00", estimated_count: 0,
+          by_storage_class: [{ storage_class: "DEEP_ARCHIVE", minimum_days: 180, count: 1900, bytes: 5.8 * 1024 ** 3, remaining_cost: 0.0312 }],
+          currency: "EUR", pricing_effective_at: "2026-10-01", region: "eu-south-1", disclaimer: null, evaluated_at: "2026-11-24T10:00:00+00:00",
+        },
+      }),
+    }, { locale: "it" }) });
+    const line = await screen.findByTestId("duplicate-cleanup-minimum");
+    const text = (line.textContent ?? "").replace(/[\u00a0\u202f]/g, " ");
+    expect(text).toContain("1.900 file (5,8 GiB) sono in Deep Archive da meno di 180 giorni.");
+    expect(text).toContain("Eliminarli adesso non fa risparmiare: AWS addebita comunque i giorni mancanti (~0,03 €).");
+    expect(text).toContain("Stima dai listini AWS, non dalla fattura.");
+  });
+
+  it("waits for the minimum duration only when asked, off by default, and says what it holds", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    let current = { ...defaultDuplicateCleanup, enabled: true };
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse(current),
+      [`PUT ${URL}`]: (init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        updates.push(body);
+        current = { ...current, ...body, held: { count: 1900, bytes: 5.8 * 1024 ** 3 } };
+        return jsonResponse(current);
+      },
+    }) });
+    const option = await screen.findByRole("checkbox", { name: "Delete only duplicates beyond their minimum duration" });
+    await waitFor(() => expect(option).toBeEnabled());
+    expect(option).not.toBeChecked();
+    expect(screen.queryByTestId("duplicate-cleanup-held")).toBeNull();
+    await user.click(option);
+    await waitFor(() => expect(updates).toEqual([{ beyond_minimum: true }]));
+    expect(option).toBeChecked();
+    expect(await screen.findByTestId("duplicate-cleanup-held")).toHaveTextContent(
+      "1,900 duplicates (5.8 GiB) stay in the cloud until their minimum duration ends.");
+  });
+
+  it("says a run scheduled nothing because every duplicate is still within its minimum", async () => {
+    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
+      [`GET ${URL}`]: () => jsonResponse({
+        ...defaultDuplicateCleanup, enabled: true, beyond_minimum: true, last_run_at: "2026-11-16T23:46:00Z",
+        last_outcome: { outcome: "none", at: "2026-11-16T23:46:00Z", file_count: 0, byte_count: 0, waiting_count: 0, held_count: 1900, held_bytes: 1 },
+      }),
+    }) });
+    expect(await screen.findByTestId("duplicate-cleanup-last-run")).toHaveTextContent(
+      /no duplicate beyond its minimum duration \(1,900 waiting for it to end\)/);
+  });
+
   it("is hidden once the Vault's protection has stopped", async () => {
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
       "GET /api/general/vaults": () => jsonResponse({ items: [{ id: 1, name: "Test Archive", lifecycle: "tombstone", paused: false, source_root: "/sources/x" }] }),
@@ -231,7 +285,8 @@ describe("Automatic Duplicate Cleanup settings", () => {
       for (const key of ["title", "summary", "enable", "off_hint", "how", "never_only_cloud", "save", "pending_one", "pending_other",
         "current_none", "current_one", "current_other", "current_unknown", "waiting_one", "waiting_other", "ready_one", "ready_other",
         "totals_one", "totals_other", "outcome.none_waiting_one", "outcome.none_waiting_other",
-        "unseen_one", "unseen_other", "outcome.none_unseen_one", "outcome.none_unseen_other"]) {
+        "unseen_one", "unseen_other", "outcome.none_unseen_one", "outcome.none_unseen_other",
+        "beyond_minimum", "beyond_minimum_help", "held_one", "held_other", "outcome.none_held_one", "outcome.none_held_other"]) {
         expect(messages[`duplicate_cleanup.${key}`], `${locale} ${key}`).toBeTruthy();
       }
     }

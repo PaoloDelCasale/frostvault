@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
 import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
+import { MinimumStoragePanel } from "./MinimumStoragePanel";
 import { RetentionPanel } from "./RetentionPanel";
 import { UploadVerificationPanel } from "./UploadVerificationPanel";
 import { errorMessage } from "@/lib/errorMessage";
@@ -106,6 +107,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     <SettingsSection id="plan" highlighted={highlight === "plan"} title={t("folder_settings.plan_title")} summary={t("folder_settings.plan_help")}>
       <details className="rounded-card border border-line"><summary className="min-h-11 cursor-pointer px-3 py-3 font-semibold">{t("settings.plan_open")}</summary>
         <div className="border-t border-line p-3"><LifecyclePanel vaultId={vaultId} onNotice={show} /></div></details>
+    </SettingsSection>
+    <SettingsSection id="minimum" highlighted={highlight === "minimum"} title={t("minimum_storage.title")} summary={t("minimum_storage.summary")}
+      more={<><p>{t("minimum_storage.how")}</p><p>{t("minimum_storage.small_objects")}</p></>}>
+      <MinimumStoragePanel vaultId={vaultId} />
     </SettingsSection>
     <SettingsSection id="danger" highlighted={highlight === "danger"} danger title={t("settings.danger_title")} summary={t("settings.danger_summary")}>
       {vault && !stopped && <div className="grid gap-2 border-b border-line pb-4">

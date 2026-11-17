@@ -1091,9 +1091,32 @@ export interface paths {
          * @description Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
          *
          *     Turning it on or changing its grace period or cap needs a fresh
-         *     authentication; turning it off never does.
+         *     authentication; turning it off never does, nor does making it wait for
+         *     the Minimum Storage Duration (#731), since both only delete less.
          */
         put: operations["update_duplicate_cleanup_api_vaults__vault_id__duplicate_cleanup_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/minimum-storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Minimum Storage Summary
+         * @description Minimum Storage Duration of a Vault's versions (#731): per storage class,
+         *     those within and beyond it, what the minimum still bills and, month by
+         *     month, when the versions within it are released. A list-price estimate.
+         */
+        get: operations["minimum_storage_summary_api_vaults__vault_id__minimum_storage_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1468,8 +1491,12 @@ export interface components {
             availability?: string | null;
             availability_checked_at?: string | null;
             created_at?: string | null;
+            /** @description The colder class the Storage Plan expects by now, while the transition is not observed yet. */
+            expected_storage_class?: string | null;
             id: string;
             integrity?: string | null;
+            /** @description When the Minimum Storage Duration of the class ends; null for a class without one. */
+            minimum_storage_until?: string | null;
             not_selectable_reason?: string | null;
             object_key?: string | null;
             provider_version_id?: string | null;
@@ -1481,6 +1508,10 @@ export interface components {
             role: "current" | "pending";
             size?: number | null;
             storage_class?: string | null;
+            /** @description Class Entry: when the version entered storage_class (or expected_storage_class). */
+            storage_class_since?: string | null;
+            /** @description The Class Entry is estimated from created_at and the Storage Plan, not recorded. */
+            storage_class_since_estimated?: boolean;
             /** @enum {string|null} */
             upload_verification_requested?: "s3_checksum" | "read_back" | null;
             verification_egress_bytes?: number | null;
@@ -1555,6 +1586,7 @@ export interface components {
             eligible_bytes: number;
             eligible_count: number;
             fingerprint: string;
+            minimum_storage?: components["schemas"]["MinimumStorageDeletion"] | null;
             /** @enum {string} */
             mode: "exact" | "selection";
             no_local_copy_bytes: number;
@@ -1670,6 +1702,8 @@ export interface components {
             [key: string]: unknown;
         };
         DuplicateCleanupStatus: {
+            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
+            beyond_minimum: boolean;
             cap_bytes: number;
             cap_files: number;
             current: {
@@ -1680,19 +1714,31 @@ export interface components {
             grace_days: number;
             grace_days_max: number;
             grace_days_min: number;
+            /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
+            held: {
+                bytes: number;
+                count: number;
+            } | null;
             last_outcome: {
                 at: string;
                 byte_count?: number;
                 file_count?: number;
                 group_id?: string;
+                held_bytes?: number;
+                held_count?: number;
+                minimum_bytes?: number;
+                minimum_cost?: number;
+                minimum_count?: number;
                 /** @enum {string} */
                 outcome: "scheduled" | "none" | "capped" | "skipped";
                 run_after?: string;
+                savings_from?: string | null;
                 unseen_count?: number;
                 waiting_bytes?: number;
                 waiting_count?: number;
             } | null;
             last_run_at: string | null;
+            minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
             next_run_at: string | null;
             pending: {
                 byte_count: number;
@@ -1726,6 +1772,8 @@ export interface components {
          * @description Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value.
          */
         DuplicateCleanupUpdate: {
+            /** Beyond Minimum */
+            beyond_minimum?: boolean | null;
             /** Cap Bytes */
             cap_bytes?: number | null;
             /** Cap Files */
@@ -2148,6 +2196,62 @@ export interface components {
             } | null;
             next_verification_at: string | null;
             pending_run_id: number | null;
+        };
+        /** @description Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731). */
+        MinimumStorageDeletion: {
+            by_storage_class: {
+                bytes: number;
+                count: number;
+                minimum_days: number;
+                remaining_cost: number;
+                storage_class: string;
+            }[];
+            bytes: number;
+            count: number;
+            currency: string;
+            disclaimer?: string | null;
+            /** @description How many of them have an estimated Class Entry. */
+            estimated_count: number;
+            evaluated_at: string;
+            pricing_effective_at: string;
+            region: string;
+            remaining_cost: number;
+            /** @description When the last Minimum Storage Duration of these files ends: deleting from then saves. */
+            savings_from: string | null;
+        };
+        /** @description Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices. */
+        MinimumStorageSummary: {
+            by_storage_class: {
+                /** @description Versions beyond it, or in a class without one. */
+                beyond: {
+                    bytes: number;
+                    count: number;
+                };
+                estimated_count: number;
+                minimum_days: number;
+                remaining_cost: number;
+                storage_class: string;
+                /** @description Versions still within the Minimum Storage Duration. */
+                within: {
+                    bytes: number;
+                    count: number;
+                };
+            }[];
+            currency: string;
+            disclaimer?: string | null;
+            /** @description Versions with a minimum whose Class Entry is estimated from the Storage Plan. */
+            estimated_count: number;
+            evaluated_at: string;
+            pricing_effective_at: string;
+            region: string;
+            /** @description Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends. */
+            releases: {
+                bytes: number;
+                count: number;
+                month: string;
+            }[];
+            remaining_cost: number;
+            vault_id: number;
         };
         NotificationItem: {
             body: string;
@@ -2639,6 +2743,7 @@ export interface components {
         VaultDeletionPreview: {
             by_storage_class: {
                 byte_count: number;
+                early_deletion_byte_count?: number;
                 early_deletion_cost: number;
                 early_deletion_version_count: number;
                 minimum_days: number;
@@ -2649,13 +2754,17 @@ export interface components {
             currency: string;
             delay_seconds: number;
             delete_marker_count: number;
+            early_deletion_byte_count?: number;
             early_deletion_cost: number;
+            early_deletion_estimated_count?: number;
+            early_deletion_version_count?: number;
             executes_at: string;
             multipart_upload_count: number;
             object_count: number;
             prefix: string;
             pricing_effective_at: string;
             region: string;
+            savings_from?: string | null;
             version_count: number;
         };
         /** VaultDeletionRequest */
@@ -4772,6 +4881,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DuplicateCleanupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    minimum_storage_summary_api_vaults__vault_id__minimum_storage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MinimumStorageSummary"];
                 };
             };
             /** @description Validation Error */

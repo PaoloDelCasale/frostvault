@@ -168,3 +168,36 @@ describe("«Delete from cloud?» summary in Italian and English (#725)", () => {
     });
   }
 });
+
+// #731: deleting within the Minimum Storage Duration saves nothing; the dialog says so.
+describe("«Delete from cloud?» minimum storage duration line (#731)", () => {
+  const minimum = {
+    count: 1900, bytes: 5.8 * 1024 ** 3, remaining_cost: 0.0312, savings_from: "2027-05-15T10:00:00+00:00",
+    estimated_count: 1900, by_storage_class: [{ storage_class: "DEEP_ARCHIVE", minimum_days: 180, count: 1900, bytes: 5.8 * 1024 ** 3, remaining_cost: 0.0312 }],
+    currency: "EUR", pricing_effective_at: "2026-10-01", region: "eu-south-1", disclaimer: null, evaluated_at: "2026-11-24T10:00:00+00:00",
+  };
+  afterEach(() => { document.documentElement.lang = ""; });
+  const cases = [
+    { locale: "it", expected: ["1.900 file (5,8 GiB) sono in Deep Archive da meno di 180 giorni.", "Eliminarli adesso non fa risparmiare: AWS addebita comunque i giorni mancanti (~0,03 €).", "Il risparmio parte dal 15 mag 2027.", "stimata dal piano di archiviazione per 1.900 file", "Stima dai listini AWS, non dalla fattura."] },
+    { locale: "en", expected: ["1,900 files (5.8 GiB) have been in Deep Archive for less than 180 days.", "Deleting them now saves nothing: AWS still bills the remaining days (~€0.03).", "Savings start on May 15, 2027.", "Estimate from AWS list prices, not from your bill."] },
+  ];
+  for (const { locale, expected } of cases) {
+    it(`shows how many files are still within it, what they still bill and from when deleting saves, in ${locale}`, () => {
+      document.documentElement.lang = locale;
+      const messages = catalog(locale);
+      const tr = (key: string, params?: Record<string, string | number>) => translate(messages, key, params, locale);
+      render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
+        preview={preview({ minimum_storage: minimum })} t={tr} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+      // Currency amounts use a no-break space: compare plain spaces.
+      const line = (screen.getByTestId("cloud-purge-minimum").textContent ?? "").replace(/[\u00a0\u202f]/g, " ");
+      for (const fragment of expected) expect(line).toContain(fragment);
+    });
+  }
+
+  it("shows nothing when every file is beyond its minimum", () => {
+    render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
+      preview={preview({ minimum_storage: { ...minimum, count: 0, bytes: 0, remaining_cost: 0, savings_from: null, estimated_count: 0, by_storage_class: [] } })}
+      t={t} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+    expect(screen.queryByTestId("cloud-purge-minimum")).not.toBeInTheDocument();
+  });
+});

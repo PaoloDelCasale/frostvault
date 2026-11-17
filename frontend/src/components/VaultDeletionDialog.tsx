@@ -4,10 +4,11 @@ import { ApiError, cancelVaultDeletion, fetchVaultDeletion, previewVaultDeletion
 import type { VaultDeletionPreview, VaultDeletionStatus } from "@/api/types";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
+import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime, formatMoney } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatMoney } from "@/pages/archive/format";
 
 const HOUR_MS = 3_600_000;
 const COUNTDOWN_TICK_MS = 60_000;
@@ -51,7 +52,7 @@ function PreviewSummary({ preview, t, locale }: { preview: VaultDeletionPreview;
       </tr></thead>
       <tbody>{preview.by_storage_class.map((entry) => <tr key={entry.storage_class} className="border-t border-line">
         <td className="py-1 pr-2 break-all">{entry.storage_class}</td>
-        <td className="py-1 pr-2 text-right tabular-nums">{entry.version_count}</td>
+        <td className="py-1 pr-2 text-right tabular-nums">{formatGroupedCount(entry.version_count, locale)}</td>
         <td className="py-1 pr-2 text-right tabular-nums">{formatBytes(entry.byte_count, locale)}</td>
         <td className="py-1 text-right tabular-nums">{entry.early_deletion_version_count ? money(entry.early_deletion_cost) : "—"}</td>
       </tr>)}</tbody>
@@ -59,6 +60,14 @@ function PreviewSummary({ preview, t, locale }: { preview: VaultDeletionPreview;
     <p className="font-semibold" data-testid="vault-deletion-early-cost">{preview.early_deletion_cost > 0
       ? t("vault_deletion.early_cost", { cost: money(preview.early_deletion_cost) })
       : t("vault_deletion.no_early_cost")}</p>
+    {/* From the Class Entry of each version (#731); a preview stored before it has no counts. */}
+    {preview.early_deletion_version_count !== undefined && preview.early_deletion_byte_count !== undefined ? <MinimumStorageNote t={t} locale={locale}
+      kind="versions" testId="vault-deletion-minimum" amount={{
+        count: preview.early_deletion_version_count, bytes: preview.early_deletion_byte_count,
+        remaining_cost: preview.early_deletion_cost, savings_from: preview.savings_from, currency: preview.currency,
+        estimated_count: preview.early_deletion_estimated_count,
+        by_storage_class: preview.by_storage_class.filter((entry) => entry.early_deletion_version_count > 0),
+      }} /> : null}
     <p className="text-xs text-muted">{t("vault_deletion.early_help")}</p>
   </div>;
 }

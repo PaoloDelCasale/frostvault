@@ -57,6 +57,23 @@ export const defaultDuplicateCleanup = {
   ready: { count: 0, bytes: 0 } as null | { count: number; bytes: number },
   unseen: { count: 0, bytes: 0 } as null | { count: number; bytes: number },
   totals: null as null | { deleted_count: number; deleted_bytes: number; last_deleted_at: string | null },
+  beyond_minimum: false,
+  held: null as null | { count: number; bytes: number },
+  minimum_storage: null as null | Record<string, unknown>,
+};
+
+/** No version in a class with a Minimum Storage Duration (#731). */
+export const defaultMinimumStorage = {
+  vault_id: 1,
+  by_storage_class: [{ storage_class: "STANDARD", minimum_days: 0, within: { count: 0, bytes: 0 }, beyond: { count: 3, bytes: 300 }, remaining_cost: 0, estimated_count: 0 }],
+  remaining_cost: 0,
+  releases: [] as { month: string; count: number; bytes: number }[],
+  estimated_count: 0,
+  currency: "EUR",
+  pricing_effective_at: "2026-10-01",
+  region: "eu-south-1",
+  disclaimer: "Estimate from AWS list prices; not an AWS Billing quote.",
+  evaluated_at: "2026-11-17T10:00:00+00:00",
 };
 
 export const defaultLifecycle = {
@@ -122,6 +139,9 @@ export function createVaultAccessFetch(
     }
     if (/^\/api\/vaults\/\d+\/duplicate-cleanup$/.test(url) && method === "GET") {
       return jsonResponse(defaultDuplicateCleanup);
+    }
+    if (/^\/api\/vaults\/\d+\/minimum-storage$/.test(url) && method === "GET") {
+      return jsonResponse(defaultMinimumStorage);
     }
     if (url === "/api/vault/move") {
       return jsonResponse({ vault_id: 1, targets: [] });

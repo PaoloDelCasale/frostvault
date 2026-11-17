@@ -33,6 +33,7 @@ export {
   cancelStoppedFolderDeletion,
   fetchDuplicateCleanup,
   updateDuplicateCleanup,
+  fetchMinimumStorage,
   cancelCloudDeletionGroup,
   fetchVaultDeletion,
   previewVaultDeletion,
@@ -133,6 +134,8 @@ export {
 
 export type {
   DuplicateCleanupStatus,
+  MinimumStorageDeletion,
+  MinimumStorageSummary,
   GeneralVault,
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,

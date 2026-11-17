@@ -11,6 +11,7 @@ import type {
   GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,
   MetadataBackupVerification,
+  MinimumStorageSummary,
   RecoveryKitStatus,
   StopProtectionPayload,
   StopProtectionStatus,
@@ -477,6 +478,11 @@ export function updateDuplicateCleanup(vaultId: number, payload: DuplicateCleanu
   return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`, {
     method: "PUT", body: JSON.stringify(payload),
   });
+}
+
+/** Minimum Storage Duration of the Vault's versions (#731): a list-price estimate. */
+export function fetchMinimumStorage(vaultId: number): Promise<MinimumStorageSummary> {
+  return apiRequest<MinimumStorageSummary>(`/api/vaults/${vaultId}/minimum-storage`);
 }
 
 /** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */

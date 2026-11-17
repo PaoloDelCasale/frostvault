@@ -38,3 +38,16 @@ hand or the rows in SQL leaves the catalog inconsistent.
 The Tombstone is no longer the end of a Vault's life; history survives only
 in the audit log and older metadata backups. Recovery of a deleted Vault's
 cloud content is impossible by design.
+
+## Amendment: the early-deletion cost counts from the Class Entry (#731, 2026-11-17)
+
+A version enters DEEP_ARCHIVE days or months after its upload when a Storage
+Plan transitions it, so `LastModified` overstated how much of the minimum had
+passed. The preview now counts each listed version's Minimum Storage Duration
+from its Class Entry: the recorded `storage_class_since` while the catalog
+records the same class the listing shows; otherwise an estimate from the
+Storage Plan and the version's creation (the catalog's `created_at`, or
+`LastModified` for a version the catalog never knew), counted as estimated.
+The preview also states how many versions and bytes are still within their
+minimum, and from when deleting them would start to save.
+

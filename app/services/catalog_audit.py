@@ -134,10 +134,14 @@ def audit_vault_catalog(
                 """
                 UPDATE archive_versions
                 SET storage_class=%s, availability='available',
-                    availability_checked_at=%s
+                    availability_checked_at=%s,
+                    -- The Class Entry moves only with an observed change (#731).
+                    storage_class_since=CASE
+                        WHEN storage_class IS NOT NULL AND storage_class <> %s THEN %s
+                        ELSE storage_class_since END
                 WHERE id=%s
                 """,
-                (storage_class, audit_started, row["id"]),
+                (storage_class, audit_started, storage_class, audit_started, row["id"]),
             )
             dirty_version_ids.append(str(row["id"]))
             if row["availability"] != "available":

@@ -13,6 +13,9 @@ listed key is checked against it before any delete, and one foreign key stops
 the run. The Cloud-only gate does not apply and no local file is ever touched:
 this module has no filesystem access at all.
 
+The early-deletion cost of the preview counts each version's Minimum Storage
+Duration from its Class Entry (#731), not from its upload (``LastModified``).
+
 Only after a fresh listing proves the prefix empty do the Vault and all its
 catalog rows leave the database, in one transaction, with one audit event
 ``folder_protection.vault_deleted``. A failure (an S3 error or leftovers) keeps
@@ -33,6 +36,8 @@ from psycopg.types.json import Jsonb
 from .audit_events import record_audit_event
 from .cloud_deletion import DELETION_DELAY_SECONDS, ConfirmationRequired, lock_vault
 from .cost_estimates import list_prices
+from .lifecycle_profiles import LifecycleProfile, profile_from_json
+from .minimum_storage import class_entry, remaining_cost
 from .vault_moves import MINIMUM_DAYS
 
 PROBLEM_EVENT = "vault_deletion_failed"
@@ -42,9 +47,10 @@ STALE_RUN_SECONDS = 15 * 60
 POLL_SECONDS = 30.0
 # S3 DeleteObjects accepts at most 1000 keys per call.
 _DELETE_BATCH = 1000
-# Early deletion is billed per remaining day of the minimum storage duration,
-# at the class's monthly rate (AWS bills a month as 30 days here).
-_DAYS_PER_MONTH = 30
+# Catalog lookups of listed versions, per query.
+_LOOKUP_BATCH = 10000
+
+Database = Callable[[], AbstractContextManager[Any]]
 
 
 class VaultDeletionError(ValueError):
@@ -161,33 +167,62 @@ def list_prefix(client: Any, *, bucket: str, prefix: str) -> PrefixInventory:
     return inventory
 
 
-def summarize(inventory: PrefixInventory, *, executes_at: datetime) -> dict[str, Any]:
+def _version_entry(version: dict[str, Any], catalog: dict[tuple[str, str], dict[str, Any]],
+                   plan: LifecycleProfile, now: datetime) -> Any:
+    """The Class Entry of one listed version (#731).
+
+    The listing is a fresh observation of its class. The recorded Class Entry
+    counts only while the catalog records that same class; otherwise it is
+    estimated from the Storage Plan and the version's creation: the catalog's
+    ``created_at``, or ``LastModified`` for a version the catalog never knew.
+    """
+    known = catalog.get((version["key"], version["version_id"]))
+    recorded = known is not None and (
+        str(known.get("storage_class") or "STANDARD").upper() == version["storage_class"])
+    return class_entry(
+        storage_class=version["storage_class"],
+        since=known.get("storage_class_since") if recorded and known else None,
+        created_at=known["created_at"] if known else version.get("last_modified"),
+        size=version["size"], plan=plan, now=now, project=False)
+
+
+def summarize(inventory: PrefixInventory, *, executes_at: datetime,
+              plan: LifecycleProfile | None = None,
+              catalog: dict[tuple[str, str], dict[str, Any]] | None = None,
+              now: datetime | None = None) -> dict[str, Any]:
     """The preview: counts, bytes per storage class and early-deletion cost.
 
     The cost is estimated at the earliest execution (after the delay), from
-    each version's LastModified and the bundled list prices.
+    each version's Class Entry (#731) and the bundled list prices.
     """
     prices = list_prices()
+    plan = plan or LifecycleProfile()
+    catalog = catalog or {}
+    moment = now or datetime.now(timezone.utc)
     classes: dict[str, dict[str, Any]] = {}
+    savings_from: datetime | None = None
+    estimated = 0
     for version in inventory.versions:
         name = version["storage_class"]
         entry = classes.setdefault(name, {"storage_class": name, "version_count": 0,
                                           "byte_count": 0, "early_deletion_cost": 0.0,
                                           "early_deletion_version_count": 0,
+                                          "early_deletion_byte_count": 0,
                                           "minimum_days": MINIMUM_DAYS.get(name, 0)})
         entry["version_count"] += 1
         entry["byte_count"] += version["size"]
-        minimum = MINIMUM_DAYS.get(name, 0)
-        modified = version.get("last_modified")
-        if not minimum or not isinstance(modified, datetime):
+        if not MINIMUM_DAYS.get(name, 0):
             continue
-        age_days = (executes_at - _aware(modified)).total_seconds() / 86400
-        remaining = max(0.0, minimum - age_days)
-        if remaining <= 0:
+        class_entry_ = _version_entry(version, catalog, plan, moment)
+        if class_entry_.remaining_days(executes_at) <= 0:
             continue
-        rate = float(prices.storage_rates.get(name, 0.0))
-        entry["early_deletion_cost"] += version["size"] / (1024 ** 3) * rate * remaining / _DAYS_PER_MONTH
+        entry["early_deletion_cost"] += remaining_cost(class_entry_, version["size"], executes_at, prices)
         entry["early_deletion_version_count"] += 1
+        entry["early_deletion_byte_count"] += version["size"]
+        estimated += class_entry_.estimated
+        until = class_entry_.minimum_until
+        if until is not None and (savings_from is None or until > savings_from):
+            savings_from = until
     by_class = sorted(classes.values(), key=lambda item: item["storage_class"])
     for entry in by_class:
         entry["early_deletion_cost"] = round(entry["early_deletion_cost"], 6)
@@ -201,6 +236,11 @@ def summarize(inventory: PrefixInventory, *, executes_at: datetime) -> dict[str,
         "byte_count": sum(v["size"] for v in inventory.versions),
         "by_storage_class": by_class,
         "early_deletion_cost": round(sum(e["early_deletion_cost"] for e in by_class), 6),
+        "early_deletion_version_count": sum(e["early_deletion_version_count"] for e in by_class),
+        "early_deletion_byte_count": sum(e["early_deletion_byte_count"] for e in by_class),
+        # The last Minimum Storage Duration to end: deleting from then saves.
+        "savings_from": savings_from.isoformat() if savings_from else None,
+        "early_deletion_estimated_count": estimated,
         "currency": prices.currency,
         "pricing_effective_at": prices.effective_at,
         "region": prices.region,
@@ -236,18 +276,51 @@ def deletion_target(connection: Any, vault_id: int) -> dict[str, Any]:
     """What a preview lists: the Tombstone's bucket and its own prefix."""
     vault = _vault_row(connection, vault_id)
     require_tombstone(vault)
+    plan = connection.execute(
+        "SELECT storage_plan::text AS plan FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     return {"vault_id": vault_id, "name": vault["name"], "bucket": vault["s3_bucket"],
-            "prefix": vault_prefix(vault)}
+            "prefix": vault_prefix(vault), "storage_plan": plan["plan"] if plan else None}
 
 
-def preview(client: Any, target: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
-    """Live preview of a Tombstone's prefix. No listing, no preview."""
+def catalog_versions(connection: Any, vault_id: int,
+                     versions: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """The recorded class, Class Entry and creation of the listed versions the
+    catalog knows exactly (object key and VersionId), for the preview (#731)."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for offset in range(0, len(versions), _LOOKUP_BATCH):
+        batch = versions[offset:offset + _LOOKUP_BATCH]
+        rows = connection.execute(
+            """SELECT av.object_key, av.provider_version_id, av.storage_class,
+                      av.storage_class_since, av.created_at
+               FROM unnest(%s::text[], %s::text[]) AS item(object_key, version_id)
+               JOIN archive_versions av ON av.object_key = item.object_key
+                AND av.provider_version_id = item.version_id
+               JOIN files f ON f.id = av.file_id AND f.vault_id = %s""",
+            ([v["key"] for v in batch], [v["version_id"] for v in batch], vault_id)).fetchall()
+        for row in rows:
+            found[(str(row["object_key"]), str(row["provider_version_id"]))] = dict(row)
+    return found
+
+
+def preview(client: Any, target: dict[str, Any], *, now: datetime | None = None,
+            database: Database | None = None) -> dict[str, Any]:
+    """Live preview of a Tombstone's prefix. No listing, no preview.
+
+    With ``database`` the early-deletion cost uses the Class Entry the catalog
+    recorded for each listed version; otherwise every Class Entry is estimated.
+    """
     moment = now or datetime.now(timezone.utc)
     try:
         inventory = list_prefix(client, bucket=target["bucket"], prefix=target["prefix"])
     except Exception as exc:
         raise VaultDeletionListingError("The Vault's cloud content could not be listed") from exc
-    return summarize(inventory, executes_at=moment + timedelta(seconds=DELETION_DELAY_SECONDS))
+    catalog: dict[tuple[str, str], dict[str, Any]] = {}
+    if database is not None and inventory.versions:
+        with database() as connection:
+            catalog = catalog_versions(connection, int(target["vault_id"]), inventory.versions)
+    return summarize(inventory, executes_at=moment + timedelta(seconds=DELETION_DELAY_SECONDS),
+                     plan=profile_from_json(target.get("storage_plan")), catalog=catalog,
+                     now=moment)
 
 
 def _iso(value: Any) -> str | None:
@@ -358,8 +431,6 @@ def retry(connection: Any, *, vault_id: int, actor: str) -> dict[str, Any]:
 
 
 # -- execution ---------------------------------------------------------------
-
-Database = Callable[[], AbstractContextManager[Any]]
 
 
 def claim_due(connection: Any, *, now: datetime) -> list[int]:

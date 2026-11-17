@@ -592,6 +592,31 @@
             "string",
             "null"
           ]
+        },
+        "storage_class_since": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Class Entry: when the version entered storage_class (or expected_storage_class)."
+        },
+        "storage_class_since_estimated": {
+          "type": "boolean",
+          "description": "The Class Entry is estimated from created_at and the Storage Plan, not recorded."
+        },
+        "expected_storage_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The colder class the Storage Plan expects by now, while the transition is not observed yet."
+        },
+        "minimum_storage_until": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When the Minimum Storage Duration of the class ends; null for a class without one."
         }
       },
       "required": [
@@ -712,6 +737,16 @@
         },
         "version_count": {
           "type": "number"
+        },
+        "minimum_storage": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/MinimumStorageDeletion"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3488,6 +3523,9 @@
               },
               "minimum_days": {
                 "type": "number"
+              },
+              "early_deletion_byte_count": {
+                "type": "number"
               }
             },
             "required": [
@@ -3516,6 +3554,21 @@
           "type": "string"
         },
         "delay_seconds": {
+          "type": "number"
+        },
+        "early_deletion_version_count": {
+          "type": "number"
+        },
+        "early_deletion_byte_count": {
+          "type": "number"
+        },
+        "savings_from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "early_deletion_estimated_count": {
           "type": "number"
         }
       },
@@ -3709,6 +3762,27 @@
                 },
                 "unseen_count": {
                   "type": "number"
+                },
+                "held_count": {
+                  "type": "number"
+                },
+                "held_bytes": {
+                  "type": "number"
+                },
+                "minimum_count": {
+                  "type": "number"
+                },
+                "minimum_bytes": {
+                  "type": "number"
+                },
+                "minimum_cost": {
+                  "type": "number"
+                },
+                "savings_from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -3890,6 +3964,44 @@
               "type": "null"
             }
           ]
+        },
+        "beyond_minimum": {
+          "type": "boolean",
+          "description": "Schedule only duplicates beyond their Minimum Storage Duration (#731)."
+        },
+        "held": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "count",
+                "bytes"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With beyond_minimum on: duplicates the next run keeps until their minimum ends."
+        },
+        "minimum_storage": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/MinimumStorageDeletion"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3907,7 +4019,231 @@
         "waiting",
         "ready",
         "unseen",
-        "totals"
+        "totals",
+        "beyond_minimum",
+        "held",
+        "minimum_storage"
+      ]
+    },
+    "MinimumStorageDeletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731).",
+      "properties": {
+        "count": {
+          "type": "number"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "remaining_cost": {
+          "type": "number"
+        },
+        "savings_from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When the last Minimum Storage Duration of these files ends: deleting from then saves."
+        },
+        "estimated_count": {
+          "type": "number",
+          "description": "How many of them have an estimated Class Entry."
+        },
+        "by_storage_class": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "storage_class": {
+                "type": "string"
+              },
+              "minimum_days": {
+                "type": "number"
+              },
+              "count": {
+                "type": "number"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "remaining_cost": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "storage_class",
+              "minimum_days",
+              "count",
+              "bytes",
+              "remaining_cost"
+            ]
+          }
+        },
+        "currency": {
+          "type": "string"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "disclaimer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "bytes",
+        "remaining_cost",
+        "savings_from",
+        "estimated_count",
+        "by_storage_class",
+        "currency",
+        "pricing_effective_at",
+        "region",
+        "evaluated_at"
+      ]
+    },
+    "MinimumStorageSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices.",
+      "properties": {
+        "vault_id": {
+          "type": "number"
+        },
+        "by_storage_class": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "storage_class": {
+                "type": "string"
+              },
+              "minimum_days": {
+                "type": "number"
+              },
+              "within": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "description": "Versions still within the Minimum Storage Duration."
+              },
+              "beyond": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "number"
+                  },
+                  "bytes": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "bytes"
+                ],
+                "description": "Versions beyond it, or in a class without one."
+              },
+              "remaining_cost": {
+                "type": "number"
+              },
+              "estimated_count": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "storage_class",
+              "minimum_days",
+              "within",
+              "beyond",
+              "remaining_cost",
+              "estimated_count"
+            ]
+          }
+        },
+        "remaining_cost": {
+          "type": "number"
+        },
+        "releases": {
+          "type": "array",
+          "description": "Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "month": {
+                "type": "string"
+              },
+              "count": {
+                "type": "number"
+              },
+              "bytes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "month",
+              "count",
+              "bytes"
+            ]
+          }
+        },
+        "estimated_count": {
+          "type": "number",
+          "description": "Versions with a minimum whose Class Entry is estimated from the Storage Plan."
+        },
+        "currency": {
+          "type": "string"
+        },
+        "pricing_effective_at": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "disclaimer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "vault_id",
+        "by_storage_class",
+        "remaining_cost",
+        "releases",
+        "estimated_count",
+        "currency",
+        "pricing_effective_at",
+        "region",
+        "evaluated_at"
       ]
     }
   }
