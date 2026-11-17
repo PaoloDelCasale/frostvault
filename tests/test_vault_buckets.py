@@ -704,6 +704,21 @@ class VaultBucketEndToEndTests(unittest.TestCase):
             {"catalog_versions": 1, "cloud_versions": 1, "missing_in_cloud": 0,
              "missing_in_catalog": 0, "healthy": 1})
 
+        # The upload identity trigger refuses the legacy vaults/<uuid>/ key on a
+        # Vault Bucket Vault: the same landed attempt, only the prefixed key.
+        import psycopg
+
+        with PostgresConnection(str(self.db_path)) as connection:
+            with self.assertRaisesRegex(psycopg.errors.RestrictViolation, "exact landed identity"):
+                connection.execute(
+                    """INSERT INTO archive_versions
+                       SELECT (jsonb_populate_record(NULL::archive_versions,
+                               to_jsonb(av) || jsonb_build_object(
+                                   'object_key', 'vaults/' || v.uuid::text || '/' || av.object_key))).*
+                       FROM archive_versions av JOIN files f ON f.id = av.file_id
+                       JOIN vaults v ON v.id = f.vault_id
+                       WHERE av.id = %s""", (current["id"],))
+
 
 if __name__ == "__main__":
     unittest.main()

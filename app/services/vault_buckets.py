@@ -283,7 +283,7 @@ _PHASES = {"creation": "the bucket creation", "configuration": "the bucket confi
 def _sdk_failure(phase: str, exc: BaseException) -> _Failed:
     action = _PHASES[phase]
     if isinstance(exc, ClientError):
-        code = str(exc.response.get("Error", {}).get("Code") or "ClientError")
+        code = buckets.error_code(exc)
         return _Failed(f"S3 refused {action} ({code})")
     # Provider messages can name accounts or endpoints: the type is enough.
     return _Failed(f"S3 could not be reached during {action} ({type(exc).__name__})")

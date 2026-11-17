@@ -25,6 +25,7 @@ provider messages, which can contain account identifiers.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import string
 from dataclasses import dataclass, field
@@ -127,8 +128,20 @@ def random_bucket_name(stem: str, *, length: int = 8) -> str:
     return name
 
 
-def _error_code(exc: ClientError) -> str:
-    return str(exc.response.get("Error", {}).get("Code") or "ClientError")
+_SAFE_ERROR_CODE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def error_code(exc: ClientError) -> str:
+    """The provider's error code, kept only when it looks like one.
+
+    An S3-compatible endpoint may answer anything: an unexpected value is
+    never stored or shown, only ``ClientError``.
+    """
+    code = str(exc.response.get("Error", {}).get("Code") or "")
+    return code if _SAFE_ERROR_CODE.fullmatch(code) else "ClientError"
+
+
+_error_code = error_code
 
 
 def _failed(action: str, exc: ClientError) -> BucketProvisioningError:

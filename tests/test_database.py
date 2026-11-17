@@ -368,9 +368,12 @@ class StartupGuardTests(_GuardFixture):
         with PostgresConnection(str(self.path)) as connection:
             target = connection.execute(
                 "SELECT bucket, key_layout, retention_lock_days FROM vault_targets").fetchone()
-            vault = connection.execute("SELECT lifecycle FROM vaults").fetchone()
+            vault = connection.execute(
+                "SELECT lifecycle, vault_key_prefix(id) AS prefix, uuid::text AS uuid FROM vaults").fetchone()
             pending = connection.execute(
                 "SELECT COUNT(*) AS n FROM vault_bucket_provisioning").fetchone()
+        # The rewritten upload/rename identity triggers keep vaults/<uuid>/ for it.
+        self.assertEqual(vault["prefix"], f"vaults/{vault['uuid']}/")
         self.assertEqual(dict(target), {"bucket": "shared", "key_layout": "vault_prefix",
                                         "retention_lock_days": None})
         self.assertEqual((vault["lifecycle"], pending["n"]), ("active", 0))

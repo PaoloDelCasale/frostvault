@@ -7692,6 +7692,9 @@ def ensure_vault_buckets_once() -> None:
     if not errors:
         _note_worker_ok("vault_buckets")
     for state in states:
+        # A Vault that ran without an escaping error closes its own
+        # per-Vault internal-error Problem, opened under its vault_id.
+        _note_worker_ok("vault_buckets", int(state["vault_id"]))
         if state["state"] == "ready" and not shutdown_state.requested:
             submit_first_scan(int(state["vault_id"]))
 
