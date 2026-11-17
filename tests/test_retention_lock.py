@@ -267,6 +267,148 @@ class DeleteMarkerProblemTests(unittest.TestCase):
         self.assertIn("deletable from 2027-03-01",
                       translate("job.cloud_purge_deferred", "en", until="2027-03-01"))
 
+    def test_the_new_problems_exist_in_both_languages_and_link_to_the_settings(self) -> None:
+        from app.i18n import has_message
+
+        for locale in ("en", "it"):
+            for key in ("notification.retention_lock_sweep_failed.title",
+                        "notification.retention_lock_sweep_failed.body_one",
+                        "notification.retention_lock_sweep_failed.body_other",
+                        "notification.retention_lock_unreadable.title",
+                        "notification.retention_lock_unreadable.body"):
+                self.assertTrue(has_message(key, locale), (key, locale))
+        self.assertEqual(notification_path(2, {"retention_lock": True, "vault": "Docs"}),
+                         "/?vault_id=2&settings=1")
+
+    def test_a_deferred_job_shows_its_date_in_the_reader_language(self) -> None:
+        from app.i18n import present_job_message
+
+        row = {"message_key": "job.cloud_purge_deferred", "message_params": {"until": "2027-03-01"}}
+        self.assertIn("deletable from 1 Mar 2027", present_job_message(row, "en"))
+        self.assertIn("eliminazione possibile dal 1 mar 2027", present_job_message(row, "it"))
+
+
+class SkewAndUnreadableTests(unittest.TestCase):
+    """#749 S4/S5: a refusal near the date and a retention S3 refuses to read."""
+
+    def test_a_refusal_just_after_the_date_is_still_the_lock_and_waits_an_hour(self) -> None:
+        bucket = LockedBucket(30)
+        bucket.add("ended-2m.txt", "v1", NOW - timedelta(days=30, minutes=2))
+        bucket.add("ended-6m.txt", "v2", NOW - timedelta(days=30, minutes=6))
+        bucket.add("ahead-10m.txt", "v3", NOW - timedelta(days=30) + timedelta(minutes=10))
+
+        def until(key: str, version: str):
+            return retention_lock.refused_until(bucket, bucket="b", key=key, version_id=version,
+                                                code="AccessDenied", now=NOW)
+
+        # Within the 5 minutes of clock skew the refusal is the lock, retried in an hour.
+        self.assertEqual(until("ended-2m.txt", "v1"), NOW + timedelta(hours=1))
+        self.assertEqual(until("ahead-10m.txt", "v3"), NOW + timedelta(hours=1))
+        # Beyond it the lock does not explain the refusal.
+        self.assertIsNone(until("ended-6m.txt", "v2"))
+
+    def test_an_unreadable_retention_defers_an_hour(self) -> None:
+        class Denied(LockedBucket):
+            def get_object_retention(self, **kwargs):
+                raise client_error("AccessDenied", "GetObjectRetention")
+
+        with self.assertRaises(retention_lock.RetentionUnreadable) as caught:
+            retention_lock.refused_until(Denied(30), bucket="b", key="a.txt", version_id="v1",
+                                         code="AccessDenied", now=NOW)
+        self.assertEqual(caught.exception.until, NOW + timedelta(hours=1))
+
+    def test_the_probe_reads_a_missing_key_and_names_a_refusal(self) -> None:
+        class Probe:
+            def __init__(self, code: str) -> None:
+                self.code, self.calls = code, []
+
+            def get_object_retention(self, **kwargs):
+                self.calls.append(kwargs)
+                raise client_error(self.code, "GetObjectRetention")
+
+        allowed = Probe("NoSuchKey")
+        self.assertIsNone(retention_lock.probe_retention_read(allowed, "b"))
+        self.assertEqual(allowed.calls, [{"Bucket": "b", "Key": retention_lock.PROBE_KEY}])
+        self.assertEqual(retention_lock.probe_retention_read(Probe("AccessDenied"), "b"), "AccessDenied")
+
+    def test_a_vault_deletion_records_an_unreadable_version_an_hour_ahead(self) -> None:
+        class Denied(LockedBucket):
+            def get_object_retention(self, **kwargs):
+                raise client_error("AccessDenied", "GetObjectRetention")
+
+        moment = datetime.now(timezone.utc)
+        bucket = Denied(60, now=moment)
+        bucket.add("old.txt", "v-old", moment - timedelta(days=40))  # estimate ended, S3 refuses
+        progress = vault_deletion._Progress()
+        with patch.object(vault_deletion, "_heartbeat"):
+            vault_deletion._delete_prefix(bucket, lambda: None, vault_id=2, bucket="b", prefix="",
+                                          progress=progress, retention_lock_days=30)
+        self.assertTrue(progress.unreadable)
+        until = progress.locked[("old.txt", "v-old")]
+        self.assertGreaterEqual(until, moment + timedelta(hours=1))
+        self.assertLess(until, moment + timedelta(hours=2))
+
+
+class SweepBatchTests(unittest.TestCase):
+    """#749 S2/S3: one DeleteObjects per batch and an outcome for each row."""
+
+    @staticmethod
+    def rows(*identities: tuple[str, str]) -> list[dict]:
+        return [{"id": f"r{n}", "object_key": key, "provider_version_id": version}
+                for n, (key, version) in enumerate(identities, 1)]
+
+    def test_one_request_deletes_the_ended_defers_the_locked_and_accepts_the_gone(self) -> None:
+        bucket = LockedBucket(30)
+        bucket.add("ended.txt", "v1", NOW - timedelta(days=40))
+        bucket.add("locked.txt", "v2", NOW - timedelta(days=1))
+        requests = []
+        send = bucket.delete_objects
+
+        def delete_objects(**kwargs):
+            requests.append(kwargs)
+            return send(**kwargs)
+        bucket.delete_objects = delete_objects
+        result = retention_lock._sweep_bucket(
+            bucket, "b", self.rows(("ended.txt", "v1"), ("locked.txt", "v2"), ("gone.txt", "v3")), NOW)
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(requests[0]["Delete"]["Quiet"])
+        self.assertEqual(result["deleted"], ["r1", "r3"])
+        self.assertEqual(result["deferred"], [("r2", bucket.until("locked.txt", "v2"))])
+        self.assertEqual((result["unreadable"], result["failed"]), ([], []))
+
+    def test_errors_are_failures_retried_sooner_when_transient(self) -> None:
+        bucket = LockedBucket(30)
+        bucket.add("ended.txt", "v1", NOW - timedelta(days=40))
+        bucket.add("busy.txt", "v2", NOW - timedelta(days=40))
+        bucket.delete_objects = lambda **kwargs: {"Errors": [
+            {"Key": "ended.txt", "VersionId": "v1", "Code": "AccessDenied"},
+            {"Key": "busy.txt", "VersionId": "v2", "Code": "InternalError"}]}
+        result = retention_lock._sweep_bucket(
+            bucket, "b", self.rows(("ended.txt", "v1"), ("busy.txt", "v2")), NOW)
+        # AccessDenied on an ended lock: not explained, a permanent failure.
+        self.assertEqual(result["failed"], [("r1", "AccessDenied", False), ("r2", "InternalError", True)])
+        self.assertEqual(bucket.retention_reads, [("ended.txt", "v1")])
+
+    def test_a_lost_request_fails_every_row_of_the_batch(self) -> None:
+        class Lost(LockedBucket):
+            def delete_objects(self, **kwargs):
+                raise client_error("SlowDown")
+
+        result = retention_lock._sweep_bucket(
+            Lost(30), "b", self.rows(("a.txt", "v1"), ("b.txt", "v2")), NOW)
+        self.assertEqual(result["failed"], [("r1", "SlowDown", True), ("r2", "SlowDown", True)])
+
+    def test_an_unreadable_retention_is_its_own_outcome(self) -> None:
+        class Denied(LockedBucket):
+            def get_object_retention(self, **kwargs):
+                raise client_error("AccessDenied", "GetObjectRetention")
+
+        bucket = Denied(30)
+        bucket.add("locked.txt", "v1", NOW - timedelta(days=1))
+        result = retention_lock._sweep_bucket(bucket, "b", self.rows(("locked.txt", "v1")), NOW)
+        self.assertEqual(result["unreadable"], [("r1", NOW + timedelta(hours=1))])
+        self.assertEqual(result["failed"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

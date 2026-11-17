@@ -2717,6 +2717,14 @@ export interface components {
                 count: number;
                 deletable_from: string | null;
                 deletable_until: string | null;
+                /** @description The most consecutive failed deletions of one of them. */
+                failed_attempts: number;
+                /** @description Retained Versions whose last deletion failed (#749). */
+                failed_count: number;
+                last_attempt_at: string | null;
+                /** @description The S3 error code of the most recent failure. */
+                last_error: string | null;
+                next_attempt_at: string | null;
             } | null;
             vault_id: number;
         };

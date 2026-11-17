@@ -300,7 +300,11 @@ the private scratch directory. The downloaded kit includes these steps offline.
    verified evidence, including files uploaded after the backup, which are
    adopted without uploading them again. A version replaced after the backup,
    and already cleaned up from S3, is closed as superseded, not reported
-   missing. GLACIER/DEEP_ARCHIVE content needs the manual S3 restore request
+   missing. A version adopted this way is dated by its S3 `LastModified`, not
+   the reconnect. With a Retention Lock, a version replaced after the backup
+   but still locked is adopted as a Retained Version (database only) and
+   deleted by the background sweep once its lock ends (#749).
+   GLACIER/DEEP_ARCHIVE content needs the manual S3 restore request
    below before reconnect can finish: until then reconnect stays suspended.
    No size/mtime-only shortcut.
 

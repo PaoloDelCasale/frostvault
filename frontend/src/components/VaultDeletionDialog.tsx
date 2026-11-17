@@ -196,7 +196,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
         {request.status === "pending" && request.retained_count ? <div className="grid gap-1" data-testid="vault-deletion-retained">
           {/* Only versions under a Retention Lock are left: waiting, not failed (#736). */}
           <p>{t("vault_deletion.retained", { count: request.retained_count, count_shown: formatGroupedCount(request.retained_count, locale), date: formatUtcDate(request.retained_until, locale) })}</p>
-          <p className="text-sm text-muted">{t("vault_deletion.retained_next", { date: formatDateTime(request.next_attempt_at ?? request.pending_until) })}</p>
+          <p className="text-sm text-muted">{t("vault_deletion.retained_next", { date: formatDateTime(request.next_attempt_at ?? request.pending_until, locale) })}</p>
         </div> : request.status === "pending" ? <>
           <p>{t("vault_deletion.pending", { date: formatDateTime(request.pending_until) })}</p>
           <p data-testid="vault-deletion-countdown">{left ? t("vault_deletion.countdown", { time: left }) : t("vault_deletion.countdown_due")}</p>

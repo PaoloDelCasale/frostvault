@@ -1249,5 +1249,12 @@
   "retention_lock.estimate": "Date stimate da quando ogni versione è stata scritta.",
   "vault_deletion.retained_one": "Resta solo {count_shown} versione sotto Retention Lock: eliminazione possibile dal {date}. Il Vault resta archiviato fino ad allora; non è un errore.",
   "vault_deletion.retained_other": "Restano solo {count_shown} versioni sotto Retention Lock: l’ultima è eliminabile dal {date}. Il Vault resta archiviato fino ad allora; non è un errore.",
-  "vault_deletion.retained_next": "FrostVault riprova il {date}, senza un nuovo ritardo."
+  "vault_deletion.retained_next": "FrostVault riprova il {date}, senza un nuovo ritardo.",
+  "notification.retention_lock_sweep_failed.title": "Versioni superate sotto Retention Lock non eliminate",
+  "notification.retention_lock_sweep_failed.body_one": "Nel bucket {bucket} di {vault}, {count} versione superata il cui Retention Lock è finito non è stata eliminata dopo vari tentativi (ultimo errore: {error}). FrostVault continua a riprovare; fino ad allora resta nel cloud ed è fatturata. Controlla la policy IAM del bucket (s3:DeleteObjectVersion) e le impostazioni del Vault.",
+  "notification.retention_lock_sweep_failed.body_other": "Nel bucket {bucket} di {vault}, {count} versioni superate il cui Retention Lock è finito non sono state eliminate dopo vari tentativi (ultimo errore: {error}). FrostVault continua a riprovare; fino ad allora restano nel cloud e sono fatturate. Controlla la policy IAM del bucket (s3:DeleteObjectVersion) e le impostazioni del Vault.",
+  "notification.retention_lock_unreadable.title": "FrostVault non può leggere le date del Retention Lock",
+  "notification.retention_lock_unreadable.body": "S3 ha rifiutato un’eliminazione nel bucket {bucket} di {vault} e FrostVault non può leggere la retention della versione (s3:GetObjectRetention) per spiegarlo. L’eliminazione aspetta e viene ritentata ogni ora; nulla è fallito. Collega la frostvault-buckets-policy.json attuale, che concede s3:GetObjectRetention: questo Problem si chiude da solo quando FrostVault riesce a leggerla.",
+  "retention_lock.failed_one": "{count_shown} versione non è ancora stata eliminata (ultimo errore: {error}, {attempts} tentativi di fila). Prossimo tentativo: {next}.",
+  "retention_lock.failed_other": "{count_shown} versioni non sono ancora state eliminate (ultimo errore: {error}, fino a {attempts} tentativi di fila). Prossimo tentativo: {next}."
 }

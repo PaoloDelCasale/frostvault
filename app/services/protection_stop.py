@@ -70,8 +70,11 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
     if group_id:
         jobs = [{"id": int(j["id"]), "status": j["status"], "pending_until": _iso(j["pending_until"])}
                 for j in _group_jobs(connection, vault_id, group_id)]
+        # What still waits can be cancelled, like ``cancel_cloud_deletion``:
+        # the members a Retention Lock deferred after the rest ended (#749).
+        waiting = [j for j in jobs if j["status"] not in _TERMINAL]
         result.update(jobs=jobs,
-                      cancellable=bool(jobs) and all(j["status"] == "pending_delay" for j in jobs),
+                      cancellable=bool(waiting) and all(j["status"] == "pending_delay" for j in waiting),
                       pending_until=max((j["pending_until"] for j in jobs if j["pending_until"]),
                                         default=None))
     return result

@@ -1249,5 +1249,12 @@
   "retention_lock.estimate": "Dates estimated from when each version was written.",
   "vault_deletion.retained_one": "Only {count_shown} version under Retention Lock is left: deletable from {date}. The Vault stays archived until then; this is not an error.",
   "vault_deletion.retained_other": "Only {count_shown} versions under Retention Lock are left: the last is deletable from {date}. The Vault stays archived until then; this is not an error.",
-  "vault_deletion.retained_next": "FrostVault tries again on {date}, without a new delay."
+  "vault_deletion.retained_next": "FrostVault tries again on {date}, without a new delay.",
+  "notification.retention_lock_sweep_failed.title": "Superseded versions under Retention Lock not deleted",
+  "notification.retention_lock_sweep_failed.body_one": "In the bucket {bucket} of {vault}, {count} superseded version whose Retention Lock ended could not be deleted after several attempts (last error: {error}). FrostVault keeps trying; until then it stays in the cloud and is billed. Check the bucket's IAM policy (s3:DeleteObjectVersion) and the Vault settings.",
+  "notification.retention_lock_sweep_failed.body_other": "In the bucket {bucket} of {vault}, {count} superseded versions whose Retention Lock ended could not be deleted after several attempts (last error: {error}). FrostVault keeps trying; until then they stay in the cloud and are billed. Check the bucket's IAM policy (s3:DeleteObjectVersion) and the Vault settings.",
+  "notification.retention_lock_unreadable.title": "FrostVault cannot read the Retention Lock dates",
+  "notification.retention_lock_unreadable.body": "S3 refused a deletion in the bucket {bucket} of {vault}, and FrostVault may not read the version's retention (s3:GetObjectRetention) to explain it. The deletion waits and is tried again every hour; nothing failed. Attach the current frostvault-buckets-policy.json, which grants s3:GetObjectRetention: this Problem closes by itself once FrostVault can read it.",
+  "retention_lock.failed_one": "{count_shown} version could not be deleted yet (last error: {error}, {attempts} attempts in a row). Next attempt: {next}.",
+  "retention_lock.failed_other": "{count_shown} versions could not be deleted yet (last error: {error}, up to {attempts} attempts in a row). Next attempt: {next}."
 }

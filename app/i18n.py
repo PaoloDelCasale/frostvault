@@ -354,6 +354,11 @@ def parse_message_params(raw: str | Mapping[str, Any] | None) -> dict[str, Any]:
     return data
 
 
+# Job message parameters that are a UTC calendar day (``YYYY-MM-DD``), shown
+# in the reader's language: ``1 dic 2027`` / ``1 Dec 2027`` (#749).
+_DATE_PARAMS: dict[str, tuple[str, ...]] = {"job.cloud_purge_deferred": ("until",)}
+
+
 def present_job_message(row: Mapping[str, Any], locale: str | None = None) -> str:
     """Localize a Job row for display; fall back to stored English/legacy prose."""
     key = row.get("message_key")
@@ -363,5 +368,9 @@ def present_job_message(row: Mapping[str, Any], locale: str | None = None) -> st
             params = parse_message_params(params)
         elif not isinstance(params, Mapping):
             params = {}
-        return translate(str(key), locale=locale, **dict(params))
+        params = dict(params)
+        for name in _DATE_PARAMS.get(str(key), ()):
+            if params.get(name):
+                params[name] = format_datetime(params[name], locale)
+        return translate(str(key), locale=locale, **params)
     return str(row.get("message") or "")
