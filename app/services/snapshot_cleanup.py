@@ -34,13 +34,26 @@ listing of the keeper's key (#622).
 No provider request here runs while an upload catalog permit is held: every
 DB unit is entered and left around the listings and DELETEs, never across
 them, so S3 latency never occupies a Vault's catalog slot (#622).
+
+Retention Lock (#736, ADR-0050): in a Vault Bucket with a Governance Retention
+Lock a frozen candidate may still be locked. It is not deleted (FrostVault has
+no bypass) but handed over, by exact key and VersionId, to
+``retained_versions`` with its RetainUntilDate: the estimate (``created_at``
+plus the bucket default days) when it is still ahead, or the observed
+retention when S3 refuses the DELETE. Its candidate is recorded as handled in
+the same fenced unit, so the batch completes, the Job never fails and the file
+is not held for months; the background sweep deletes the version after that
+date. Every listing check accepts the exact retained versions of its keys.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
+from botocore.exceptions import ClientError
 
+from . import retention_lock
 from . import upload_provenance as provenance
 from .database_retry import owned_connection
 from .s3_copy import _delete_s3_version
@@ -51,6 +64,7 @@ def _superseded(connection: Any, file_id: str) -> list[dict[str, Any]]:
     """The file's versions that are neither Current nor the replacement in progress."""
     return connection.execute(
         """SELECT av.id, av.object_key, av.provider_version_id, av.integrity,
+                  av.created_at, av.size, av.storage_class,
                   COALESCE(av.upload_attempt_id, av.copy_attempt_id) AS producer_id,
                   COALESCE(a.outcome, ca.outcome) AS outcome,
                   COALESCE(a.landed_version_id, ca.landed_version_id) AS landed_version_id,
@@ -129,6 +143,7 @@ def _listing(client: Any, bucket: str, keys: set[str]) -> dict[str, dict[str, li
 
 def _require_known(observed: dict[str, dict[str, list[str]]], allowed: set[tuple[str, str]],
                    keeper: tuple[str, str]) -> None:
+    """Only the keeper, the frozen candidates and retained versions, no marker."""
     if any(value["markers"] for value in observed.values()):
         # Replacement has no Delete Marker consent.
         raise UploadBlocked("markers_present")
@@ -139,14 +154,23 @@ def _require_known(observed: dict[str, dict[str, list[str]]], allowed: set[tuple
             raise UploadBlocked("inventory_changed")
 
 
-def _require_sole(observed: dict[str, list[str]], keeper_version: str) -> None:
-    """The postcondition: the keeper is the only version at its key, no marker."""
+def _require_sole(observed: dict[str, list[str]], keeper_version: str,
+                  retained: set[str] = frozenset()) -> None:
+    """The postcondition: the keeper is the only version at its key, no marker.
+
+    ``retained``: the exact versions of that key a Retention Lock holds back
+    (#736); they wait for their date and are not the keeper's concern.
+    """
     if observed["markers"]:
         raise UploadBlocked("markers_present")
     if keeper_version not in observed["versions"]:
         raise UploadBlocked("keeper_missing")
-    if observed["versions"] != [keeper_version]:
+    if [v for v in observed["versions"] if v not in retained] != [keeper_version]:
         raise UploadBlocked("inventory_changed")
+
+
+def _held_at(held: set[tuple[str, str]], key: str) -> set[str]:
+    return {version for object_key, version in held if object_key == key}
 
 
 def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any], *,
@@ -167,8 +191,20 @@ def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any]
         raise UploadBlocked("identity_changed")
     if client is None:
         client = worker.s3_client()
-    _require_sole(provenance.inventory(client, bucket, keeper["object_key"]),
-                  keeper["provider_version_id"])
+    observed = provenance.inventory(client, bucket, keeper["object_key"])
+    if (not observed["markers"] and keeper["provider_version_id"] in observed["versions"]
+            and len(observed["versions"]) > 1):
+        # Other versions at the key: only retained ones (#736) may stay. Read
+        # only now, so an ordinary upload costs no extra catalog unit.
+        def retained(catalog: Any) -> set[str]:
+            return _held_at(retention_lock.retained_at_keys(
+                catalog.connection, int(job["vault_id"]), [keeper["object_key"]]),
+                keeper["object_key"])
+
+        _require_sole(observed, keeper["provider_version_id"],
+                      worker._upload_catalog_unit(job, retained, shared=True))
+        return
+    _require_sole(observed, keeper["provider_version_id"])
 
 
 def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any) -> None:
@@ -191,10 +227,18 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         keeper = _keeper(connection, job, str(keeper_id), key) if keeper_id is not None else None
         # The keeper is the file's Current by construction.
         current = str(keeper["id"]) if keeper is not None else _current_id(connection, job["file_id"])
+        superseded = _superseded(connection, job["file_id"])
+        # A Retention Lock (#736): the bucket default days and the versions
+        # already held back at these keys.
+        days = retention_lock.vault_lock_days(connection, int(job["vault_id"]))
+        held = retention_lock.retained_at_keys(
+            connection, int(job["vault_id"]), {key} | {r["object_key"] for r in superseded}
+        ) if days else set()
         return (provenance.validated_pin(connection, job), current,
-                batch, _superseded(connection, job["file_id"]), keeper)
+                batch, superseded, keeper, days, held)
 
-    pinned, current, batch, superseded, keeper = w._upload_catalog_unit(job, load, shared=True)
+    pinned, current, batch, superseded, keeper, days, held = w._upload_catalog_unit(
+        job, load, shared=True)
     if keeper_id is None:
         if batch is None and (not superseded or current is None):
             # Nothing to resume, or no Current to keep yet: the next verified
@@ -234,10 +278,11 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
     if not candidates and batch is None:
         # Nothing to freeze or delete: the first and the final listing would
         # be the same check back to back. One listing is the postcondition.
-        _require_sole(provenance.inventory(client, bucket, keep[0]), keep[1])
+        _require_sole(provenance.inventory(client, bucket, keep[0]), keep[1],
+                      _held_at(held, keep[0]))
         return
     observed = _listing(client, bucket, keys)
-    _require_known(observed, allowed, keep)
+    _require_known(observed, allowed | held, keep)
 
     if candidates and batch is None:
         def freeze(catalog: Any) -> dict[str, Any]:
@@ -266,9 +311,14 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         w._require_upload_source_identity(job)
         w.validate_cloud_vault(job)
         current_listing = _listing(client, bucket, keys)
-        _require_known(current_listing, allowed, keep)
+        _require_known(current_listing, allowed | held, keep)
         if version in current_listing[object_key]["versions"]:
-            _delete_fenced(w, job, pinned, batch, keep, client, object_key, version)
+            until = _locked_until(w, job, pinned, batch, keep, client, row, days)
+            if until is not None:
+                _hand_over(w, job, batch, row, until)
+                held.add((object_key, version))
+                observed = current_listing
+                continue
         _record_deleted(w, job, batch, [str(row["id"])])
         observed = current_listing
         observed[object_key] = {**observed[object_key],
@@ -279,8 +329,11 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
     final = _listing(client, bucket, keys)
     if any(value["markers"] for value in final.values()):
         raise UploadBlocked("markers_present")
-    if final[keep[0]]["versions"] != [keep[1]] or any(
-            value["versions"] for object_key, value in final.items() if object_key != keep[0]):
+    # What a Retention Lock holds back stays; nothing else may (#736).
+    left = {object_key: [v for v in value["versions"] if (object_key, v) not in held]
+            for object_key, value in final.items()}
+    if left[keep[0]] != [keep[1]] or any(
+            versions for object_key, versions in left.items() if object_key != keep[0]):
         raise UploadBlocked("inventory_changed")
     if batch is None:
         return
@@ -306,6 +359,63 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         catalog._mark_file_aggregates_dirty(int(job["vault_id"]), str(job["file_id"]))
 
     w._upload_catalog_unit(job, complete)
+
+
+def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
+                  keep: tuple[str, str], client: Any, row: dict[str, Any],
+                  days: int | None) -> datetime | None:
+    """Delete one frozen candidate, or say until when a Retention Lock keeps it.
+
+    Without a lock this is the exact DELETE. With one, a candidate whose
+    estimated RetainUntilDate is still ahead is not sent at all; otherwise the
+    DELETE is sent, and a refusal is explained by the version's observed
+    retention (#736). A refusal a Retention Lock does not explain propagates.
+    """
+    object_key, version = str(row["object_key"]), str(row["provider_version_id"])
+    if not days:
+        _delete_fenced(w, job, pinned, batch, keep, client, object_key, version)
+        return None
+    now = datetime.now(timezone.utc)
+    until = retention_lock.locked_at(row["created_at"], days, now)
+    if until is not None:
+        return until
+    try:
+        _delete_fenced(w, job, pinned, batch, keep, client, object_key, version)
+    except ClientError as exc:
+        try:
+            until = retention_lock.refused_until(
+                client, bucket=pinned["bucket"], key=object_key, version_id=version,
+                code=retention_lock.error_code(exc), now=now)
+        except retention_lock.VersionGone:
+            return None
+        except Exception:
+            until = None
+        if until is None:
+            raise
+    return until
+
+
+def _hand_over(w: Any, job: dict[str, Any], batch: dict[str, Any], row: dict[str, Any],
+               until: datetime) -> None:
+    """Hand a locked candidate to ``retained_versions`` and record it handled (#736)."""
+    def record(catalog: Any) -> None:
+        connection = catalog.connection
+        live = connection.execute(
+            """SELECT 1 FROM cleanup_candidates
+               WHERE batch_id=%s AND archive_version_id=%s AND deleted_at IS NULL""",
+            (batch["id"], str(row["id"]))).fetchone()
+        if live is None:
+            return
+        retention_lock.hand_over(
+            connection, vault_id=int(job["vault_id"]), object_key=str(row["object_key"]),
+            version_id=str(row["provider_version_id"]), size=int(row["size"] or 0),
+            storage_class=row["storage_class"], retain_until=until)
+        connection.execute(
+            """UPDATE cleanup_candidates SET deleted_at=now()
+               WHERE batch_id=%s AND archive_version_id=%s AND deleted_at IS NULL""",
+            (batch["id"], str(row["id"])))
+
+    w._upload_catalog_unit(job, record, shared=True)
 
 
 def _delete_fenced(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],

@@ -72,6 +72,26 @@ describe("plaintext Vault creation", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/recovery"))).toBe(false);
   });
 
+  it("offers an optional Retention Lock, 180 days when enabled, only at creation (#736)", async () => {
+    requests({ messages: itCatalog });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("heading", { name: itCatalog["ui.vault_create.title"] });
+    const fieldset = screen.getByTestId("vault-create-retention-lock");
+    expect(fieldset).toHaveTextContent(itCatalog["ui.vault_create.retention_lock_help"]);
+    expect(within(fieldset).queryByRole("combobox")).toBeNull();
+    await user.type(screen.getByRole("textbox", { name: itCatalog["ui.vault_create.name"] }), "Photos");
+    await user.click(within(fieldset).getByRole("checkbox", { name: itCatalog["ui.vault_create.retention_lock_enable"] }));
+    const days = within(fieldset).getByRole("combobox", { name: itCatalog["ui.vault_create.retention_lock_days"] });
+    expect(days).toHaveValue("180");
+    expect(within(days).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["30", "90", "180", "365"]);
+    await user.selectOptions(days, "90");
+    expect(screen.getByTestId("vault-create-retention-lock-consequences")).toHaveTextContent("Governance, 90");
+    await user.click(screen.getByRole("button", { name: itCatalog["ui.vault_create.submit"] }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/?vault_id=42"));
+    expect(payload()).toEqual({ name: "Photos", creation_mode: "empty", retention_lock_days: 90 });
+  });
+
   it("explains while the Vault's bucket is being created", async () => {
     requests();
     const user = userEvent.setup();

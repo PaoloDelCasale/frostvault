@@ -16,6 +16,7 @@ import type {
   VaultBilledCost,
   RecoveryKitStatus,
   VaultCloudUsage,
+  RetentionLockStatus,
   StopProtectionPayload,
   StopProtectionStatus,
   VaultDeletionPreview,
@@ -516,6 +517,11 @@ export function fetchVaultBilledCost(vaultId: number): Promise<VaultBilledCost> 
 /** The billing export's status and every known bucket's Billed Cost (#738). */
 export function fetchBillingExport(): Promise<BillingExportStatus> {
   return apiRequest<BillingExportStatus>("/api/billing-export");
+}
+
+/** The Vault's Retention Lock and the versions it still holds back (#736). */
+export function fetchRetentionLock(vaultId: number): Promise<RetentionLockStatus> {
+  return apiRequest<RetentionLockStatus>(`/api/vaults/${vaultId}/retention-lock`);
 }
 
 /** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */

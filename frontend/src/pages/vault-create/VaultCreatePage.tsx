@@ -31,6 +31,10 @@ export type VaultCreatePageProps = {
   embedded?: boolean;
 };
 
+/** Governance Retention Lock durations offered at creation (#736, ADR-0050). */
+const RETENTION_LOCK_CHOICES = [30, 90, 180, 365] as const;
+const RETENTION_LOCK_DEFAULT = 180;
+
 function navigateTo(url: string, onNavigate?: (url: string) => void): void {
   if (onNavigate) {
     onNavigate(url);
@@ -47,6 +51,9 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const [volumeOptions, setVolumeOptions] = useState<string[]>([]);
   const [volumeAlias, setVolumeAlias] = useState("");
   const [relativePath, setRelativePath] = useState<string | null>(null);
+  // Optional, chosen only now: it cannot be changed afterwards (#736).
+  const [retentionLock, setRetentionLock] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<number>(RETENTION_LOCK_DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [volumesFailed, setVolumesFailed] = useState(false);
@@ -148,10 +155,12 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
         creation_mode: VaultCreationMode;
         volume_alias?: string;
         relative_path?: string;
+        retention_lock_days?: 30 | 90 | 180 | 365 | null;
       } = {
         name: name.trim(),
         creation_mode: creationMode,
       };
+      if (retentionLock) payload.retention_lock_days = retentionDays as 30 | 90 | 180 | 365;
       if (creationMode === "adopt") {
         payload.volume_alias = volumeAlias;
         payload.relative_path = relativePath ?? "";
@@ -321,6 +330,39 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                   ) : null}
                 </div>
               ) : null}
+
+              <fieldset className="grid gap-2 rounded-[10px] border border-line bg-canvas px-3.5 py-3" data-testid="vault-create-retention-lock">
+                <legend className="px-1 text-[13px] font-bold text-muted">{t("ui.vault_create.retention_lock")}</legend>
+                <label className="flex min-h-11 items-center gap-3 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    name="retention_lock"
+                    checked={retentionLock}
+                    onChange={(e) => setRetentionLock(e.target.checked)}
+                    className="size-4 accent-green"
+                  />
+                  {t("ui.vault_create.retention_lock_enable")}
+                </label>
+                <p className="m-0 text-sm text-muted">{t("ui.vault_create.retention_lock_help")}</p>
+                {retentionLock ? (
+                  <>
+                    <FormField label={t("ui.vault_create.retention_lock_days")} htmlFor="vault-retention-days">
+                      <FormSelect
+                        id="vault-retention-days"
+                        value={String(retentionDays)}
+                        onChange={(e) => setRetentionDays(Number(e.target.value))}
+                      >
+                        {RETENTION_LOCK_CHOICES.map((days) => (
+                          <option key={days} value={days}>
+                            {t(days === RETENTION_LOCK_DEFAULT ? "ui.vault_create.retention_lock_option_default" : "ui.vault_create.retention_lock_option", { count: days })}
+                          </option>
+                        ))}
+                      </FormSelect>
+                    </FormField>
+                    <p className="m-0 text-sm text-ink" data-testid="vault-create-retention-lock-consequences">{t("ui.vault_create.retention_lock_consequences", { count: retentionDays })}</p>
+                  </>
+                ) : null}
+              </fieldset>
 
               {error ? (
                 <div

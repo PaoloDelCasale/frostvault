@@ -107,9 +107,12 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
     Storage Duration at the earliest deletion, and what deleting them then
     still bills (#731). ``held``: with ``beyond_minimum`` on, those seen long
     enough ago that the next run keeps for that reason (None when off).
+    ``retention_lock``: those the next run would take that a Retention Lock
+    still holds at the earliest deletion, and until when (#736): they are
+    deleted from that date, never earlier.
     """
     unknown = {"current": None, "waiting": None, "ready": None, "unseen": None,
-               "held": None, "minimum_storage": None}
+               "held": None, "minimum_storage": None, "retention_lock": None}
     if row["lifecycle"] != "active" or row.get("root_released_at"):
         return unknown
     try:
@@ -141,7 +144,8 @@ def _duplicates(connection: Any, row: dict[str, Any], *, now: datetime,
                         "earliest_deletion_at": _iso(earliest)},
             "unseen": _amount(sighting.unseen), "held": held,
             "minimum_storage": minimum_storage.deletion_summary(
-                rows, plan=plan, at=executes, now=now)}
+                rows, plan=plan, at=executes, now=now),
+            "retention_lock": cloud_deletion.retention_lock_summary(row, ready, now=now)}
 
 
 def _totals(row: dict[str, Any]) -> dict[str, Any] | None:

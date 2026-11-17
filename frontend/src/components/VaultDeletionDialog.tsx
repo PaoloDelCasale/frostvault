@@ -5,10 +5,11 @@ import type { VaultDeletionPreview, VaultDeletionStatus } from "@/api/types";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
+import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime, formatGroupedCount, formatMoney } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatMoney, formatUtcDate } from "@/pages/archive/format";
 
 const HOUR_MS = 3_600_000;
 const COUNTDOWN_TICK_MS = 60_000;
@@ -69,6 +70,7 @@ function PreviewSummary({ preview, t, locale }: { preview: VaultDeletionPreview;
         by_storage_class: preview.by_storage_class.filter((entry) => entry.early_deletion_version_count > 0),
       }} /> : null}
     <p className="text-xs text-muted">{t("vault_deletion.early_help")}</p>
+    <RetentionLockNote amount={preview.retention_lock} t={t} locale={locale} kind="versions" testId="vault-deletion-retention-lock" />
   </div>;
 }
 
@@ -187,7 +189,11 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
         <p>{t("vault_deletion.deleted")}</p>
         <Button onClick={() => handleOpenChange(false)}>{t("ui.close")}</Button>
       </div> : request ? <div className="grid gap-3" data-testid="vault-deletion-status" data-status={request.status}>
-        {request.status === "pending" ? <>
+        {request.status === "pending" && request.retained_count ? <div className="grid gap-1" data-testid="vault-deletion-retained">
+          {/* Only versions under a Retention Lock are left: waiting, not failed (#736). */}
+          <p>{t("vault_deletion.retained", { count: request.retained_count, count_shown: formatGroupedCount(request.retained_count, locale), date: formatUtcDate(request.retained_until, locale) })}</p>
+          <p className="text-sm text-muted">{t("vault_deletion.retained_next", { date: formatDateTime(request.next_attempt_at ?? request.pending_until) })}</p>
+        </div> : request.status === "pending" ? <>
           <p>{t("vault_deletion.pending", { date: formatDateTime(request.pending_until) })}</p>
           <p data-testid="vault-deletion-countdown">{left ? t("vault_deletion.countdown", { time: left }) : t("vault_deletion.countdown_due")}</p>
         </> : null}

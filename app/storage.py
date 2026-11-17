@@ -64,6 +64,7 @@ from .services.lifecycle_policies import sync_lifecycle_rules_for_bucket
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import system_bucket as system_bucket_service
+from .services import retention_lock as retention_lock_service
 from .services import metrics as metrics_service
 # Helpers extracted from this module.  Names storage itself no longer calls
 # stay importable here because tests and ``app.main`` reach them through
@@ -1656,6 +1657,9 @@ def _reconcile_restored_cloud(
                 (vault_id,),
             ).fetchall()
         }
+        # Superseded versions a Retention Lock holds back (#736) are garbage
+        # waiting for their date, never content to adopt.
+        retained = retention_lock_service.retained_versions(connection, vault_id)
     files = {str(row["path"]): row for row in rows}
     candidates: list[tuple[str, dict[str, Any], str | None]] = []
     for object_key, item in latest.items():
@@ -1665,6 +1669,8 @@ def _reconcile_restored_cloud(
         if path is None:
             continue
         identity = (object_key, str(item["VersionId"]))
+        if identity in retained:
+            continue
         # A replacement a failed earlier attempt left unverified is read
         # again; any other known version is already accounted for.
         if identity in known and known[identity] is None:
@@ -5217,6 +5223,11 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     exact VersionId; then record each result in a separate DB unit. A DELETE
     is never replayed by a DB retry; an unrecorded outcome stays held for the
     restart reconciliation, which settles it by exact listing.
+
+    Retention Lock (#736): a member whose Current is still locked is not sent
+    (its estimated RetainUntilDate is ahead) or, refused by S3, is explained by
+    its observed retention; either way it is deferred, never failed, and goes
+    back to ``pending_delay`` in one last unit (``defer_locked``).
     """
     from .services import upload_provenance as _provenance
 
@@ -5267,8 +5278,18 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         purge_jobs, items = ArchiveCatalog(connection).load_claimed_purge_group(
             lead_job_id=int(job["id"]), claim_token=str(claim_token), now=now_iso(),
         )
+        lock_days = retention_lock_service.vault_lock_days(connection, vault_id)
     if not purge_jobs:
         return
+    # Members a Retention Lock still holds: never sent now (#736).
+    deferred: dict[int, datetime] = {}
+    if lock_days:
+        moment = datetime.now(timezone.utc)
+        for item in items:
+            until = retention_lock_service.locked_at(item.get("version_created_at"), lock_days, moment)
+            if until is not None:
+                deferred[int(item["id"])] = until
+        items = [item for item in items if int(item["id"]) not in deferred]
     # The lead carries the worker's claim checkpoints: settle it in the last
     # batch, so an ended lead never fences the members still to be deleted.
     items = sorted(items, key=lambda item: int(item["id"]) == int(job["id"]))
@@ -5335,6 +5356,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
             raise _PurgeUnsettled("Cloud purge claim was lost")
         deleted: list[dict[str, Any]] = []
         failed: list[tuple[dict[str, Any], str]] = []
+        locked: dict[int, datetime] = {}
         try:
             if ambiguous is not None or response is None:
                 for item in batch:
@@ -5361,6 +5383,11 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                         deleted.append(item)
                     else:
                         failed.append((item, message))
+            if lock_days and failed:
+                # A version still locked cannot have been deleted: wait for
+                # its observed RetainUntilDate instead of failing (#736).
+                failed = _locked_purge_members(client, str(job["s3_bucket"]), failed,
+                                               deleted, locked)
             stamp = now_iso()
             with owned_connection(db()) as connection:
                 cloud_deletion_service.lock_vault_for_totals(
@@ -5372,6 +5399,13 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
                 cloud_deletion_service.record_failed(
                     connection, failures=failed, at=stamp, actor=actor,
                 )
+                if locked:
+                    # Their grants go now; they stay claimed until the end.
+                    cloud_deletion_service.revoke_grants(
+                        connection, group_id=group_id,
+                        file_ids=[str(item["file_id"]) for item in batch
+                                  if int(item["id"]) in locked])
+            deferred.update(locked)
             # Ended members dropped their lease; the claim covers the rest.
             ended = {int(item["id"]) for item in deleted} | {int(item["id"]) for item, _ in failed}
             expected_job_ids[:] = [i for i in expected_job_ids if i not in ended]
@@ -5381,6 +5415,45 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
             # Never fail a Job whose exact DELETE may have run without its
             # record: keep it held; the restart reconciliation lists and settles.
             raise _PurgeUnsettled(f"Cloud deletion outcome not recorded: {exc}") from exc
+    if deferred:
+        with owned_connection(db()) as connection:
+            if not still_valid(connection):
+                return
+            renew(connection)
+            remaining = {job_id: until for job_id, until in deferred.items()
+                         if job_id in expected_job_ids}
+            cloud_deletion_service.defer_locked(
+                connection, vault_id=vault_id, group_id=group_id, deferred=remaining,
+                at=now_iso())
+
+
+def _locked_purge_members(
+    client: Any, bucket: str, failed: list[tuple[dict[str, Any], str]],
+    deleted: list[dict[str, Any]], locked: dict[int, datetime],
+) -> list[tuple[dict[str, Any], str]]:
+    """Split refused members of a locked Vault: still locked, gone, or failed (#736).
+
+    Only the version's observed retention decides: a version locked until a
+    later date waits (``locked``), one that is gone was deleted, anything else
+    stays a failure.
+    """
+    moment = datetime.now(timezone.utc)
+    still_failed: list[tuple[dict[str, Any], str]] = []
+    for item, message in failed:
+        try:
+            until = retention_lock_service.observed_until(
+                client, bucket=bucket, key=str(item["object_key"]),
+                version_id=str(item["provider_version_id"]))
+        except retention_lock_service.VersionGone:
+            deleted.append(item)
+            continue
+        except Exception:
+            until = None
+        if until is not None and until > moment:
+            locked[int(item["id"])] = until
+        else:
+            still_failed.append((item, message))
+    return still_failed
 
 
 @retry_database_unit
@@ -7931,6 +8004,17 @@ def run_vault_deletions_once() -> int:
     return completed
 
 
+def run_retained_versions_once() -> int:
+    """Delete the retained versions whose Retention Lock ended (#736)."""
+    try:
+        outcomes = retention_lock_service.run_due(db, s3_client)
+    except Exception as exc:
+        _report_worker_error("retained_versions", exc)
+        return 0
+    _note_worker_ok("retained_versions")
+    return int(outcomes.get("deleted", 0))
+
+
 def run_duplicate_cleanup_once() -> int:
     """Run the due Automatic Duplicate Cleanups (#726); returns how many Vaults ran."""
     try:
@@ -7992,6 +8076,7 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
     backlog_runnable = 0
     last_aggregates: float | None = None
     last_vault_deletions: float | None = None
+    last_retained_versions: float | None = None
     last_duplicate_cleanup: float | None = None
     last_system_bucket: float | None = None
     last_vault_buckets: float | None = None
@@ -8030,6 +8115,11 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                         or loop.time() - last_vault_deletions >= vault_deletion_service.POLL_SECONDS):
                     last_vault_deletions = loop.time()
                     _submit_maintenance("vault_deletion", run_vault_deletions_once)
+                # Superseded versions a Retention Lock held back (#736).
+                if (last_retained_versions is None
+                        or loop.time() - last_retained_versions >= retention_lock_service.POLL_SECONDS):
+                    last_retained_versions = loop.time()
+                    _submit_maintenance("retained_versions", run_retained_versions_once)
                 # Automatic Duplicate Cleanup (#726): each Vault runs once a day
                 # from its persisted last run; the poll only looks for due ones.
                 if (last_duplicate_cleanup is None

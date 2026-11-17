@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { cancelCloudDeletionGroup, fetchDuplicateCleanup, updateDuplicateCleanup, type DuplicateCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
+import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { SavedIndicator } from "@/components/SavedIndicator";
 import { useSavedFlash } from "@/components/useSavedFlash";
 import { Button } from "@/components/ui/button";
@@ -134,6 +135,7 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
       {status.enabled && ready && ready.count > 0 && <p data-testid="duplicate-cleanup-ready">{t("duplicate_cleanup.ready", counted(ready.count, ready.bytes))}</p>}
       {status.enabled && status.beyond_minimum && held && held.count > 0 && <p data-testid="duplicate-cleanup-held">{t("duplicate_cleanup.held", counted(held.count, held.bytes))}</p>}
       <MinimumStorageNote amount={status.minimum_storage} t={t} locale={locale} testId="duplicate-cleanup-minimum" />
+      <RetentionLockNote amount={status.retention_lock} t={t} locale={locale} testId="duplicate-cleanup-retention-lock" />
       {unseen && unseen.count > 0 && <p data-testid="duplicate-cleanup-unseen">{t("duplicate_cleanup.unseen", counted(unseen.count, unseen.bytes))}</p>}
       {totals && totals.deleted_count > 0 && <p data-testid="duplicate-cleanup-totals">{t("duplicate_cleanup.totals", {
         ...counted(totals.deleted_count, totals.deleted_bytes), when: formatDate(totals.last_deleted_at),

@@ -215,3 +215,28 @@ describe("«Delete from cloud?» minimum storage duration line (#731)", () => {
     expect(screen.queryByTestId("cloud-purge-minimum")).not.toBeInTheDocument();
   });
 });
+
+// #736: a Retention Lock defers locked files to their date; the dialog says how many and when.
+describe("«Delete from cloud?» Retention Lock line (#736)", () => {
+  afterEach(() => { document.documentElement.lang = ""; });
+  const lock = { days: 180, mode: "GOVERNANCE" as const, locked_count: 12, locked_bytes: 3 * 1024 ** 2,
+    locked_from: "2027-03-01T10:00:00+00:00", locked_until: "2027-03-01T10:00:00+00:00" };
+
+  it("shows in Italian how many files stay locked and «eliminazione possibile dal …»", () => {
+    document.documentElement.lang = "it";
+    const messages = catalog("it");
+    const tr = (key: string, params?: Record<string, string | number>) => translate(messages, key, params, "it");
+    render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
+      preview={preview({ retention_lock: lock })} t={tr} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+    const line = (screen.getByTestId("cloud-purge-retention-lock").textContent ?? "").replace(/[\u00a0\u202f]/g, " ");
+    expect(line).toContain("Retention Lock: 12 file (3,0 MiB) saranno ancora bloccati.");
+    expect(line).toContain("Eliminazione possibile dal 1 mar 2027");
+  });
+
+  it("shows nothing without locked files", () => {
+    render(<CloudPurgeDialog open onOpenChange={() => undefined} path="upload/" vaultName="Immich" settings={null}
+      preview={preview({ retention_lock: { ...lock, locked_count: 0, locked_bytes: 0, locked_from: null, locked_until: null } })}
+      t={t} duplicatesOnly onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
+    expect(screen.queryByTestId("cloud-purge-retention-lock")).not.toBeInTheDocument();
+  });
+});

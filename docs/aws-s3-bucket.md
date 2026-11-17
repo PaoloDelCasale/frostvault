@@ -156,6 +156,61 @@ taken: FrostVault picks a new random name without probing the bucket. Any other
 error is an error, never a reason to rename. Provider error codes are shown,
 provider messages never.
 
+### Retention Lock (optional, per Vault)
+
+A new Vault may get a **Retention Lock**
+([ADR-0050](adr/0050-governance-retention-lock-without-bypass.md), #736): its
+Vault Bucket is created with S3 Object Lock and a default retention in
+**Governance** mode of 30, 90, 180 (proposed) or 365 days. It is chosen only
+on the Vault creation page (or `retention_lock_days` of `POST /api/vaults`) and
+cannot be changed or removed from FrostVault afterwards; Compliance mode is
+not offered, and a shared bucket from before Vault Buckets never has one.
+
+Every version written to the bucket is locked for those days. FrostVault never
+holds `s3:BypassGovernanceRetention` (the policy denies it explicitly), so a
+stolen key, ransomware or a FrostVault bug cannot delete a locked version
+early. Every FrostVault deletion waits for the lock instead of failing:
+
+- **Superseded versions** (a verified replacement, a rename or Vault move that
+  copies a file and deletes its source): the old version is handed over to
+  the `retained_versions` table and the background loop deletes it, by exact
+  VersionId, from its RetainUntilDate (checked hourly, a refused attempt
+  retried after a day). The Vault settings show how many versions wait and
+  until when.
+- **Delayed Cloud Deletion** («Delete from cloud») and **Automatic Duplicate
+  Cleanup**: a file still locked when the seven-day delay ends is not deleted;
+  its Job waits again, «deletable from» its date, and the group runs again
+  from the earliest one (at least an hour later). The Owner can still cancel
+  what is left.
+- **Vault Deletion**: when only locked versions are left, the request goes
+  back to *pending* with how many versions remain and the date the last one
+  can be deleted; it runs again from the earliest date (at most once a day)
+  and the Vault leaves the catalog only when its bucket is empty. This is not
+  a failure.
+
+The previews of these deletions say how many files (or versions) will still be
+locked when the deletion runs, and until when.
+
+**How FrostVault knows the RetainUntilDate.** It never changes a retention
+(`s3:PutObjectRetention` is not granted). The date is **estimated** as the
+version's creation (the catalog's record of the upload, or `LastModified` in a
+listing) plus the bucket's default days: S3 computes the default retention from
+the moment the version is written, so the estimate matches up to seconds. A
+version whose estimate is still ahead is not sent to S3 at all. When S3 refuses
+a DELETE anyway (`AccessDenied`), FrostVault reads the exact version's
+`GetObjectRetention` and waits for that observed date. Lifecycle transitions
+are not affected by Object Lock.
+
+**Delete Markers.** FrostVault deletes only by exact VersionId and never
+creates a Delete Marker. On a bucket with a Retention Lock the weekly audit
+reports any Delete Marker as a Problem: someone deleted with the bucket's keys
+without a version, and the lock kept the data hidden behind the marker. Check
+who used the keys, then delete the marker version (for example from the AWS
+console) to make the file visible again.
+
+Locked versions are billed until they are deleted: superseded or deleted
+files cost storage for up to the chosen days.
+
 ### IAM for FrostVault-created buckets
 
 `iam/frostvault-buckets-policy.json` is scoped to `arn:aws:s3:::frostvault-*`,
@@ -164,7 +219,7 @@ apart from its one CloudWatch statement:
 | Statement | Actions |
 | --- | --- |
 | Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:ListBucketMultipartUploads`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:Get/PutBucketOwnershipControls`, `s3:Get/PutBucketObjectLockConfiguration` (a Vault Bucket's Governance Retention Lock only) |
-| Objects (`frostvault-*/*`) | `s3:GetObject`, `s3:GetObjectVersion`, `s3:GetObjectTagging`, `s3:GetObjectVersionTagging`, `s3:PutObject`, `s3:PutObjectTagging`, `s3:RestoreObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload` (Vault content, metadata backups and their read-back) |
+| Objects (`frostvault-*/*`) | `s3:GetObject`, `s3:GetObjectVersion`, `s3:GetObjectTagging`, `s3:GetObjectVersionTagging`, `s3:GetObjectRetention` (the RetainUntilDate of a version a Retention Lock keeps), `s3:PutObject`, `s3:PutObjectTagging`, `s3:RestoreObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload` (Vault content, metadata backups and their read-back) |
 | Deletion (`frostvault-*/*`) | `s3:DeleteObject`, `s3:DeleteObjectVersion`: the [accepted single-identity deletion model](#accepted-single-identity-deletion-risk) |
 | CloudWatch (`"*"`) | `cloudwatch:GetMetricStatistics`: the daily [Vault Bucket sizes](#vault-bucket-sizes-from-cloudwatch). CloudWatch actions take no resource ARN |
 | Deny | `s3:BypassGovernanceRetention`, always |

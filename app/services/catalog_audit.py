@@ -2,6 +2,13 @@
 
 Compares Archive Versions and delete markers with ``list_object_versions``
 metadata (storage class and availability) without restoring Glacier content.
+
+On a Vault Bucket with a Retention Lock (#736, ADR-0050) a Delete Marker is
+a Problem: FrostVault deletes only by exact VersionId and never creates one,
+so a marker is a DELETE without VersionId by someone else (a stolen key, a
+script) that the lock turned into a hidden, still present version. The
+versions a Retention Lock holds back for deletion (``retained_versions``) are
+known, never counted as missing in the catalog.
 """
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ from .catalog_incidents import (
 from .directory_aggregates import invalidate_for_archive_version_ids
 from .job_admission import TERMINAL_JOB_STATUSES
 from .minimum_storage import observed_since_sql
+from .retention_lock import report_delete_markers, retained_versions
 
 _OBSERVED_SINCE = observed_since_sql(
     old_class="av.storage_class", new_class="obs.storage_class",
@@ -154,6 +162,9 @@ def audit_vault_catalog(
             if row["availability"] != "available":
                 restored_ids.append(str(row["id"]))
 
+    if vault.get("s3_retention_lock_days"):
+        seen |= retained_versions(connection, int(vault["id"]))
+        report_delete_markers(connection, vault, cloud_markers)
     for key in cloud_versions:
         if key not in seen:
             report["missing_in_catalog"] += 1
