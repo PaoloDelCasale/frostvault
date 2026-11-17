@@ -3,17 +3,21 @@
 ``METADATA_BACKUP_BUCKET``, when set, names an operator-supplied bucket that
 FrostVault verifies (Block Public Access, versioning, SSE-S3, region) and never
 changes. Otherwise FrostVault creates ``frostvault-system-<8 random [a-z0-9]>``
-once, in ``AWS_DEFAULT_REGION``, with the same configuration, a lifecycle that
-only aborts incomplete multipart uploads, the tag ``frostvault:role=system`` and
-no Object Lock: backup retention must be able to delete.
+once, in ``AWS_DEFAULT_REGION``, with the same configuration, Object Ownership
+``BucketOwnerEnforced``, a lifecycle that aborts incomplete multipart uploads,
+the tag ``frostvault:role=system`` and no Object Lock: backup retention must be
+able to delete. Afterwards each backup verifies the baseline, Object Ownership,
+the presence of the abort rule and the absence of Object Lock; lifecycle rules
+and tags the Owner adds are accepted.
 
 The generated name is saved before the bucket is created, so an interrupted
 creation resumes on the same name and never leaves an unknown bucket behind.
 The row records the region the bucket was created in; changing
 ``AWS_DEFAULT_REGION`` later does not move it.
 
-Without ``METADATA_BACKUP_BUCKET`` and without usable AWS credentials there is
-no System Bucket: metadata backups stay local, as in development.
+Without ``METADATA_BACKUP_BUCKET``, ``VAULT_S3_BUCKET`` and usable AWS
+credentials there is no System Bucket: metadata backups stay local, as in
+development.
 """
 from __future__ import annotations
 
@@ -46,6 +50,10 @@ class SystemBucketUnavailable(RuntimeError):
     """The System Bucket cannot be used; the message is safe to store and show."""
 
 
+class ReservationChanged(SystemBucketUnavailable):
+    """Another process renamed or completed the saved name first."""
+
+
 @dataclass(frozen=True)
 class SystemBucket:
     name: str
@@ -74,9 +82,11 @@ class SystemBucketStore(Protocol):
 
     def reserve(self, name: str, region: str) -> Reservation: ...
 
-    def rename(self, old: str, new: str) -> Reservation: ...
+    def rename(self, old: str, new: str) -> Reservation:
+        """Replace a not-ready name; raise ``ReservationChanged`` if ``old`` is gone."""
 
-    def mark_ready(self, name: str) -> None: ...
+    def mark_ready(self, name: str) -> None:
+        """Mark ``name`` ready; raise ``ReservationChanged`` unless it is the saved name."""
 
 
 def configured_bucket(cfg: Any = None) -> str | None:
@@ -111,10 +121,28 @@ def aws_credentials_configured() -> bool:
     return any(os.getenv(name, "").strip() for name in _CREDENTIAL_SOURCE_VARIABLES)
 
 
+def legacy_shared_bucket_configured(cfg: Any = None) -> bool:
+    """Whether a non-placeholder ``VAULT_S3_BUCKET`` is set.
+
+    Transitional (#734 -> #735): an installation with the shared Vault bucket
+    stores Vault content in S3, so its metadata backups must leave the server
+    too. Missing credentials or IAM then fail the backup loudly instead of
+    silently downgrading it to local-only. Only this requirement reads
+    ``VAULT_S3_BUCKET``: where backups go never does. #735 removes
+    ``VAULT_S3_BUCKET`` and replaces this check (e.g. with "any Vault exists").
+    """
+    cfg = cfg if cfg is not None else settings
+    bucket = str(getattr(cfg, "vault_s3_bucket", "") or "").strip()
+    return bool(bucket) and not is_placeholder(
+        bucket, "example-bucket", "BUCKET-NAME", "REPLACE-WITH-BUCKET-NAME")
+
+
 def off_host_required(cfg: Any = None, *,
                       credentials: Callable[[], bool] | None = None) -> bool:
     """Whether metadata backups must also reach the System Bucket."""
-    return configured_bucket(cfg) is not None or (credentials or aws_credentials_configured)()
+    return (configured_bucket(cfg) is not None
+            or legacy_shared_bucket_configured(cfg)
+            or (credentials or aws_credentials_configured)())
 
 
 def spec(name: str, region: str) -> buckets.BucketSpec:
@@ -142,12 +170,23 @@ def location(cfg: Any = None, *, connection: Any = None,
     return SystemBucket(reservation.name, reservation.region, "created", reservation.ready)
 
 
+def verify_created(client: Any, reservation: Reservation) -> buckets.BucketVerification:
+    """A created System Bucket: baseline, ownership, abort rule, no Object Lock.
+
+    Extra lifecycle rules (e.g. noncurrent-version expiry) and tags the Owner
+    adds are accepted; FrostVault's abort rule must stay as it was created.
+    """
+    return buckets.verify_bucket(client, spec(reservation.name, reservation.region),
+                                 extra_lifecycle_rules=True, require_tags=False)
+
+
 def ensure(cfg: Any = None, *, store: SystemBucketStore | None = None,
            client_for: Callable[[str], Any] | None = None) -> SystemBucket:
     """The verified System Bucket, creating FrostVault's one when needed.
 
     Every call verifies the bucket again before a backup relies on it; an
-    operator-supplied bucket is only read, never changed.
+    operator-supplied bucket is only read, never changed. Only creation holds
+    the process lock; verifying a ready bucket does not.
     """
     cfg = cfg if cfg is not None else settings
     client_for = client_for or _default_client
@@ -164,21 +203,27 @@ def ensure(cfg: Any = None, *, store: SystemBucketStore | None = None,
                 "AWS_DEFAULT_REGION, or unset it to let FrostVault create its own")
         return SystemBucket(name, region, "configured")
     store = store or DatabaseStore()
-    with _ensure_lock:
-        reservation = store.load()
-        if reservation is None:
-            if not region:
-                raise SystemBucketUnavailable("Creating the System Bucket needs AWS_DEFAULT_REGION")
-            reservation = store.reserve(buckets.random_bucket_name(NAME_STEM), region)
-        client = client_for(reservation.region)
-        if reservation.ready:
-            verification = buckets.verify_bucket(client, spec(reservation.name, reservation.region))
-            if not verification.ok:
-                raise SystemBucketUnavailable(
-                    f"System Bucket {reservation.name} failed verification: "
-                    + verification.failure_message())
-            return SystemBucket(reservation.name, reservation.region, "created")
-        return _finish_creation(store, client, reservation)
+    reservation = store.load()
+    if reservation is None or not reservation.ready:
+        with _ensure_lock:
+            reservation = store.load()
+            if reservation is None:
+                if not region:
+                    raise SystemBucketUnavailable(
+                        "Creating the System Bucket needs AWS_DEFAULT_REGION")
+                # A client first: without credentials no name is saved.
+                client_for(region)
+                reservation = store.reserve(buckets.random_bucket_name(NAME_STEM), region)
+            if not reservation.ready:
+                return _finish_creation(store, client_for(reservation.region), reservation)
+    # A ready bucket is never repaired or recreated: a change, or its deletion,
+    # is refused until the Owner restores it.
+    verification = verify_created(client_for(reservation.region), reservation)
+    if not verification.ok:
+        raise SystemBucketUnavailable(
+            f"System Bucket {reservation.name} failed verification: "
+            + verification.failure_message())
+    return SystemBucket(reservation.name, reservation.region, "created")
 
 
 def _finish_creation(store: SystemBucketStore, client: Any,
@@ -241,13 +286,25 @@ class DatabaseStore:
 
     def rename(self, old: str, new: str) -> Reservation:
         with self._database() as connection:
-            connection.execute(
+            changed = connection.execute(
                 "UPDATE system_bucket SET name=%s WHERE id=1 AND name=%s AND ready_at IS NULL",
-                (new, old))
+                (new, old)).rowcount
+            if changed != 1:
+                raise ReservationChanged(
+                    f"The System Bucket name {old} changed while FrostVault created it; "
+                    "the next attempt uses the saved name")
             return self.read(connection)
 
     def mark_ready(self, name: str) -> None:
         with self._database() as connection:
-            connection.execute(
+            changed = connection.execute(
                 "UPDATE system_bucket SET ready_at=%s WHERE id=1 AND name=%s AND ready_at IS NULL",
-                (_now(), name))
+                (_now(), name)).rowcount
+            if changed == 1:
+                return
+            # Another process may have completed the same name first: fine.
+            current = self.read(connection)
+            if current is None or current.name != name or not current.ready:
+                raise ReservationChanged(
+                    f"The System Bucket name {name} changed while FrostVault created it; "
+                    "the next attempt uses the saved name")

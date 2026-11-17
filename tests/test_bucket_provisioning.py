@@ -56,13 +56,15 @@ class ProvisionBucketTests(unittest.TestCase):
         self.assertTrue(verification.ok, verification.failure_message())
         self.assertEqual({check.code for check in verification.checks}, {
             "bucket.region", "bucket.versioning", "bucket.public_access_block",
-            "bucket.encryption", "bucket.lifecycle", "bucket.tags", "bucket.retention_lock"})
+            "bucket.encryption", "bucket.ownership", "bucket.lifecycle", "bucket.tags",
+            "bucket.retention_lock"})
         stored = self.s3.buckets["frostvault-docs-abcd1234"]
         self.assertEqual(stored["region"], "eu-south-1")
         self.assertEqual(stored["versioning"], "Enabled")
         self.assertTrue(all(stored["bpa"].values()) and len(stored["bpa"]) == 4)
         self.assertEqual(stored["sse"]["Rules"][0]["ApplyServerSideEncryptionByDefault"],
                          {"SSEAlgorithm": "AES256"})
+        self.assertEqual(stored["ownership"], {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]})
         self.assertNotIn("lock", stored)
 
     def test_us_east_1_is_created_without_a_location_constraint(self):
@@ -82,12 +84,25 @@ class ProvisionBucketTests(unittest.TestCase):
         self.s3.foreign.add("frostvault-docs-abcd1234")
         with self.assertRaises(buckets.BucketNameUnavailable):
             buckets.provision_bucket(self.s3, spec())
+        # Decided by the CreateBucket error code alone: no HeadBucket probe.
+        self.assertNotIn("head_bucket", [name for name, _ in self.s3.calls])
 
-    def test_repeated_creation_answered_as_already_exists_by_the_owner_is_resumed(self):
+    def test_already_exists_is_never_adopted_even_for_the_owner(self):
         buckets.create_bucket(self.s3, spec())
         with patch.object(self.s3, "create_bucket",
                           side_effect=client_error("BucketAlreadyExists", "CreateBucket")):
-            buckets.create_bucket(self.s3, spec())
+            with self.assertRaises(buckets.BucketNameUnavailable):
+                buckets.create_bucket(self.s3, spec())
+        self.assertNotIn("head_bucket", [name for name, _ in self.s3.calls])
+
+    def test_other_creation_errors_are_errors_not_a_new_name(self):
+        for code in ("AccessDenied", "OperationAborted", "InvalidBucketName"):
+            with self.subTest(code=code):
+                self.s3.fail["create_bucket"] = code
+                with self.assertRaises(buckets.BucketProvisioningError) as caught:
+                    buckets.create_bucket(self.s3, spec())
+                self.assertNotIsInstance(caught.exception, buckets.BucketNameUnavailable)
+                self.assertEqual(str(caught.exception), f"S3 refused s3:CreateBucket ({code})")
 
     def test_other_tags_are_kept(self):
         buckets.create_bucket(self.s3, spec())
@@ -152,12 +167,39 @@ class VerifyBucketTests(unittest.TestCase):
         self.assertIn("bucket.public_access_block", failures)
         self.assertIn("bucket.encryption", failures)
 
-    def test_lifecycle_tags_and_unexpected_object_lock(self):
+    def test_lifecycle_tags_ownership_and_unexpected_object_lock(self):
         self.stored["lifecycle"].append({**PLAN, "ID": "someone-else"})
         self.stored["tags"] = []
         self.stored["lock"] = {"ObjectLockEnabled": "Enabled"}
+        self.stored["ownership"] = {"Rules": [{"ObjectOwnership": "ObjectWriter"}]}
         failures = self.failures(buckets.verify_bucket(self.s3, spec()))
-        self.assertEqual(set(failures), {"bucket.lifecycle", "bucket.tags", "bucket.retention_lock"})
+        self.assertEqual(set(failures), {"bucket.lifecycle", "bucket.tags", "bucket.retention_lock",
+                                         "bucket.ownership"})
+        del self.stored["ownership"]
+        self.assertIn("bucket.ownership", self.failures(buckets.verify_bucket(self.s3, spec())))
+
+    def test_extra_lifecycle_rules_can_be_accepted_but_frostvault_rules_must_stay(self):
+        self.stored["lifecycle"].append({"ID": "owner-noncurrent", "Status": "Enabled", "Filter": {},
+                                         "NoncurrentVersionExpiration": {"NoncurrentDays": 90}})
+        # Exact by default (Vault Buckets, #735).
+        self.assertIn("bucket.lifecycle", self.failures(buckets.verify_bucket(self.s3, spec())))
+        self.assertTrue(buckets.verify_bucket(self.s3, spec(), extra_lifecycle_rules=True).ok)
+        self.stored["lifecycle"] = self.stored["lifecycle"][1:]
+        self.assertEqual(
+            self.failures(buckets.verify_bucket(self.s3, spec(), extra_lifecycle_rules=True)),
+            {"bucket.lifecycle": "FrostVault's lifecycle rules are missing or changed"})
+
+    def test_tags_can_be_left_to_the_owner(self):
+        self.stored["tags"] = []
+        self.assertTrue(buckets.verify_bucket(self.s3, spec(), require_tags=False).ok)
+
+    def test_a_redirect_from_another_region_is_a_region_mismatch(self):
+        for code in ("PermanentRedirect", "AuthorizationHeaderMalformed"):
+            with self.subTest(code=code):
+                self.s3.fail["get_bucket_location"] = code
+                self.assertEqual(self.failures(buckets.verify_baseline(
+                    self.s3, "frostvault-docs-abcd1234", "eu-south-1")),
+                    {"bucket.region": "The bucket is in another region, not in eu-south-1"})
 
     def test_lifecycle_comparison_ignores_how_s3_spells_an_unfiltered_rule(self):
         self.stored["lifecycle"] = [{**ABORT, "Filter": {}}]
@@ -211,9 +253,27 @@ class ProvisioningAgainstS3CompatibleServer(unittest.TestCase):
                 # A second run (a resumed creation) is idempotent.
                 verification = buckets.provision_bucket(self.client, bucket)
                 self.assertTrue(verification.ok, verification.failure_message())
+                # An Owner-added lifecycle rule is accepted only when asked (System Bucket).
+                self.client.put_bucket_lifecycle_configuration(
+                    Bucket=bucket.name, LifecycleConfiguration={"Rules": [ABORT, {
+                        "ID": "owner-noncurrent", "Status": "Enabled", "Filter": {"Prefix": ""},
+                        "NoncurrentVersionExpiration": {"NoncurrentDays": 90}}]})
+                self.assertFalse(buckets.verify_bucket(self.client, bucket).ok)
+                verification = buckets.verify_bucket(self.client, bucket, extra_lifecycle_rules=True)
+                self.assertTrue(verification.ok, verification.failure_message())
                 self.client.put_bucket_versioning(Bucket=bucket.name,
                                                   VersioningConfiguration={"Status": "Suspended"})
-                self.assertFalse(buckets.verify_bucket(self.client, bucket).ok)
+                self.assertFalse(buckets.verify_bucket(self.client, bucket,
+                                                       extra_lifecycle_rules=True).ok)
+
+    def test_a_resumed_creation_outside_us_east_1_is_already_owned(self):
+        import boto3
+
+        client = boto3.client("s3", endpoint_url=_s3_compatible_endpoint(), region_name="eu-west-1")
+        bucket = spec(buckets.random_bucket_name("frostvault-ci"), region="eu-west-1")
+        self.assertTrue(buckets.provision_bucket(client, bucket).ok)
+        # The second CreateBucket answers BucketAlreadyOwnedByYou: adopted, not renamed.
+        self.assertTrue(buckets.provision_bucket(client, bucket).ok)
 
 
 if __name__ == "__main__":

@@ -36,17 +36,21 @@ class MemoryStore:
 
     def rename(self, old, new):
         self.events.append(f"rename {new}")
-        if self.row["name"] == old and not self.row["ready"]:
-            self.row["name"] = new
+        if self.row["name"] != old or self.row["ready"]:
+            raise system_bucket.ReservationChanged("lost race")
+        self.row["name"] = new
         return self.load()
 
     def mark_ready(self, name):
         self.events.append(f"ready {name}")
+        if self.row["name"] != name:
+            raise system_bucket.ReservationChanged("lost race")
         self.row["ready"] = True
 
 
 def settings(**changes):
-    return replace(Settings(), **{"aws_region": "eu-south-1", "metadata_backup_bucket": "", **changes})
+    return replace(Settings(), **{"aws_region": "eu-south-1", "metadata_backup_bucket": "",
+                                  "vault_s3_bucket": "", **changes})
 
 
 class CreatedSystemBucketTests(unittest.TestCase):
@@ -54,6 +58,9 @@ class CreatedSystemBucketTests(unittest.TestCase):
         self.s3 = FakeBucketS3()
         self.store = MemoryStore()
         self.regions: list[str] = []
+
+    def creations(self):
+        return [bucket for operation, bucket in self.s3.calls if operation == "create_bucket"]
 
     def ensure(self, cfg=None):
         def client_for(region):
@@ -69,8 +76,8 @@ class CreatedSystemBucketTests(unittest.TestCase):
         self.assertEqual(stored["tags"], [{"Key": "frostvault:role", "Value": "system"}])
         self.assertEqual(stored["lifecycle"], [system_bucket.ABORT_RULE])
         self.assertNotIn("lock", stored)
-        self.assertNotIn(("create_bucket", bucket.name), [
-            call for call in self.s3.calls if call[0] == "create_bucket"][1:])
+        self.assertEqual(stored["ownership"], {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]})
+        self.assertEqual(self.creations(), [bucket.name])
         # The name was saved before the bucket existed, and only then marked ready.
         self.assertEqual(self.store.events, [f"reserve {bucket.name}", f"ready {bucket.name}"])
 
@@ -98,6 +105,109 @@ class CreatedSystemBucketTests(unittest.TestCase):
             bucket = self.ensure()
         self.assertEqual(bucket.name, "frostvault-system-free0000")
         self.assertEqual(list(self.s3.buckets), ["frostvault-system-free0000"])
+        self.assertNotIn("head_bucket", [operation for operation, _ in self.s3.calls])
+
+    def test_every_generated_name_taken_stops_after_three_attempts(self):
+        names = [f"frostvault-system-taken00{index}" for index in range(4)]
+        self.s3.foreign.update(names[:3])
+        with patch.object(system_bucket.buckets, "random_bucket_name", side_effect=names):
+            with self.assertRaises(system_bucket.SystemBucketUnavailable) as caught:
+                self.ensure()
+        self.assertIn("Every generated System Bucket name belongs to another AWS account",
+                      str(caught.exception))
+        self.assertEqual(self.creations(), names[:3])
+        self.assertEqual(self.s3.buckets, {})
+        # The next attempt starts from a fresh saved name, never a taken one.
+        self.assertEqual(self.store.row, {"name": names[3], "region": "eu-south-1", "ready": False})
+
+    def test_create_bucket_access_denied_names_the_permission_and_keeps_the_name(self):
+        self.s3.fail["create_bucket"] = "AccessDenied"
+        with self.assertRaises(system_bucket.SystemBucketUnavailable) as caught:
+            self.ensure()
+        name = self.store.row["name"]
+        self.assertEqual(str(caught.exception),
+                         f"Creating System Bucket {name} did not finish: S3 refused "
+                         "s3:CreateBucket (AccessDenied). FrostVault retries with the same name")
+        self.assertNotIn("provider detail", str(caught.exception))
+        self.assertEqual(self.store.events, [f"reserve {name}"])
+        self.assertFalse(self.store.row["ready"])
+
+    def test_a_denied_head_bucket_never_renames_our_own_bucket(self):
+        """An interrupted creation of our bucket resumes on BucketAlreadyOwnedByYou."""
+        self.s3.fail["put_bucket_versioning"] = "InternalError"
+        with self.assertRaises(system_bucket.SystemBucketUnavailable):
+            self.ensure()
+        name = self.store.row["name"]
+        self.s3.fail["head_bucket"] = "403"
+        self.assertEqual(self.ensure().name, name)
+        self.assertEqual(self.creations(), [name, name])
+        self.assertNotIn("head_bucket", [operation for operation, _ in self.s3.calls])
+        self.assertFalse(any(event.startswith("rename") for event in self.store.events))
+
+    def test_a_denied_read_of_a_ready_bucket_is_an_error_not_a_rename(self):
+        bucket = self.ensure()
+        self.s3.fail["get_bucket_location"] = "AccessDenied"
+        with self.assertRaises(system_bucket.SystemBucketUnavailable) as caught:
+            self.ensure()
+        self.assertIn("S3 refused s3:GetBucketLocation (AccessDenied)", str(caught.exception))
+        self.assertEqual(self.store.row["name"], bucket.name)
+        self.assertEqual(self.creations(), [bucket.name])
+
+    def test_a_ready_bucket_deleted_afterwards_is_refused_not_recreated(self):
+        bucket = self.ensure()
+        del self.s3.buckets[bucket.name]
+        with self.assertRaises(system_bucket.SystemBucketUnavailable) as caught:
+            self.ensure()
+        self.assertEqual(str(caught.exception),
+                         f"System Bucket {bucket.name} failed verification: The bucket does not exist")
+        self.assertEqual(self.creations(), [bucket.name])
+        self.assertEqual(self.store.row["name"], bucket.name)
+
+    def test_owner_additions_are_accepted_frostvault_essentials_are_not(self):
+        bucket = self.ensure()
+        stored = self.s3.buckets[bucket.name]
+        stored["lifecycle"].append({"ID": "owner-noncurrent", "Status": "Enabled", "Filter": {},
+                                    "NoncurrentVersionExpiration": {"NoncurrentDays": 30}})
+        stored["tags"] = [{"Key": "cost-center", "Value": "home"}]
+        self.assertEqual(self.ensure(), bucket)
+        for change, message in (
+            (lambda: stored.update(lifecycle=stored["lifecycle"][1:]),
+             "FrostVault's lifecycle rules are missing or changed"),
+            (lambda: stored.update(lock={"ObjectLockEnabled": "Enabled"}),
+             "Object Lock is enabled on a bucket that must not have it"),
+            (lambda: stored.update(ownership={"Rules": [{"ObjectOwnership": "ObjectWriter"}]}),
+             "Object Ownership is not BucketOwnerEnforced"),
+        ):
+            saved = {key: value for key, value in stored.items()}
+            with self.subTest(message=message):
+                change()
+                with self.assertRaises(system_bucket.SystemBucketUnavailable) as caught:
+                    self.ensure()
+                self.assertIn(message, str(caught.exception))
+            stored.clear()
+            stored.update(saved)
+
+    def test_verifying_a_ready_bucket_does_not_take_the_creation_lock(self):
+        bucket = self.ensure()
+        with patch.object(system_bucket, "_ensure_lock") as lock:
+            lock.__enter__.side_effect = AssertionError("creation lock taken")
+            self.assertEqual(self.ensure(), bucket)
+
+    def test_the_shared_vault_bucket_never_becomes_the_system_bucket(self):
+        bucket = self.ensure(settings(vault_s3_bucket="shared-bucket"))
+        self.assertRegex(bucket.name, r"^frostvault-system-[a-z0-9]{8}$")
+        self.assertNotIn("shared-bucket", [name for _, name in self.s3.calls])
+
+    def test_a_lost_race_never_reports_ready(self):
+        self.s3.fail["put_bucket_tagging"] = "SlowDown"
+        with self.assertRaises(system_bucket.SystemBucketUnavailable):
+            self.ensure()
+        # Another process renamed the saved name meanwhile.
+        self.store.row["name"] = "frostvault-system-other000"
+        with self.assertRaises(system_bucket.ReservationChanged):
+            system_bucket._finish_creation(
+                self.store, self.s3, Reservation(self.creations()[0], "eu-south-1", False))
+        self.assertFalse(self.store.row["ready"])
 
     def test_the_bucket_keeps_its_region_when_aws_default_region_changes(self):
         bucket = self.ensure()
@@ -179,10 +289,22 @@ class OffHostRequirementTests(unittest.TestCase):
 
     def test_configured_bucket_or_credentials_require_off_host_copies(self):
         none = lambda: False  # noqa: E731
-        self.assertFalse(system_bucket.off_host_required(settings(), credentials=none))
+        self.assertFalse(system_bucket.off_host_required(settings(vault_s3_bucket=""),
+                                                         credentials=none))
         self.assertTrue(system_bucket.off_host_required(
-            settings(metadata_backup_bucket="my-backups"), credentials=none))
-        self.assertTrue(system_bucket.off_host_required(settings(), credentials=lambda: True))
+            settings(metadata_backup_bucket="my-backups", vault_s3_bucket=""), credentials=none))
+        self.assertTrue(system_bucket.off_host_required(settings(vault_s3_bucket=""),
+                                                        credentials=lambda: True))
+
+    def test_the_shared_vault_bucket_still_requires_off_host_copies_until_735(self):
+        """An upgrade with VAULT_S3_BUCKET never silently goes local-only."""
+        none = lambda: False  # noqa: E731
+        self.assertTrue(system_bucket.off_host_required(
+            settings(vault_s3_bucket="shared-bucket"), credentials=none))
+        for value in ("", "example-bucket", "BUCKET-NAME", "REPLACE-WITH-BUCKET-NAME"):
+            with self.subTest(value=value):
+                self.assertFalse(system_bucket.off_host_required(
+                    settings(vault_s3_bucket=value), credentials=none))
 
     def test_credentials_from_the_environment_without_probing_aws(self):
         cases = [
@@ -267,12 +389,29 @@ class DatabaseStoreTests(unittest.TestCase):
         self.store.mark_ready("frostvault-system-cccc3333")
         self.assertTrue(self.store.load().ready)
         # A ready bucket is never renamed.
-        self.assertEqual(self.store.rename("frostvault-system-cccc3333", "frostvault-system-dddd4444").name,
-                         "frostvault-system-cccc3333")
+        with self.assertRaises(system_bucket.ReservationChanged):
+            self.store.rename("frostvault-system-cccc3333", "frostvault-system-dddd4444")
+        self.assertEqual(self.store.load().name, "frostvault-system-cccc3333")
         with self.connect() as connection:
             self.assertEqual(system_bucket.location(settings(), connection=connection),
                              system_bucket.SystemBucket("frostvault-system-cccc3333", "eu-south-1",
                                                         "created"))
+
+    def test_lost_races_are_reported_not_applied(self):
+        self.store.reserve("frostvault-system-aaaa1111", "eu-south-1")
+        with self.assertRaises(system_bucket.ReservationChanged):
+            self.store.rename("frostvault-system-zzzz0000", "frostvault-system-bbbb2222")
+        with self.assertRaises(system_bucket.ReservationChanged):
+            self.store.mark_ready("frostvault-system-zzzz0000")
+        self.assertEqual(self.store.load(),
+                         Reservation("frostvault-system-aaaa1111", "eu-south-1", False))
+        self.store.mark_ready("frostvault-system-aaaa1111")
+        # A second process completing the same name is not a lost race.
+        self.store.mark_ready("frostvault-system-aaaa1111")
+        with self.assertRaises(system_bucket.ReservationChanged):
+            self.store.rename("frostvault-system-aaaa1111", "frostvault-system-bbbb2222")
+        self.assertEqual(self.store.load(),
+                         Reservation("frostvault-system-aaaa1111", "eu-south-1", True))
 
     def test_constraints(self):
         for name, region in (("backups", "eu-south-1"), ("frostvault-system-ABCD1234", "eu-south-1"),

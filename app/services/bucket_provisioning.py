@@ -7,14 +7,18 @@ Retention Lock; everything else is the same for every bucket:
 
 - Block Public Access with all four settings on;
 - versioning Enabled;
-- default encryption SSE-S3 (``AES256``).
+- default encryption SSE-S3 (``AES256``);
+- Object Ownership ``BucketOwnerEnforced`` (ACLs off).
 
-``provision_bucket`` is idempotent and resumable: creating a bucket this
-account already owns is not an error, and the configuration is applied again
-and then verified, so a run interrupted at any step completes on the next
-call. A name owned by another account raises ``BucketNameUnavailable``; the
-caller picks a new name. ``verify_baseline`` checks an operator-supplied
-bucket without changing it.
+``provision_bucket`` is idempotent and resumable: ``BucketAlreadyOwnedByYou``
+is not an error, and the configuration is applied again and then verified, so
+a run interrupted at any step completes on the next call. ``BucketAlreadyExists``
+raises ``BucketNameUnavailable`` and the caller picks a new name; ownership is
+decided by these two CreateBucket error codes only (no HeadBucket probe, no
+``ExpectedBucketOwner``, so no extra IAM permission). Every other error is an
+error, never a reason to rename. ``verify_baseline`` checks an
+operator-supplied bucket without changing it; ``verify_bucket`` checks a
+bucket FrostVault created against its spec.
 
 Callers inject the SDK client. Messages carry provider error codes only, never
 provider messages, which can contain account identifiers.
@@ -39,6 +43,9 @@ _LIFECYCLE_ACTIONS = (
 )
 _ALREADY_OWNED = frozenset({"BucketAlreadyOwnedByYou"})
 _NAME_TAKEN = frozenset({"BucketAlreadyExists"})
+# GetBucketLocation answers a client of another region with these.
+_OTHER_REGION = frozenset({"PermanentRedirect", "AuthorizationHeaderMalformed"})
+OWNERSHIP = "BucketOwnerEnforced"
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,7 @@ class BucketSpec:
     name: str
     region: str
     tags: Mapping[str, str] = field(default_factory=dict)
-    # The complete lifecycle configuration: no other rule may exist.
+    # The lifecycle configuration FrostVault applies (see ``verify_bucket``).
     lifecycle_rules: tuple[Mapping[str, Any], ...] = ()
     retention_lock: RetentionLock | None = None
 
@@ -121,7 +128,12 @@ def _failed(action: str, exc: ClientError) -> BucketProvisioningError:
 
 
 def create_bucket(client: Any, spec: BucketSpec) -> None:
-    """Create the bucket; one this account already owns counts as created."""
+    """Create the bucket; ``BucketAlreadyOwnedByYou`` counts as created.
+
+    ``BucketAlreadyExists`` raises ``BucketNameUnavailable``: the name is
+    someone else's (a provider answering its owner this way loses one name,
+    never adopts a foreign bucket). Any other refusal is an error.
+    """
     request: dict[str, Any] = {"Bucket": spec.name}
     if spec.region != "us-east-1":
         request["CreateBucketConfiguration"] = {"LocationConstraint": spec.region}
@@ -133,22 +145,11 @@ def create_bucket(client: Any, spec: BucketSpec) -> None:
         code = _error_code(exc)
         if code in _ALREADY_OWNED:
             return
-        if code in _NAME_TAKEN and not _reachable(client, spec.name):
+        if code in _NAME_TAKEN:
             raise BucketNameUnavailable(
                 "The bucket name belongs to another AWS account"
             ) from None
-        if code in _NAME_TAKEN:
-            # Some providers answer a repeated creation by the owner this way.
-            return
         raise _failed("s3:CreateBucket", exc) from None
-
-
-def _reachable(client: Any, name: str) -> bool:
-    try:
-        client.head_bucket(Bucket=name)
-    except ClientError:
-        return False
-    return True
 
 
 def configure_bucket(client: Any, spec: BucketSpec) -> None:
@@ -165,6 +166,9 @@ def configure_bucket(client: Any, spec: BucketSpec) -> None:
             "ServerSideEncryptionConfiguration": {"Rules": [{
                 "ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"},
             }]},
+        }),
+        ("s3:PutBucketOwnershipControls", client.put_bucket_ownership_controls, {
+            "OwnershipControls": {"Rules": [{"ObjectOwnership": OWNERSHIP}]},
         }),
     ]
     for action, call, arguments in steps:
@@ -219,15 +223,23 @@ def verify_baseline(client: Any, name: str, region: str) -> BucketVerification:
                               checks=tuple(_baseline_checks(client, name, region)))
 
 
-def verify_bucket(client: Any, spec: BucketSpec) -> BucketVerification:
-    """The baseline plus the spec's lifecycle, tags and Retention Lock."""
+def verify_bucket(client: Any, spec: BucketSpec, *, extra_lifecycle_rules: bool = False,
+                  require_tags: bool = True) -> BucketVerification:
+    """The baseline plus Object Ownership and the spec's lifecycle, tags and lock.
+
+    By default the lifecycle must be exactly the spec's rules (Vault Buckets,
+    #735) and the spec's tags must be present. ``extra_lifecycle_rules``
+    accepts rules the Owner added next to the spec's, which must still be
+    present unchanged; ``require_tags=False`` leaves the tags to the Owner
+    (the System Bucket).
+    """
     checks = _baseline_checks(client, spec.name, spec.region)
     if all(check.ok for check in checks):
-        checks.extend([
-            _lifecycle_check(client, spec),
-            _tags_check(client, spec),
-            _retention_lock_check(client, spec),
-        ])
+        checks.append(_ownership_check(client, spec.name))
+        checks.append(_lifecycle_check(client, spec, extra_rules=extra_lifecycle_rules))
+        if require_tags:
+            checks.append(_tags_check(client, spec))
+        checks.append(_retention_lock_check(client, spec))
     return BucketVerification(bucket=spec.name, region=spec.region, checks=tuple(checks))
 
 
@@ -238,6 +250,9 @@ def _baseline_checks(client: Any, name: str, region: str) -> list[BucketCheck]:
         code = _error_code(exc)
         if code in {"NoSuchBucket", "404", "NotFound"}:
             return [BucketCheck("bucket.exists", False, "The bucket does not exist")]
+        if code in _OTHER_REGION:
+            return [BucketCheck("bucket.region", False,
+                                f"The bucket is in another region, not in {region}")]
         return [BucketCheck("bucket.access", False,
                             f"S3 refused s3:GetBucketLocation ({code})")]
     actual = location or "us-east-1"
@@ -307,6 +322,22 @@ def _encryption_check(client: Any, name: str) -> BucketCheck:
     )
 
 
+def _ownership_check(client: Any, name: str) -> BucketCheck:
+    try:
+        rules = client.get_bucket_ownership_controls(Bucket=name).get(
+            "OwnershipControls", {}).get("Rules") or []
+    except ClientError as exc:
+        if _error_code(exc) != "OwnershipControlsNotFoundError":
+            return _refused("bucket.ownership", "s3:GetBucketOwnershipControls", exc)
+        rules = []
+    enforced = [rule.get("ObjectOwnership") for rule in rules] == [OWNERSHIP]
+    return BucketCheck(
+        "bucket.ownership", enforced,
+        "Object Ownership is BucketOwnerEnforced" if enforced
+        else "Object Ownership is not BucketOwnerEnforced (ACLs must be off)",
+    )
+
+
 def _normalized_rule(rule: Mapping[str, Any]) -> dict[str, Any]:
     """The parts of a lifecycle rule that matter, as S3 returns or accepts them."""
     raw_filter = rule.get("Filter")
@@ -321,7 +352,7 @@ def _normalized_rule(rule: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _lifecycle_check(client: Any, spec: BucketSpec) -> BucketCheck:
+def _lifecycle_check(client: Any, spec: BucketSpec, *, extra_rules: bool) -> BucketCheck:
     try:
         actual = client.get_bucket_lifecycle_configuration(Bucket=spec.name).get("Rules") or []
     except ClientError as exc:
@@ -329,9 +360,17 @@ def _lifecycle_check(client: Any, spec: BucketSpec) -> BucketCheck:
             return BucketCheck("bucket.lifecycle", False,
                                f"S3 refused s3:GetLifecycleConfiguration ({_error_code(exc)})")
         actual = []
+    present = [_normalized_rule(rule) for rule in actual]
+    wanted = [_normalized_rule(rule) for rule in spec.lifecycle_rules]
+    if extra_rules:
+        matches = all(rule in present for rule in wanted)
+        return BucketCheck(
+            "bucket.lifecycle", matches,
+            "FrostVault's lifecycle rules are present" if matches
+            else "FrostVault's lifecycle rules are missing or changed",
+        )
     key = lambda rule: str(rule.get("ID"))  # noqa: E731
-    matches = (sorted((_normalized_rule(rule) for rule in actual), key=key)
-               == sorted((_normalized_rule(rule) for rule in spec.lifecycle_rules), key=key))
+    matches = sorted(present, key=key) == sorted(wanted, key=key)
     return BucketCheck(
         "bucket.lifecycle", matches,
         "The lifecycle rules are FrostVault's" if matches

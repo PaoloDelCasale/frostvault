@@ -124,6 +124,16 @@ class FakeBucketS3:
             ObjectLockConfiguration)
         return {}
 
+    def put_bucket_ownership_controls(self, Bucket: str, OwnershipControls: dict) -> dict:
+        self._bucket("put_bucket_ownership_controls", Bucket)["ownership"] = copy.deepcopy(
+            OwnershipControls)
+        return {}
+
+    def get_bucket_ownership_controls(self, Bucket: str) -> dict:
+        return {"OwnershipControls": self._setting(
+            "get_bucket_ownership_controls", Bucket, "ownership",
+            "OwnershipControlsNotFoundError")}
+
     def get_object_lock_configuration(self, Bucket: str) -> dict:
         return {"ObjectLockConfiguration": self._setting(
             "get_object_lock_configuration", Bucket, "lock",

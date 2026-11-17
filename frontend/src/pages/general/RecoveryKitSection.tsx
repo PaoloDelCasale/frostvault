@@ -60,7 +60,11 @@ export function RecoveryKitSection() {
           {status.custody_acknowledged
             ? <p role="status">{t("recovery_kit.acknowledged")}</p>
             : <Button className="w-fit" disabled={busy} variant="secondary" onClick={() => void acknowledge()}>{t("recovery_kit.acknowledge")}</Button>}
-        </> : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
+        </> : status?.awaiting_backup && status.system_bucket
+          ? <p role="alert" data-testid="recovery-kit-awaiting-backup">
+            {t("recovery_kit.awaiting_backup", { name: status.system_bucket.name, region: status.system_bucket.region })}
+          </p>
+          : status ? <p role="alert">{t("recovery_kit.unconfigured")}</p> : null}
         {status?.metadata_restore ? <p role="alert" data-testid="metadata-restore-warning">
           {t("recovery_kit.restore_warning", { date: formatDateTime(status.metadata_restore.backup_created_at), count: status.metadata_restore.updated_files })}
         </p> : null}

@@ -12,6 +12,30 @@ from app.services.system_bucket import SystemBucket
 from app.services.audit_events import redact_sensitive, REDACTED
 
 
+class BackupRunsConnection:
+    """Answers the kit's reads: backups by bucket, no custody or restore rows."""
+
+    def __init__(self, backup_buckets: list[str]):
+        self.backup_buckets = backup_buckets
+
+    def execute(self, sql, params=()):
+        result = Mock()
+        if "FROM system_bucket" in sql:
+            result.fetchone.return_value = None
+        elif "FROM metadata_backup_runs" in sql:
+            self.assert_succeeded_only(sql)
+            result.fetchone.return_value = {"?column?": 1} if params[0] in self.backup_buckets else None
+        elif "COUNT(*)" in sql:
+            result.fetchone.return_value = {"n": 0}
+        else:
+            result.fetchone.return_value = None
+        return result
+
+    @staticmethod
+    def assert_succeeded_only(sql):
+        assert "status IN ('succeeded', 'verified')" in sql, sql
+
+
 class RecoveryKitTests(unittest.TestCase):
     def setUp(self):
         self.config = replace(Settings(), archive_master_key=Fernet.generate_key().decode(),
@@ -78,7 +102,39 @@ class RecoveryKitTests(unittest.TestCase):
         configured = replace(self.config, metadata_backup_bucket="my-backups")
         with self.assertRaises(ValueError):
             recovery_kit.acknowledge_custody(connection, "0" * 24, configured)
-        connection.execute.assert_not_called()
+        statements = [call.args[0].lstrip().split()[0] for call in connection.execute.call_args_list]
+        self.assertEqual(set(statements), {"SELECT"})
+
+    def test_the_kit_waits_for_a_backup_in_the_current_system_bucket(self):
+        """S4: never offer a kit naming a bucket that holds no backup yet."""
+        configured = replace(self.config, metadata_backup_bucket="my-backups")
+        backups: list[str] = []
+        connection = BackupRunsConnection(backups)
+        status = recovery_kit.kit_status(connection, configured)
+        self.assertEqual((status["configured"], status["fingerprint"], status["awaiting_backup"]),
+                         (False, None, True))
+        self.assertEqual(status["system_bucket"]["name"], "my-backups")
+        self.assertIsNone(recovery_kit.kit_bucket(connection, configured))
+        with self.assertRaises(recovery_kit.RecoveryKitUnavailable) as caught:
+            recovery_kit.build_recovery_kit(configured, bucket=None)
+        self.assertIn("keep the previous kit", str(caught.exception))
+        self.assertIn("the bucket in VAULT_S3_BUCKET", str(caught.exception))
+        # A backup in another bucket (the shared one, or a previous System Bucket) does not count.
+        backups.append("shared-bucket")
+        self.assertTrue(recovery_kit.kit_status(connection, configured)["awaiting_backup"])
+        backups.append("my-backups")
+        status = recovery_kit.kit_status(connection, configured)
+        self.assertEqual((status["configured"], status["awaiting_backup"]), (True, False))
+        self.assertEqual(status["fingerprint"], self.fingerprint(
+            configured, SystemBucket("my-backups", "eu-south-1", "configured")))
+
+    def test_no_system_bucket_is_not_awaiting_a_backup(self):
+        status = recovery_kit.kit_status(BackupRunsConnection([]), self.config)
+        self.assertEqual((status["configured"], status["system_bucket"], status["awaiting_backup"]),
+                         (False, None, False))
+
+    def test_the_kit_instructions_point_to_the_previous_kit_for_older_backups(self):
+        self.assertIn("the bucket in VAULT_S3_BUCKET", recovery_kit.INSTRUCTIONS)
 
     def test_key_fields_are_redacted_defensively(self):
         result = redact_sensitive({"ARCHIVE_MASTER_KEY": self.config.archive_master_key, "nested": {"master_key": "value"}})

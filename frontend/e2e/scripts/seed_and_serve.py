@@ -193,6 +193,12 @@ def _seed(paths: dict[str, Path]) -> dict:
                 (vault_id,),
             )
 
+        # The Recovery Kit is offered once a metadata backup has succeeded in
+        # the System Bucket (#734); record one off-host run, no artifact needed.
+        from app.services.metadata_backups import record_backup_run
+        record_backup_run(connection, reason="manual", backend="postgresql", status="succeeded",
+                          s3_key="system/backups/e2e-seed.bak.enc", s3_bucket="e2e-system-bucket")
+
         owner_token = create_session(connection, auth_method="local")
         connection.execute("UPDATE sessions SET vault_id=%s", (primary_id,))
 

@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import tarfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -108,9 +109,10 @@ class Boto3ObjectStore:
 def off_host_backup_configured(settings_obj: Settings | Any | None = None) -> bool:
     """Whether deployment configuration requires an off-host backup copy.
 
-    A METADATA_BACKUP_BUCKET or usable AWS credentials commit every backup to
-    the System Bucket (#734); neither, as in local development, means
-    local-only. Never an optional optimization once committed.
+    A METADATA_BACKUP_BUCKET, a VAULT_S3_BUCKET (until #735) or usable AWS
+    credentials commit every backup to the System Bucket (#734); none of them,
+    as in local development, means local-only. Never an optional optimization
+    once committed: missing credentials or IAM fail the backup.
     """
     cfg = settings_obj if settings_obj is not None else settings
     return system_bucket.off_host_required(cfg)
@@ -151,6 +153,35 @@ def default_object_store(
         raise ObjectStoreUnavailableError(
             "Configured metadata backup object store is unavailable"
         ) from None
+
+
+@dataclass(frozen=True)
+class ResolvedObjectStore:
+    """The off-host store for one backup run, resolved before it starts.
+
+    ``error`` is the safe refusal of a required store; the run records it as
+    a failure after writing the local artifact.
+    """
+
+    store: ObjectStore | None = None
+    error: BackupError | None = None
+
+
+def resolve_object_store(
+    factory: Callable[[], ObjectStore | None] | None = None,
+) -> ResolvedObjectStore:
+    """Resolve (create and verify) the System Bucket store without raising.
+
+    Callers do this before opening the database connection that records the
+    run, so the S3 round trips never hold a pooled connection (#734).
+    """
+    try:
+        return ResolvedObjectStore(store=(factory or default_object_store)())
+    except BackupError as exc:
+        return ResolvedObjectStore(error=exc)
+    except Exception:  # noqa: BLE001 - normalize an external boundary
+        return ResolvedObjectStore(error=ObjectStoreUnavailableError(
+            "Configured metadata backup object store is unavailable"))
 
 
 def now_iso() -> str:
@@ -426,12 +457,10 @@ def verify_restore_isolated(
     *,
     master_key: str | None = None,
     work_dir: str | Path,
-    object_store: ObjectStore | None = None,
 ) -> dict[str, Any]:
     """Decrypt a backup into a temporary database and verify it opens cleanly.
 
-    Never writes to the live database path and never mutates production vault
-    object keys (anything under ``vaults/``).
+    Never writes to the live database path and makes no S3 request.
     """
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -440,18 +469,8 @@ def verify_restore_isolated(
     if backend != "postgresql" or payload["manifest"].get("schema_format") != "postgresql-custom":
         raise BackupError("Only PostgreSQL custom-format backups are supported")
 
-    vault_keys_before: list[str] = []
-    if object_store is not None:
-        vault_keys_before = object_store.list_keys("vaults/")
-
     result = _verify_postgres_dump_isolated(payload["database"], work)
     result["backend"] = backend
-
-    if object_store is not None:
-        vault_keys_after = object_store.list_keys("vaults/")
-        if vault_keys_after != vault_keys_before:
-            raise BackupError("Restore verification mutated production vault objects")
-
     return result
 
 
@@ -834,16 +853,15 @@ def run_metadata_backup(
     master_key: str | None = None,
     database_dsn: str | None = None,
     config_snapshot: dict[str, Any] | None = None,
-    object_store: ObjectStore | None = None,
-    object_store_factory: Callable[[], ObjectStore | None] | None = None,
+    object_store: ObjectStore | ResolvedObjectStore | None = None,
     retention: int | None = None,
     s3_prefix: str = S3_BACKUP_PREFIX,
 ) -> dict[str, Any]:
     """Create, optionally upload, rotate, and record one metadata backup.
 
-    ``object_store_factory`` (``default_object_store`` in the app) resolves
-    the System Bucket inside the run, so a refused bucket is a recorded,
-    notified failure rather than an error before the run.
+    The app passes ``resolve_object_store()``, resolved before ``connection``
+    was opened: a refused System Bucket is then a recorded, notified failure
+    of this run, after the local artifact is written.
     """
     backend = "postgresql"
     keep = retention if retention is not None else settings.metadata_backup_retention
@@ -859,8 +877,10 @@ def run_metadata_backup(
         )
         s3_key = s3_bucket = None
         # After the local artifact: a refused System Bucket still leaves it on disk.
-        if object_store is None and object_store_factory is not None:
-            object_store = object_store_factory()
+        if isinstance(object_store, ResolvedObjectStore):
+            if object_store.error is not None:
+                raise object_store.error
+            object_store = object_store.store
         if object_store is not None:
             stored = store_backup_to_object_store(
                 artifact, object_store=object_store, prefix=s3_prefix

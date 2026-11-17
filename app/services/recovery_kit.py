@@ -4,6 +4,8 @@ The secret-bearing payload exists only in the authenticated no-store download.
 Status and custody use a public, domain-separated fingerprint instead. The kit
 names the System Bucket and its region (#734): a new System Bucket, or a new
 METADATA_BACKUP_BUCKET, changes the fingerprint and asks for custody again.
+The kit is offered only once a metadata backup run has succeeded in the
+current System Bucket, so it never names a bucket that holds no backup.
 """
 from __future__ import annotations
 
@@ -34,8 +36,10 @@ KIT_FORMAT = "frostvault-recovery-kit-v2"
 def _ready(bucket: system_bucket.SystemBucket | None) -> system_bucket.SystemBucket:
     if bucket is None or not bucket.ready or not bucket.name or not bucket.region:
         raise RecoveryKitUnavailable(
-            "Recovery Kit requires the System Bucket: set METADATA_BACKUP_BUCKET, or "
-            "configure AWS credentials and let the first metadata backup create it")
+            "Recovery Kit is available once a metadata backup has succeeded in the "
+            "System Bucket (METADATA_BACKUP_BUCKET, or the one FrostVault creates with "
+            "AWS credentials). Until then keep the previous kit: it points to the "
+            "earlier backups in the bucket in VAULT_S3_BUCKET")
     return bucket
 
 
@@ -65,7 +69,8 @@ Never paste the kit/key/credentials into logs, reports, command arguments or cha
 MAIN ROUTE: restore metadata plus files
 BUCKET and REGION below are this kit's system_bucket and region: the System
 Bucket that receives the metadata backups. Backups made before FrostVault had a
-System Bucket stay under system/backups/ in the old shared bucket.
+System Bucket stay under system/backups/ in the bucket in VAULT_S3_BUCKET, which
+the previous kit names: keep that kit while you need them.
 1. Stop FrostVault. Keep the old database unchanged. Use the matching application
    release and PostgreSQL 16 tools. Obtain AWS access via a private AWS profile.
    On a new server, restore before the first start: the restored catalog names
@@ -178,8 +183,24 @@ Cold retrieval, requests and transfer may incur AWS charges.
 
 
 def current_bucket(connection: Any = None, config: Any = None) -> system_bucket.SystemBucket | None:
-    """The System Bucket the kit names; reads the saved row, never S3."""
+    """The current System Bucket, ready or not; reads the saved row, never S3."""
     return system_bucket.location(config or settings, connection=connection)
+
+
+def has_backup_in(connection: Any, bucket: system_bucket.SystemBucket) -> bool:
+    """Whether a metadata backup run has succeeded with its copy in ``bucket``."""
+    row = connection.execute(
+        "SELECT 1 FROM metadata_backup_runs WHERE s3_bucket=%s "
+        "AND status IN ('succeeded', 'verified') LIMIT 1", (bucket.name,)).fetchone()
+    return row is not None
+
+
+def kit_bucket(connection: Any, config: Any = None) -> system_bucket.SystemBucket | None:
+    """The System Bucket the kit names: ready and holding a succeeded backup."""
+    bucket = current_bucket(connection, config)
+    if bucket is None or not bucket.ready or not has_backup_in(connection, bucket):
+        return None
+    return bucket
 
 
 def build_recovery_kit(config: Any = None, *,
@@ -207,8 +228,9 @@ def _iso(value: Any) -> str | None:
 
 def kit_status(connection: Any, config: Any = None) -> dict[str, Any]:
     bucket = current_bucket(connection, config)
+    named = kit_bucket(connection, config)
     try:
-        fingerprint = kit_fingerprint(config, bucket=bucket)
+        fingerprint = kit_fingerprint(config, bucket=named)
     except RecoveryKitUnavailable:
         fingerprint = None
     custody = connection.execute("SELECT * FROM recovery_kit_custody WHERE id=1").fetchone()
@@ -216,7 +238,9 @@ def kit_status(connection: Any, config: Any = None) -> dict[str, Any]:
     count = connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_updates").fetchone()["n"]
     acknowledged = bool(fingerprint and custody and custody["fingerprint"] == fingerprint)
     return {"configured": fingerprint is not None, "fingerprint": fingerprint,
-            "system_bucket": bucket.public() if fingerprint is not None else None,
+            "system_bucket": bucket.public() if bucket is not None else None,
+            # A System Bucket exists but no backup has succeeded in it yet.
+            "awaiting_backup": bucket is not None and named is None,
             "custody_acknowledged": acknowledged,
             "acknowledged_at": _iso(custody["acknowledged_at"]) if acknowledged else None,
             "metadata_restore": {"backup_created_at": _iso(restore["backup_created_at"]),
@@ -225,7 +249,7 @@ def kit_status(connection: Any, config: Any = None) -> dict[str, Any]:
 
 def acknowledge_custody(connection: Any, fingerprint: str, config: Any = None) -> None:
     try:
-        current = kit_fingerprint(config, bucket=current_bucket(connection, config))
+        current = kit_fingerprint(config, bucket=kit_bucket(connection, config))
     except RecoveryKitUnavailable:
         current = None
     if fingerprint != current:

@@ -18,7 +18,10 @@
         "s3:PutLifecycleConfiguration",
         "s3:GetBucketTagging",
         "s3:PutBucketTagging",
-        "s3:GetBucketObjectLockConfiguration"
+        "s3:GetBucketOwnershipControls",
+        "s3:PutBucketOwnershipControls",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:PutBucketObjectLockConfiguration"
       ],
       "Resource": "arn:aws:s3:::frostvault-*"
     },

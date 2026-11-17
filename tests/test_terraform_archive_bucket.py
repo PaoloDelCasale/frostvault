@@ -62,11 +62,17 @@ class ArchiveBucketTerraformTests(unittest.TestCase):
             else:
                 self.assertEqual(actions, ["s3:BypassGovernanceRetention"])
         self.assertNotIn("s3:BypassGovernanceRetention", allowed)
+        # Deletion of buckets and objects belongs to #735/#739, not to #734.
+        for action in ("s3:DeleteBucket", "s3:DeleteObject", "s3:DeleteObjectVersion"):
+            self.assertNotIn(action, allowed)
         self.assertFalse(any("*" in action for action in allowed))
         for action in ("s3:CreateBucket", "s3:PutBucketPublicAccessBlock",
                        "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
                        "s3:PutLifecycleConfiguration", "s3:PutBucketTagging",
-                       "s3:GetBucketObjectLockConfiguration", "s3:PutObject", "s3:GetObject"):
+                       "s3:GetBucketObjectLockConfiguration",
+                       "s3:PutBucketObjectLockConfiguration",
+                       "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls",
+                       "s3:PutObject", "s3:GetObject"):
             self.assertIn(action, allowed)
 
     def test_github_oidc_ci_policy_is_prefix_scoped(self) -> None:

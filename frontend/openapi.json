@@ -3078,6 +3078,10 @@
               "null"
             ]
           },
+          "awaiting_backup": {
+            "description": "A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734).",
+            "type": "boolean"
+          },
           "configured": {
             "type": "boolean"
           },
@@ -3109,7 +3113,7 @@
             ]
           },
           "system_bucket": {
-            "description": "The System Bucket the kit names (#734); null while the kit is unavailable.",
+            "description": "The current System Bucket (#734), ready or not; null while there is none.",
             "properties": {
               "name": {
                 "type": "string"

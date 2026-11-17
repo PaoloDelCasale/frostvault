@@ -79,16 +79,22 @@ bucket gets, and is then verified to have:
 - all four Block Public Access settings;
 - versioning Enabled;
 - default encryption SSE-S3 (`AES256`);
-- a lifecycle that is exactly FrostVault's (for the System Bucket: only the
-  seven-day abort of incomplete multipart uploads, on the whole bucket);
+- Object Ownership `BucketOwnerEnforced` (ACLs off);
+- FrostVault's lifecycle rules (for the System Bucket: the seven-day abort of
+  incomplete multipart uploads, on the whole bucket). A Vault Bucket's lifecycle
+  must be exactly FrostVault's; on the System Bucket, extra rules the Owner adds
+  (for example a noncurrent-version expiry) are allowed;
 - its `frostvault:*` tags (`frostvault:role=system` for the System Bucket); other
-  tags are kept;
+  tags are kept. The System Bucket's tags are applied at creation and not
+  required afterwards;
 - no Object Lock, unless a Governance-mode default retention was chosen for it.
   The System Bucket never has one.
 
-Creation is idempotent and resumable: the name is saved before `CreateBucket`, a
-bucket the account already owns counts as created, and the configuration is
-applied again and verified on the next attempt. Provider error codes are shown,
+Creation is idempotent and resumable: the name is saved before `CreateBucket`,
+`BucketAlreadyOwnedByYou` counts as created, and the configuration is applied
+again and verified on the next attempt. `BucketAlreadyExists` means the name is
+taken: FrostVault picks a new random name without probing the bucket. Any other
+error is an error, never a reason to rename. Provider error codes are shown,
 provider messages never.
 
 ### IAM for FrostVault-created buckets
@@ -97,11 +103,12 @@ provider messages never.
 
 | Statement | Actions |
 | --- | --- |
-| Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:GetBucketObjectLockConfiguration` |
+| Buckets | `s3:CreateBucket`, `s3:ListBucket`, `s3:GetBucketLocation`, `s3:Get/PutBucketPublicAccessBlock`, `s3:Get/PutBucketVersioning`, `s3:Get/PutEncryptionConfiguration`, `s3:Get/PutLifecycleConfiguration`, `s3:Get/PutBucketTagging`, `s3:Get/PutBucketOwnershipControls`, `s3:Get/PutBucketObjectLockConfiguration` (a Vault Bucket's Governance Retention Lock only) |
 | Objects (`frostvault-*/*`) | `s3:PutObject`, `s3:GetObject` (metadata backups and their read-back) |
 | Deny | `s3:BypassGovernanceRetention`, always |
 
-FrostVault never holds `s3:BypassGovernanceRetention`. Unlike the shared archive
+FrostVault never holds `s3:BypassGovernanceRetention`, and this policy grants no
+bucket or object deletion. Unlike the shared archive
 bucket, whose settings the application only reads, FrostVault configures the
 buckets it creates, so this policy grants the matching `Put*` actions only on
 `frostvault-*`.

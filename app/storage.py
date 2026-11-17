@@ -7552,15 +7552,18 @@ def _deliver_notifications_once() -> None:
 def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
     try:
+        runtime = _runtime_settings()
+        if runtime.metadata_backup_interval_seconds <= 0:
+            return
+        # S3 round trips (System Bucket creation/verification) before a pooled
+        # connection is held for the run (#734).
+        object_store = metadata_backup_service.resolve_object_store()
         with db() as connection:
-            runtime = _runtime_settings()
-            if runtime.metadata_backup_interval_seconds <= 0:
-                return
             result = metadata_backup_service.run_metadata_backup(
                 connection,
                 reason="scheduled",
                 backup_dir=settings.metadata_backup_dir,
-                object_store_factory=metadata_backup_service.default_object_store,
+                object_store=object_store,
                 retention=runtime.metadata_backup_retention,
                 s3_prefix=runtime.metadata_backup_s3_prefix,
             )
@@ -7645,7 +7648,6 @@ def _verify_latest_metadata_backup_once() -> None:
         result = metadata_backup_service.verify_restore_isolated(
             artifact,
             work_dir=work_dir,
-            object_store=None,
         )
         if not result.get("ok"):
             raise metadata_backup_service.BackupError("Restore verification reported not ok")
