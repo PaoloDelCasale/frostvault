@@ -1935,6 +1935,13 @@
         },
         "stability_seconds": {
           "type": "number"
+        },
+        "fixed_exclude_globs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Fixed noise exclusions applied to every Vault; read only."
         }
       },
       "required": [
@@ -5371,6 +5378,253 @@
         "days",
         "mode",
         "retained"
+      ]
+    },
+    "ExcludedFolder": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "rule"
+      ]
+    },
+    "DiskListingEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "An entry read from disk inside an Excluded Folder: not catalogued, not protected.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modified_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "type",
+        "size",
+        "modified_at"
+      ]
+    },
+    "ExcludedFolderListing": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder.",
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "excluded_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The folder rule that covers this directory; null outside an Excluded Folder."
+        },
+        "folders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ExcludedFolder"
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/DiskListingEntry"
+          }
+        },
+        "total_entries": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "directory",
+        "excluded_by",
+        "folders",
+        "entries",
+        "total_entries",
+        "truncated"
+      ]
+    },
+    "VaultItemExclusionStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "is_directory": {
+          "type": "boolean"
+        },
+        "own_rule": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "path/** for a folder, the exact path for a file; null when the path holds glob characters."
+        },
+        "own_rule_present": {
+          "type": "boolean"
+        },
+        "excluded": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Other exclude globs that exclude the item."
+        },
+        "fixed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Fixed noise exclusions that match the item."
+        },
+        "not_included": {
+          "type": "boolean",
+          "description": "The include globs do not match the item."
+        }
+      },
+      "required": [
+        "path",
+        "is_directory",
+        "own_rule",
+        "own_rule_present",
+        "excluded",
+        "rules",
+        "fixed",
+        "not_included"
+      ]
+    },
+    "VaultInclusionPreview": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "is_directory": {
+          "type": "boolean"
+        },
+        "own_rule": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "path/** for a folder, the exact path for a file; null when the path holds glob characters."
+        },
+        "own_rule_present": {
+          "type": "boolean"
+        },
+        "excluded": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Other exclude globs that exclude the item."
+        },
+        "fixed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Fixed noise exclusions that match the item."
+        },
+        "not_included": {
+          "type": "boolean",
+          "description": "The include globs do not match the item."
+        },
+        "includable": {
+          "type": "boolean"
+        },
+        "folder_rule": {
+          "type": "boolean",
+          "description": "Removing the rule makes the Vault look inside the folder again with a full scan."
+        },
+        "files": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "False when the disk walk stopped at its time budget: the counts are a minimum."
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/StorageEstimateResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "is_directory",
+        "own_rule",
+        "own_rule_present",
+        "excluded",
+        "rules",
+        "fixed",
+        "not_included",
+        "includable",
+        "folder_rule",
+        "files",
+        "bytes",
+        "complete",
+        "estimate"
       ]
     }
   }

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, File as FileIcon, Folder, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, EyeOff, File as FileIcon, Folder, FolderX, Search, X } from "lucide-react";
 import { ApiError, apiRequest } from "@/api/client";
-import type { ArchiveListItem, CloudDeletionPreview, CloudDeletionSettings, FilesResponse } from "@/api/types";
+import type { ArchiveListItem, CloudDeletionPreview, CloudDeletionSettings, DiskListingEntry, ExcludedFolder, FilesResponse } from "@/api/types";
 import { vaultApi } from "@/api/vault";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { navigate, vaultFilesUrl, vaultSettingsUrl } from "@/router";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { FileDetails } from "./FileDetails";
+import { ExcludeDialog, ExclusionMenu, IncludeDialog, type ExclusionTarget } from "./ExclusionActions";
+import { EXCLUSIONS_SECTION, ownRule } from "./exclusionRules";
 import { RecoverSelection, type Target } from "./RecoverSelection";
 import { formatBytes, formatDateTime, formatNumber } from "./format";
 import { errorMessage } from "@/lib/errorMessage";
@@ -61,6 +63,7 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [freeOutcome, setFreeOutcome] = useState<{ freed: number; total: number; errors: string[] } | null>(null);
+  const [exclusion, setExclusion] = useState<{ action: "exclude" | "include"; target: ExclusionTarget } | null>(null);
   const scope = useMemo(() => vaultApi(vaultId), [vaultId]);
   const stats = useVaultStats(vaultId);
   const q = params.get("q") ?? "", state = params.get("state") ?? "", directory = params.get("directory") ?? "";
@@ -93,10 +96,29 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
   }, refetchInterval: 15_000 });
   const focusPath = params.get("file");
   const focus = useQuery({ queryKey: ["file-detail", vaultId, focusPath, revision], queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
+  /** Excluded Folders are not observed (ADR-0044): one disk read of this level shows them (#754). */
+  const diskLevel = !global && !q && (state === "" || state === "excluded") && page === 1;
+  const disk = useQuery({ queryKey: ["excluded-folders", vaultId, directory, revision], queryFn: () => scope.excludedFolders(directory), enabled: diskLevel, retry: false });
+  const policy = useQuery({ queryKey: ["operation-policy", vaultId, revision], queryFn: () => scope.policy(), enabled: !global, retry: false });
+  const excludedBy = diskLevel ? disk.data?.excluded_by ?? null : null;
+  const excludedFolders = new Map<string, ExcludedFolder>((diskLevel ? disk.data?.folders ?? [] : []).map((folder) => [folder.path, folder]));
   const items = [...(query.data?.items ?? [])];
   if (focus.data && !items.some((item) => item.path === focusPath)) items.unshift(focus.data);
   const rows = items.map((item): Target => ({ item, vaultId: typeof item.vault_id === "number" ? item.vault_id : vaultId, vaultName: typeof item.vault_name === "string" ? item.vault_name : vaultName }));
   const effectiveDetails = details ?? (focus.data ? { item: focus.data, vaultId, vaultName } : null);
+  const ownRules = new Set(policy.data?.exclude_globs ?? []);
+  /** Whether «Includi di nuovo» applies: an excluded file, or a folder a rule excludes entirely. */
+  function exclusionTarget(item: ArchiveListItem): ExclusionTarget {
+    const isDirectory = item.type === "directory";
+    const excluded = isDirectory
+      ? ownRules.has(ownRule(item.path, true)) || excludedFolders.has(item.path) || Boolean(excludedBy)
+      : item.state === "excluded" || Boolean(item.in_excluded_folder);
+    return { path: item.path, name: item.name, isDirectory, excluded };
+  }
+  const catalogPaths = new Set(items.map((item) => item.path));
+  /** Excluded Folders without a catalog row: shown in their place, never hidden. */
+  const uncatalogued = [...excludedFolders.values()].filter((folder) => !catalogPaths.has(folder.path));
+  const diskEntries = excludedBy ? (disk.data?.entries ?? []).filter((entry) => !catalogPaths.has(entry.path)) : [];
   const refresh = () => { setSelected([]); setRevision((value) => value + 1); onRefresh?.(); };
   function openFolder(path: string) { setInput(""); update({ directory: path, q: "", page: "", file: "" }, true); }
   function eligible(target: Target, action: "recover" | "free-space") {
@@ -178,7 +200,12 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     {target.item.type === "directory" ? <Folder className="size-4 shrink-0 text-green" aria-hidden="true" /> : <FileIcon className="size-4 shrink-0 text-muted" aria-hidden="true" />}
     <span className="min-w-0 break-words">{label(target)}</span>
   </button>;
-  const protection = (item: ArchiveListItem) => item.type === "directory" ? <FolderStates item={item} t={t} /> : item.recovery?.active
+  const excludedChip = (rule: string) => <span className="flex min-w-0 flex-wrap items-center gap-1" data-testid="excluded-folder-chip">
+    <Badge size="sm" state="excluded" label={t("exclusions.excluded_folder")} />
+    <a className="text-xs break-all text-muted underline" href={vaultSettingsUrl(vaultId, EXCLUSIONS_SECTION)}>{t("exclusions.rule", { rule })}</a>
+  </span>;
+  const protection = (item: ArchiveListItem) => item.type === "directory" && excludedFolders.has(item.path) ? <span className="grid gap-1"><FolderStates item={item} t={t} />{excludedChip(excludedFolders.get(item.path)!.rule)}</span>
+    : item.type === "directory" ? <FolderStates item={item} t={t} /> : item.recovery?.active
     ? <span className="flex flex-wrap gap-1"><Badge size="sm" {...itemStateBadge(item, t)} /><Badge size="sm" state="restoring" label={t("state.recovering")} /></span>
     : <Badge size="sm" {...itemStateBadge(item, t)} />;
   const size = (item: ArchiveListItem) => formatBytes(item.type === "directory" ? item.total_size : Number((item.local_exists ? item.local_size : item.cloud_size) ?? 0));
@@ -192,6 +219,15 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
   const selectAllOffered = cloudDeletion && !allResults && allChecked && total > rows.length;
   const checkbox = (target: Target) => <input className="size-5 accent-[var(--green)]" type="checkbox" aria-label={`${t("essential.select")} ${target.vaultName} / ${target.item.path}`} checked={checked(target)} onChange={() => toggle(target)} />;
   const highlighted = (target: Target) => target.item.path === focusPath;
+  const menu = (target: ExclusionTarget) => global ? null : <ExclusionMenu target={target} t={t} vaultId={vaultId}
+    onExclude={() => setExclusion({ action: "exclude", target })} onInclude={() => setExclusion({ action: "include", target })} />;
+  const folderTarget = (folder: ExcludedFolder): ExclusionTarget => ({ path: folder.path, name: folder.name, isDirectory: true, excluded: true });
+  const entryTarget = (entry: DiskListingEntry): ExclusionTarget => ({ path: entry.path, name: entry.name, isDirectory: entry.type === "directory", excluded: true });
+  const diskName = (name: string, path: string, isDirectory: boolean) => isDirectory
+    ? <button type="button" className="flex min-h-11 max-w-full min-w-0 items-center gap-2 text-left font-semibold hover:underline focus-visible:underline" onClick={() => openFolder(path)}>
+      <FolderX className="size-4 shrink-0 text-muted" aria-hidden="true" /><span className="min-w-0 break-words">{name}</span></button>
+    : <span className="flex min-h-11 max-w-full min-w-0 items-center gap-2"><EyeOff className="size-4 shrink-0 text-muted" aria-hidden="true" /><span className="min-w-0 break-words">{name}</span></span>;
+  const diskLabel = <span className="text-xs text-muted" data-testid="disk-entry-label">{t("exclusions.disk_listing")}</span>;
   const attention = problemCount > 0;
   return <section className="grid min-w-0 gap-4" data-testid="file-browser">
     <VaultHeader vaultId={vaultId} vaultName={vaultName} active="files" t={t} />
@@ -227,6 +263,16 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     {searching && <p className="text-sm text-muted">{global ? t("files.results_all") : t("files.results_vault", { name: vaultName })}</p>}
     {query.isPending && <p role="status" data-testid="file-list-loading">{t("ui.file_list_loading")}</p>}{query.error && <div role="alert" data-testid="file-list-error"><p>{t("ui.file_list_error")}</p><Button variant="secondary" onClick={() => void query.refetch()}>{t("ui.file_list_retry")}</Button></div>}
     {query.data?.aggregate_status === "loading" && <p role="status">{t("ui.file_list_loading")}</p>}
+    {excludedBy && <div role="note" className="flex min-w-0 items-start gap-3 rounded-card border border-line bg-surface p-3 text-sm" data-testid="excluded-folder-banner">
+      <FolderX className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden="true" />
+      <div className="grid min-w-0 gap-1">
+        <p className="font-semibold">{t("exclusions.excluded_folder")}</p>
+        <p>{t("exclusions.inside_banner", { rule: excludedBy })} <a className="font-semibold text-ink underline" href={vaultSettingsUrl(vaultId, EXCLUSIONS_SECTION)}>{t("exclusions.open_panel")}</a></p>
+        {disk.data?.truncated && <p className="text-muted">{t("exclusions.truncated", { shown: formatNumber(disk.data.entries.length), total: formatNumber(disk.data.total_entries) })}</p>}
+        {disk.data?.entries.length === 0 && <p className="text-muted">{t("ui.empty_folder")}</p>}
+      </div>
+    </div>}
+    {diskLevel && disk.isError && (policy.data?.exclude_globs ?? []).some((rule) => rule.endsWith("/**")) && <p role="status" className="text-sm text-muted" data-testid="disk-listing-error">{t("exclusions.disk_error")}</p>}
     {stoppedCount > 0 && <div role="note" className="flex min-w-0 flex-wrap items-center gap-3 rounded-card border border-line bg-surface p-3 text-sm" data-testid="stopped-uploads">
       <CirclePause className="size-4 shrink-0 text-muted" aria-hidden="true" />
       <p className="min-w-0 flex-1">{t("files.stopped_notice", { count: stoppedCount })}</p>
@@ -256,6 +302,7 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
           <th className="w-12 px-3 py-2"><input className="size-5 accent-[var(--green)]" type="checkbox" aria-label={t("files.select_page")} checked={allChecked} disabled={!rows.length} onChange={() => setSelected(allChecked ? [] : rows)} /></th>
           <th className="px-2 py-2">{t("essential.name")}</th><th className="w-[34%] px-2 py-2">{t("essential.protection")}</th>
           <th className="w-28 px-2 py-2 text-right">{t("essential.size")}</th><th className="w-44 px-2 py-2">{t("essential.modified")}</th>
+          {!global && <th className="w-14 px-2 py-2"><span className="sr-only">{t("exclusions.actions_column")}</span></th>}
         </tr></thead>
         <tbody>{rows.map((target) => <tr key={`${target.vaultId}:${target.item.path}`} data-highlighted={highlighted(target) || undefined}
           className={cn("border-t border-line", highlighted(target) ? "bg-green-soft" : checked(target) ? "bg-green-soft/50" : "hover:bg-canvas/60")}>
@@ -264,6 +311,22 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
           <td className="px-2 py-2">{protection(target.item)}</td>
           <td className="px-2 py-2 text-right tabular-nums">{size(target.item)}</td>
           <td className="px-2 py-2 text-muted">{modified(target.item)}</td>
+          {!global && <td className="px-2">{menu(exclusionTarget(target.item))}</td>}
+        </tr>)}
+        {uncatalogued.map((folder) => <tr key={`excluded:${folder.path}`} className="border-t border-line" data-excluded-folder={folder.path}>
+          <td className="px-3" />
+          <td className="min-w-0 px-2 py-1">{diskName(folder.name, folder.path, true)}</td>
+          <td className="px-2 py-2">{excludedChip(folder.rule)}</td>
+          <td className="px-2 py-2 text-right text-muted">—</td><td className="px-2 py-2 text-muted">—</td>
+          <td className="px-2">{menu(folderTarget(folder))}</td>
+        </tr>)}
+        {diskEntries.map((entry) => <tr key={`disk:${entry.path}`} className="border-t border-line" data-disk-entry={entry.path}>
+          <td className="px-3" />
+          <td className="min-w-0 px-2 py-1">{diskName(entry.name, entry.path, entry.type === "directory")}</td>
+          <td className="px-2 py-2">{diskLabel}</td>
+          <td className="px-2 py-2 text-right tabular-nums">{entry.type === "file" ? formatBytes(entry.size) : "—"}</td>
+          <td className="px-2 py-2 text-muted">{formatDateTime(entry.modified_at)}</td>
+          <td className="px-2">{menu(entryTarget(entry))}</td>
         </tr>)}</tbody>
       </table>
     </div>
@@ -275,8 +338,18 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm">{protection(target.item)}<span className="tabular-nums text-muted">{size(target.item)}</span></div>
         <span className="text-xs text-muted">{t("essential.modified")}: {modified(target.item)}</span>
       </div>
+      {!global && menu(exclusionTarget(target.item))}
+    </li>)}
+    {uncatalogued.map((folder) => <li key={`excluded:${folder.path}`} className="flex min-w-0 items-start gap-3 rounded-card border border-line bg-surface p-3" data-excluded-folder={folder.path}>
+      <div className="grid min-w-0 flex-1 gap-1">{diskName(folder.name, folder.path, true)}{excludedChip(folder.rule)}</div>
+      {menu(folderTarget(folder))}
+    </li>)}
+    {diskEntries.map((entry) => <li key={`disk:${entry.path}`} className="flex min-w-0 items-start gap-3 rounded-card border border-line bg-surface p-3" data-disk-entry={entry.path}>
+      <div className="grid min-w-0 flex-1 gap-1">{diskName(entry.name, entry.path, entry.type === "directory")}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm">{diskLabel}{entry.type === "file" && <span className="tabular-nums text-muted">{formatBytes(entry.size)}</span>}</div></div>
+      {menu(entryTarget(entry))}
     </li>)}</ul>
-    {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && <p className="rounded-card border border-dashed border-line p-6 text-center text-muted" data-testid="file-list-empty" data-empty={searching ? "search" : state ? "filter" : "folder"}>{t(searching ? "ui.empty_no_matches" : state ? "ui.empty_filter" : "ui.empty_folder")}</p>}
+    {query.data?.items.length === 0 && query.data.aggregate_status !== "loading" && !uncatalogued.length && !excludedBy && <p className="rounded-card border border-dashed border-line p-6 text-center text-muted" data-testid="file-list-empty" data-empty={searching ? "search" : state ? "filter" : "folder"}>{t(searching ? "ui.empty_no_matches" : state ? "ui.empty_filter" : "ui.empty_folder")}</p>}
     {total > 0 && <nav aria-label={t("files.pages")} className="flex flex-wrap items-center justify-between gap-2">
       <p data-testid="page-label" className="text-sm text-muted tabular-nums">{t("files.range", { from: formatNumber(from), to: formatNumber(to), total: formatNumber(total) })}</p>
       {total > PAGE_SIZE && <div className="flex gap-2">
@@ -290,6 +363,8 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
       settings={purge.settings} preview={purge.preview} previewing={purge.previewing} busy={purge.busy} error={purge.error} t={t}
       duplicatesOnly={duplicatesOnly} onDuplicatesOnlyChange={(value) => { setDuplicatesOnly(value); void previewPurge(purge.request, value); }}
       onConfirm={(payload) => void confirmPurge(payload)} />}
+    {exclusion?.action === "exclude" && <ExcludeDialog vaultId={vaultId} target={exclusion.target} t={t} onClose={() => setExclusion(null)} onDone={() => { setExclusion(null); refresh(); }} />}
+    {exclusion?.action === "include" && <IncludeDialog vaultId={vaultId} target={exclusion.target} t={t} onClose={() => setExclusion(null)} onDone={() => { setExclusion(null); refresh(); }} />}
     {recover && <RecoverSelection targets={recover} onClose={() => setRecover(null)} onDone={() => { setRecover(null); refresh(); }} t={t} />}
     <ConfirmDialog open={Boolean(release)} onOpenChange={(open) => { if (!open && !busy) setRelease(null); }} title={t("ui.confirm_free_space_title")} description={t("ui.confirm_free_space_description", { count: release?.length ?? 0 })} confirmLabel={busy ? t("ui.free_space_running") : t("essential.free_now")} cancelLabel={t("ui.cancel")} tone="danger" keepOpenOnConfirm onConfirm={() => void free()}>
       <details className="rounded-card border border-line" data-testid="free-space-items"><summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold">{t("files.free_space_show_items", { count: release?.length ?? 0 })}</summary>

@@ -27,7 +27,7 @@ describe("essential file browser", () => {
     const calls = setup(); await screen.findAllByText("photo.jpg");
     expect(calls.find((url) => url.startsWith("/api/files?"))).toContain("vault_id=1");
     const table = screen.getByTestId("file-list-table");
-    expect(within(table).getAllByRole("columnheader")).toHaveLength(5);
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(6);
     expect(table).not.toHaveTextContent("essential.ready");
     expect(table).not.toHaveTextContent("DEEP_ARCHIVE");
     expect(screen.queryByText(/VersionId/)).not.toBeInTheDocument();

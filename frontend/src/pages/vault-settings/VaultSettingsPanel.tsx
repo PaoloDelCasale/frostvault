@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
 import { CloudUsagePanel } from "./CloudUsagePanel";
 import { DuplicateCleanupPanel } from "./DuplicateCleanupPanel";
+import { ExclusionsPanel } from "./ExclusionsPanel";
 import { LifecyclePanel } from "./LifecyclePanel";
 import { MinimumStoragePanel } from "./MinimumStoragePanel";
 import { RetentionPanel } from "./RetentionPanel";
@@ -95,6 +96,9 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
         {auto === false && <p className="text-sm text-muted" data-testid="auto-upload-off-hint">{t("settings.auto_off")}</p>}
       </div>
       <UploadRetryActions vaultId={vaultId} showHelp={false} />
+    </SettingsSection>
+    <SettingsSection id="exclusions" highlighted={highlight === "exclusions"} title={t("exclusions.title")} summary={t("exclusions.summary")}>
+      <ExclusionsPanel vaultId={vaultId} onNotice={show} />
     </SettingsSection>
     <SettingsSection id="verification" highlighted={highlight === "verification"} title={t("verification.title")} summary={t("settings.verification_summary")} more={<p>{t("verification.help")}</p>}>
       <UploadVerificationPanel vaultId={vaultId} onNotice={show} />
