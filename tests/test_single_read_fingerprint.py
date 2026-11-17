@@ -2,8 +2,9 @@
 
 Seams under test (none needs a database):
 1. An upload's whole, stable Upload Snapshot read of a Local Copy without a
-   fingerprint publishes it (scan compare-and-swap), before the send, so a
-   failed send keeps it; a changed file, a recorded fingerprint or a snapshot
+   fingerprint publishes it (scan compare-and-swap): a multipart file before
+   its send, a single PUT with its publication or, failing, as the run ends;
+   a failed send keeps it; a changed file, a recorded fingerprint or a snapshot
    taken from the catalog publish nothing.
 2. The scan verification skips the very observation an upload fingerprinted.
 3. The default reads per device: 1 rotational, 3 solid-state or unknown, the
@@ -176,6 +177,29 @@ class UploadFingerprintTests(unittest.TestCase):
             self.run_job()
         self.catalog.publish_local_fingerprint.assert_called_once()
         self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row()))
+
+    def test_a_small_failed_send_keeps_its_fingerprint_too(self) -> None:
+        self.write(SMALL)
+        self.fingerprint = self.unfingerprinted(SMALL)
+        self.worker.upload_s3_file.side_effect = RuntimeError("provider down")
+        with self.assertRaisesRegex(RuntimeError, "provider down"):
+            self.run_job()
+        self.catalog.publish_local_fingerprint.assert_called_once()
+        self.worker.upload_s3_file.assert_called_once()  # Published after the failed send.
+        self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row(SMALL)))
+
+    def test_a_small_successful_upload_adds_no_unit(self) -> None:
+        # The publication unit records the same digest of the same observation.
+        def publish(_execution, run):
+            run.extra["read_fingerprint_published"] = True
+            self.execution._read_fingerprint_committed(run)
+
+        self.write(SMALL)
+        self.fingerprint = self.unfingerprinted(SMALL)
+        with patch.object(self.execution_module.UploadExecution, "_publish", publish):
+            self.assertEqual(self.run_job().status, "completed")
+        self.catalog.publish_local_fingerprint.assert_not_called()
+        self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row(SMALL)))
 
     def test_a_file_changed_during_the_read_publishes_nothing(self) -> None:
         calls = {"n": 0}

@@ -113,10 +113,15 @@ it was also read twice, by its upload and by the scan.
 **One read.** When an upload's Upload Snapshot pass reads a Local Copy that
 has no fingerprint, that whole, stable read (size and mtime unchanged before
 and after) is its fingerprint: the digest and the part digests are published
-right after the pass, before the send, through the same compare-and-swap as
-the scan verification (`publish_local_fingerprint` on the generation, size
-and mtime of the observation; no match with Current is inferred). A failed
-send keeps it: it describes the disk, not the cloud. The observation joins a
+through the same compare-and-swap as the scan verification
+(`publish_local_fingerprint` on the generation, size and mtime of the
+observation; no match with Current is inferred). A multipart file publishes
+it right after the pass, before its send, in a unit of its own. A single PUT
+adds no unit to a successful upload (the small-upload cost budget): its
+publication unit records the same digest of the same observation; a run that
+ends otherwise (a failed send, an automatic gate, an error) publishes it in
+a unit of its own as it ends. A failed send keeps it: it describes the disk,
+not the cloud. The observation joins a
 process-local, bounded set (65,536 entries, 24 hours), and the verification
 skips a row of its listing that is that very observation (same file,
 generation, size and mtime), checked before and again after waiting for the

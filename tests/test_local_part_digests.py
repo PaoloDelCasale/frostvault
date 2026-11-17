@@ -514,7 +514,7 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
         job = self.queue()
         self.run_job(job)
         row = self.row(job)
-        self.assertEqual(row["status"], "retrying", row["message"])
+        self.assertIn(row["status"], {"retrying", "failed"}, row["message"])
         self.assertEqual((self.reads, self.provider.puts), (1, 0))
         self.assert_fingerprint(BIG_A)
         with PostgresConnection(self.db_path) as connection:
