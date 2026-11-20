@@ -41,6 +41,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Python 3.12 is the single supported runtime line (docs/ci.md). A move
+      # to another line updates CI and the alignment contracts together, so
+      # only 3.12.x patches and digest refreshes arrive here (#773).
+      - dependency-name: python
+        versions: [">=3.13"]
 
   - package-ecosystem: npm
     directory: "/frontend"

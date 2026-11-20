@@ -25,7 +25,8 @@ The root Docker ecosystem in `.github/dependabot.yml` already maintains literal
 `FROM python:<version>-slim-trixie@sha256:<digest>` references. Digest refreshes
 and Python 3.12 patch updates remain ordinary reviewed dependency PRs. A move to
 another Python runtime line must update CI and the alignment contracts together;
-it must not silently ship through a base-tag update. `tests/test_ci_contracts.py`
+it must not silently ship through a base-tag update, so the Docker ecosystem
+ignores `python` versions `>=3.13`. `tests/test_ci_contracts.py`
 checks the versioned digest pin and runtime alignment without registry access.
 
 ## Pull request and push to `main`
