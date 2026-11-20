@@ -865,7 +865,11 @@ class DependabotContractTests(unittest.TestCase):
                       if item["package-ecosystem"] == "docker")
         self.assertEqual(docker["directory"], "/")
         self.assertEqual(docker["schedule"]["interval"], "weekly")
-        self.assertFalse(docker.get("ignore"))
+        # Only other Python runtime lines are ignored; 3.12 patches stay on.
+        self.assertEqual(
+            docker.get("ignore"),
+            [{"dependency-name": "python", "versions": [">=3.13"]}],
+        )
         self.assertFalse(docker.get("allow"))
         self.assertEqual(docker["groups"]["docker-minor-and-patch"]["update-types"],
                          ["minor", "patch"])
