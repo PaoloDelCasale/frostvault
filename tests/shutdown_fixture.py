@@ -40,6 +40,7 @@ async def lifespan(app):
             "validate_settings", "prepare_sources_layout",
             "initialize_database", "reconcile_source_volume_identities",
             "validate_nested_mounts_after_identity", "cleanup_abandoned_restore_files",
+            "start_restore_residue_sweep",
             "reconcile_interrupted_jobs", "vault_relocation_service.reconcile_vault_root_identities",
             "protection_stop_service.reconcile_all",
         ):

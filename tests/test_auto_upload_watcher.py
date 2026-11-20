@@ -336,6 +336,59 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
                 self.assertIn("Storage plan synchronization", storage.runtime_status[2]["last_error"])
         self.assertEqual(len(self.jobs()), 2)
 
+    def cloud_health(self):
+        from app.services.component_health import load_vault_health
+        with self.db() as connection:
+            health = load_vault_health(connection, 2)
+        return {component: (health.get(component) or {}).get("last_error")
+                for component in ("cloud", "policy")}, health
+
+    def test_probe_in_progress_skips_cloud_phases_without_touching_health(self):
+        """#777: a readiness probe held by another process is no S3 failure."""
+        gate = storage.cloud_preflight_gate
+        with (
+            patch("app.storage.scan_cloud", return_value=0),
+            patch("app.storage.validate_cloud_vault"),
+            patch("app.storage.s3_client"),
+            patch("app.storage.sync_lifecycle_rules_for_bucket", return_value=0),
+        ):
+            storage.scan_vault(self.vault)
+        errors, before = self.cloud_health()
+        self.assertEqual(errors, {"cloud": None, "policy": None})
+        self.advance(60)
+        busy = gate.CloudPreflightBusy(gate.PROBE_IN_PROGRESS)
+        with (
+            patch("app.storage.scan_cloud", side_effect=busy),
+            patch("app.storage.validate_cloud_vault", side_effect=busy),
+            patch("app.storage.s3_client"),
+            patch("app.storage.sync_lifecycle_rules_for_bucket") as sync,
+        ):
+            result = storage.scan_vault(self.vault)
+        sync.assert_not_called()
+        self.assertEqual((result.get("cloud_deferred"), result.get("lifecycle_rules_deferred")), (1, 1))
+        self.assertNotIn("cloud", result)
+        self.assertIsNone(storage.runtime_status[2]["last_error"])
+        _errors, after = self.cloud_health()
+        self.assertEqual({key: after[key] for key in ("cloud", "policy")},
+                         {key: before[key] for key in ("cloud", "policy")})
+        with self.db() as connection:
+            problems = connection.execute(
+                "SELECT dedupe_key FROM notifications WHERE problem_status='open' "
+                "AND dedupe_key IN ('blocked:2:cloud', 'blocked:2:policy')").fetchall()
+        self.assertEqual(problems, [])
+        # A real S3 block is still a cloud and policy error.
+        blocked = gate.CloudPreflightBlocked("Check AWS credentials")
+        with (
+            patch("app.storage.scan_cloud", side_effect=blocked),
+            patch("app.storage.validate_cloud_vault", side_effect=blocked),
+            patch("app.storage.s3_client"),
+        ):
+            result = storage.scan_vault(self.vault)
+        self.assertEqual((result["cloud"], result["lifecycle_rules"]), (-1, -1))
+        errors, _health = self.cloud_health()
+        self.assertEqual(errors, {"cloud": "Cloud scan: Check AWS credentials",
+                                  "policy": "Storage plan synchronization: Check AWS credentials"})
+
     def test_preflight_failure_never_writes_or_deletes_cloud_content(self):
         self.write()
         self.advance(300)

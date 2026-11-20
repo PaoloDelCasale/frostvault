@@ -104,6 +104,60 @@ class CloudPreflightPolicyTests(unittest.TestCase):
                 retry.assert_not_called()
 
 
+class ProbeInProgressTests(unittest.TestCase):
+    """#777: a probe running in another process is not an S3 block."""
+
+    def check_without_lock(self, status, remediation=None):
+        now = datetime.now(timezone.utc)
+        state = {'status': status, 'remediation': remediation, 'next_probe_at': None}
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.fetchone.return_value = {'acquired': False}
+        probe = Mock()
+        with patch.object(gate, '_ready_pid', None), patch.object(gate, 'snapshot', return_value=state):
+            outcome = gate.check(lambda: connection, probe, now=now)
+        probe.assert_not_called()
+        return outcome
+
+    def test_busy_lock_on_an_unblocked_gate_is_a_probe_in_progress(self):
+        for status in ('ready', 'unknown'):
+            with self.subTest(status=status):
+                outcome = self.check_without_lock(status)
+                self.assertEqual(outcome['status'], 'blocked')
+                self.assertTrue(outcome['probe_in_progress'])
+                self.assertEqual(outcome['remediation'], gate.PROBE_IN_PROGRESS)
+                with patch.object(gate, 'check', return_value=outcome):
+                    with self.assertRaises(gate.CloudPreflightBusy):
+                        storage.validate_cloud_vault({'s3_bucket': 'bucket'})
+
+    def test_busy_lock_on_a_blocked_gate_stays_a_real_block(self):
+        outcome = self.check_without_lock('blocked', 'Check AWS credentials')
+        self.assertFalse(outcome['probe_in_progress'])
+        with patch.object(gate, 'check', return_value=outcome):
+            with self.assertRaises(gate.CloudPreflightBlocked) as raised:
+                storage.validate_cloud_vault({'s3_bucket': 'bucket'})
+        self.assertNotIsInstance(raised.exception, gate.CloudPreflightBusy)
+        self.assertEqual(str(raised.exception), 'Check AWS credentials')
+
+    def test_probe_in_progress_still_keeps_jobs_queued(self):
+        job = {"id": 99003, "action": "upload", "status": "queued", "retry_count": 2}
+        with patch.object(storage, "_runtime_settings"), patch.object(
+            storage, "_load_claimed_job_status", return_value={"status": "queued"}
+        ), patch.object(storage, "process_upload", side_effect=gate.CloudPreflightBusy(gate.PROBE_IN_PROGRESS)), \
+                patch.object(storage, "set_job", return_value=True) as update, \
+                patch.object(storage, "schedule_upload_retry") as retry:
+            self.assertFalse(storage._process_claimed_job(job))
+        update.assert_called_once_with(job["id"], "queued", "S3 readiness blocked; Job remains queued")
+        retry.assert_not_called()
+
+    def test_audit_skipped_by_a_probe_in_progress_keeps_its_last_outcome(self):
+        with patch.object(storage, "validate_cloud_vault", side_effect=gate.CloudPreflightBusy(gate.PROBE_IN_PROGRESS)), \
+                patch.object(storage, "runtime_status", {}), \
+                patch.object(storage, "_record_scan_component_health") as record:
+            self.assertTrue(storage._audit_vault({"id": 3}))
+        record.assert_not_called()
+
+
 class LocalizedRemediationTests(unittest.TestCase):
     """#531: the missing-bucket readiness text follows the viewer's language.
 
