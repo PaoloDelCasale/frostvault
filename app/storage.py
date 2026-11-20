@@ -33,7 +33,10 @@ from .services.upload_snapshot import (
     PartDigests, UploadSnapshot, prepare_upload_snapshot, validated_s3_proof,
     UploadProofMismatch, unsupported_checksum_api,
 )
-from watchfiles import Change, awatch
+from watchfiles import Change
+
+# The native observer runs in a child process with its own GIL (ADR-0053).
+from .services.watch_process import awatch
 
 from .config import is_placeholder, settings, settings_snapshot
 from .catalog import ArchiveCatalog
