@@ -169,6 +169,7 @@ from .storage import (
     background_loop,
     cancel_jobs,
     cleanup_abandoned_restore_files,
+    start_restore_residue_sweep,
     filesystem_watch_loop,
     auto_upload_loop,
     cloud_preflight_loop,
@@ -242,6 +243,9 @@ async def lifespan(_: FastAPI):
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()
     protection_stop_service.reconcile_all()
+    # The walk of every Vault tree runs beside the server, not before it
+    # answers (#777); Recover Jobs wait for it.
+    start_restore_residue_sweep()
     tasks = [asyncio.create_task(background_loop()), asyncio.create_task(auto_upload_loop()),
              asyncio.create_task(cloud_preflight_loop()), asyncio.create_task(upload_remediation_loop()),
              asyncio.create_task(bulk_upload_admission_loop()),

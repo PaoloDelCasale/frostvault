@@ -68,6 +68,18 @@ class CloudPreflightBlocked(RuntimeError):
     """Queue suspension, NOT a Job failure or a transfer retry."""
 
 
+class CloudPreflightBusy(CloudPreflightBlocked):
+    """Another process is probing a gate that is not blocked (#777).
+
+    Jobs still wait queued (it is a ``CloudPreflightBlocked``), but it is no
+    S3 failure: an observation (scan, audit) skips its cloud work and leaves
+    the recorded component health as it was.
+    """
+
+
+PROBE_IN_PROGRESS = "S3 readiness check in progress; Jobs remain queued"
+
+
 class ReadinessFailure(RuntimeError):
     """Only locally composed, safe remediation text may use this exception."""
 
@@ -201,8 +213,11 @@ def check(connect: Callable, probe: Callable[[], None], *, now: datetime | None 
             "SELECT pg_try_advisory_xact_lock(%s) AS acquired", (LOCK_ID,),
         ).fetchone()["acquired"]
         if not acquired:
-            return {**state, "status": "blocked", "remediation": state.get("remediation") or
-                    "S3 readiness check in progress; Jobs remain queued"}
+            # A gate already blocked keeps its own remediation: that is a real
+            # S3 block. Otherwise the probe is merely running elsewhere (#777).
+            return {**state, "status": "blocked",
+                    "probe_in_progress": state["status"] != "blocked",
+                    "remediation": state.get("remediation") or PROBE_IN_PROGRESS}
         state = snapshot(connection)
         needs_startup = _ready_pid != os.getpid() and state['status'] == 'ready'
         if not needs_startup and not probe_due(state, injected_now or datetime.now(timezone.utc)):

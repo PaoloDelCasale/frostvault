@@ -564,6 +564,8 @@ def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:
         # Even an aborted gate-publication transaction is before the first
         # transfer. Suspend, do not replay a cloud call as a DB-unit retry.
         raise cloud_preflight_gate.CloudPreflightBlocked("S3 readiness status is temporarily unavailable; Job remains queued") from exc
+    if state.get("probe_in_progress"):
+        raise cloud_preflight_gate.CloudPreflightBusy(state["remediation"])
     if state["status"] != "ready":
         raise cloud_preflight_gate.CloudPreflightBlocked(state.get("remediation") or "S3 readiness check pending")
 
@@ -2748,6 +2750,9 @@ def _scan_vault(vault: dict[str, Any], *,
                     vault_relocation.prepare_reconnect_local_scan(connection, vault_id)
             except WorkerStopping:
                 return {"stopped": 1}
+            except cloud_preflight_gate.CloudPreflightBusy:
+                # Not an S3 failure (#777): reconnect waits, health is untouched.
+                return {"cloud_deferred": 1, "reconnect_suspended": 1}
             except Exception as exc:
                 status["last_error"] = "Cloud reconciliation failed; reconnect remains suspended"
                 _record_scan_component_health(vault_id, "cloud", ok=False, error=status["last_error"],
@@ -2831,6 +2836,10 @@ def _scan_vault(vault: dict[str, Any], *,
                     result["cloud"] = scan_cloud(vault, scan_id, report=cloud_report)
             except WorkerStopping:
                 return {**result, "stopped": 1}
+            except cloud_preflight_gate.CloudPreflightBusy:
+                # The readiness probe is running in another process (#777): no
+                # S3 failure, so the last recorded cloud health stays as it was.
+                result["cloud_deferred"] = 1
             except Exception as exc:
                 status["last_error"] = f"Cloud scan: {exc}"
                 result["cloud"] = -1
@@ -2857,6 +2866,8 @@ def _scan_vault(vault: dict[str, Any], *,
                             connection,
                             vault_id=int(vault["id"]),
                         )
+            except cloud_preflight_gate.CloudPreflightBusy:
+                result["lifecycle_rules_deferred"] = 1
             except Exception as exc:
                 status["last_error"] = f"Storage plan synchronization: {exc}"
                 result["lifecycle_rules"] = -1
@@ -3446,13 +3457,17 @@ def _remove_abandoned_restore_files(target: Path) -> None:
         pass
 
 
-def cleanup_abandoned_restore_files() -> int:
-    """Remove application-owned recovery residues before workers are started."""
+def cleanup_abandoned_restore_files() -> None:
+    """Retire catalog ghosts of recovery residues before workers are started.
+
+    Catalog-only and quick. The filesystem sweep of the residues themselves
+    walks every Vault tree: ``start_restore_residue_sweep`` runs it off the
+    startup path (#777).
+    """
     with db() as connection:
         vaults = connection.execute(
             "SELECT * FROM vaults WHERE lifecycle='active'"
         ).fetchall()
-    removed = 0
     for vault in vaults:
         access = source_layout.vault_local_access(vault["source_root"])
         if not access.local_operations_allowed:
@@ -3465,25 +3480,66 @@ def cleanup_abandoned_restore_files() -> int:
         except RuntimeError:
             # Never repair metadata using the absence of paths in a replaced
             # root. The existing residue cleanup remains separately scoped.
-            pass
-        else:
-            with db() as connection:
-                retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
-        try:
-            entries = root.rglob("*")
-            for entry in entries:
-                # Do not delete free-space .cleanup-*.tmp salvage claims here.
-                if (
-                    RESTORE_TEMPORARY_RE.fullmatch(entry.name) is not None
-                    or VERIFY_TEMPORARY_RE.fullmatch(entry.name) is not None
-                ):
-                    try:
-                        entry.unlink(missing_ok=True)
-                        removed += 1
-                    except OSError:
-                        pass
-        except OSError:
             continue
+        with db() as connection:
+            retire_absent_restore_ghosts(connection, int(vault["id"]), root, now_iso())
+
+
+# Set while the startup residue sweep walks the Vault trees. Recover Jobs, the
+# only writers of restore temporaries, are not dispatched meanwhile.
+_restore_residue_sweep_running = threading.Event()
+
+
+def start_restore_residue_sweep() -> None:
+    """Sweep recovery residues on a thread of its own (#777).
+
+    The walk of every Vault tree took ~100 s on Unraid, and run inside the
+    application startup it kept the HTTP server, readiness included, from
+    answering. Set before the thread starts, so no Recover Job can be
+    dispatched before the sweep has finished.
+    """
+    _restore_residue_sweep_running.set()
+    threading.Thread(target=_sweep_restore_residues, name="restore-residue-sweep",
+                     daemon=True).start()
+
+
+def _sweep_restore_residues() -> int:
+    """Remove application-owned recovery residues of every active Vault."""
+    removed = 0
+    try:
+        with db() as connection:
+            vaults = connection.execute(
+                "SELECT * FROM vaults WHERE lifecycle='active'"
+            ).fetchall()
+        for vault in vaults:
+            access = source_layout.vault_local_access(vault["source_root"])
+            if not access.local_operations_allowed:
+                continue
+            root = Path(vault["source_root"]).resolve()
+            if not root.is_dir():
+                continue
+            try:
+                for entry in root.rglob("*"):
+                    if shutdown_state.requested:
+                        return removed
+                    # Do not delete free-space .cleanup-*.tmp salvage claims here.
+                    if (
+                        RESTORE_TEMPORARY_RE.fullmatch(entry.name) is not None
+                        or VERIFY_TEMPORARY_RE.fullmatch(entry.name) is not None
+                    ):
+                        try:
+                            entry.unlink(missing_ok=True)
+                            removed += 1
+                        except OSError:
+                            pass
+            except OSError:
+                continue
+    except Exception as exc:
+        _report_worker_error("restore_residue_sweep", exc)
+    else:
+        _note_worker_ok("restore_residue_sweep")
+    finally:
+        _restore_residue_sweep_running.clear()
     return removed
 
 
@@ -6454,6 +6510,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 # does not stop local catalog scans, notifications or heartbeat.
                 if preflight_wait and job["action"] in {"upload", "recover", "rename", "free-space", "storage-class", "cloud-purge"}:
                     continue
+                if job["action"] == "recover" and _restore_residue_sweep_running.is_set():
+                    continue
                 if vault_relocation.local_work_suspended({"id": vault_id}):
                     continue
                 if job["action"] == "cloud-purge":
@@ -7869,6 +7927,9 @@ def _audit_vault(vault: dict[str, Any]) -> bool:
             verified=True,
             extra=report,
         )
+        return True
+    except cloud_preflight_gate.CloudPreflightBusy:
+        # Not an audit failure (#777): the last audit outcome stays recorded.
         return True
     except Exception as exc:
         message = f"Catalog audit: {exc}"

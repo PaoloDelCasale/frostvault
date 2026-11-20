@@ -590,6 +590,59 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertNotIn("Local space freed", job["message"] or "")
             self.assertEqual(observed["local_copy"]["presence"], "present")
 
+    def test_restore_residue_sweep_runs_beside_startup_and_holds_recover_jobs(self) -> None:
+        """#777: the residue walk no longer delays the server; Recover Jobs wait."""
+        with tempfile.TemporaryDirectory() as directory:
+            target, database_path = self.cleanup_fixture(directory)
+            residue = target.with_name(f".{target.name}.restore-{'ef' * 16}.tmp")
+            residue.write_bytes(b"partial")
+            claim = target.with_name(f".{target.name}.cleanup-{'ab' * 16}.tmp")
+            claim.write_bytes(b"claim")
+            database_settings = SimpleNamespace(database_dsn=database_dsn(str(database_path)))
+            release = threading.Event()
+            original = storage._sweep_restore_residues
+
+            def held_sweep():
+                release.wait(timeout=5)
+                return original()
+
+            jobs = [
+                {"id": 1, "vault_id": 10, "action": "upload", "status": "queued"},
+                {"id": 2, "vault_id": 10, "action": "recover", "status": "queued"},
+            ]
+            with (
+                patch("app.database.settings", database_settings),
+                patch("app.storage.settings", database_settings),
+                patch("app.storage._sweep_restore_residues", side_effect=held_sweep),
+            ):
+                cleanup_abandoned_restore_files()
+                self.assertTrue(residue.exists(), "the startup step itself does not walk the tree")
+                storage.start_restore_residue_sweep()
+                try:
+                    with (
+                        patch('app.storage.validate_cloud_vault'),
+                        patch("app.storage.db", return_value=JobQueueConnection(jobs)),
+                        patch("app.storage.settings", SimpleNamespace(
+                            operation_concurrency=2, restore_poll_interval=900)),
+                        patch("app.storage.get_policy", return_value=__import__(
+                            "app.services.operation_policies", fromlist=["OperationPolicy"]
+                        ).OperationPolicy()),
+                        patch("app.storage.process_upload") as upload,
+                        patch("app.storage.process_recover") as recover,
+                    ):
+                        self.assertEqual(process_jobs_once(), 1)
+                    upload.assert_called_once()
+                    recover.assert_not_called()
+                finally:
+                    release.set()
+                    for thread in threading.enumerate():
+                        if thread.name == "restore-residue-sweep":
+                            thread.join(timeout=10)
+            self.assertFalse(storage._restore_residue_sweep_running.is_set())
+            self.assertFalse(residue.exists())
+            self.assertTrue(claim.is_file(), "free-space claims are never swept")
+            self.assertTrue(target.is_file())
+
     def test_bug_006_failed_claim_restore_does_not_mark_freed(self) -> None:
         """[BUG-006] surviving claims must not complete free-space as freed."""
         with tempfile.TemporaryDirectory() as directory:
