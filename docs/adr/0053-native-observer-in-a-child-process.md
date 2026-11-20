@@ -19,7 +19,7 @@ successor observer of a new folder (#721), a rearm around a repaired
 permission, and a restart after a failure.
 
 Measured on the production host, a synthetic tree of 15,151 folders on
-`fuse.shfs` (`/mnt/user/...`): registration takes 13–15 s, and the event loop
+an Unraid user share (`fuse.shfs`): registration takes 13–15 s, and the event loop
 stalls for all of it (longest gap 12.8–14.0 s). On the NVMe pool directly the
 same tree takes 1.2 s with a 0.2 s stall.
 
