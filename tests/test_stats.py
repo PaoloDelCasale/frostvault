@@ -1,35 +1,25 @@
 """Stats are catalog aggregates plus Source Volume safety, with no filesystem walk."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import json
-import tempfile
-import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.config import settings
-
 from app.main import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
 from app.services.source_layout import VaultLocalAccess
-from tests.catalog_support import seed_vault, sha256_hex
-from tests.test_database import run_alembic
+from tests.catalog_support import sha256_hex
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 
-class StatsTests(unittest.TestCase):
+class StatsTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / "catalog.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=9, source_root="/sources/photos", name="Files")
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=9, source_root="/sources/photos", name="Files")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
             # Current holds other (older) content: the Local Copy is pending.
@@ -42,7 +32,6 @@ class StatsTests(unittest.TestCase):
                 row["id"], archive_version_id=version, plaintext_sha256=sha256_hex(b"older"),
                 verified_at="2026-07-21T00:01:00+00:00", local_generation=row["generation"],
             )
-        self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         runtime_status.pop(9, None)
         self.addCleanup(runtime_status.pop, 9, None)
 
@@ -50,8 +39,6 @@ class StatsTests(unittest.TestCase):
         for health in ("ok", "absent", "replaced", "identity_ambiguous", "identity_unsupported"):
             with (
                 self.subTest(health=health),
-                patch("app.database.settings", self.cfg),
-                patch("app.main.settings", self.cfg),
                 patch("app.main.vault_local_access", return_value=VaultLocalAccess(health == "ok", True, "photos", health)),
                 patch("os.walk", side_effect=AssertionError("no diagnostic walker")),
                 patch("os.path.realpath", side_effect=AssertionError("no root resolution")),
@@ -70,7 +57,7 @@ class StatsTests(unittest.TestCase):
             self.assertIsInstance(payload["runtime"]["source_devices"], list)
 
     def test_summary_is_scoped_and_matches_listing(self):
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             rows = catalog_probe.list_file_rows(catalog, 9)
             summary = catalog.summary(9)

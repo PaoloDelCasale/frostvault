@@ -2,58 +2,31 @@
 
 from __future__ import annotations
 
-import tempfile
 import time
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main, storage
-from app.config import settings
+from app import storage
 from app.services import runtime_status
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class ScanQueueHttpTests(unittest.TestCase):
+class ScanQueueHttpTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "app.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        root = Path(self.tmp.name) / "photos"
+        super().setUp()
+        root = self.tmp_path / "photos"
         root.mkdir()
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            self.vault_id = int(insert_vault(connection, source_root=str(root), name="Immich")["id"])
+        with self.database.connect() as connection:
+            self.vault_id = int(seed_vault(connection, source_root=str(root), name="Immich")["id"])
         self.addCleanup(runtime_status.runtime_status.pop, self.vault_id, None)
         self.addCleanup(runtime_status.scan_locks.pop, self.vault_id, None)
         self.addCleanup(storage._queued_scans.pop, self.vault_id, None)
-        test_settings = replace(settings, database_dsn=database_dsn(str(self.path)), cookie_secure=False)
-        for patcher in (
-            patch("app.main.settings", test_settings),
-            patch("app.database.settings", test_settings),
-            patch("app.sessions.settings", test_settings),
-            patch("app.storage.QUEUED_SCAN_POLL_SECONDS", 0.01),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
-        with PostgresConnection(str(self.path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.client.cookies.set(settings.csrf_cookie_name, csrf)
-        self.headers = {"X-CSRF-Token": csrf}
+        self.enterContext(patch("app.storage.QUEUED_SCAN_POLL_SECONDS", 0.01))
+        self.client = self.http_client()
+        self.sign_in()
 
     def scan(self):
-        return self.client.post(f"/api/scan?vault_id={self.vault_id}", headers=self.headers)
+        return self.client.post(f"/api/scan?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers)
 
     def test_a_scan_requested_while_admission_holds_the_vault_is_queued_and_runs_after_it(self) -> None:
         lock = runtime_status.scan_lock_for_vault(self.vault_id)

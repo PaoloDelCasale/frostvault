@@ -2,64 +2,37 @@
 
 from __future__ import annotations
 
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main
-from app.config import settings
 from app.services.source_layout import VaultLocalAccess
 from app.services.vault_relocation import ROOT_IDENTITY_VERSION, root_identity
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 ONLINE = VaultLocalAccess(True, True, "photos", "ok")
 
 
-class VaultExclusionsHttpTests(unittest.TestCase):
+class VaultExclusionsHttpTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name) / "immich"
+        super().setUp()
+        self.root = self.tmp_path / "immich"
         for folder in ("library", "upload/u1", "thumbs"):
             (self.root / folder).mkdir(parents=True)
         (self.root / "library/a.jpg").write_bytes(b"a" * 10)
         (self.root / "upload/u1/b.jpg").write_bytes(b"b" * 20)
         (self.root / "upload/c.jpg").write_bytes(b"c" * 30)
-        self.path = Path(self.tmp.name) / "app.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            self.vault_id = insert_vault(
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(
                 connection, source_root=str(self.root), root_identity_version=ROOT_IDENTITY_VERSION,
                 root_identity=root_identity(str(self.root)),
             )["id"]
-        test_settings = replace(settings, database_dsn=database_dsn(str(self.path)), cookie_secure=False)
-        for patcher in (
-            patch("app.main.settings", test_settings),
-            patch("app.database.settings", test_settings),
-            patch("app.sessions.settings", test_settings),
-            patch("app.services.vault_exclusions.vault_local_access", return_value=ONLINE),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
-        with PostgresConnection(str(self.path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.client.cookies.set(settings.csrf_cookie_name, csrf)
-        self.headers = {"X-CSRF-Token": csrf}
+        self.enterContext(
+            patch("app.services.vault_exclusions.vault_local_access", return_value=ONLINE))
+        self.client = self.http_client()
+        self.sign_in()
 
     def audit(self, event: str) -> list[dict]:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return [row["detail"] for row in connection.execute(
                 "SELECT detail FROM audit_events WHERE event=%s ORDER BY id", (event,)).fetchall()]
 
@@ -69,14 +42,14 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         return response.json()
 
     def edit(self, field: str, action: str, glob: str):
-        return self.client.post("/api/vault/operation-policy/globs", headers=self.headers,
+        return self.client.post("/api/vault/operation-policy/globs", headers=self.signed_in.csrf_headers,
                                 json={"field": field, "action": action, "glob": glob})
 
     def test_the_policy_lists_the_fixed_exclusions_read_only(self) -> None:
         self.assertIn("._*", self.policy()["fixed_exclude_globs"])
 
     def test_one_glob_is_added_and_removed_against_the_stored_policy(self) -> None:
-        put = self.client.put("/api/vault/operation-policy", headers=self.headers,
+        put = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
                               json={"stability_seconds": 900, "exclude_globs": ["*.tmp"]})
         self.assertEqual(put.status_code, 200, put.text)
         added = self.edit("exclude_globs", "add", "thumbs/**")
@@ -101,7 +74,7 @@ class VaultExclusionsHttpTests(unittest.TestCase):
             scan.assert_called_once()
 
     def test_a_folder_is_excluded_by_its_own_rule_and_included_again(self) -> None:
-        excluded = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
+        excluded = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                     json={"path": "upload", "is_directory": True})
         self.assertEqual(excluded.status_code, 200, excluded.text)
         self.assertEqual(excluded.json()["exclude_globs"], ["upload/**"])
@@ -116,7 +89,7 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         self.assertEqual((body["files"], body["bytes"], body["complete"]), (2, 50, True))
         self.assertEqual(body["estimate"]["size_bytes"], 50)
         with patch("app.main.request_full_scan"):
-            included = self.client.post("/api/vault/exclusions/include", headers=self.headers,
+            included = self.client.post("/api/vault/exclusions/include", headers=self.signed_in.csrf_headers,
                                         json={"path": "upload", "is_directory": True})
         self.assertEqual(included.status_code, 200, included.text)
         self.assertEqual(included.json()["exclude_globs"], [])
@@ -126,14 +99,14 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         self.assertEqual(event["glob"], "upload/**")
 
     def test_a_file_gets_its_exact_path_and_glob_names_are_refused(self) -> None:
-        response = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
+        response = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                     json={"path": "library/a.jpg"})
         self.assertEqual(response.json()["exclude_globs"], ["library/a.jpg"])
-        refused = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
+        refused = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                    json={"path": "library/a[1].jpg"})
         self.assertEqual(refused.status_code, 422, refused.text)
         # A root file's rule would have no "/" and match the name in every folder.
-        root_file = self.client.post("/api/vault/exclusions/exclude", headers=self.headers,
+        root_file = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                      json={"path": "notes.txt"})
         self.assertEqual(root_file.status_code, 422, root_file.text)
         self.assertEqual(self.client.get("/api/vault/operation-policy").json()["exclude_globs"],
@@ -146,7 +119,7 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         self.assertFalse(preview["includable"])
         self.assertEqual(preview["rules"], ["**/u1/**"])
         self.assertIsNone(preview["files"])
-        refused = self.client.post("/api/vault/exclusions/include", headers=self.headers,
+        refused = self.client.post("/api/vault/exclusions/include", headers=self.signed_in.csrf_headers,
                                    json={"path": "upload/u1", "is_directory": True})
         self.assertEqual(refused.status_code, 409, refused.text)
         self.assertEqual(self.policy()["exclude_globs"], ["**/u1/**"])
@@ -169,7 +142,7 @@ class VaultExclusionsHttpTests(unittest.TestCase):
         escape = self.client.get("/api/vault/excluded-folders", params={"directory": "../x"})
         self.assertEqual(escape.status_code, 422, escape.text)
         # Nothing read from disk is catalogued.
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM files").fetchone()["n"], 0)
 
 

@@ -41,6 +41,10 @@ v0.5.x tables stays out of scope.
   server with a CREATEDB role (see `.github/workflows/migrations.yml`). Fixtures
   create uniquely named databases from a migrated template; never use a production
   server. Missing configuration is an error, not skipped database coverage.
+- New tests take their setup from `tests/fixtures.py`: `FrostVaultTestCase` (fresh database,
+  Owner, Settings), `override_settings(...)` as the only Settings override, `seed_vault`,
+  `sign_in`. Never patch `app.<module>.settings`; `tests/postgres.py` holds aliases for
+  files not yet migrated (#801).
 - S3-compatible integrity tests run only when `TEST_S3_ENDPOINT` is set (MinIO job in CI).
   Contributor-facing CI status: `docs/ci.md`.
 - There is no Python linter configured; the frontend has ESLint.

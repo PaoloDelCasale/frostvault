@@ -7,95 +7,47 @@ Seams under test:
 """
 from __future__ import annotations
 
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
 
-from app import main
-from app.config import settings
-
-from app.services import metadata_backups
-from app.sessions import create_session, csrf_token_for
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings
 from tests.test_metadata_backups import RecordingObjectStore
 
 
-class MetadataBackupHttpTests(unittest.TestCase):
+class MetadataBackupHttpTests(FrostVaultTestCase):
     PASSWORD = "correct-horse-battery"
+    owner = {"display_name": "Admin", "password": PASSWORD}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.database_path = self.root / "app.db"
+        super().setUp()
+        self.root = self.tmp_path
         self.backup_dir = self.root / "backups"
         self.backup_dir.mkdir()
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
         self.master_key = Fernet.generate_key().decode("ascii")
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Admin", password=self.PASSWORD)
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
+        self.enterContext(override_settings(
             archive_master_key=self.master_key,
             metadata_backup_dir=str(self.backup_dir),
             metadata_backup_retention=5,
             metadata_backup_interval_seconds=3600,
             metadata_backup_s3_prefix="system/backups/",
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.services.metadata_backups.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        ))
 
         self.store = RecordingObjectStore()
-        store_patcher = patch(
+        self.enterContext(patch(
             "app.services.metadata_backups.default_object_store",
             return_value=self.store,
-        )
-        store_patcher.start()
-        self.addCleanup(store_patcher.stop)
+        ))
 
-        self.client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
-
-    def _authenticate(self, *, reauth: bool = True) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, auth_method="oidc")
-            if reauth:
-                connection.execute(
-                    "UPDATE sessions SET reauth_at=%s",
-                    ("2099-01-01T00:00:00+00:00",),
-                )
-            csrf_token = csrf_token_for(connection, raw_token)
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
-        self.client.cookies.set("frostvault_csrf", csrf_token)
-        self.client.headers["X-CSRF-Token"] = csrf_token
+        self.client = self.http_client(follow_redirects=False)
 
     def test_backups_require_authentication(self) -> None:
         listed = self.client.get("/api/general/metadata-backups")
         self.assertEqual(listed.status_code, 401, listed.text)
 
     def test_owner_can_run_list_and_download_backup(self) -> None:
-        self._authenticate()
+        self.sign_in(reauthenticated_until="2099-01-01T00:00:00+00:00", send_csrf_header=True)
         ran = self.client.post(
             "/api/general/metadata-backups/run",
             json={"reason": "operator requested backup"},
@@ -123,7 +75,7 @@ class MetadataBackupHttpTests(unittest.TestCase):
             hashlib_sha256(download.content),
             payload["runs"][0]["digest_sha256"],
         )
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             actions = connection.execute("SELECT event, detail::text AS detail FROM audit_events ORDER BY id").fetchall()
         self.assertEqual([row["event"] for row in actions], ["metadata_backup_created", "metadata_backup_downloaded"])
         self.assertIn("operator requested backup", actions[0]["detail"])

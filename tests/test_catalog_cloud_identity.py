@@ -9,19 +9,17 @@ historical path is counted, never attributed to the file that once had it.
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import psycopg
 
 from app.catalog import ArchiveCatalog
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
@@ -41,22 +39,15 @@ def _item(key: str, version_id: str) -> dict:
     }
 
 
-class CloudRediscoveryIdentityTests(unittest.TestCase):
+class CloudRediscoveryIdentityTests(FrostVaultTestCase):
     """BUG-008: cloud scan must not fork Vault File identity after rename."""
 
     def setUp(self) -> None:
-        runtime = patch("app.storage.runtime_status", {})
-        runtime.start()
-        self.addCleanup(runtime.stop)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog.db"
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
+        self.enterContext(patch("app.storage.runtime_status", {}))
         digest = sha256_hex(b"q1")
-        with PostgresConnection(str(self.db_path)) as connection:
-            insert_owner(connection)
-            insert_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
             catalog = ArchiveCatalog(connection)
             self.file_id = catalog.observe_local_copy(
                 vault_id=2, path=OLD_PATH, file_type="regular", size=32,
@@ -94,9 +85,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 paginate=lambda **_kwargs: iter([{"Versions": versions, "DeleteMarkers": []}])
             )
         )
-        settings = SimpleNamespace(database_dsn=database_dsn(str(self.db_path)))
         with (
-            patch("app.database.settings", settings),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client", return_value=client),
         ):
@@ -107,7 +96,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
             )
         return count, report
 
-    def _assert_identity_kept(self, connection: PostgresConnection) -> None:
+    def _assert_identity_kept(self, connection: psycopg.Connection) -> None:
         catalog = ArchiveCatalog(connection)
         self.assertIsNone(
             catalog_probe.get_file_by_path(catalog, 2, OLD_PATH),
@@ -128,7 +117,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(report["unknown_versions"], 0)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self._assert_identity_kept(connection)
             row = connection.execute(
                 "SELECT file_id::text AS file_id, availability FROM archive_versions"
@@ -143,7 +132,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(report["unknown_versions"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self._assert_identity_kept(connection)
             versions = connection.execute(
                 "SELECT provider_version_id FROM archive_versions"

@@ -263,22 +263,35 @@ def seed_vault(
     name: str = "Docs",
     source_root: str = "/sources/managed/docs",
     bucket: str = "bucket",
+    target: dict[str, Any] | None = None,
     **columns: Any,
 ) -> dict[str, Any]:
-    """Insert one Vault (and its Vault Target on first use); return its row.
+    """Insert one Vault and return its row: the one Vault seeder.
 
+    The Vault Target of ``bucket`` is created on first use (S3, eu-south-1,
+    ``vault_prefix`` layout) and shared by the Vaults seeded on it; ``target``
+    gives other ``vault_targets`` columns for a Target created here.
     ``columns`` are further ``vaults`` columns, for example an explicit ``id``.
     """
-    target = connection.execute(
+    found = connection.execute(
         "SELECT id FROM vault_targets WHERE bucket=%s", (bucket,)
-    ).fetchone() or connection.execute(
-        "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-        "VALUES ('s3', %s, 'eu-south-1', 'vault_prefix') RETURNING id",
-        (bucket,),
     ).fetchone()
-    values = {"name": name, "source_root": source_root, "target_id": target["id"], **columns}
+    if found is None:
+        found = _insert(connection, "vault_targets", {
+            "provider": "s3", "bucket": bucket, "region": "eu-south-1",
+            "key_layout": "vault_prefix", **(target or {}),
+        })
+    elif target:
+        raise ValueError(f"the Vault Target of {bucket!r} already exists")
+    return _insert(connection, "vaults", {
+        "name": name, "source_root": source_root, "target_id": found["id"], **columns,
+    })
+
+
+def _insert(connection: Any, table: str, values: dict[str, Any]) -> dict[str, Any]:
     return connection.execute(
-        sql.SQL("INSERT INTO vaults({}) VALUES ({}) RETURNING *").format(
+        sql.SQL("INSERT INTO {}({}) VALUES ({}) RETURNING *").format(
+            sql.Identifier(table),
             sql.SQL(", ").join(map(sql.Identifier, values)),
             sql.SQL(", ").join(sql.Placeholder() * len(values)),
         ),

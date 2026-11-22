@@ -6,11 +6,8 @@ catalog tests run on a disposable PostgreSQL 16 database.
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -19,6 +16,7 @@ from botocore.exceptions import (
 )
 
 from app.services import bucket_metrics
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 NOW = datetime(2026, 11, 17, 3, 0, tzinfo=timezone.utc)
 BUCKET = "frostvault-docs-ab12cd34"
@@ -191,17 +189,12 @@ class ReadTests(unittest.TestCase):
                 bucket_metrics._default_client("eu-south-1")
 
 
-class CatalogFixture(unittest.TestCase):
-    def setUp(self) -> None:
-        from tests.postgres import PostgresConnection
-        from tests.test_database import run_alembic
+class CatalogFixture(FrostVaultTestCase):
+    owner = None
 
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "catalog"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connect = lambda: PostgresConnection(str(self.path))
+    def setUp(self) -> None:
+        super().setUp()
+        self.connect = self.database.connect
         with self.connect() as connection:
             self.dedicated = self.vault(connection, 2, "Docs", BUCKET, "bucket_root")
             self.shared = self.vault(connection, 3, "Immich", "shared-archive", "vault_prefix")
@@ -210,13 +203,10 @@ class CatalogFixture(unittest.TestCase):
 
     def vault(self, connection: Any, vault_id: int, name: str, bucket: str, layout: str, *,
               region: str = "eu-south-1", lifecycle: str = "active") -> int:
-        target = connection.execute(
-            "INSERT INTO vault_targets(provider, bucket, region, key_layout) VALUES ('s3', %s, %s, %s) "
-            "RETURNING id", (bucket, region, layout)).fetchone()["id"]
-        connection.execute(
-            "INSERT INTO vaults(id, target_id, name, source_root, lifecycle) VALUES (%s, %s, %s, %s, %s)",
-            (vault_id, target, name, f"/sources/managed/{vault_id}", lifecycle))
-        return vault_id
+        return seed_vault(
+            connection, id=vault_id, name=name, source_root=f"/sources/managed/{vault_id}",
+            lifecycle=lifecycle, bucket=bucket, target={"region": region, "key_layout": layout},
+        )["id"]
 
     def rows(self, sql: str, *params: Any) -> list[dict]:
         with self.connect() as connection:
@@ -479,25 +469,11 @@ class RunTests(CatalogFixture):
 
 
 class HttpTests(CatalogFixture):
+    owner = {}
+
     def test_the_cloud_usage_is_served_and_a_missing_vault_is_not_found(self) -> None:
-        from fastapi.testclient import TestClient
-
-        from app import main
-        from app.config import settings
-        from app.sessions import create_session
-        from tests.owner_fixtures import insert_owner
-        from tests.postgres import database_dsn
-
-        configured = replace(settings, database_dsn=database_dsn(self.path), cookie_secure=False)
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        client = TestClient(main.app, client=("127.0.0.1", 50000))
-        with self.connect() as connection:
-            insert_owner(connection)
-            token = create_session(connection, auth_method="oidc")
-        client.cookies.set(settings.session_cookie_name, token)
+        client = self.http_client()
+        self.sign_in(client)
         served = client.get("/api/vaults/3/cloud-usage")
         self.assertEqual(served.status_code, 200, served.text)
         self.assertEqual(served.json()["measured"], {"status": "shared_bucket"})

@@ -2,26 +2,14 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import hashlib
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main
 from app.catalog import ArchiveCatalog
-from app.config import settings
-
-from app.sessions import create_session, csrf_token_for
 from app.storage import process_jobs_once
 from tests.catalog_support import fingerprint, protect
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 
@@ -29,22 +17,24 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-class RecoveryHttpTests(unittest.TestCase):
+class RecoveryHttpTests(FrostVaultTestCase):
     PASSWORD = "correct-horse-battery"
+    owner = {"password": PASSWORD}
+    settings_overrides = {
+        "restore_high_impact_gib": 100,
+        "restore_high_impact_eur": 10.0,
+        "restore_approval_hold_seconds": 3600,
+        "restore_tier": "Bulk",
+        "restore_days": 3,
+    }
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        self.source = Path(self._tmp.name) / "source"
+        super().setUp()
+        self.source = self.tmp_path / "source"
         self.source.mkdir()
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, password=self.PASSWORD)
-            self.owner_id = 1
-            self.vault_id = insert_vault(connection, source_root=str(self.source))["id"]
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection, source_root=str(self.source))["id"]
             catalog = ArchiveCatalog(connection)
             payload = b"http-recover"
             self.file_id = catalog.observe_local_copy(
@@ -63,42 +53,10 @@ class RecoveryHttpTests(unittest.TestCase):
                 self.file_id, observed_at="2026-07-21T11:00:00+00:00"
             )
 
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            restore_high_impact_gib=100,
-            restore_high_impact_eur=10.0,
-            restore_approval_hold_seconds=3600,
-            restore_tier="Bulk",
-            restore_days=3,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.storage.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
-
-    def _authenticate(self, user_id: int) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, auth_method="oidc")
-            csrf_token = csrf_token_for(connection, raw_token)
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
-        self.client.cookies.set("frostvault_csrf", csrf_token)
-
-    def _csrf(self) -> dict:
-        return {"X-CSRF-Token": self.client.cookies.get("frostvault_csrf") or ""}
+        self.client = self.http_client(follow_redirects=False)
 
     def test_versions_and_estimate_expose_irreversible_restore_boundary(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         versions = self.client.get(
             "/api/files/versions",
             params={"path": "docs/note.txt"},
@@ -110,7 +68,7 @@ class RecoveryHttpTests(unittest.TestCase):
 
         estimate = self.client.post(
             "/api/recover/estimate",
-            headers=self._csrf(),
+            headers=self.signed_in.csrf_headers,
             json={
                 "path": "docs/note.txt",
                 "archive_version_id": self.version_id,
@@ -127,7 +85,7 @@ class RecoveryHttpTests(unittest.TestCase):
         self.assertEqual(payload["estimate"]["region"], payload["estimate"]["assumptions"]["region"])
 
     def test_superseded_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             generation = catalog_probe.get_file_by_path(catalog, self.vault_id, "docs/note.txt")["generation"]
             newest = catalog.begin_replacement(
@@ -136,18 +94,18 @@ class RecoveryHttpTests(unittest.TestCase):
             catalog.promote_replacement(
                 self.file_id, archive_version_id=newest, plaintext_sha256=_sha(b"newer"),
                 verified_at="2026-11-03T00:00:00+00:00", local_generation=generation)
-        self._authenticate(self.owner_id)
+        self.sign_in()
         response = self.client.get("/api/files/versions", params={"path": "docs/note.txt"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([row["id"] for row in response.json()["items"]], [newest])
         for endpoint in ("/api/recover/estimate", "/api/recover"):
-            rejected = self.client.post(endpoint, headers=self._csrf(), json={
+            rejected = self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={
                 "path": "docs/note.txt", "archive_version_id": self.version_id,
             })
             self.assertEqual(rejected.status_code, 409, rejected.text)
-        queued = self.client.post("/api/recover", headers=self._csrf(), json={"path": "docs/note.txt"})
+        queued = self.client.post("/api/recover", headers=self.signed_in.csrf_headers, json={"path": "docs/note.txt"})
         self.assertEqual(queued.status_code, 202, queued.text)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # No implicit cloud purge on read/recovery: the superseded copy waits
             # for its exact cleanup.
             self.assertIsNotNone(connection.execute(
@@ -157,35 +115,35 @@ class RecoveryHttpTests(unittest.TestCase):
     def test_selection_recovery_preserves_csrf_vault_scope_and_bulk_decision(self) -> None:
         selection = {"selection": [{"path": "docs", "is_directory": True}, {"path": "docs/note.txt"}]}
         self.assertIn(self.client.post("/api/recover", json=selection).status_code, {401, 403})
-        self._authenticate(self.owner_id)
+        self.sign_in()
         self.assertEqual(self.client.post("/api/recover", json=selection).status_code, 403)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET size=%s", (100 * 1024**3,))
         for endpoint in ("/api/recover/estimate", "/api/recover"):
-            self.assertEqual(self.client.post(endpoint + "?vault_id=999999", headers=self._csrf(), json=selection).status_code, 404)
-            self.assertEqual(self.client.post(endpoint, headers=self._csrf(), json={"selection": [{"path": "../other"}]}).status_code, 422)
-            self.assertEqual(self.client.post(endpoint, headers=self._csrf(), json={**selection, "path": "docs/note.txt"}).status_code, 422)
-        estimate = self.client.post(f"/api/recover/estimate?vault_id={self.vault_id}", headers=self._csrf(), json=selection)
+            self.assertEqual(self.client.post(endpoint + "?vault_id=999999", headers=self.signed_in.csrf_headers, json=selection).status_code, 404)
+            self.assertEqual(self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={"selection": [{"path": "../other"}]}).status_code, 422)
+            self.assertEqual(self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={**selection, "path": "docs/note.txt"}).status_code, 422)
+        estimate = self.client.post(f"/api/recover/estimate?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json=selection)
         self.assertEqual(estimate.status_code, 200, estimate.text)
         self.assertTrue(estimate.json()["high_impact"])
-        queued = self.client.post(f"/api/recover?vault_id={self.vault_id}", headers=self._csrf(), json=selection)
+        queued = self.client.post(f"/api/recover?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json=selection)
         self.assertEqual(queued.status_code, 202, queued.text)
         self.assertEqual(queued.json()["item_count"], 1, "folder/file overlap deduplicated")
         self.assertTrue(queued.json()["approval_required"])
-        approved = self.client.post(f"/api/recover/approve?vault_id={self.vault_id}", headers=self._csrf(), json={"group_id": queued.json()["group_id"]})
+        approved = self.client.post(f"/api/recover/approve?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json={"group_id": queued.json()["group_id"]})
         self.assertEqual(approved.status_code, 202, approved.text)
         self.assertEqual(approved.json()["job_ids"], queued.json()["job_ids"])
 
     def test_owner_approves_high_impact_restore(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=%s WHERE id=%s",
                 (100 * 1024**3, self.version_id),
             )
-        self._authenticate(self.owner_id)
+        self.sign_in()
         queued = self.client.post(
             "/api/recover",
-            headers=self._csrf(),
+            headers=self.signed_in.csrf_headers,
             json={"path": "docs/note.txt", "archive_version_id": self.version_id},
         )
         self.assertEqual(queued.status_code, 202, queued.text)
@@ -197,7 +155,7 @@ class RecoveryHttpTests(unittest.TestCase):
             process_jobs_once()
         approved = self.client.post(
             "/api/recover/approve",
-            headers=self._csrf(),
+            headers=self.signed_in.csrf_headers,
             json={"group_id": group_id},
         )
         self.assertEqual(approved.status_code, 202, approved.text)

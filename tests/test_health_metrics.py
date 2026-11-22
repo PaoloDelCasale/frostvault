@@ -7,65 +7,32 @@ Seams under test:
 """
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from app import main
-from app.config import settings
-
-from tests.owner_fixtures import insert_owner
 from app.services import health as health_service
 from app.services import source_layout
 from app.services import metrics as metrics_service
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings
 
 
-class HealthAndMetricsHttpTests(unittest.TestCase):
+class HealthAndMetricsHttpTests(FrostVaultTestCase):
+    owner = {"display_name": "Admin", "password": "admin-password-1"}
+    settings_overrides = {"allowed_hosts": ""}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Admin", password="admin-password-1")
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            allowed_hosts="",
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.services.health.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.sources_root = Path(self._tmp.name) / "sources"
+        super().setUp()
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
-        mount_patcher = patch("app.services.source_layout.path_is_mount", return_value=True)
-        mount_patcher.start()
-        self.addCleanup(mount_patcher.stop)
+        self.enterContext(patch("app.services.source_layout.path_is_mount", return_value=True))
         source_layout.prepare_sources_layout()
 
         health_service.mark_worker_heartbeat()
         metrics_service.reset_for_tests()
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
+        self.client = self.http_client()
 
     def test_liveness_stays_ok_even_when_dependencies_are_down(self) -> None:
         with patch(
@@ -102,9 +69,9 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         from app.services import upload_pipeline, upload_remediation
         coordinator = upload_pipeline._Pipeline(1)
         coordinator.journal_failed("private-intent", "private-fact-hash")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("DELETE FROM upload_remediation_sweep")
-        with patch.dict(upload_pipeline._registry, {self.test_settings.database_dsn: coordinator}):
+        with patch.dict(upload_pipeline._registry, {self.settings.database_dsn: coordinator}):
             upload_remediation.observe(main.db)
             report = health_service.readiness_report()
             response = self.client.get("/ready")
@@ -115,7 +82,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         self.assertEqual(set(response.json()), {"status", "checks"})
         self.assertNotIn("private-intent", response.text)
         self.assertNotIn("private-fact-hash", response.text)
-        self.assertNotIn(self.test_settings.database_dsn, response.text)
+        self.assertNotIn(self.settings.database_dsn, response.text)
 
     def test_metrics_expose_low_cardinality_prometheus_counters(self) -> None:
         metrics_service.inc("jobs_completed_total", action="upload")
@@ -124,7 +91,7 @@ class HealthAndMetricsHttpTests(unittest.TestCase):
         metrics_service.set_gauge("worker_up", 1)
 
         # Scrapers use their own explicit credential, not an Owner Session.
-        with patch("app.diagnostics.settings", replace(settings, metrics_token="test-only-metrics-credential")):
+        with override_settings(metrics_token="test-only-metrics-credential"):
             response = self.client.get("/metrics", headers={
                 "Authorization": "Bearer test-only-metrics-credential",
             })

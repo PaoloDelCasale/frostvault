@@ -1,52 +1,34 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.config import settings
 from app.main import app
 from app.services.metadata_backups import record_backup_run
-from app.sessions import create_session
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 from tests.spa_fixture import write_spa_dist
-from tests.test_database import run_alembic
 
 
-
-class ReconnectRecoveryHttpTests(unittest.TestCase):
+class ReconnectRecoveryHttpTests(FrostVaultTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog"
-        result = run_alembic(self.db_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.db_path)) as connection:
-            insert_owner(connection)
+        super().setUp()
+        with self.database.connect() as connection:
             # The kit is offered once a backup has succeeded in the System Bucket (#734).
             record_backup_run(connection, reason="manual", backend="postgresql", status="succeeded",
                               s3_key="system/backups/a.bak.enc", s3_bucket="test-bucket")
-        configured = replace(settings, database_dsn=database_dsn(str(self.db_path)), cookie_secure=False,
-                             archive_master_key=Fernet.generate_key().decode(), metadata_backup_bucket="test-bucket",
-                             frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))))
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings", "app.services.recovery_kit.settings"):
-            patcher = patch(target, configured); patcher.start(); self.addCleanup(patcher.stop)
-        self.settings = configured
+        self.enterContext(override_settings(
+            archive_master_key=Fernet.generate_key().decode(), metadata_backup_bucket="test-bucket",
+            frontend_dist_dir=str(write_spa_dist(self.tmp_path))))
 
     def client_for(self, stale=False):
-        client = TestClient(app, client=("127.0.0.1", 50000))
-        with PostgresConnection(str(self.db_path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-            if stale:
-                connection.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00'")
-        client.cookies.set(self.settings.session_cookie_name, token)
-        return client, {"X-CSRF-Token": client.get("/api/me").json()["csrf_token"]}
+        client = self.http_client()
+        signed_in = self.sign_in(
+            client, reauthenticated_until="2000-01-01T00:00:00+00:00" if stale else None)
+        return client, signed_in.csrf_headers
 
     def test_reconnect_needs_session_csrf_but_not_recent_reauthentication(self):
         client, headers = self.client_for(stale=True)
@@ -57,7 +39,7 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
 
     def test_managed_reconnect_errors_name_the_refusal(self):
         from app.services import source_identity, source_layout
-        sources = Path(self.tmp.name) / "sources"
+        sources = self.tmp_path / "sources"
         own_uuid, other_uuid = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
         (sources / "managed").mkdir(parents=True)
         source_layout.override_sources_root(sources)
@@ -66,12 +48,9 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
                         patch.object(source_identity, "validate_root_mount_boundary"),
                         patch.object(source_layout, "path_is_mount", return_value=False)):
             patcher.start(); self.addCleanup(patcher.stop)
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
-            connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root, lifecycle)
-                VALUES (7, %s, (SELECT id FROM vault_targets), 'Photos', %s, 'reconnect_required')""",
-                (own_uuid, str(sources / "managed" / own_uuid)))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=7, uuid=own_uuid, name="Photos",
+                       source_root=str(sources / "managed" / own_uuid), lifecycle="reconnect_required")
         client, headers = self.client_for()
         def post(relative_path):
             return client.post("/api/vaults/7/reconnect", headers=headers, json={
@@ -107,13 +86,13 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(set(kit), {"format", "fingerprint", "ARCHIVE_MASTER_KEY", "system_bucket", "region", "instructions"})
         self.assertEqual(kit["system_bucket"], "test-bucket")
         self.assertTrue(kit["ARCHIVE_MASTER_KEY"] == self.settings.archive_master_key)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             event = connection.execute("SELECT detail::text AS detail FROM audit_events WHERE event='recovery_kit_downloaded'").fetchone()
         self.assertNotIn(self.settings.archive_master_key, "\n".join(logs.output) + event["detail"])
         self.assertIn("s3api restore-object", kit["instructions"])
 
     def test_no_kit_before_a_backup_reached_the_system_bucket(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE metadata_backup_runs SET s3_bucket='shared-bucket'")
         client, _ = self.client_for()
         status = client.get("/api/recovery-kit").json()
@@ -135,13 +114,12 @@ class ReconnectRecoveryHttpTests(unittest.TestCase):
         self.assertEqual(client.post("/api/recovery-kit/custody", json=payload).status_code, 403)
         response = client.post("/api/recovery-kit/custody", json=payload, headers=headers)
         self.assertTrue(response.json()["custody_acknowledged"], response.text)
-        changed = replace(self.settings, archive_master_key=Fernet.generate_key().decode())
-        with patch("app.services.recovery_kit.settings", changed):
+        with override_settings(archive_master_key=Fernet.generate_key().decode()):
             current = client.get("/api/recovery-kit").json()
             self.assertNotEqual(current["fingerprint"], status["fingerprint"])
             self.assertFalse(current["custody_acknowledged"])
             self.assertEqual(client.post("/api/recovery-kit/custody", json=payload, headers=headers).status_code, 409)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM recovery_kit_custody").fetchone()["n"], 1)
 
 
