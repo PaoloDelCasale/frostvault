@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { fetchBillingExport, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
+import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { vaultApi, type Overview } from "@/api/vault";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
@@ -94,7 +94,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [retryError, setRetryError] = useState<string | null>(null);
   const [cancelledCreation, setCancelledCreation] = useState<VaultCreationCancelled | null>(null);
   const stats = useQueries({ queries: vaults.map((vault) => ({
-    queryKey: ["vault-stats", vault.id],
+    queryKey: apiQueryKeys.vaultStats(vault.id),
     queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
     refetchInterval: STATS_REFRESH_MS,
   })) });
