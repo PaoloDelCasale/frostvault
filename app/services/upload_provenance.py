@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from . import root_pins
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
 from .s3_copy import ProviderResponseError, _object_version_entries
@@ -347,7 +348,7 @@ class _ValidatedTarget:
         # provider/key are the caller's namespace labels, checked by target.
         # Identity/lifecycle/ownership checks remain the actual locked facts.
         current = {**self.pinned, "key": pinned["key"], "provider": pinned["provider"]}
-        if current != pinned:
+        if not root_pins.same_pin(pinned, current, self.vault):
             raise UploadBlocked("identity_changed")
 
 
@@ -385,13 +386,25 @@ def validated_vault(connection: Any, job: dict[str, Any]) -> dict[str, Any]:
     return dict(validated.vault)
 
 
+def _pin_vault(connection: Any, job: dict[str, Any]) -> dict[str, Any]:
+    """The Vault row a pin is compared against: the unit's locked one when it has one."""
+    validated = _validated.get()
+    if validated is not None and validated.matches(connection, job):
+        return validated.vault
+    row = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
+    return dict(row or {})
+
+
 def require_target(connection: Any, job: dict[str, Any], pinned: dict[str, Any], *,
                    shared: bool = False) -> None:
     validated = _validated.get()
     if validated is not None and validated.matches(connection, job):
         validated.require(pinned, shared)
-    elif _target(connection, job, key=pinned["key"], provider=pinned["provider"], shared=shared)[0] != pinned:
-        raise UploadBlocked("identity_changed")
+    else:
+        current, vault = _target(connection, job, key=pinned["key"], provider=pinned["provider"],
+                                 shared=shared)
+        if not root_pins.same_pin(pinned, current, vault):
+            raise UploadBlocked("identity_changed")
 
 
 # --- Upload proofs (#588): the snapshot and its target once, attempts and
@@ -672,7 +685,8 @@ def prepare(connection: Any, job: dict[str, Any], *, pinned: dict[str, Any], sna
             raise UploadBlocked("already_resolved")
         if (admitted.snapshot, admitted.verification) != (snapshot, requested):
             raise RuntimeError("Local file changed since fingerprinting")
-        if admitted.target != pinned:
+        if admitted.target != pinned and not root_pins.same_pin(
+                admitted.target, pinned, _pin_vault(connection, job)):
             raise UploadBlocked("identity_changed")
     return _open_attempt(connection, job, admitted, before, timestamp)
 

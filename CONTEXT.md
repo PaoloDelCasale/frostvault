@@ -68,6 +68,12 @@ it is stable across ordinary remounts and is never represented by a marker file
 or by persisted raw host paths.
 _Avoid_: Marker file, Host path, Mount ID
 
+**Root Identity**:
+The versioned opaque identity of a Vault's root directory; it survives ordinary
+reboots and remounts of the same folder and changes when the folder is replaced
+or a different filesystem is mounted there.
+_Avoid_: Marker file, Device number
+
 **Reconnect Folder**:
 The Owner's explicit acceptance of a local folder and its Source Volume for an
 existing Vault, with a complete reconciliation before local protection resumes.

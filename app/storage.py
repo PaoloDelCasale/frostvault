@@ -8437,6 +8437,8 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
                 # Reconcile Source Volume identity even when filesystem watchers are
                 # disabled, before workers or scheduled scans can touch local data.
                 await asyncio.to_thread(source_layout.verify_mounts_once)
+                # A v1 root identity left while its Source Volume was down (#784).
+                await asyncio.to_thread(vault_relocation.upgrade_pending_legacy_root_identities)
                 await asyncio.to_thread(process_jobs_once, wait=False)
                 await asyncio.to_thread(_deliver_notifications_once)
                 # Converge durable directory aggregate dirty/rebuild work off the
