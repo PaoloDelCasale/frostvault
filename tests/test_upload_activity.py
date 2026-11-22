@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from app import main
-from app.services.operation_policies import _path_matches
-from app.services.upload_activity import _path_pattern, upload_activity
+from app.services.path_rules import path_matches, sql_path_regex
+from app.services.upload_activity import upload_activity
 
 
 class UploadActivityTests(unittest.TestCase):
@@ -19,12 +19,12 @@ class UploadActivityTests(unittest.TestCase):
         patterns = ['*.jpg', 'photos/**', '**/*.jpg', '**/a/b/**', 'a*b*c',
                     'foo*bar', 'foo', '.DS_Store', '._*', '?', '[!x]*', 'a[[]1].jpg']
         for pattern in patterns:
-            regex = re.compile(_path_pattern(pattern))
+            regex = re.compile(sql_path_regex(pattern))
             for path in paths:
                 observed = bool(regex.search(path))
                 if '**' not in pattern:
                     observed |= any(bool(regex.search(part)) for part in path.split('/'))
-                self.assertEqual(observed, _path_matches(path, pattern), (path, pattern))
+                self.assertEqual(observed, path_matches(path, pattern), (path, pattern))
 
     def test_only_aggregate_rows_leave_sql_and_no_write_or_provider_calls(self):
         connection = Mock()

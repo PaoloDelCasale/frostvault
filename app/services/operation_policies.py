@@ -11,14 +11,17 @@ The only transfer throttle is the global ``BANDWIDTH_LIMIT_KIBPS`` for uploads.
 from __future__ import annotations
 
 import json
-import re
 import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from fnmatch import fnmatchcase, translate as fnmatch_translate
 from pathlib import PurePosixPath
 from typing import Any, Sequence
+
+from .path_rules import (
+    MAX_GLOBS_PER_POLICY, GlobSet, ParsedPath, UnsafeGlob, any_name_glob, name_matches,
+    normalize_globs, path_matches, validate_glob,
+)
 
 
 
@@ -76,7 +79,7 @@ def stopped_upload_sql(file: str) -> str:
 def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
     """Fixed noise exclusions are additional to, never editable via, user globs."""
     return not any(
-        fnmatchcase(part, pattern)
+        name_matches(part, pattern)
         for part in PurePosixPath(path.replace("\\", "/")).parts
         for pattern in AUTO_UPLOAD_EXCLUSIONS
     ) and path_is_included(path, policy)
@@ -123,18 +126,6 @@ def _load_json_list(raw: str | None) -> tuple[Any, ...]:
     return tuple(data)
 
 
-def _normalize_globs(values: Sequence[str]) -> tuple[str, ...]:
-    normalized: list[str] = []
-    for value in values:
-        text = str(value).strip().replace("\\", "/")
-        if not text:
-            continue
-        if text.startswith("/"):
-            raise ValueError("globs must be relative paths")
-        normalized.append(text)
-    return tuple(normalized)
-
-
 def validate_policy(policy: OperationPolicy) -> None:
     if policy.upload_verification not in {None, "s3_checksum", "read_back"}:
         raise ValueError("upload_verification must be null, s3_checksum or read_back")
@@ -145,8 +136,8 @@ def validate_policy(policy: OperationPolicy) -> None:
         or policy.local_release_after_days not in LOCAL_RELEASE_PERIODS
     ):
         raise ValueError("local_release_after_days must be null, 90, 180, 365 or 730")
-    _normalize_globs(policy.include_globs)
-    _normalize_globs(policy.exclude_globs)
+    normalize_globs(policy.include_globs)
+    normalize_globs(policy.exclude_globs)
 
 
 def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | None = None) -> None:
@@ -156,9 +147,8 @@ def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | 
     unsupported glob never blocks changing an unrelated setting, and removing it
     is always allowed.
     """
-    from .upload_path_rules import MAX_GLOBS_PER_POLICY, UnsafeGlob, validate_glob
-    kept = {*_normalize_globs(stored.include_globs), *_normalize_globs(stored.exclude_globs)} if stored else set()
-    globs = (*_normalize_globs(policy.include_globs), *_normalize_globs(policy.exclude_globs))
+    kept = {*normalize_globs(stored.include_globs), *normalize_globs(stored.exclude_globs)} if stored else set()
+    globs = (*normalize_globs(policy.include_globs), *normalize_globs(policy.exclude_globs))
     new = [glob for glob in globs if glob not in kept]
     if new and len(globs) > MAX_GLOBS_PER_POLICY:
         raise UnsafeGlob(f"at most {MAX_GLOBS_PER_POLICY} globs per policy")
@@ -200,8 +190,8 @@ def set_policy(
     if locked["lifecycle"] != "active":
         raise LookupError("vault_quiesced")
     validate_policy_globs(policy, stored=get_policy(connection, vault_id))
-    include_globs = _normalize_globs(policy.include_globs)
-    exclude_globs = _normalize_globs(policy.exclude_globs)
+    include_globs = normalize_globs(policy.include_globs)
+    exclude_globs = normalize_globs(policy.exclude_globs)
     canonical = OperationPolicy(
         auto_upload=bool(policy.auto_upload),
         local_release_after_days=policy.local_release_after_days,
@@ -243,142 +233,15 @@ def set_policy(
     return canonical
 
 
-def _path_matches(path: str, pattern: str) -> bool:
-    normalized = path.replace("\\", "/")
-    candidate = PurePosixPath(normalized)
-    # Support ** across path segments the way operators expect for vault trees.
-    if "**" in pattern:
-        # Convert glob to a sequence of fnmatch checks over suffixes/prefixes.
-        parts = pattern.split("/")
-        if pattern.endswith("/**"):
-            prefix = pattern[: -len("/**")]
-            if normalized == prefix or normalized.startswith(prefix + "/"):
-                return True
-        if pattern.startswith("**/"):
-            suffix = pattern[3:]
-            if fnmatchcase(normalized, suffix):
-                return True
-            if any(
-                fnmatchcase(str(PurePosixPath(*candidate.parts[index:])), suffix)
-                for index in range(len(candidate.parts))
-            ):
-                return True
-        return fnmatchcase(normalized, pattern)
-    return fnmatchcase(normalized, pattern) or any(
-        fnmatchcase(part, pattern) for part in candidate.parts
-    )
-
-
 def path_is_included(path: str, policy: OperationPolicy) -> bool:
     normalized = path.replace("\\", "/")
     if policy.include_globs and not any(
-        _path_matches(normalized, pattern) for pattern in policy.include_globs
+        path_matches(normalized, pattern) for pattern in policy.include_globs
     ):
         return False
-    if any(_path_matches(normalized, pattern) for pattern in policy.exclude_globs):
+    if any(path_matches(normalized, pattern) for pattern in policy.exclude_globs):
         return False
     return True
-
-
-def _path_parts(normalized: str) -> tuple[tuple[str, ...], bool]:
-    """``PurePosixPath(normalized).parts``, and whether ``"/".join`` rebuilds it.
-
-    A relative path with no empty or ``.`` segment parses to its plain split,
-    so most catalog paths skip building a ``PurePosixPath``; any other path
-    (absolute, ``//``, ``./``, trailing ``/``) takes the exact pathlib parse.
-    """
-    if (normalized and normalized[0] != "/" and normalized[-1] != "/"
-            and "//" not in normalized and "/./" not in normalized
-            and normalized != "." and not normalized.startswith("./")
-            and not normalized.endswith("/.")):
-        return tuple(normalized.split("/")), True
-    return PurePosixPath(normalized).parts, False
-
-
-class _CompiledGlob:
-    """One Vault glob with exactly the semantics of :func:`_path_matches`."""
-
-    __slots__ = ("pattern", "_match", "_prefix", "_suffix")
-
-    def __init__(self, pattern: str) -> None:
-        self.pattern = pattern
-        # fnmatchcase(name, pattern) is compile(translate(pattern)).match(name).
-        self._match = re.compile(fnmatch_translate(pattern)).match
-        self._prefix = pattern[: -len("/**")] if "**" in pattern and pattern.endswith("/**") else None
-        self._suffix = (re.compile(fnmatch_translate(pattern[3:])).match
-                        if "**" in pattern and pattern.startswith("**/") else None)
-
-    def matches(self, normalized: str, path: "_ParsedPath") -> bool:
-        if "**" in self.pattern:
-            prefix = self._prefix
-            if prefix is not None and (normalized == prefix or normalized.startswith(prefix + "/")):
-                return True
-            suffix = self._suffix
-            if suffix is not None and (suffix(normalized) or any(
-                    suffix(tail) for tail in path.tails())):
-                return True
-            return self._match(normalized) is not None
-        match = self._match
-        return match(normalized) is not None or any(match(part) for part in path.parts)
-
-
-class _ParsedPath:
-    """A path parsed once for every glob of a policy (#767)."""
-
-    __slots__ = ("parts", "_plain", "_tails")
-
-    def __init__(self, normalized: str) -> None:
-        self.parts, self._plain = _path_parts(normalized)
-        self._tails: list[str] | None = None
-
-    def tails(self) -> list[str]:
-        # str(PurePosixPath(*parts[index:])) for every index, as _path_matches.
-        if self._tails is None:
-            parts = self.parts
-            self._tails = (["/".join(parts[index:]) for index in range(len(parts))] if self._plain
-                           else [str(PurePosixPath(*parts[index:])) for index in range(len(parts))])
-        return self._tails
-
-
-def _any_glob(patterns: Sequence[str]) -> Any:
-    """One compiled ``match``: true where ``fnmatchcase`` is true for any pattern.
-
-    Each alternative is anchored at the start by ``match`` and at the end by
-    its own ``\\Z``, so the alternation matches exactly when one pattern does.
-    """
-    try:
-        return re.compile("|".join(f"(?:{fnmatch_translate(pattern)})" for pattern in patterns)).match
-    except re.error:  # pragma: no cover - fnmatch output always combines
-        matches = tuple(re.compile(fnmatch_translate(pattern)).match for pattern in patterns)
-        return lambda name: any(match(name) for match in matches)
-
-
-class _GlobSet:
-    """Whether any of a policy's globs matches, as ``any(_path_matches(...))``."""
-
-    __slots__ = ("_plain", "_starred")
-
-    def __init__(self, patterns: Sequence[str]) -> None:
-        plain = [pattern for pattern in patterns if "**" not in pattern]
-        # Without "**" a glob matches the whole path or any one part.
-        self._plain = _any_glob(plain) if plain else None
-        self._starred = tuple(_CompiledGlob(pattern) for pattern in patterns if "**" in pattern)
-
-    def __bool__(self) -> bool:
-        return self._plain is not None or bool(self._starred)
-
-    def matches(self, normalized: str, path: _ParsedPath) -> bool:
-        match = self._plain
-        if match is not None:
-            if match(normalized):
-                return True
-            for part in path.parts:
-                if match(part):
-                    return True
-        for glob in self._starred:
-            if glob.matches(normalized, path):
-                return True
-        return False
 
 
 class AutoUploadPathMatcher:
@@ -393,13 +256,13 @@ class AutoUploadPathMatcher:
     __slots__ = ("_noise", "_include", "_exclude")
 
     def __init__(self, policy: "OperationPolicy") -> None:
-        self._noise = _any_glob(AUTO_UPLOAD_EXCLUSIONS)
-        self._include = _GlobSet(policy.include_globs)
-        self._exclude = _GlobSet(policy.exclude_globs)
+        self._noise = any_name_glob(AUTO_UPLOAD_EXCLUSIONS)
+        self._include = GlobSet(policy.include_globs)
+        self._exclude = GlobSet(policy.exclude_globs)
 
     def __call__(self, path: str) -> bool:
         normalized = path.replace("\\", "/")
-        parsed = _ParsedPath(normalized)
+        parsed = ParsedPath(normalized)
         noise = self._noise
         for part in parsed.parts:
             if noise(part):
@@ -416,8 +279,8 @@ def preview_glob_rules(
     exclude_globs: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     policy = OperationPolicy(
-        include_globs=_normalize_globs(include_globs),
-        exclude_globs=_normalize_globs(exclude_globs),
+        include_globs=normalize_globs(include_globs),
+        exclude_globs=normalize_globs(exclude_globs),
     )
     included: list[str] = []
     excluded: list[str] = []

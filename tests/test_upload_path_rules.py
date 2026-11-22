@@ -6,12 +6,12 @@ import logging
 import re
 import unittest
 
-from app.services.operation_policies import (
-    OperationPolicy, _path_matches, validate_policy_globs,
+from app.services.operation_policies import OperationPolicy, validate_policy_globs
+from app.services.path_rules import (
+    MAX_GLOB_LENGTH, MAX_GLOBS_PER_POLICY, UnsafeGlob, path_matches, sql_path_regex, validate_glob,
 )
 from app.services.upload_path_rules import (
-    MAX_GLOB_LENGTH, MAX_GLOBS_PER_POLICY, PATH_SQL, UnsafeGlob, _stored_regex, eligibility_sql,
-    inline_eligibility_sql, path_pattern, validate_glob,
+    PATH_SQL, eligibility_sql, inline_eligibility_sql, stored_glob_match,
 )
 
 # Globs that Python accepts but PostgreSQL rejected or misread before the
@@ -28,18 +28,18 @@ class GlobTranslationTests(unittest.TestCase):
     def test_translation_never_leaves_a_posix_class_opener_in_a_set(self):
         for glob in NASTY:
             with self.subTest(glob=glob):
-                regex = path_pattern(glob)
+                regex = sql_path_regex(glob)
                 self.assertIsNone(re.search(r'(?<!\\)\[[:.=]', regex), regex)
                 re.compile(regex)
 
     def test_translation_keeps_python_glob_semantics(self):
         for glob in NASTY:
-            regex = re.compile(path_pattern(glob))
+            regex = re.compile(sql_path_regex(glob))
             for path in PATHS:
                 observed = bool(regex.search(path))
                 if '**' not in glob:
                     observed |= any(bool(regex.search(part)) for part in path.split('/'))
-                self.assertEqual(observed, _path_matches(path, glob), (glob, path))
+                self.assertEqual(observed, path_matches(path, glob), (glob, path))
 
     def test_unsupported_globs_are_refused(self):
         for glob in ('[z-a]*', 'a\x00b', '\ud800'):
@@ -51,10 +51,10 @@ class GlobTranslationTests(unittest.TestCase):
 
     def test_group_rewrite_and_empty_range_check_ignore_set_contents(self):
         # "(?>" and "(?!)" are only syntax outside a set; inside one they are characters.
-        self.assertIn('[(?>]', path_pattern('[(?>]x'))
-        self.assertIn('[(?!)]', path_pattern('[(?!)]x'))
-        self.assertNotIn('(?>', path_pattern('*a*'))
-        self.assertIn('(?:', path_pattern('*a*'))
+        self.assertIn('[(?>]', sql_path_regex('[(?>]x'))
+        self.assertIn('[(?!)]', sql_path_regex('[(?!)]x'))
+        self.assertNotIn('(?>', sql_path_regex('*a*'))
+        self.assertIn('(?:', sql_path_regex('*a*'))
         validate_glob('[(?!)]x')
         with self.assertRaises(UnsafeGlob):
             validate_glob('[z-a]x')
@@ -81,7 +81,7 @@ class GlobTranslationTests(unittest.TestCase):
         self.assertTrue(all(len(value) < 4 * MAX_GLOB_LENGTH for value in params))
 
     def test_an_unsupported_stored_glob_warns_once_not_on_every_query(self):
-        _stored_regex.cache_clear()
+        stored_glob_match.cache_clear()
         policy = OperationPolicy(exclude_globs=('[z-a]*',))
         with self.assertLogs('app.services.upload_path_rules', level=logging.WARNING) as logs:
             for _ in range(5):

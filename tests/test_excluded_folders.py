@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 from app import storage
 from app.services import watch_plan
-from app.services.excluded_folders import ExcludedFolders, excluded_folders, folder_rule
+from app.services.excluded_folders import ExcludedFolders, excluded_folders
 from app.services.fs_preflight import PinnedTree
-from app.services.operation_policies import OperationPolicy, _path_matches, path_is_included
-from app.services.upload_path_rules import path_pattern
+from app.services.operation_policies import OperationPolicy, path_is_included
+from app.services.path_rules import folder_rule, path_matches, sql_path_regex
 from tests.test_watcher_real_filesystem import VAULT_ID, Harness
 
 
@@ -74,8 +74,8 @@ class FolderRuleTests(unittest.TestCase):
         for path in candidates:
             if not folders.contains_path(path):
                 continue
-            self.assertTrue(any(_path_matches(path, pattern) for pattern in patterns), path)
-            self.assertTrue(any(re.search(path_pattern(pattern), path) for pattern in patterns), path)
+            self.assertTrue(any(path_matches(path, pattern) for pattern in patterns), path)
+            self.assertTrue(any(re.search(sql_path_regex(pattern), path) for pattern in patterns), path)
 
     def test_inside_regex_agrees_with_contains_path(self):
         folders = rules("backups/**", "**/node_modules/**", "**/.cache*/**", "a/*/c/**", "tmp?/**")

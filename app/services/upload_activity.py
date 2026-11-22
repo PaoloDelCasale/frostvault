@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .operation_policies import get_policy, stopped_upload_holds_automatic_admission_sql
-from .upload_path_rules import eligibility_sql as _eligibility_sql, path_pattern as _path_pattern  # noqa: F401
+from .upload_path_rules import eligibility_sql as _eligibility_sql
 
 STAGES = ("stability_wait", "queued", "uploading", "verifying")
 

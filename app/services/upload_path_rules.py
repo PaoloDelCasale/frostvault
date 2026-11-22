@@ -1,134 +1,37 @@
 """SQL projection of the automatic-upload path rules (fixed noise + Vault globs).
 
-Single place where Python glob semantics (``operation_policies._path_matches``)
-are translated to PostgreSQL regular expressions. It is informational and
-read-only: it classifies observations (upload activity, protection states) and
-never authorizes an upload, release or deletion. Manual operations remain
-explicit and ignore these rules.
+The glob semantics and their PostgreSQL translation live in ``path_rules``;
+this module applies them to a policy. It is informational and read-only: it
+classifies observations (upload activity, protection states) and never
+authorizes an upload, release or deletion. Manual operations remain explicit
+and ignore these rules.
 """
 from __future__ import annotations
 
-import fnmatch
 import functools
 import logging
 import re
 from typing import Any
 
 from .operation_policies import AUTO_UPLOAD_EXCLUSIONS
+from .path_rules import UnsafeGlob, normalized_path_sql, sql_glob_match
 
 _logger = logging.getLogger(__name__)
 
-
-class UnsafeGlob(ValueError):
-    """A glob that cannot be expressed as a safe PostgreSQL regular expression."""
-
-
-# PostgreSQL refuses a regular expression it finds "too complex" (observed from
-# ~12.6 KB of ``*a`` repeated), which would fail every query that classifies
-# files. A prudent cap keeps a large safety margin; the count bounds the size of
-# the generated statements.
-MAX_GLOB_LENGTH = 1024
-MAX_GLOBS_PER_POLICY = 100
-
-
 # Admission matches a path with its backslashes read as separators; the SQL
 # projection reads the same normalized text (a Linux name may contain "\\").
-PATH_SQL = "replace(f.path, '\\', '/')"
-
-
-def _posix_are(body: str) -> str:
-    """Rewrite Python's regex for a glob as a POSIX ARE both engines read alike.
-
-    The glob dialect only yields literals, ``.``, ``.*``, ``.*?``, groups and
-    bracket sets, so a small scanner is enough. Inside a set every ``[`` and a
-    leading ``]`` are escaped: PostgreSQL would otherwise read ``[:``, ``[.``
-    and ``[=`` as class/collating/equivalence openers and reject the set.
-    """
-    out: list[str] = []
-    i, n = 0, len(body)
-    while i < n:
-        char = body[i]
-        if char == "\\":
-            out.append(body[i:i + 2])
-            i += 2
-        elif body.startswith("(?!)", i):
-            # Python's translation of an empty range such as ``[z-a]``: it can never
-            # match and PostgreSQL's reading of the empty lookahead is not guaranteed.
-            raise UnsafeGlob("empty character range")
-        elif body.startswith("(?>", i):
-            # Python's atomic groups are an optimization, not part of the glob
-            # language; PostgreSQL ARE has noncapturing groups instead.
-            out.append("(?:")
-            i += 3
-        elif char == "[":
-            out.append("[")
-            i += 1
-            if body[i] == "^":
-                out.append("^")
-                i += 1
-            first = True
-            while True:
-                char = body[i]
-                if char == "\\":
-                    out.append(body[i:i + 2])
-                    i += 2
-                elif char == "]" and not first:
-                    break
-                elif char in "[]":
-                    out.append("\\" + char)
-                    i += 1
-                else:
-                    out.append(char)
-                    i += 1
-                first = False
-            out.append("]")
-            i += 1
-        else:
-            out.append(char)
-            i += 1
-    return "".join(out)
-
-
-def glob_body(pattern: str) -> str:
-    if "\x00" in pattern:
-        raise UnsafeGlob("NUL is not valid in a path pattern")
-    try:
-        pattern.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise UnsafeGlob("pattern is not valid text") from exc
-    return _posix_are(fnmatch.translate(pattern)[4:-3])
-
-
-def path_pattern(pattern: str) -> str:
-    if len(pattern) > MAX_GLOB_LENGTH:
-        raise UnsafeGlob(f"glob longer than {MAX_GLOB_LENGTH} characters")
-    body = glob_body(pattern)
-    alternatives = [f"^(?:{body})$"]
-    if "**" in pattern and pattern.endswith("/**"):
-        # _path_matches treats this prefix literally, even if it contains '*'.
-        alternatives.append(f"^{re.escape(pattern[:-3])}(?:/|$)")
-    if pattern.startswith("**/"):
-        alternatives.append(f"(?:^|/)(?:{glob_body(pattern[3:])})$")
-    return "(?s)(?:" + "|".join(alternatives) + ")"
-
-
-def validate_glob(pattern: str) -> None:
-    """Raise ``ValueError`` when the glob cannot be classified safely in SQL."""
-    try:
-        re.compile(path_pattern(pattern))
-    except re.error as exc:
-        raise UnsafeGlob(f"unsupported glob: {exc}") from exc
+PATH_SQL = normalized_path_sql("f.path")
 
 
 @functools.lru_cache(maxsize=512)
-def _stored_regex(pattern: str) -> str | None:
-    """The regex for a glob already in use, or None when it is unsupported.
+def stored_glob_match(pattern: str) -> tuple[str, tuple[str, ...]] | None:
+    """The SQL match of a glob already in use, or None when it is unsupported.
 
     Cached so the warning for an unsupported stored glob is logged once, not on
     every query that classifies files.
     """
     try:
-        return path_pattern(pattern)
+        return sql_glob_match(PATH_SQL, pattern)
     except UnsafeGlob as exc:
         _logger.warning("Ignoring an unsupported upload glob in the SQL projection (%s)", exc)
         return None
@@ -148,15 +51,12 @@ def eligibility_sql(policy: Any) -> tuple[str, list[str]]:
     params: list[str] = []
 
     def match(pattern: str) -> str:
-        regex = _stored_regex(pattern)
-        if regex is None:
+        stored = stored_glob_match(pattern)
+        if stored is None:
             return "FALSE"
-        params.append(regex)
-        if "**" in pattern:
-            return f"{PATH_SQL} ~ %s"
-        params.append(regex)
-        return (f"({PATH_SQL} ~ %s OR EXISTS (SELECT 1 FROM unnest(string_to_array({PATH_SQL},'/')) "
-                "AS parts(part) WHERE part ~ %s))")
+        sql, regexes = stored
+        params.extend(regexes)
+        return sql
 
     include = tuple(getattr(policy, "include_globs", ()) or ())
     exclude = tuple(getattr(policy, "exclude_globs", ()) or ())
