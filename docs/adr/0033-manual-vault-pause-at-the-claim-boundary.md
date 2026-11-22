@@ -1,5 +1,7 @@
 # A manual Vault pause holds new cloud Jobs at the claim boundary
 
+Status: accepted.
+
 Issue #537 implements the Paused Vault in CONTEXT: an indefinite Owner hold, not
 Stop Protection, a Source Volume suspension, or an operating window. A separate
 persistent `vaults.paused` boolean defaults to false (migration 0070). No Job,

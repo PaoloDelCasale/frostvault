@@ -1,5 +1,7 @@
 # Independent SHA-256 ingestion proof for new uploads
 
+Status: accepted.
+
 Issue #460 accepts S3's cryptographic ingestion proof as sufficient Integrity
 for new Upload Snapshots, instead of paying for an independent full Read-back
 on every upload. This supersedes **only the new-upload read-back-only and CRC32

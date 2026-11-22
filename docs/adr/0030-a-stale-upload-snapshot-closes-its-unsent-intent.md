@@ -1,5 +1,7 @@
 # A stale Upload Snapshot closes its unsent intent
 
+Status: accepted; amended in part by ADR-0036.
+
 > **Amended in part by [ADR-0036](0036-one-upload-snapshot-many-send-attempts.md)**
 > (#588): the intent is now an Upload Attempt of a snapshot stored once; the stale
 > snapshot is closed, its unsent attempt settled `unsent`, and the Job forgets it.

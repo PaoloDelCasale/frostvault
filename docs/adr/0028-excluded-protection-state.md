@@ -1,5 +1,7 @@
 # Excluded is a protection state, not pending work
 
+Status: accepted; amended by ADR-0044, extended by ADR-0039.
+
 > Amended by [ADR-0044](0044-excluded-folders-are-not-observed.md): a folder that
 > a Vault exclusion rule covers entirely (`dir/**`, `**/dir/**`) is an Excluded
 > Folder. It is no longer walked nor watched, and the files already catalogued

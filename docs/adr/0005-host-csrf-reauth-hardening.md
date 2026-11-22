@@ -1,5 +1,7 @@
 # Harden host/origin/forwarded handling, CSRF, and step-up reauthentication
 
+Status: accepted.
+
 This final PR of the server-side session work closes the perimeter around the
 now purely server-side Session. It hardens three edges at once — the **network
 edge** (which Host/Origin/forwarded data we trust), the **request edge** (proving

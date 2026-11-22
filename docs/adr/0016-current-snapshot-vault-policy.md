@@ -1,5 +1,7 @@
 # Current Snapshot is the only cloud behavior
 
+Status: accepted; amended in part by ADR-0023 and ADR-0035.
+
 > ADR-0023 supersedes only the new-upload read-back-only requirement: independent
 > S3 SHA256 ingestion proof can verify a new Upload Snapshot. Cleanup and all
 > other-operation guarantees below remain unchanged.

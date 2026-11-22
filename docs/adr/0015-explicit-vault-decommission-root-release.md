@@ -1,5 +1,7 @@
 # Release Vault roots only through explicit terminal decommission
 
+Status: superseded by ADR-0020 (#428).
+
 > Superseded by ADR-0020 (#428): Stop Protection never removes Local Copies;
 > cloud deletion is Cloud-only-only, with a fixed seven-day cancellable delay.
 > The original decision below is historical, not an available workflow.

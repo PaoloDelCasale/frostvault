@@ -1,5 +1,7 @@
 # Explicit per-Vault reconnect and one independently custodied Recovery Kit
 
+Status: accepted.
+
 Decision #364, as amended by #366's plaintext/SDK-only model and implemented by
 #427, replaces relocation/rebind with **Reconnect Folder**. The Owner may accept
 a new Source Volume or different directory for an existing Vault; content

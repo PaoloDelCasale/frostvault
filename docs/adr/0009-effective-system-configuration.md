@@ -1,5 +1,7 @@
 # Deployment-owned configuration
 
+Status: accepted.
+
 Issue #416 (decision #366 Q11) supersedes runtime-managed configuration.
 FrostVault reads configuration only from environment variables at process
 startup. There is no settings administration API, override catalog, revision

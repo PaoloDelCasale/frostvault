@@ -156,42 +156,30 @@ Workflow: [`.github/workflows/security.yml`](../.github/workflows/security.yml)
 | Gitleaks (CLI) | Any finding fails the job | Rotate the secret, purge history if needed, then add a documented allow rule only for false positives. |
 | SBOM + Trivy image scan | **CRITICAL** and **HIGH** fail (`ignore-unfixed: true`) | Add CVE lines to [`.trivyignore`](../.trivyignore) with advisory URL + review date. |
 
-The 6 September 2026 production audit (`56ee35d`) reported three `dev:true` advisories. `npm audit --omit=dev` was clean: they were not reachable in the FastAPI/SPA runtime and were not treated as S3 data compromise. Targeted `package.json` overrides (not `npm audit fix --force`) raised every lockfile copy:
+### npm audit exceptions and overrides
 
-| Package | Introduced by | Was | Now | Exposure |
-| --- | --- | --- | --- | --- |
-| brace-expansion | `eslint-plugin-react` → minimatch 3; `typescript-eslint`; `shadcn` → ts-morph | 1.1.16, 2.1.2, 5.0.8 | 1.1.18, 2.1.4, 5.0.9 | build |
-| nanoid | `shadcn` → postcss | 3.3.16 | 3.3.18 | build |
-| qs | `shadcn` → MCP SDK → express/body-parser | 6.15.3 | 6.16.0 | build |
+`.github/npm-audit-exceptions.json` has no exceptions: the full and the
+runtime-only (`npm audit --omit=dev`) audits are both clean, in strict and in
+baseline mode.
 
-### Issue #405: retire the deepmerge/minimatch exceptions
-
-The full and runtime-only audits are clean after the targeted #405 cleanup;
-`.github/npm-audit-exceptions.json` has no remaining exceptions. This does not
-weaken either the strict or baseline gate:
-
-- Remove only the installed **shadcn CLI**, not the vendored UI components or
-  design system. Its exact `4.22.1` stylesheet is imported locally from
+- The shadcn CLI is not installed. Its exact `4.22.1` stylesheet is vendored in
   `frontend/src/vendor/shadcn/tailwind.css`, with npm integrity, upstream commit,
   SHA-256 and the original MIT notice documented alongside it. An identical
   public license ships at `/licenses/shadcn.txt`; the production-build job
-  compares the emitted notice to the source license. This removes
-  deepmerge (no patched upstream release) and ts-morph from the dependency graph.
+  compares the emitted notice to the source license.
   [ADR 0008](adr/0008-tailwind-shadcn-design-system.md) and the
   [vendoring guide](../frontend/src/vendor/shadcn/README.md) describe updates and
   explicit, disposable CLI use for contributors.
-- Override **only `minimatch@10`** to `^11.0.4`. The current advisory affects
-  `>=7 <11.0.1`; safe minimatch 3/5 consumers keep their existing callable API
-  and versions. Do not apply a blanket minimatch override. The remaining 10.x
-  consumer is typescript-eslint's estree parser; its actual CommonJS named
+- `package.json` overrides are targeted, never `npm audit fix --force`. The
+  only cross-major one raises `minimatch@10` to `^11.0.4` (the advisory affects
+  `>=7 <11.0.1`); minimatch 3/5 consumers keep their own versions, so do not
+  apply a blanket minimatch override. The 10.x consumer is typescript-eslint's
+  estree parser, whose CommonJS named
   `minimatch(filePath, pattern, { dot: true })` seam is compatible with 11.x.
-  Both support this project's Node range (`^20.19.0 || >=22.12.0`). This is an
-  explicitly tested cross-major exception, not a claim that every 10.x consumer
-  is compatible. Revisit/remove it when typescript-eslint adopts a patched
-  release natively.
-- Remove unused CLI-only overrides, retain patched floors for every remaining
-  copy, and leave unrelated dependencies unchanged. Structural tests do not
-  require removed packages to reappear just to test their floors.
+  Both support this project's Node range (`^20.19.0 || >=22.12.0`). Remove the
+  override when typescript-eslint adopts a patched release natively.
+- Overrides keep patched floors for every remaining lockfile copy; structural
+  tests do not require absent packages to reappear just to test their floors.
 
 Deterministic regressions in `tests/test_ci_contracts.py` cover the installed
 lockfile graph, scoped override and retired advisory IDs. The targeted

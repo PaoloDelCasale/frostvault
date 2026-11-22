@@ -1,5 +1,7 @@
 # Vault-wide colder-only movement with durable copy provenance
 
+Status: accepted.
+
 Decision #366 Q5/Q5ter, implemented by #429, adds Move now only for an entire
 Vault and only to a colder class on its saved Storage Plan. It creates per-file
 background Jobs, not a per-file class-change API or a new expiration policy.

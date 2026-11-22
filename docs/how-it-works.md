@@ -145,7 +145,7 @@ Group cancellation also stops unproduced work; cancel-pending records folder
 exclusions for later batches (or stops all admissions for an empty path), without
 cancelling ambiguous sends. Stop Protection and Reconnect require pending admission
 to finish or be cancelled first. Paused Vaults can prepare Jobs but cannot claim
-them. See [the admission decision](adr/bulk-upload-admission-550.md).
+them. See [the admission decision](bulk-upload-admission.md).
 
 Filesystem watcher observations are the upload input. After five minutes without
 changes, an independent scheduler admits them to the durable Job queue (checked

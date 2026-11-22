@@ -1,5 +1,7 @@
 # Proven absence closes an ambiguous send
 
+Status: accepted; amended in part by ADR-0036.
+
 > **Amended in part by [ADR-0036](0036-one-upload-snapshot-many-send-attempts.md)**
 > (#588): after a proven absence the next send is a new attempt with a new token
 > on the same Upload Snapshot; the no-write outcome settles the attempt and is not
