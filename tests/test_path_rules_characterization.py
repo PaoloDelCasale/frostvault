@@ -2,7 +2,7 @@
 
 ``tests/fixtures/path_rules_golden.json`` was recorded from the code at commit
 4a778eee (four separate implementations) and must not change with a refactor:
-the same file passes before and after ``app/services/path_rules.py`` took
+the same file passed before and after ``app/services/path_rules.py`` took
 ownership of the glob semantics. It pins, for one corpus of patterns and paths
 (segments, ``**``, regex/LIKE special characters, case, trailing slashes, empty
 and root paths, unicode):
@@ -30,14 +30,13 @@ from typing import Any, Callable
 
 from app.services.excluded_folders import excluded_folders
 from app.services.operation_policies import (
-    AutoUploadPathMatcher, OperationPolicy, _GlobSet as GlobSet, _ParsedPath as ParsedPath,
-    _normalize_globs as normalize_globs, _path_matches as path_matches,
-    auto_upload_path_is_included, path_is_included,
+    AutoUploadPathMatcher, OperationPolicy, auto_upload_path_is_included, path_is_included,
 )
-from app.services.excluded_folders import folder_rule
-from app.services.upload_path_rules import (
-    eligibility_sql, inline_eligibility_sql, path_pattern as sql_path_regex, validate_glob,
+from app.services.path_rules import (
+    GlobSet, ParsedPath, UnsafeGlob, folder_rule, normalize_globs, normalized_path_sql,
+    path_matches, sql_glob_match, sql_path_regex, validate_glob,
 )
+from app.services.upload_path_rules import eligibility_sql, inline_eligibility_sql
 
 GOLDEN = Path(__file__).parent / "fixtures" / "path_rules_golden.json"
 
@@ -100,7 +99,8 @@ NORMALIZE_INPUTS: list[list[Any]] = [
 ]
 
 # --- Divergences that exist today (4a778eee); see the module docstring. -------------
-# Python admission and its SQL projection, as (pattern, path) the two read differently.
+# The Python matcher and its SQL translation (one glob, and the admission rule built
+# on it), as (pattern, path) the two read differently.
 # Python parses the path with PurePosixPath (collapsing "//", "./" and a trailing "/",
 # keeping "/" as the root part of an absolute path); SQL reads the stored text and
 # splits it on "/". Catalog paths are relative and normalized, so none of these is
@@ -312,6 +312,19 @@ class PostgresCharacterizationTests(_Characterization):
         for name in ("admission_include_sql", "admission_exclude_sql", "folder_inside_sql"):
             with self.subTest(table=name):
                 self.assert_table(name, self.observed[name])
+
+    def test_one_glob_in_python_and_in_sql_agrees_except_where_pinned(self):
+        """The equivalence of the two matchers of ``path_rules``, glob by glob."""
+        found = set()
+        for pattern in PATTERNS:
+            try:
+                sql, params = sql_glob_match(normalized_path_sql("f.path"), pattern)
+            except UnsafeGlob:  # no SQL reading: the projection matches nothing
+                continue
+            hits = _sql_bits(self.connection, sql, list(params))
+            found.update((pattern, path) for path, hit in zip(PATHS, hits)
+                         if (hit == "1") != path_matches(path, pattern))
+        self.assertEqual(found, KNOWN_ADMISSION_DIVERGENCES)
 
     def test_python_and_sql_admission_agree_except_where_pinned(self):
         python = python_results()

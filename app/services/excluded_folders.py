@@ -11,8 +11,8 @@ The rule must be certain, never approximate. A segment may use ``*`` and ``?``
 only (no ``[...]`` sets and no ``**`` inside the folder part), and a folder name
 containing a backslash is never pruned: admission reads ``\\`` as a separator.
 With those limits, a folder whose path segments match the rule's segments one by
-one has every descendant path matched by ``operation_policies._path_matches`` and
-by the SQL projection of ``upload_path_rules`` alike, so the rows already known
+one has every descendant path matched by ``path_rules.path_matches`` and by its
+SQL translation alike (``path_rules.FolderRule``), so the rows already known
 there are shown Excluded. ``include_globs`` never re-open such a folder:
 admission applies the exclusions after the inclusions, so an excluded path stays
 excluded whatever the include rules say.
@@ -22,83 +22,11 @@ records it.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
 from typing import Any
 
-from .operation_policies import OperationPolicy, _normalize_globs, get_policy
-
-_FLOATING = "**/"
-_SUFFIX = "/**"
-
-
-def _segment_regex(segment: str) -> str:
-    """One path component, as a POSIX ARE that Python's ``re`` reads alike."""
-    out: list[str] = []
-    for char in segment:
-        if char == "*":
-            out.append("[^/\\\\]*")
-        elif char == "?":
-            out.append("[^/\\\\]")
-        else:
-            out.append(re.escape(char))
-    return "".join(out)
-
-
-@dataclass(frozen=True)
-class ExcludedFolderRule:
-    """``segments/**`` anchored at the Vault root, or ``**/segments/**`` anywhere."""
-
-    pattern: str
-    segments: tuple[str, ...]
-    floating: bool
-
-    def _matches_at(self, parts: tuple[str, ...], start: int) -> bool:
-        end = start + len(self.segments)
-        return end <= len(parts) and all(
-            fnmatchcase(part, segment)
-            for part, segment in zip(parts[start:end], self.segments)
-        )
-
-    def covers(self, parts: tuple[str, ...]) -> bool:
-        """Whether the folder at ``parts`` is at or below a folder of this rule."""
-        if any("\\" in part for part in parts):
-            return False
-        if not self.floating:
-            return self._matches_at(parts, 0)
-        return any(self._matches_at(parts, start) for start in range(len(parts)))
-
-    def inside_regex(self) -> str:
-        """Matches a catalog path strictly inside a folder of this rule."""
-        body = "/".join(_segment_regex(segment) for segment in self.segments)
-        return ("(^|/)" if self.floating else "^") + body + "/"
-
-
-def folder_rule(pattern: str) -> ExcludedFolderRule | None:
-    """The folder rule of one exclude glob, or None when it is not one."""
-    from .upload_path_rules import UnsafeGlob, path_pattern
-
-    if not pattern.endswith(_SUFFIX):
-        return None
-    folder = pattern[: -len(_SUFFIX)]
-    floating = folder.startswith(_FLOATING)
-    if floating:
-        folder = folder[len(_FLOATING):]
-    segments = tuple(folder.split("/"))
-    for segment in segments:
-        if (
-            not segment or segment in {".", ".."} or "**" in segment
-            or any(char in segment for char in "[]\\")
-        ):
-            return None
-    try:
-        # A glob the SQL projection cannot classify matches nothing there
-        # (ADR-0028): its rows would not be shown Excluded, so never prune it.
-        path_pattern(pattern)
-    except UnsafeGlob:
-        return None
-    return ExcludedFolderRule(pattern, segments, floating)
+from .operation_policies import OperationPolicy, get_policy
+from .path_rules import FolderRule, folder_rule, normalize_globs
 
 
 def _parts(relative: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -111,7 +39,7 @@ def _parts(relative: str | tuple[str, ...]) -> tuple[str, ...]:
 class ExcludedFolders:
     """The folder rules of one Vault policy."""
 
-    rules: tuple[ExcludedFolderRule, ...] = ()
+    rules: tuple[FolderRule, ...] = ()
 
     def __bool__(self) -> bool:
         return bool(self.rules)
@@ -148,7 +76,7 @@ def excluded_folders(policy: OperationPolicy | None) -> ExcludedFolders:
     if policy is None:
         return ExcludedFolders()
     rules = []
-    for pattern in _normalize_globs(policy.exclude_globs):
+    for pattern in normalize_globs(policy.exclude_globs):
         rule = folder_rule(pattern)
         if rule is not None and rule not in rules:
             rules.append(rule)

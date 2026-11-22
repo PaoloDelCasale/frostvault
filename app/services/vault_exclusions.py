@@ -27,18 +27,16 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from fnmatch import fnmatchcase
 from typing import Any, Iterator, Literal
 
-from .excluded_folders import ExcludedFolders, excluded_folders, folder_rule
+from .excluded_folders import ExcludedFolders, excluded_folders
 from .fs_preflight import is_storable_name
 from .operation_policies import (
     AUTO_UPLOAD_EXCLUSIONS,
     OperationPolicy,
-    _normalize_globs,
-    _path_matches,
     auto_upload_path_is_included,
 )
+from .path_rules import name_matches, normalize_globs, path_matches
 from .source_layout import vault_local_access
 
 # Characters with a meaning in a glob: a path holding one cannot be its own rule.
@@ -90,11 +88,11 @@ def edit_glob(policy: OperationPolicy, field: GlobField, action: str, glob: str)
     present raises :class:`RuleNotFound`, so a stale view never removes another
     rule by position.
     """
-    normalized = _normalize_globs((glob,))
+    normalized = normalize_globs((glob,))
     if not normalized:
         raise ValueError("glob must not be empty")
     value = normalized[0]
-    current = tuple(_normalize_globs(getattr(policy, field)))
+    current = tuple(normalize_globs(getattr(policy, field)))
     if action == "add":
         updated = current if value in current else (*current, value)
     elif action == "remove":
@@ -132,11 +130,11 @@ def exclusion_reasons(policy: OperationPolicy, path: str, *, is_directory: bool)
         rules = [rule.pattern for rule in excluded_folders(policy).rules if rule.covers(_parts(path))]
         return {"rules": rules, "fixed": [], "not_included": False, "excluded": bool(rules)}
     normalized = path.replace("\\", "/")
-    rules = [pattern for pattern in _normalize_globs(policy.exclude_globs) if _path_matches(normalized, pattern)]
+    rules = [pattern for pattern in normalize_globs(policy.exclude_globs) if path_matches(normalized, pattern)]
     fixed = [pattern for pattern in AUTO_UPLOAD_EXCLUSIONS
-             if any(fnmatchcase(part, pattern) for part in _parts(normalized))]
-    include = _normalize_globs(policy.include_globs)
-    not_included = bool(include) and not any(_path_matches(normalized, pattern) for pattern in include)
+             if any(name_matches(part, pattern) for part in _parts(normalized))]
+    include = normalize_globs(policy.include_globs)
+    not_included = bool(include) and not any(path_matches(normalized, pattern) for pattern in include)
     return {
         "rules": rules,
         "fixed": fixed,
