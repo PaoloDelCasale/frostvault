@@ -240,8 +240,9 @@ async def lifespan(_: FastAPI):
     # them. A root already missing at upgrade stays ambiguous and cannot be
     # rebound by the relocation workflow.
     vault_relocation_service.reconcile_vault_root_identities()
-    # A v1 root identity (#784, ADR-0054) becomes v2 when it is provably the
-    # same folder: unchanged, or changed only in its anonymous device number.
+    # A v1/v2 root identity becomes v3 when it is the same folder: on FUSE the
+    # same path of the same Source Volume (#787, ADR-0055); elsewhere
+    # unchanged, or changed only in its anonymous device number (#784, ADR-0054).
     vault_relocation_service.upgrade_legacy_root_identities()
     cleanup_abandoned_restore_files()
     reconcile_interrupted_jobs()

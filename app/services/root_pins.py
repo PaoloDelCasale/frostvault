@@ -1,22 +1,30 @@
-"""Whether two pinned Root Identities name the same Vault root (#784, ADR-0054).
+"""Whether two pinned Root Identities name the same Vault root (#784, #787).
 
-Proofs (upload snapshots, cleanup batches) pin the Vault's Root Identity when
-they are written and stay immutable. A v1 identity rewritten as v2 for a
-provably unchanged folder is kept as ``vaults.legacy_root_identity``: a proof
-pinned with it still names the current root. Every other difference is a
-changed root.
+Proofs (upload snapshots, upload attempts, cleanup batches, bulk uploads) pin
+the Vault's Root Identity when they are written and stay immutable. When the
+startup upgrade rewrites a Vault's identity for the same folder (v1 -> v2,
+ADR-0054; v1/v2 -> v3, ADR-0055) the replaced value joins
+``vaults.retired_root_identities``: a proof pinned with any of them still
+names the current root. Every other difference is a changed root.
 """
 from __future__ import annotations
 
 from typing import Any, Mapping
 
 
+def root_names(vault: Mapping[str, Any]) -> frozenset[Any]:
+    """Every identity naming the Vault's current root: the current one and the retired ones."""
+    root = vault.get("root_identity")
+    if not root:
+        return frozenset()
+    return frozenset({root, *(vault.get("retired_root_identities") or ())})
+
+
 def same_root(pinned: Any, current: Any, vault: Mapping[str, Any]) -> bool:
     if pinned == current:
         return True
-    legacy = vault.get("legacy_root_identity")
-    root = vault.get("root_identity")
-    return bool(legacy and root) and {pinned, current} == {legacy, root}
+    names = root_names(vault)
+    return pinned in names and current in names
 
 
 def same_pin(pinned: Mapping[str, Any], current: Mapping[str, Any],

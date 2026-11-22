@@ -148,8 +148,15 @@ class PinnedTree:
     caller owns catalog compensation.
     """
 
-    def __init__(self, root: Path, *, subtree: Path | None = None, missing_ok: bool = False):
+    def __init__(self, root: Path, *, subtree: Path | None = None, missing_ok: bool = False,
+                 root_check: Callable[[int], bool] | None = None):
         self.root = root
+        # The root fence (#787, ADR-0055). By default the root must keep its
+        # device and inode. A root whose identity is not its inode (a FUSE
+        # union reports the inode of whichever branch holds the folder, and
+        # the mover changes it) passes ``root_check``: given the pinned root
+        # descriptor, it says whether that is still the Vault root.
+        self.root_check = root_check
         self.start = (subtree or root).relative_to(root).parts
         if ".." in self.start:
             raise TreeIdentityChanged("Subtree escapes the pinned root")
@@ -243,7 +250,10 @@ class PinnedTree:
         """
         try:
             with _open_directory_from_path(self.root) as current:
-                if _directory_identity(current) != self.identities[()]:
+                if self.root_check is not None:
+                    if not self.root_check(current):
+                        raise TreeIdentityChanged("Scan root changed during traversal")
+                elif _directory_identity(current) != self.identities[()]:
                     raise TreeIdentityChanged("Scan root changed during traversal")
         except OSError as exc:
             raise TreeIdentityChanged("Scan root is no longer accessible") from exc
