@@ -10,7 +10,7 @@ prose.
   (Italian).
 - Lookup API: `app.i18n.translate(key, locale=..., **params)`.
 - Critical keys that must exist in every locale live in
-  `app.i18n.CRITICAL_KEYS`.
+  `tests.i18n_checks.CRITICAL_KEYS` (`tests/i18n_checks.py`).
 
 ## Adding or changing a string
 
@@ -20,7 +20,7 @@ prose.
 2. Add the English string to `app/locales/en.json`.
 3. Add the Italian string to `app/locales/it.json` in the same change.
 4. If the string is on a critical path (login, archive chrome, Job progress,
-   cancel/stop, or email subject/body), add the key to `CRITICAL_KEYS`.
+   cancel/stop, or email subject/body), add the key to `CRITICAL_KEYS` in `tests/i18n_checks.py`.
 5. Reference the key from code:
    - Python/API: `translate("…", locale=…)` or `set_job(..., message_key="…")`
    - React SPA: `t('…')` via the i18n provider (catalog from `/api/i18n/catalog`)

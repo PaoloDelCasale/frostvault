@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app import i18n
+from tests import i18n_checks
 
 
 class PluralAndFormattingTests(unittest.TestCase):
@@ -111,19 +112,19 @@ class CatalogIntegrityTests(unittest.TestCase):
             "activity.waiting_observation", "activity.admission",
             "activity.current_work", "activity.unavailable",
         }
-        self.assertEqual(expected - i18n.CRITICAL_KEYS, set())
+        self.assertEqual(expected - i18n_checks.CRITICAL_KEYS, set())
 
     def test_english_catalog_defines_every_critical_key(self) -> None:
-        self.assertEqual(i18n.missing_critical_keys("en"), frozenset())
+        self.assertEqual(i18n_checks.missing_critical_keys("en"), frozenset())
 
     def test_italian_catalog_defines_every_critical_key(self) -> None:
-        self.assertEqual(i18n.missing_critical_keys("it"), frozenset())
+        self.assertEqual(i18n_checks.missing_critical_keys("it"), frozenset())
 
     def test_critical_keys_are_not_orphaned_from_english_catalog(self) -> None:
-        self.assertEqual(i18n.unused_critical_keys(), frozenset())
+        self.assertEqual(i18n_checks.unused_critical_keys(), frozenset())
 
     def test_english_and_italian_catalogs_have_matching_keys(self) -> None:
-        self.assertEqual(i18n.locale_key_parity(), {})
+        self.assertEqual(i18n_checks.locale_key_parity(), {})
 
 
 if __name__ == "__main__":
