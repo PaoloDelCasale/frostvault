@@ -75,7 +75,8 @@ def _dsn(name: str) -> str:
 
 
 def _create(label: str, template: str | None = None) -> str:
-    name = f"{_PREFIX}{label}_{next(_SEQUENCE)}"
+    # The process id keeps a forked child from reusing its parent's names.
+    name = f"{_PREFIX}{label}_{os.getpid()}_{next(_SEQUENCE)}"
     with psycopg.connect(_server_dsn(), autocommit=True) as connection:
         connection.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
             sql.Identifier(name), sql.Identifier(template or "template0")
