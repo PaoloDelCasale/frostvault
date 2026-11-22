@@ -45,7 +45,8 @@ role. It is everything FrostVault needs in the buckets it creates, scoped to
 - upload, read, list versions, restore, tag and copy objects, and abort
   incomplete multipart uploads;
 - delete object versions (the accepted single-identity deletion model in the
-  project README: Cloud Deletion, Duplicate Cleanup, Vault Deletion).
+  [archive lifecycle guide](../../../docs/cloud-lifecycle.md): Cloud Deletion,
+  Duplicate Cleanup, Vault Deletion).
 
 - read the daily size metrics of the Vault Buckets with
   `cloudwatch:GetMetricStatistics` (#737). CloudWatch actions take no

@@ -1,1066 +1,271 @@
 # FrostVault
 
-FrostVault is a self-hosted web application for cataloging files, archiving
-versioned copies in Amazon S3 storage classes, verifying uploaded content, safely
-freeing local space, and recovering exact versions. It is a personal
-archive with a single owner, isolated plaintext vaults, OIDC, and PostgreSQL.
+<p align="center">
+  <img src="docs/images/logo.svg" width="88" height="88" alt="FrostVault logo">
+</p>
 
-The archive works like a file manager: it shows top-level folders, lets you
-open them, and provides breadcrumbs for navigating back to parent folders.
-Search remains global across every file in the selected vault.
+<p align="center">
+  <strong>Self-hosted cold storage for your server's files.</strong><br>
+  FrostVault watches your folders, archives them to Amazon S3, proves every upload
+  with SHA-256, frees local space only when it is safe, and recovers the exact bytes.
+</p>
 
-## Owner and vaults
+<p align="center">
+  <a href="https://github.com/PaoloDelCasale/frostvault/actions/workflows/migrations.yml"><img alt="CI" src="https://github.com/PaoloDelCasale/frostvault/actions/workflows/migrations.yml/badge.svg"></a>
+  <a href="https://github.com/PaoloDelCasale/frostvault/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PaoloDelCasale/frostvault?sort=semver"></a>
+  <a href="https://github.com/PaoloDelCasale/frostvault/pkgs/container/frostvault"><img alt="Container image" src="https://img.shields.io/badge/ghcr.io-frostvault-2496ED?logo=docker&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue"></a>
+  <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="PostgreSQL 16" src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white">
+</p>
 
-- FrostVault has exactly one **Owner**, who owns every vault. There are no other
-  users, roles, members, invites, or shared vaults.
-- The Owner signs in with OIDC (for example Pocket ID), configured only through
-  the `OIDC_*` environment variables. The first successful OIDC login binds the
-  provider subject to the Owner; any other subject is refused.
-- The **Emergency Password** from `BOOTSTRAP_ADMIN_*` is accepted only from
-  loopback and the LAN networks listed in `BREAK_GLASS_ALLOWED_CIDRS`; it is
-  refused from anywhere else. An empty value means loopback-only (`127.0.0.0/8`
-  and `::1`); there is no allow-all value.
-- Reauthentication is required only before downloading the Recovery Kit and
-  before deleting from the cloud.
-- Each Vault has its own local folder and immutable S3 prefix.
-- Every query and operation includes the vault identifier.
-- Queued or active uploads, recoveries, and local cleanup operations can be
-  stopped with the **Stop** button shown next to their progress.
-- Operations run in parallel. `OPERATION_CONCURRENCY` controls the number of
-  simultaneous processes (default: `4`, maximum: `32`). The previous
-  `UPLOAD_CONCURRENCY` variable remains supported as a fallback.
-- Local cleanup runs in the background and reports progress for each file or
-  folder.
-- Vaults are created from the UI with one cloud behavior: **Current Snapshot**
-  keeps the last verified content of each file. A successful upload or safe
-  rename verifies the new copy before destroying previous cloud bytes; a failed
-  upload/verification preserves the previous copy. Recovery has no version picker.
-  The shared S3 bucket stays versioned as an internal safety mechanism, not a
-  recoverable history. Mistaken overwrites or ransomware can therefore replace
-  the only good cloud copy after verification.
-- A file whose Local Copy is gone (freed or deleted via SMB) keeps its verified
-  cloud copy as the only copy. If **different** content later appears at the
-  same path, FrostVault does not upload it: the file shows a conflict with a
-  file kept only in the cloud, and an immediate notification (in-app, plus
-  email when SMTP is configured) explains it. Rename the new file to protect
-  it at its new path, or confirm the replacement with
-  `POST /api/files/cloud-only-conflict/replace`: the new
-  content is uploaded and verified before the previous cloud copy is deleted.
-  Identical content is never a conflict; it becomes the Local Copy again
-  without an upload.
-- New vaults can use an empty managed root or adopt any existing directory
-  under a Source Volume that does not overlap another vault root.
-- The file browser is home: a sidebar lists protected folders, All / Cloud only /
-  Pending / Stopped by you / Excluded / Problems filters and **General**. Home reopens the last-used Vault at
-  its root; search matches name/path across all protected folders and preserves
-  Vault identity even for identical paths. Folder rows show protection counts.
-- Selection offers only **Recover**, **Free space now** and single-file **Details**.
-  Cloud internals and deliberate seven-day cloud deletion live only in Details.
-  Cold recovery offers Normal (Standard) / Economical (Bulk, default), an estimate,
-  return path and local-retention explanation. There are no previews.
-- Each folder's gear panel contains automatic protection, fixed release periods,
-  collapsed Advanced Storage Plan / Move now and Stop Protection. **General**
-  contains optional email status, the installation Recovery Kit/fingerprint/custody,
-  last verified backup, per-Vault storage estimates, folder creation and reconnect.
-  There are no administration or Manage access pages. Installation settings remain
-  deployment-owned. API clients should pin `vault_id` on every scoped request;
-  an invalid explicit identity fails closed rather than using Session selection.
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
 
-## Automatic protection
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
+  <img alt="FrostVault Overview: protection status, sizes and estimated monthly cost of every Vault" src="docs/images/overview-light.png">
+</picture>
 
-Browsing and statistics use these **protection states**, not copy-presence labels:
+## Why FrostVault
 
-- **Pending**: new or changed local content not yet verified. A retained verified
-  previous snapshot is indicated separately; it does not protect the new bytes.
-- **Protected**: the regular Local Copy's fingerprint and matched Archive Version
-  agree, with `integrity=verified` and `availability=available`.
-- **Problem**: terminal upload failure, mismatched content verification, missing
-  Archive Version, unsupported local entry, or a held Cloud-only Conflict.
-- **Unconfirmed**: the Source Volume/reconnect gate prevents observation or cloud
-  requests cannot confirm availability. Last catalog evidence and its observation
-  date remain visible; absence of a volume never turns files into Cloud only.
-- **Cloud only**: no Local Copy is present and the retained cloud snapshot is
-  verified and available. Recovery progress is independent of protection state.
-- **Excluded**: a present Local Copy that automatic upload deliberately skips:
-  the fixed noise exclusions (`._*`, `.DS_Store`, `Thumbs.db`, `*.lock`, `*-wal`,
-  `*-journal`) or the Vault's own include/exclude globs. It is not pending work
-  and does not count against the Vault's protection, but its current content is
-  not expected to be in the cloud (an older verified copy is still indicated).
-  A Problem, an unconfirmed observation or a verified cloud copy of the same
-  bytes (Protected) take precedence. Manual upload requests stay explicit.
-  An exclude glob that covers a whole folder (`dir/**`, `**/dir/**`) makes it an
-  **Excluded Folder**: scans and the watcher no longer look inside it, files
-  already known there keep their last known state and are marked "not
-  observed", and removing the rule starts a full scan (ADR-0044).
-- **Stopped by you** (`stopped`): a present Local Copy whose upload the Owner
-  stopped (single or bulk cancel, manual or automatic upload). Automatic upload
-  leaves it alone until its content is observed again; it is not pending work,
-  not queued and not protected. Details and the folder listing say so and offer
-  **Upload now**. A failed upload stays a Problem. See
-  [ADR-0039](docs/adr/0039-stopped-upload-is-a-protection-state.md).
+S3 Glacier Deep Archive costs about a dollar per terabyte per month, which makes
+it ideal for photo libraries, documents and server backups that almost never
+change. Using them safely is the hard part: knowing what is really in the cloud,
+deciding when a local copy can be deleted, and getting the right bytes back months
+later.
 
-Folders show counts for every state; Vault statistics use the same derivation.
-The aggregate headline prioritizes Problem, Unconfirmed, Pending, Stopped by you,
-Protected, then Cloud only; Excluded appears as the headline only when nothing else is present
-(empty Vaults have no headline state). **Protection suspended** is a
-separate per-Vault flag: pausing uploads does not invalidate already verified
-content. None of these display states authorizes deleting a Local Copy or cloud
-content; operation-specific safety checks remain mandatory.
-Migration `0055_protection_states` rebuilds disposable directory projections only;
-it changes no file, cloud object, fingerprint or verification evidence.
+FrostVault is a small web application you run next to your files (a NAS, an
+Unraid server, any Linux box with Docker). It keeps a catalog of every file in
+your **Vaults**, uploads new and changed files on its own, and shows a clear
+protection state for each one. Nothing is called *Protected* until FrostVault has
+proved that the exact content is in S3, and nothing is deleted on the server
+until that proof is checked again.
 
-New Vaults enable automatic upload by default. The per-Vault **Enable automatic
-upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) enables or
-disables that policy only. Disabling holds queued automatic uploads; an already
-uploaded Archive Version still finishes verification. Explicit manual uploads
-remain available. Migration `0054_watcher_auto_upload` preserves both explicitly
-disabled policies and the old implicit off state of Vaults with no policy row;
-enable those deliberately. It changes no cloud content and performs no S3 calls.
+It is a personal archive: one Owner, no accounts to manage, no client-side
+encryption to lose keys for. Your files keep their names and bytes in your own
+AWS account, readable by any S3 tool even without FrostVault.
 
-**Pause cloud work** in Overview or Vault settings is a separate manual hold,
-persisted across restart until **Resume cloud work**. Authenticated, CSRF-protected
-`POST /api/vaults/{id}/pause` and `/resume` leave queued Jobs unchanged, including
-Owner uploads, and let already claimed Jobs finish. Recoveries at every stage and
-storage-class Jobs already restoring remain runnable so temporary cloud copies
-are downloaded before expiry; pending Restore Approvals still expire. Local scans,
-watchers and automatic admission continue, but no new held cloud Job starts. Cloud
-inventory scans, shared Storage Plan synchronization and provider lifecycle
-transitions continue: this is not a zero-S3-call maintenance switch. No data is
-deleted, no protection is stopped, and resume does not create duplicate Jobs.
-Migration `0070_vault_pause` adds `paused=false` independently of lifecycle/source
-identity; downgrade refuses a still-paused Vault. See ADR-0033 for exact scope.
-Bulk cancellation remains the existing `POST /api/upload/cancel-pending` (empty
-`path` for the entire Vault), not pause/resume.
+## Features
 
-**Upload whole Vault** and manual directory uploads return HTTP 202 after
-persisting an admission request, not after creating every transfer Job. A dedicated
-DB-only producer creates at most 100 candidates per transaction, releasing the
-Vault lock between batches. Upload activity shows paths considered and Jobs
-admitted separately from transfer progress. The accepted response includes
-`admission` and a stable `group_id`; read durable progress with
-`GET /api/upload/admissions/{group_id}?vault_id=…`. Optional UUID `request_id` on
-`POST /api/upload` makes retries return the same request, including terminal
-requests; reuse for a different scope is rejected. Acceptance is catalog-only, not
-a confirmation of mount availability: transfer workers retain Source Volume checks
-and wait safely when unavailable. Single-file behavior is unchanged.
+**Automatic, verified protection**
+- Real-time folder watching with a stability window, so files are uploaded once
+  they stop changing, plus a periodic full scan as a safety net.
+- Every upload is proved with an S3 SHA-256 checksum of the exact object version,
+  or an optional full read-back. A failed or ambiguous upload never replaces the
+  last good copy.
+- Clear per-file states: **Protected**, **Pending**, **Cloud only**, **Excluded**,
+  **Stopped by you**, **Unconfirmed** and **Problem**, counted on every folder.
+- Exclusion and inclusion rules per Vault, with fixed noise exclusions
+  (`.DS_Store`, `Thumbs.db`, `*.lock`, …) and a rule tester.
 
-Each request freezes manual origin, verification mode, Vault identity and a finite
-catalog path watermark. New or renamed paths are not added; unavailable, protected
-or busy files can be skipped, so selected paths need not equal admitted Jobs.
-Restart resumes the committed cursor without reproducing completed batches.
-Remediation still uses its original frozen proof and reconcile-only restrictions.
-Group cancellation also stops unproduced work; cancel-pending records folder
-exclusions for later batches (or stops all admissions for an empty path), without
-cancelling ambiguous sends. Stop Protection and Reconnect require pending admission
-to finish or be cancelled first. Paused Vaults can prepare Jobs but cannot claim
-them. Migration `bulk_upload_admission_550` is metadata-only and refuses downgrade
-while admission remains pending. See [the admission decision](docs/adr/bulk-upload-admission-550.md).
+**Cost-aware cloud storage**
+- A dedicated, private, versioned S3 bucket for each Vault, created and checked
+  by FrostVault.
+- Storage plans per Vault, from *Always accessible* to *Tiered archive*
+  (Standard-IA → Glacier Instant Retrieval → Deep Archive), and on-demand moves
+  of a whole Vault to a colder class.
+- Monthly cost estimates from AWS list prices, sizes measured by CloudWatch and the
+  real billed cost from the AWS billing export, side by side.
+- Minimum storage duration tracking, so you see what an early deletion still costs.
 
-Filesystem watcher observations are the upload input. After five minutes without
-changes, an independent scheduler admits them to the durable Job queue (checked
-every ten seconds), without waiting for the default six-hour full scan. Both
-mtime and the last observed content change must be old enough, so copying a file
-with a preserved old timestamp does not bypass stability. Edits restart the
-window; unchanged reconciliation scans and restarts do not. Full scans remain
-the reconciliation net for events missed while stopped or with the watcher off.
-With adequate bandwidth and a healthy provider, the target is verified protection
-within about one hour of finishing the copy, not a transfer-time guarantee.
+**Safe local space and recovery**
+- Free local space by hand or automatically after 3 months to 2 years, only for
+  files whose cloud copy is verified; the local file is hashed again just before
+  removal.
+- Recover single files or whole folders. Cold recoveries show an estimate first,
+  use the economical Bulk tier by default, and large ones wait for your approval.
+- Conflict protection: if different content appears where a cloud-only file used
+  to be, nothing is overwritten until you decide.
 
-Automatic uploads always exclude `.DS_Store`, `Thumbs.db`, `._*`, `*.lock`,
-`*-wal`, and `*-journal` at any path depth. These fixed exclusions cannot be
-removed or overridden by include patterns. Existing additional include/exclude
-rules still narrow eligibility; explicit manual operations are unaffected.
+**Built for unattended operation**
+- Optional S3 Object Lock (Governance mode) per Vault against stolen keys and
+  ransomware: FrostVault itself cannot delete a locked version early.
+- Cloud deletion always waits seven days and can be cancelled; optional Mirror
+  Cleanup for data that is already a backup.
+- Encrypted metadata backups to a separate System Bucket and a **Recovery Kit**
+  to rebuild everything on a new server.
+- Notification center with optional email alerts and a weekly summary.
+- Single sign-on with OIDC (for example Pocket ID), an emergency password limited
+  to your LAN, responsive UI in English and Italian, light and dark themes.
 
-Enqueueing performs no cloud writes and does not depend on cloud validation or
-storage-plan/lifecycle synchronization succeeding. Those failures remain visible
-in scan health/errors. The upload worker still requires successful bucket
-preflight before writing, honors retries and leases, and verifies the exact S3
-VersionId with a full SHA-256 readback. Terminal automatic failures/cancellations
-are not silently requeued for the same observation; retry manually or make a new
-content change. Missing/replaced Source Volumes or Vault roots suspend local work
-without clearing the catalog. SMB deletion never propagates to cloud deletion
-unless the Owner turns on Mirror Cleanup for that Vault (below), and Cloud-only
-Conflicts remain held back.
+## Screenshots
 
-## Archive lifecycle and cloud deletion
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/file-browser.png" alt="File browser with protection states and a selection offering Recover and Free space now"><br><sub><b>File browser.</b> Protection state per file and folder, filters, search, bulk actions.</sub></td>
+    <td width="50%"><img src="docs/images/recover.png" alt="Recover dialog for three Deep Archive files with cost and time estimate"><br><sub><b>Recovery.</b> Cold copies come back with an estimate, the return path and a choice of speed.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/storage-plan.png" alt="Vault storage plan options and catalog cost estimate per storage class"><br><sub><b>Storage plans.</b> One plan per Vault, explained in plain language, with cost per class.</sub></td>
+    <td width="50%"><img src="docs/images/file-details.png" alt="File details panel in dark mode showing verification date, cloud class and recovery time"><br><sub><b>File details.</b> When it was verified, which class it is in and how fast it comes back.</sub></td>
+  </tr>
+</table>
 
-- Each Vault has one **storage plan** in **Advanced**: Always accessible
-  (Standard), Economical instant access (IA30 → GlacierIR90), Tiered archive
-  (recommended: IA30 → GlacierIR90 → DeepArchive365), Early Deep Archive (day 0),
-  Recent backups (GlacierIR from day 0, for rotating backups kept a few weeks
-  and restored at once), or Custom (ordered object-age/class chain). Each explains timing and cost.
-  There are no folder assignments, pins or manual per-file class changes.
-- Plans emit only current-version transitions, never expiration or noncurrent
-  rules. AWS requires age 30 for IA and minimum residence in the source class
-  before the next step (30 days in IA, 90 in Glacier Instant/Flexible Retrieval),
-  not 90/180 days from Standard before archiving. Objects below 128 KB stay put
-  by default. Early replacement can incur minimum-duration charges; cold recovery
-  takes hours. A changed plan does not warm existing cold objects or move them
-  immediately. See [storage plans and upgrade safety](docs/aws-s3-bucket.md#vault-storage-plans).
-- **Move the entire Vault now**, in the same Advanced panel, queues verified
-  Current Snapshots for a colder class on the saved plan (not Standard). Mixed
-  classes are evaluated per file: equal/colder copies, unverified/missing copies,
-  pending work (including delayed deletion), and cold sources without an explicit
-  exact-version restore are skipped. It never restores automatically or moves
-  warmer. A regional storage/source-retrieval estimate and minimum-duration warning
-  must be acknowledged first; request fees and early-deletion charges are excluded.
-  A copy resets the provider object-age/plan clock. Exact destination checksum
-  verification precedes removal of the exact old source; interruption resumes from
-  a durable ledger without discarding the only verified copy. Follow/cancel Jobs
-  in Operations; cancellation retains copies and does not undo finished movement.
-  Reconnect and Stop Protection require these Jobs to finish or be cancelled.
-  See [copy/restart safety and limitations](docs/adr/0021-vault-wide-colder-moves.md).
-- **Minimum storage duration** (#731): STANDARD_IA (30 days), GLACIER_IR and
-  GLACIER (90) and DEEP_ARCHIVE (180) bill a version for those days from its **Class Entry**,
-  not from its upload, even if it is deleted earlier. Migration **0009**
-  records the Class Entry (`archive_versions.storage_class_since`) from then
-  on: a direct PUT or copy enters its class when written; an observed class
-  change (listing, audit, restore check) moves it. Existing versions are not
-  backfilled: their entry is estimated as upload + plan transition days + 1
-  and marked as estimated. Objects under 128 KB stay Standard. The Vault's
-  **Minimum storage duration** settings section shows, per class, the versions
-  within and beyond it, the remaining minimum cost and the month-by-month
-  release; «Delete from cloud», Automatic Duplicate Cleanup and Vault Deletion
-  say how many versions are still within it and what deleting them still
-  bills. All amounts are list-price estimates, not your AWS bill. The duplicate
-  cleanup can wait for the minimum to end (off by default).
-- **Retention Lock** (#736, optional): a new Vault can get S3 Object Lock in
-  Governance mode with a default retention of 30, 90, 180 or 365 days, chosen
-  only on the creation page and never changeable afterwards. It protects
-  against stolen keys and ransomware: FrostVault never holds
-  `s3:BypassGovernanceRetention`, so no one using its keys can delete a locked
-  version early. Superseded versions, «Delete from cloud», Automatic Duplicate
-  Cleanup and Vault Deletion wait for the RetainUntilDate («deletable from …»)
-  instead of failing, and their previews say how many files stay locked and
-  until when. A Delete Marker in such a bucket is a Problem. See
-  [Retention Lock](docs/aws-s3-bucket.md#retention-lock-optional-per-vault).
-- Lifecycle synchronization preserves external bucket rules and the seven-day
-  incomplete-multipart abort rule. Changing a plan never deletes cloud content.
-- **Delete from cloud** is available only for **Cloud-only** files (or folders
-  whose selected files are all Cloud-only). Type the exact Vault name and a
-  reason, with recent Owner reauthentication. A fixed **seven-day cancellable
-  delay** applies; there is no immediate deletion or acceleration. Every exact
-  VersionId is captured once, never expanded to new content during execution.
-  Local reappearance, changed cloud content or an untrusted/unavailable source
-  cancels the request instead of deleting the only cloud copy by mistake.
-- **Mirror Cleanup** (#771, «Elimina dal cloud i file spariti dal server», off by
-  default): once a day it schedules one ordinary seven-day cancellable deletion
-  of the Cloud-only files whose Local Copy was last seen at least N days ago
-  (1–180, default 7), optionally only under listed folders. Unlike the duplicate
-  cleanup these can be the only copy of their content, so the cloud no longer
-  protects against accidental deletion: use it only for data that is already a
-  backup (rotating dumps, exports), never for originals. Files never seen on the
-  server are never taken. Above 5,000 files or 50 GiB per run nothing is
-  scheduled and a Vault Problem opens. A file back on the server, changed or busy
-  is skipped alone at execution. Enabling it, or making it delete more, needs a
-  fresh sign-in; it can also wait for the Minimum Storage Duration. See
-  [ADR-0052](docs/adr/0052-mirror-cleanup.md).
-- **Stop protecting this folder** always keeps local files. Choose **keep cloud**
-  or the same delayed cloud deletion. A cloud-backed file present on the server
-  blocks the delete choice: choose keep instead. Pending Jobs/scans must finish
-  or be cancelled first. Stop+delete reserves the root until terminal; cancelling
-  means keep cloud, not resume protection. Retained cloud content stays under its
-  original S3 namespace and can be recovered using the Recovery Kit's manual S3
-  instructions; the stopped Vault is a non-operational tombstone.
-- Migration **0059** cancels legacy delayed deletion requests; make new explicit
-  requests if still wanted. Finish legacy decommissions and reconcile interrupted
-  destructive Jobs with the previous release before upgrading. No migration calls
-  S3 or deletes local files. Remove `CLOUD_PURGE_DELAY_SECONDS`; it is no longer
-  configurable. The old enablement toggle, generated phrase and decommission
-  endpoints/UI are removed. A downgrade after Stop Protection is refused.
-- Safe renames are recognized automatically only for unique, identical content
-  observed within the scan window. The new cloud key is verified before cleaning
-  up the old key (permanently under Current Snapshot). Ambiguous matches stay new
-  files; no cloud content is deleted on their behalf. Path History is internal,
-  not a UI action, and there is no manual rename confirmation.
-- Archive statistics, file-state badges, and Job progress refresh automatically
-  while background operations are active.
+## How it works
 
-## Local cleanup safety
-
-- Each Vault has one optional **Free local space after** rule, off by default:
-  **3 months / 6 months / 1 year / 2 years** (fixed 90/180/365/730 days).
-  Enabling preselects 6 months. It applies to every file, regardless of upload
-  include/exclude filters. Put files that must stay local in a separate Vault
-  with release off. Cold copies can take hours to recover and incur restore costs.
-- Retention starts at the latest actual content observation, cloud content
-  verification, local modification, or explicit recovery time. Old photo imports
-  and recovered files get a full new period without changing their mtime.
-- **Free local space now** remains an explicit, confirmed manual action even
-  with the automatic rule off. Only Protected files are eligible; an absent or
-  untrusted Source Volume, unconfirmed protection, mismatch, changed content or
-  unavailable cloud blocks release. GLACIER and DEEP_ARCHIVE are allowed.
-- Migration 0057 maps **all** old cleanup configurations to **off**, including
-  enabled ones: the removed global environment gate cannot be inferred and old
-  filters had a narrower scope. Pending legacy free-space Jobs are cancelled;
-  request manual actions again, and explicitly enable the new rule if desired.
-  Complete active local-removal decommissions before upgrading; cancellation of
-  their pending Jobs leaves them blocked with the root reserved, never released.
-  Upgrade refuses interrupted `cleaning` Jobs: reconcile them with the previous
-  release first so hidden rename-claims are never stranded. No file/cloud content
-  or verification evidence is changed. Downgrade also leaves automation off.
-  Remove the retired `ALLOW_LOCAL_DELETE` environment variable; old API fields
-  `auto_local_cleanup`, `local_retention_days` and `local_delete_enabled` are rejected.
-  Policy updates preserve omitted fields, so saving upload rules cannot silently
-  replay an old automatic-release choice from another settings panel.
-- Release outcomes and blockages are audited and included in the weekly summary,
-  never sent as per-file notifications.
-- Before deleting the server copy, the application checks the exact S3
-  `VersionId`, atomically claims the local file, and rehashes it; object
-  existence at the same key or a stale local fingerprint is not sufficient.
-- Cleanup deletes local copies only. It never deletes the S3 object.
-- Recovery downloads the exact archived S3 `VersionId`, verifies the plaintext
-  SHA-256 digest, then atomically replaces the local file. Glacier/Deep Archive
-  versions request a restore first (Bulk by default); high-impact restores are
-  held for one hour awaiting the Owner's approval before any `RestoreObject`
-  call. An accepted S3 restore request cannot be cancelled. Large recoveries
-  use parallel S3 range downloads (`S3_DOWNLOAD_*`).
-- Sign in with the Owner's configured OIDC provider or, from loopback/allowed
-  LAN, the Emergency Password.
-
-## Requirements
-
-- Docker Engine with Docker Compose v2 for the recommended deployment, or
-  Python 3.12+ for native development
-- An S3 bucket with versioning and all four Block Public Access flags enabled,
-  plus a least-privilege IAM principal (including `s3:GetBucketPublicAccessBlock`)
-- PostgreSQL 16 for production, local development and tests (the only backend)
-- PostgreSQL 16 client tools for native metadata backups and restore verification
-- An HTTPS reverse proxy for any network-accessible deployment
-
-FrostVault never replaces independent backups. Keep encrypted metadata backups
-and the installation **Recovery Kit** outside this server. Download requires
-recent reauthentication; compare the visible fingerprint and confirm custody
-once for the current kit. It contains the metadata key, cloud location and
-manual PostgreSQL/S3 instructions, not catalog data or AWS credentials. The key
-protects metadata backups only. Any authorized S3 tool can recover Vault files;
-AWS SSE-S3 and HTTPS remain required protections. After metadata restore,
-Reconnect Folder for each Vault and review the durable backup-date/updated-files
-warning. See [manual disaster recovery](docs/metadata-backups.md).
-
-## Setup
-
-### Compose identity and fresh host data directory
-
-The published image bakes in the default Unraid account `archive` (`99:100`).
-It does **not** create users or groups when it starts. Both Compose manifests
-instead launch the process directly as the numeric
-`user: "${PUID:-99}:${PGID:-100}"` identity, so non-default numeric overrides
-need no matching account in the image. This preserves the read-only root
-filesystem, `cap_drop: [ALL]`, and `no-new-privileges` contract.
-
-Before the first Compose start, create the repository's `./data` bind source on
-the host with the identity selected in `.env`. A missing bind source may be
-created by Docker as root, which prevents the non-root service from creating
-its migration scratch and encrypted backup files:
-
-```bash
-# Use the same values in .env. These are the Unraid defaults.
-# Omit `sudo` when your shell is already root, as is typical on Unraid.
-PUID=99
-PGID=100
-mkdir -p ./data
-sudo chown "${PUID}:${PGID}" ./data
-sudo chmod 0750 ./data
+```mermaid
+flowchart LR
+    A[Files on your server] -->|watcher + periodic scan| B[Catalog<br/>PostgreSQL]
+    B -->|stable for 5 min| C[Upload to the<br/>Vault Bucket]
+    C -->|SHA-256 proof of the<br/>exact S3 version| D((Protected))
+    D -->|storage plan| E[Standard-IA → Glacier IR<br/>→ Deep Archive]
+    D -->|free local space,<br/>rehash first| F((Cloud only))
+    F -->|Recover: restore, download,<br/>verify SHA-256| A
 ```
 
-This is a one-time fresh-directory preflight, not a recursive ownership reset
-of an existing catalog. It deliberately changes only `./data`: prepare
-`SOURCES_ROOT` under its own access policy and do not use it as a workaround for
-source permissions. Full Linux, Unraid, Docker Desktop, and invalid-identity
-guidance is in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
+1. **Observe.** FrostVault watches each Vault folder and records what it sees in
+   its catalog. A full scan every six hours catches anything the watcher missed.
+2. **Upload.** Once a file has been stable for five minutes it is queued and
+   uploaded to the Vault's own S3 bucket, with bounded bandwidth and parallelism.
+3. **Verify.** The upload is accepted only when S3's SHA-256 checksum of that exact
+   object version matches the bytes that were read. Then the file is *Protected*,
+   and only then is the previous cloud copy cleaned up.
+4. **Age.** The Vault's storage plan moves objects to cheaper classes over time.
+5. **Release.** Freeing local space re-checks the cloud version and re-hashes the
+   local file first. The file stays in the catalog as *Cloud only*.
+6. **Recover.** FrostVault restores the object from cold storage if needed,
+   downloads the exact version, checks its SHA-256 and puts the file back in place.
 
-`PUID=0 PGID=0` runs FrostVault as root **without** root privileges, for shares
-written by containers running as root (for example the Immich library): keep
-`cap_drop: [ALL]` and `no-new-privileges`, and add back only `CHOWN` so a
-Recovery restores the original owner and mode. The entrypoint refuses to start
-as root with any capability that bypasses file permissions. See
-[Running as root](docs/filesystem-permissions.md#running-as-root-puid0).
+The full model, including every protection state and upload guarantee, is in
+[How FrostVault works](docs/how-it-works.md).
 
-### Local development with PostgreSQL
+## Quick start
 
-The local configuration uses:
+You need Docker with Compose v2, a PostgreSQL 16 database, an AWS account and an
+HTTPS reverse proxy (or Tailscale) for anything beyond localhost.
 
-- a dedicated PostgreSQL 16 catalog (never a production database);
-- a test source at `local-data/sources/test`;
-- a real AWS bucket restricted to the `development/test` prefix;
-- credentials read only from the Git-ignored `.env` file.
+1. **Get the Compose files** and create your configuration:
 
-Local setup:
-
-1. Provision a disposable PostgreSQL 16 server and database. For native/cloud
-   development without Docker, follow the isolated `initdb` / `pg_ctl` procedure
-   in [AGENTS.md](AGENTS.md). Use a user-owned cluster, not a system service.
-2. Copy `.env.local.example` to `.env` if absent; configure `PGHOST`, `PGPORT`,
-   `PGDATABASE`, `PGUSER` and database authentication. For cloud tests also set:
-
-   ```text
-   AWS_ACCESS_KEY_ID=...
-   AWS_SECRET_ACCESS_KEY=...
-   AWS_DEFAULT_REGION=...
+   ```bash
+   git clone https://github.com/PaoloDelCasale/frostvault.git
+   cd frostvault
+   cp .env.example .env
    ```
 
-3. Never send AWS keys in chat or commit the `.env` file.
-4. Use dedicated IAM credentials restricted to the test bucket/prefix, without
-   delete permissions when cloud deletion is not being tested. Never use account
-   root credentials.
-5. Run the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory),
-   then pull the published image and start the application (an empty database
-   is initialized on first start):
+2. **Prepare the data directory** with the identity the container runs as. The
+   image runs directly as the numeric `PUID:PGID` (default `99:100`, the Unraid
+   `nobody:users`) and never creates an account at runtime, so the directory must
+   exist with the right owner before the first start. See
+   [Compose identity and fresh host data directory](docs/deployment.md#compose-identity-and-fresh-host-data-directory).
+
+   ```bash
+   PUID=99
+   PGID=100
+   mkdir -p ./data
+   sudo chown "${PUID}:${PGID}" ./data
+   sudo chmod 0750 ./data
+   ```
+
+3. **Create the database** (as a PostgreSQL administrator):
+
+   ```sql
+   CREATE USER frostvault WITH PASSWORD 'A-LONG-PASSWORD';
+   CREATE DATABASE frostvault OWNER frostvault;
+   ```
+
+4. **Create an IAM user** with the
+   [FrostVault buckets policy](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json).
+   FrostVault creates its own buckets (`frostvault-*`); you do not create one.
+
+5. **Fill in `.env`**: `SOURCES_ROOT` (the host folder mounted at `/sources`),
+   the `PG*` database settings, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+   `AWS_DEFAULT_REGION`, an `ARCHIVE_MASTER_KEY` (the command to generate it is in
+   `.env.example`), an emergency password in `BOOTSTRAP_ADMIN_*` (at least 12
+   characters) and, in `BREAK_GLASS_ALLOWED_CIDRS`, the LAN you will sign in from.
+   Values containing `REPLACE` are placeholders.
+
+6. **Start it.** Compose pulls `ghcr.io/paolodelcasale/frostvault:latest`; an empty
+   database is initialized on first start.
 
    ```bash
    docker compose pull
    docker compose up -d
+   docker compose logs -f frostvault
    ```
 
-   Compose uses `ghcr.io/paolodelcasale/frostvault:latest`. Developers who need
-   to change the image can still build from the `Dockerfile` locally.
-While `REPLACE...` placeholder values remain, the application blocks AWS calls
-instead of trying other credentials available on the computer.
-
-### Production with PostgreSQL
-
-1. Create the PostgreSQL database and user shown below.
-2. Mount each Source Volume directly under the fixed `/sources` namespace.
-   `managed` is reserved for server-provisioned empty Vault roots. Nested
-   mounts are unsupported — every filesystem must be a sibling under
-   `/sources/<alias>`:
-
-   ```text
-   /srv/frostvault/sources/          # host path bound to /sources
-   ├── managed/                      # created by FrostVault (do not mount over)
-   ├── photos/                       # direct host mount -> /sources/photos
-   └── documents/                    # direct host mount -> /sources/documents
-   ```
-
-   Compose may still substitute the host path with `SOURCES_ROOT`; the
-   application no longer accepts `VAULT_SOURCES_ROOT`. A bind of a folder on
-   the same filesystem as `/sources` is a valid Source Volume; a direct child
-   that is not a mount degrades only that alias, not the whole instance.
-
-   On first discovery FrostVault stores a markerless, opaque identity for each
-   custom Source Volume. It accepts ordinary remounts of the same source but
-   blocks scans, watchers, and all local operations if the alias is absent,
-   inaccessible, ambiguous, unsupported, or backed by a different source. The
-   catalog remains intact. Restore the expected Compose mount or explicitly
-   **Reconnect Folder** for one existing Vault: accept a new volume/folder,
-   reconcile S3 without deletions, then complete a full local rehash. Matching
-   files become Protected, missing files Cloud-only and different content stays
-   held as a conflict. Sibling Vaults are never implicitly accepted. Bind, Docker
-   Desktop, and NAS details and limitations
-   are documented in [docs/filesystem-permissions.md](docs/filesystem-permissions.md).
-
-   When creating a Vault, the Owner can keep the default empty root
-   (`/sources/managed/<uuid>`) or adopt any existing directory under a Source
-   Volume in place, provided it does not overlap another Vault root. Adoption never moves or rewrites content;
-   the server still mints the Vault UUID and `vaults/<uuid>/` S3 prefix, then
-   starts an asynchronous local scan.
-
-3. Copy `.env.example` to `.env` and configure paths, bucket, credentials, and
-   the Owner's Emergency Password (`BOOTSTRAP_ADMIN_*`). Before the first Compose start, run the
-   [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory)
-   using the same `PUID`/`PGID` values. For a network deployment set `COOKIE_SECURE=true`
-   and provide `ALLOWED_HOSTS` (the hostnames the panel answers to) and
-   `TRUSTED_PROXIES` (the app's proxy IP/CIDR allowlist); the app refuses to start
-   in production without them. **Also set `FORWARDED_ALLOW_IPS` explicitly** for
-   Uvicorn to the same narrow proxy IPs/CIDRs as seen by FrostVault. Neither list
-   derives from the other. Uvicorn rewrites both scheme and client address;
-   `TRUSTED_PROXIES` cannot veto overly broad Uvicorn trust. Without the proxy in
-   `FORWARDED_ALLOW_IPS`, OIDC redirects remain `http` even with secure cookies.
-   Never use `*` or an entire Docker/LAN range as a shortcut; follow the
-   [Traefik trust and verification guide](docs/traefik.md).
-   Set `OIDC_ENABLED=true` and configure
-   `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` for single sign-on; OIDC
-   is configured only through these variables. The optional `OIDC_PROVIDER_NAME`
-   names the provider on the sign-in button (for example `Pocket ID`). List your LAN in
-   `BREAK_GLASS_ALLOWED_CIDRS` to accept the Emergency Password from it.
-
-4. Set `AWS_DEFAULT_REGION` and AWS credentials with the
-   [FrostVault buckets policy](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json):
-   FrostVault creates a private, versioned **Vault Bucket** for every new Vault
-   (`frostvault-<name>-<random>`, see
-   [buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
-   There is no bucket setting; `VAULT_S3_BUCKET` was removed in #735.
-5. Configure `ARCHIVE_MASTER_KEY` for encrypted metadata backups and keep it
-   outside this server; see [metadata backup custody](docs/metadata-backups.md).
-   The backups go to the System Bucket FrostVault creates
-   (`frostvault-system-<random>`), or to the bucket named by the optional
-   `METADATA_BACKUP_BUCKET`; see [System Bucket](docs/metadata-backups.md#system-bucket).
-
-Example database creation, run as a PostgreSQL administrator:
-
-```sql
-CREATE USER frostvault WITH PASSWORD 'A-LONG-PASSWORD';
-CREATE DATABASE frostvault OWNER frostvault;
-```
-
-The v0.6 schema starts at the Alembic revision `0001_baseline`
-([ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md)), followed by
-linear migrations ([ADR-0041](docs/adr/0041-linear-migrations-after-the-frozen-baseline.md)).
-On every start the application checks the database before any write: an
-**empty** database is initialized with `alembic upgrade head`; a database at an
-**earlier v0.6+ revision** is upgraded in place; a database at this release's
-revision is used; any other database (a v0.5.x revision, a newer release's
-revision, or tables without `alembic_version`) is **refused** with a clear
-message. FrostVault never stamps, resets or adopts a v0.5.x catalog, and
-refuses its metadata backups: v0.6 starts from an empty database and new Vaults
-use new cloud namespaces. Keep the previous release to read an older catalog or
-backup.
-
-If PostgreSQL runs directly on the server or exposes port `5432`, keep
-`PGHOST=host.docker.internal`. Otherwise, connect both containers to the same
-Docker network and set `PGHOST` to the PostgreSQL service name.
-
-All Vaults store readable object keys `vaults/<uuid>/<relative-path>` and original
-file bytes, without client-side encryption or extension transformation. Managed
-SDK uploads use multipart transfers, a shared optional upload bandwidth cap and
-throttled progress. New uploads default to **S3 SHA-256 ingestion proof**
-(`UPLOAD_VERIFICATION=s3_checksum`); `read_back` requests an independent complete
-GET/SHA-256. Vault settings offer inherit / S3 SHA-256 / full read-back and show
-the deployment default and effective mode. The mode is frozen at Job admission;
-later setting changes affect only new uploads, not retries or existing evidence.
-
-Both plaintext SHA-256 and independently expected provider proof come from the
-same stable Upload Snapshot. Single PUT uses SHA256 `FULL_OBJECT`; multipart uses
-SHA256 `COMPOSITE` with independently hashed parts and recorded boundaries, **not**
-the plaintext digest. Bounded validated part buffers prevent a changed Local Copy
-from being sent under an earlier digest; no verification artifacts are written
-inside the Vault or as an unbounded whole-file temporary copy. Normal buffers are
-8 MiB, adjusted up to 1 GiB for large objects (5 TiB maximum), at most two per Job;
-hashing reads 1 MiB chunks. Below 8 MiB the hashing pass is the only read of the
-file: the single PUT sends exactly the bytes it hashed, from a send buffer
-reserved before the read. Completed snapshot A never protects later Local Copy B.
-
-The upload response supplies the exact VersionId and is registered before later
-HEAD/proof checks. Valid S3 cryptographic proof grants Integrity verified and the
-usual guarded Current Snapshot cleanup/local release. It proves **provider
-ingestion**, not independently reread storage. Missing proof or an unsupported
-checksum HEAD API triggers a visible full exact-VersionId GET/SHA-256 fallback;
-wrong checksum/type/size/identity blocks, never silently downgrades. Read-back and
-fallback download approximately the entire uploaded size (e.g. 9 GB upload +
-9 GB download), potentially incurring request, retrieval and **S3 egress costs**.
-File Details show the recorded method, fallback reason and completed read-back
-byte count. Legacy versions without independent S3 expected evidence require
-read-back against their durable plaintext digest, never remote checksum inference
-or rehashing a changed Local Copy. Retries of linked versions do not issue another
-PUT. Providers refusing checksum-bearing writes fail safely rather than silently
-repeating an ambiguous upload without checksum.
-
-Rename, Move now, Recovery and Reconnect retain their existing full/independent
-verification behavior and exact VersionId pins; this is only a new-upload policy.
-Migration `0063_upload_verification` adds nullable evidence and override fields,
-without backfilling or rewriting existing trust. Downgrade discards the new method/
-expected-provider fields, not plaintext digests or verified/available state.
-See [ADR-0023](docs/adr/0023-new-upload-ingestion-proof.md) for the verification
-contract and [ADR-0024](docs/adr/0024-upload-facts-and-proven-duplicate-cleanup.md)
-for durable upload facts and replacement cleanup.
-Incomplete multipart uploads are aborted on failure/cancellation, with a seven-day
-lifecycle safety net for process interruption. No external transfer binary or
-remote configuration is required.
-
-### Interrupted upload and retained cloud extras
-
-Migration `0064_upload_provenance` commits a target-specific upload intent,
-independent Upload Snapshot and separate opaque metadata token before any cloud
-mutation. Raw VersionId receipts append before proof/HEAD/progress flush or
-cancellation, independently of a worker lease; a receipt is a fact, not permission
-to publish or delete. PutObject/CreateMultipartUpload/CompleteMultipartUpload use
-`total_max_attempts=1`; reads and same-MPU parts retain ordinary SDK retries.
-
-Restart/retry reconciles the exact receipt or an exact unique token match against
-that frozen expected proof before any new PUT. Zero matches after send-started,
-multiple/fake tokens, incomplete/unstable pagination and observable external
-writers remain **reconcile-only**, not evidence that another upload is safe.
-Source A's receipt never verifies a later Local Copy B; an unavailable/replaced
-Source Volume or changed Vault/path still suspends authority, even when individual
-local-file absence would not prevent finishing an already-written target.
-
-Upload and rename replacement cleanup share durable per-VersionId authority.
-Scans discover content but do not directly delete it or grant trust by cataloging
-it. Ordinary app-owned superseded versions require independent lineage. Historical
-unknowns are adopted/cleaned only after a full exact-VersionId GET, checked length
-and SHA256 prove a duplicate of a verified, available, current keeper. The proof
-catalog does not promote an older duplicate to Current Snapshot or alter local
-matches/verification clocks. A committed exact proof avoids repeated GET on retry.
-Different, ambiguous, cold/unreadable versions stay in cloud with a deduplicated
-Problem and a safe remedy. Historical reads may incur retrieval/egress/request
-charges; explicitly restore an exact cold version externally if needed. No
-arbitrary deletion or automatic RestoreObject action is offered.
-
-File Details exposes **Retry exact reconciliation** independently of the normal
-upload action (including already protected files for which upload returns 409).
-`POST /api/upload/reconcile` admits one stable Vault File into a claim-fenced,
-reconcile-only Job incapable of PUT; `/api/files/versions` exposes pending,
-can_resume, bounded reason and remedy. Cancelled attempts retain facts and cannot
-be automatically resurrected. New writers, path/owner/source changes, missing
-keepers and Delete Markers block cleanup; only exact authorized IDs may be deleted,
-never the keeper. Keep external S3/SMB writers quiescent: DB locks are not an atomic
-provider snapshot, and in-flight deletes cannot be undone. Delayed deletion
-consent, metadata-backup retention and generic prefix utilities are unchanged.
-
-No automatic sweep or original-failure history resolution is added here; #459
-owns that separate operational cadence. Verified is still not completed until
-cleanup satisfies its postcondition. Downgrade refuses retained ambiguous sends
-or pending cleanup authority before dropping metadata, without contacting S3.
-No real AWS or object larger than 5 GiB acceptance is claimed by the compatible
-CI emulator/SDK tests.
-
-Migration `0051_plaintext_vaults` refuses legacy
-encrypted Vaults before any schema change; recover test data using the previous
-release before creating a fresh plaintext installation. It never rewrites or
-deletes S3 objects. See [upgrade notes](docs/metadata-backups.md#older-formats-and-upgrades).
-
-## Run
-
-After completing the [fresh `./data` preflight](#compose-identity-and-fresh-host-data-directory):
-
-```bash
-docker compose pull
-docker compose up -d
-docker compose logs -f frostvault
-```
-
-On start an empty database is initialized, one of an earlier v0.6+ release is
-upgraded, and any other database is refused before any write (see
-[ADR-0035](docs/adr/0035-database-rebuilt-from-scratch.md) and
-[ADR-0041](docs/adr/0041-linear-migrations-after-the-frozen-baseline.md)).
-
-The service listens on `127.0.0.1:8080` by default. Use an HTTPS reverse proxy or
-Tailscale to make it reachable. Set `COOKIE_SECURE=true` when using HTTPS.
-
-Compose pulls `ghcr.io/paolodelcasale/frostvault:latest` from the GitHub
-Container Registry (a standard deploy does not build the image locally).
-For production behind Traefik, use `compose.traefik.yaml` so the app is not
-published on host ports. It requires both `TRUSTED_PROXIES` (app) and
-`FORWARDED_ALLOW_IPS` (Uvicorn), explicitly configured to the actual trusted
-proxy addresses, with no permissive defaults. See
-[docs/traefik.md](docs/traefik.md) for topology selection and HTTPS OIDC checks.
-
-The image bakes in default `99:100`; Compose runs directly as numeric
-`PUID`/`PGID` and never creates an account at runtime. Permission the host
-source and data directories for that identity before start; see
-[docs/filesystem-permissions.md](docs/filesystem-permissions.md) for the
-required `./data` preflight and valid-override behavior.
-
-On first startup, the application creates the Owner defined by
-`BOOTSTRAP_ADMIN_*`; create vaults from the UI. The variables are re-applied at
-every start, so they remain the Owner's Emergency Password: changing the
-password revokes existing sessions. Removing them keeps the stored credentials.
-The Owner has no username: `BOOTSTRAP_ADMIN_USERNAME` only marks the
-credentials as configured, and the password alone signs in.
-
-### Graceful shutdown
-
-The image runs `python -m app.server`, a single-process uvicorn entrypoint that
-signals SSE streams and stops background admission **before** uvicorn waits for
-HTTP connections. SIGTERM (and SIGINT) closes active catalog streams normally;
-idle and cooperatively draining uploads exit with status 0. Keep this entrypoint
-when overriding the image command; plain `uvicorn app.main:app` has no early-stop
-hook and can wait indefinitely for SSE.
-
-HTTP graceful shutdown is bounded at 5 seconds (`--timeout-graceful-shutdown`);
-worker pools then have up to 20 seconds to join running work. Queued pool work
-is cancelled immediately, and active Jobs stop at existing transfer/verification
-checkpoints. Shutdown is not an Owner cancellation: durable leases, upload
-intents and late provider receipts remain available for conservative recovery
-once the lease expires. No ambiguous send is blindly repeated.
-
-Both repository Compose manifests set `stop_grace_period: 40s`. For a direct
-container invocation use `docker stop --time 40` (Docker's 10-second default is
-too short). A process-wide 30-second watchdog also covers synchronous SDK calls,
-filesystem operations and Python executor joins that cannot be interrupted by
-asyncio cancellation. If they do not drain in time, shutdown exits **nonzero**
-rather than claiming success; recovery evidence is retained, but a provider
-response arriving after that hard deadline cannot be recorded by the process.
-Do not shorten the stop period below the process deadline.
-
-## Localization
-
-The UI defaults to English and includes a complete Italian translation. You
-can switch language from the archive header or the sign-in page; the preference
-is stored in the `frostvault_locale` cookie. Contributor guidance for catalogs and
-critical-key checks lives in `docs/translation-workflow.md`.
-
-## Continuous integration
-
-Pull-request CI is deterministic and does not need AWS credentials: unit tests,
-PostgreSQL migrations, frontend JS tests, and S3-compatible integrity proofs
-against a local versioned S3 server.
-A separate optional manual workflow uses GitHub OIDC against a prefix-scoped IAM
-role for real AWS digest checks. See [docs/ci.md](docs/ci.md) for job status,
-cleanup reruns, and security scanner severity gates.
-
-## Recommended first smoke test
-
-Before indexing a terabyte of data:
-
-1. use a test source folder containing two unimportant files;
-2. wait for the local catalog to pick them up through the filesystem watcher
-   (or trigger an administrative `POST /api/scan` if you need a full
-   reconciliation immediately);
-3. upload one file and confirm that a distinct S3 version exists in the bucket;
-4. confirm the catalog keeps the version unverified until the requested SHA-256
-   proof (or its visible exact read-back fallback) succeeds;
-5. confirm **Free local space** and **Recover** remain unavailable for an
-   unverified version;
-6. keep the metadata backup master key and AWS access/recovery instructions in
-   secure storage separate from the server.
-
-The local catalog updates automatically when files under the configured source
-are created, modified, renamed, or deleted. Native filesystem watching is the
-primary mechanism; authenticated browsers receive a Vault-scoped catalog
-revision signal and refresh the archive view without idle polling or a manual
-**Refresh list** action. A low-frequency full scan (`SCAN_INTERVAL_SECONDS`,
-default six hours) remains the reconciliation safety net for missed events and
-mount-return correctness. Every healthy watcher start (new Vault, restart, or
-recovery) also runs one full scan, so nothing that arrived earlier stays unseen. Set
-`FILESYSTEM_WATCH_FORCE_POLLING=true` with Docker Desktop on Windows. On a Linux
-server, prefer the native watcher with the value `false`.
-See [docs/catalog-events.md](docs/catalog-events.md) for the SSE journal cost
-model and reconnect semantics.
-
-## Indicative minimum AWS permissions
-
-The application role/user must be able to list the bucket and, within the
-configured prefix, read, upload, and request object restores. Automatic rename
-cleanup requires `s3:DeleteObjectVersion` to remove the old key's versions
-only after the new key is verified. The same permission removes superseded
-versions after verified uploads; permanent purge uses it too.
-The explicit seven-day delay applies to Owner-requested cloud deletion, not
-verified snapshot replacement or automatic rename cleanup.
-
-FrostVault creates and configures its own buckets, a Vault Bucket for every new
-Vault and the System Bucket for metadata backups: attach
-[`frostvault-buckets-policy.json`](infra/terraform/archive-bucket/iam/frostvault-buckets-policy.json),
-scoped to `arn:aws:s3:::frostvault-*`, which covers the operations above in those
-buckets, grants `s3:DeleteBucket` only for an emptied Vault Bucket the Owner asked to delete (#739), never `s3:BypassGovernanceRetention` (see
-[buckets FrostVault creates](docs/aws-s3-bucket.md#buckets-frostvault-creates)).
-Its one statement on `"*"` is `cloudwatch:GetMetricStatistics`: once a day
-FrostVault reads the bytes per storage class and the object count of every
-Vault Bucket from CloudWatch, shown on the Vault page next to the catalog's
-estimate ([CloudWatch sizes](docs/aws-s3-bucket.md#vault-bucket-sizes-from-cloudwatch)).
-Without it the Vault page shows a note and only the estimate.
-
-An installation from before Vault Buckets keeps its shared bucket for its older
-Vaults (objects under `vaults/<uuid>/`); the Terraform baseline in
-[`infra/terraform/archive-bucket/`](infra/terraform/archive-bucket/) and
-`iam/archive-operator-policy.json` describe that bucket. See [docs/aws-s3-bucket.md](docs/aws-s3-bucket.md) for
-the full model.
-
-## Billed Cost from the AWS billing export
-
-Each Vault shows its **Billed Cost**, what AWS actually charged for its Vault
-Bucket, next to and apart from the Cost Estimate. It comes from an AWS Data
-Exports CUR 2.0 export (gzip CSV, with resource IDs) that the Owner sets up once
-in the AWS Billing console, delivered to the System Bucket under `billing/cur/`;
-FrostVault reads it at most once a day and never calls the Cost Explorer API.
-Without it only Cost Estimates are shown. Steps, bucket policy and IAM:
-[docs/billed-cost.md](docs/billed-cost.md).
-
-## Container readiness
-
-The image defines a healthcheck inherited by both Compose templates. Every 30s
-it runs `python -m app.readiness_probe` against **`http://127.0.0.1:8080/ready`**
-inside the container (3s socket timeout, 5s Docker timeout, 60s startup grace,
-3 consecutive failures before `unhealthy`). `APP_PORT` changes only the host
-mapping, not this internal port. No curl or additional probe package is needed.
-
-With `ALLOWED_HOSTS` configured, the probe sends the first safe concrete hostname
-or IPv4 entry as the `Host` header, preserving its exact spelling/case. Entries
-are comma-separated and trimmed; empty entries are ignored. Use bare ASCII
-hostnames (punycode for international names), **not** URLs, ports, credentials,
-wildcards or shell/header fragments. Unsupported entries are skipped; a
-non-empty allowlist with no safe entry fails closed. With an unset/empty list,
-the probe sends `Host: 127.0.0.1`. The selected public hostname is **never resolved
-or contacted**: the connection always stays on loopback and ignores HTTP proxy
-environment variables.
-
-Host protection is unchanged, including on loopback, `/health` and `/ready`.
-Do not add loopback to `ALLOWED_HOSTS` or exempt health routes just to make a
-check pass. Only HTTP 200 from `/ready` succeeds: database, worker heartbeat,
-configuration or Source Volume layout failures return 503 and make the probe
-fail. `/health` is process liveness only and is never a fallback. Redirects,
-other statuses, invalid configuration, timeouts and connection failures fail too.
-
-Read-only verification (also works behind Traefik, without a published port):
-
-```bash
-# Run exactly the packaged check; exit 0 = ready, exit 1 = failed.
-docker compose exec -T frostvault python -m app.readiness_probe
-# Inspect only health status/history, not the container environment.
-docker inspect --format '{{json .State.Health}}' frostvault
-```
-
-For the Traefik template, add `-f compose.traefik.yaml` to the Compose command.
-Probe failure output contains only a fixed diagnostic or HTTP status, not
-configuration values or response bodies. During migrations/startup it can take
-longer than the grace period to become ready; adjust `healthcheck.start_period`
-in a local Compose override for a known long upgrade rather than weakening the
-probe. Docker health status alone does not restart a container under
-`restart: unless-stopped`; investigate the failed dependency before any restart.
-
-## HTTP diagnostics
-
-Diagnostics are **closed by default**, independently of Owner sign-in:
-
-| Endpoint | Default / opt-in behavior |
-| --- | --- |
-| `/docs`, `/redoc`, `/openapi.json` (including Swagger's `/docs/oauth2-redirect`) | 404; `API_DOCS_ENABLED=true` enables anonymous HTTP docs/schema for isolated development only, not production |
-| `/metrics` | 404 without `METRICS_TOKEN`; when set, only a valid `Authorization: Bearer` credential returns Prometheus text (missing, malformed or invalid credentials return 401) |
-| `/health` | Anonymous minimal process liveness, `{"status":"ok"}` |
-| `/ready` | Anonymous dependency status and boolean checks only; 200 ready / 503 not ready, no queue/workload details |
-
-An Owner Session does **not** authorize metrics. Use a separate, strong random
-scraper secret, not an Emergency Password, OIDC secret or Session credential.
-Keep it outside version control and logs; never send it in a query string.
-Responses containing metrics and credential errors use `Cache-Control: no-store`.
-Host/origin/CSRF and trusted-proxy rules are unchanged; there is no loopback or
-forwarded-header authentication exception. Disabled diagnostics never serve SPA
-HTML. Local schema tooling remains usable without HTTP opt-in or any token:
-
-```bash
-.venv/bin/python scripts/export_openapi.py frontend/openapi.json
-```
-
-**Scraper migration:** previously anonymous scraping now fails closed. To retain
-it, supply `METRICS_TOKEN` securely in the deployment environment and the same
-value in the scraper's protected credential file, then apply the environment
-change in an authorized restart/redeploy. Do not enable HTTP docs for scraping.
-For example, through an existing HTTPS hostname (no new port or route):
-
-```yaml
-scrape_configs:
-  - job_name: frostvault
-    scheme: https
-    authorization:
-      type: Bearer
-      credentials_file: /run/secrets/frostvault_metrics_token
-    static_configs:
-      - targets: ["frostvault.example.com:443"]
-```
-
-The credential file contains only the secret, not the `Bearer` prefix; it is
-operator-provisioned, not supplied by this repository. Leave `METRICS_TOKEN`
-empty if scraping is not needed. Prefer a private scrape path and deny diagnostic
-paths at the public reverse proxy when not needed there; see
-[the public-surface guidance](docs/traefik.md#public-http-surface). The packaged
-local healthcheck needs no credential or public diagnostic route and is unchanged.
-
-## Configuration
-
-Start from `.env.local.example` for local PostgreSQL use or `.env.example` for a
-PostgreSQL deployment. Every value containing `REPLACE` is a placeholder and
-must be replaced before the corresponding integration is used. Important groups:
+7. **Open** port `8080` (published on `127.0.0.1` only; reach it through your
+   reverse proxy or an SSH tunnel), sign in with the emergency password or OIDC,
+   create your first Vault and download the Recovery Kit from **System**.
+
+Before archiving terabytes, run the
+[recommended first smoke test](docs/deployment.md#recommended-first-smoke-test) on
+a folder with two unimportant files. For a network deployment behind Traefik with
+OIDC, read [Deployment and operations](docs/deployment.md) and the
+[Traefik guide](docs/traefik.md): the app refuses to start in production without
+`ALLOWED_HOSTS`, `TRUSTED_PROXIES` and `FORWARDED_ALLOW_IPS`.
+
+### Essential configuration
 
 | Area | Variables |
 | --- | --- |
-| Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` (or `.pgpass`); optional PostgreSQL `DATABASE_URL` overrides corresponding `PG*` values |
-| Authentication | `BOOTSTRAP_ADMIN_*` (the Owner and its Emergency Password), `OIDC_*`, `BREAK_GLASS_ALLOWED_CIDRS` (LAN networks that accept the Emergency Password) |
-| Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `FORWARDED_ALLOW_IPS` (Uvicorn) |
-| Frontend | `FRONTEND_DIST_DIR` (Vite build output; required for HTML routes) |
-| Diagnostics | `API_DOCS_ENABLED` (default false; isolated development only), `METRICS_TOKEN` (default empty; independent Bearer scraper secret) |
-| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS`, `SMTP_USE_TLS` (optional; see below); `TZ` (IANA zone such as `Europe/Rome` for notification dates; missing or invalid means UTC, labelled "UTC") |
-| Storage | `AWS_DEFAULT_REGION` (the region of every new Vault Bucket; `VAULT_S3_BUCKET` and `S3_BUCKET` were removed in #735) |
-| Encryption and backup | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` (optional `METADATA_BACKUP_BUCKET`: an operator-supplied System Bucket; empty lets FrostVault create `frostvault-system-<random>`) |
-| Operations | `OPERATION_CONCURRENCY`, `S3_DOWNLOAD_*`, `RESTORE_*` |
-| Scans | `SCAN_INTERVAL_SECONDS`, `SCAN_HASH_CONCURRENCY` (default 4, 1–32: Local Copies a full scan fingerprints at once; HDD arrays and FUSE unions such as Unraid `shfs` read faster with several reads queued, 1 restores one file at a time), `SOURCE_DEVICE_READ_CONCURRENCY` (1–16: reads in flight per Source Device, shared by scan verification and uploads; on an Unraid user share each array disk is a device; unset by default: 1 on a rotational disk and 3 on a solid-state or unknown one, from `/sys/block/<disk>/queue/rotational`; a value applies to every device), `SERVER_PRIORITY_IOWAIT_PERCENT` (empty or 0 = off: above this host iowait for 10 s, one read per device and no new uploads until 30 s below; see [ADR-0046](docs/adr/0046-reads-per-source-device.md)) |
+| Folders | `SOURCES_ROOT`, `PUID`, `PGID` |
+| Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
+| AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` |
+| Sign-in | `OIDC_*`, `BOOTSTRAP_ADMIN_*`, `BREAK_GLASS_ALLOWED_CIDRS` |
+| Network | `APP_PORT`, `COOKIE_SECURE`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, `FORWARDED_ALLOW_IPS` |
+| Backups | `ARCHIVE_MASTER_KEY`, `METADATA_BACKUP_*` |
+| Email | `SMTP_*`, `APP_PUBLIC_URL`, `TZ` |
 
-All installation configuration is environment-only and takes effect on process
-restart. There is no mutable settings UI or API. Before upgrading through
-migration `0048_essential_administration`, move any required database overrides
-into deployment environment variables; the migration discards those overrides.
-See [ADR-0009](docs/adr/0009-effective-system-configuration.md).
+All configuration lives in the environment; there is no settings page to drift
+from it. Every variable is described in [Configuration](docs/configuration.md).
 
-There is no audit or worker-error page. Sensitive/destructive actions (including
-cloud deletion, Recovery Kit downloads and folder reconnects) retain an
-append-only, redacted action log. Worker errors appear as internal-error
-problems in the notification center. The real scan/watcher reports every
-unreadable path there; inaccessible roots block protection. No background
-diagnostic walker or filesystem banner runs. `/metrics` retains process-local
-Job, queue, worker, verification, notification delivery and backup signals,
-without per-file labels or filesystem/listing performance diagnostics, behind the
-explicit Bearer opt-in described above. Queue stalls remain visible in protected
-metrics and Owner problems, not the anonymous readiness payload.
+## Safety principles
 
-Upload Remediation keeps one episode per file only while an ended upload left
-cloud work open (an uncertain send, an unverified replacement, an open cleanup
-or a reconciliation block); a successful upload writes nothing for it, so there
-is no backlog to re-examine. `upload_remediation_due_queue` and
-`upload_remediation_states` count open episodes. The sweep recreates a missing
-cursor without resetting existing round-robin progress. Missing ticks or ticks
-older than 50 seconds open an Owner problem; `upload_remediation_sweep_stale` and the oldest actual
-`upload_remediation_last_tick_unixtime` support protected monitoring (zero means
-at least one tick is missing). Receipt-journal holds are reported by
-`upload_journal_held` and an Owner problem when the catalog is writable. Held
-Jobs release their claims and wait without spending transfer retries. Once the
-journal's INSERT/commit probe succeeds, unrelated uploads may continue; the
-uncertain attempt keeps its token, snapshot and send-started fence and must still
-reconcile before any send. No provider reads of another Vault are needed to
-reopen admission. These are informational health signals, not new container
-readiness dependencies.
+- **Proof before trust.** A file is Protected only after S3 proves the exact
+  object version; a missing source volume never turns files into Cloud only.
+- **Nothing irreversible by accident.** Local copies are removed only after a fresh
+  check, cloud deletion waits seven days, and deletions on the server never reach
+  the cloud unless you turn on Mirror Cleanup.
+- **Your data stays yours.** Files are stored with their original names and bytes
+  in your own buckets, protected by S3 versioning, SSE-S3 and Block Public Access,
+  and recoverable with any S3 tool using the Recovery Kit.
+- **Small attack surface.** One Owner, OIDC or a LAN-only emergency password,
+  read-only root filesystem, no Linux capabilities, diagnostics closed by default.
 
-OIDC is configured only through the `OIDC_*` variables and binds the Owner on
-the first login. See [ADR-0017](docs/adr/0017-single-owner.md).
+FrostVault does not replace independent, tested backups. Report vulnerabilities as
+described in [SECURITY.md](SECURITY.md).
 
-### Notifications and optional email
+## Documentation
 
-The notification center uses fixed rules, with no per-event, per-channel or
-per-Vault preferences. Immediate inbox alerts (and optional email) cover:
+| Guide | What it covers |
+| --- | --- |
+| [How FrostVault works](docs/how-it-works.md) | Owner and Vaults, protection states, automatic upload, upload verification |
+| [Archive lifecycle and recovery](docs/cloud-lifecycle.md) | Storage plans, Retention Lock, cloud deletion, Mirror Cleanup, freeing space, recovery |
+| [Deployment and operations](docs/deployment.md) | Requirements, production setup, healthcheck, diagnostics, shutdown, AWS permissions |
+| [Configuration](docs/configuration.md) | Every environment variable, notifications and email |
+| [AWS S3 buckets](docs/aws-s3-bucket.md) | Buckets FrostVault creates, storage plans, Object Lock, CloudWatch sizes |
+| [Billed cost](docs/billed-cost.md) | Setting up the AWS billing export |
+| [Metadata backups](docs/metadata-backups.md) | Encrypted backups, Recovery Kit and manual disaster recovery |
+| [Filesystem permissions](docs/filesystem-permissions.md) | `PUID`/`PGID`, Source Volumes, Unraid and Docker Desktop, running as root |
+| [Traefik](docs/traefik.md) | Reverse proxy topology, trusted proxies, OIDC over HTTPS |
+| [Development](docs/development.md) | Native setup, tests, frontend, CI, translations |
+| [Architecture decisions](docs/adr/) | The ADRs behind each design choice |
 
-- **Protection delayed**, aggregated once per Vault and continuous problem episode:
-  a stable queue with no completed verified upload for about two hours, or any
-  included file continuously unprotected for 24 hours. Large progressing imports
-  do not alert before that ceiling. Files still changing after 24 hours are counted
-  as “not stabilizing”, not as upload errors. Timers survive application restarts.
-- **Terminal upload failure**, after retries are exhausted or a permanent/mismatch
-  failure, not every retry.
-- **Protection blocked**, for an unavailable Source Volume, cloud preflight or
-  configuration/policy failures, or automatic protection suspended for 24 hours.
-- **Missing cloud copy** and **Cloud-only Conflict**.
-- An Owner-requested **recovery completed or failed**, the sole routine completion
-  exception. Successful uploads, verification and individual local cleanups do not
-  create notifications.
-
-Each problem shows its **current open/resolved state**. Reading is not resolution:
-`open_problem_count` and `unread_count` are independent. Resolved problems are
-marked read automatically, and pending email for them is not sent. A recurrence
-reopens the problem and notifies once again.
-
-A **weekly summary** is both an inbox item and optional email (the first runs on
-startup, then at most once every seven days). It includes all six protection
-state counts, per-Vault last successful scan/audit and suspension, the last
-verified metadata backup (or an explicit unknown date), open problems, files and
-space freed and blocked cleanups over the last seven days, and the estimated
-monthly storage cost from bundled AWS list prices, not an AWS bill. Its dates
-are local date and time in the `TZ` zone (UTC, labelled, without a valid `TZ`). No automatic
-restore or external heartbeat is introduced: a missing weekly email can mean
-that the application/server or SMTP is down.
-
-Email is optional and configured only in the deployment environment:
-
-- `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `SMTP_TO_ADDRESS` — all three must be
-  non-empty to enable delivery. The recipient is explicitly configured, not
-  inferred from the Owner's login address.
-- `APP_PUBLIC_URL` — optional canonical application URL (for example
-  `https://frostvault.example.com`), without credentials/query/fragment. Enables
-  email links to the file's folder, highlighted row and problem Details. Without
-  it email still works but has no absolute application link.
-- `SMTP_PORT` — defaults to `587`; valid range `1–65535`.
-- `SMTP_USERNAME`, `SMTP_PASSWORD` — optional authentication. The password is
-  never exposed by an API or stored in the database.
-- `SMTP_USE_TLS` — defaults to `true`: STARTTLS on port 587 (and other ports),
-  implicit TLS on port 465. Disable only for a trusted local relay.
-
-Missing or partial configuration disables email, not the inbox. The General
-page warns when email is not configured. The API exposes only a boolean
-configuration status, never SMTP addresses or credentials. Email delivery has
-three bounded attempts and does not change Job results or remove notifications.
-Environment changes require an application restart. Existing database SMTP
-configuration is discarded by migration `0046_simplify_notifications`; set the
-SMTP environment variables before upgrading if you want email to continue.
-Migration `0056_notification_problems` adds notification problem state, continuous
-pending-file timers and suspension timestamps, and removes obsolete routine
-completion/cleanup inbox history and its deliveries. It does not change Jobs,
-Local Copies, Archive Version evidence or cloud content.
-
-### Online responsive site
-
-Use the responsive site on desktop or phone to check status, resolve problems
-and launch recoveries. A network connection is required: FrostVault does not
-install a PWA, register a service worker, or persist file listings in the browser.
-Authenticated API responses are `no-store`.
-
-When upgrading from a PWA release, the site removes its old browser caches and
-registration without clearing theme preferences. `/sw.js` remains only as an
-unregistering retirement script so existing installations stop serving the old
-shell; the current frontend never registers it. Migration
-`0047_remove_offline_cache` removes the Session cache nonce, preserving existing
-Sessions and their internal concurrency lock. No file or cloud data is changed.
-
-Do not commit `.env`, master-key material, database files, or
-cloud credentials.
-
-## Security
-
-- Expose FrostVault only through HTTPS and configure trusted hosts and proxies.
-- Prefer OIDC and short-lived AWS credentials. Accept the Emergency Password only
-  from loopback and your LAN;
-  an empty `BREAK_GLASS_ALLOWED_CIDRS` value is loopback-only, never allow-all.
-- Grant only the documented S3 actions and prefixes. Do not grant account-root
-  credentials or broad bucket deletion rights.
-- Keep versioning enabled, test restores, and review problems in the notification center.
-- Report vulnerabilities according to [SECURITY.md](SECURITY.md).
-
-## Development and tests
-
-Create a virtual environment and install the pinned dependencies; the app
-initializes an empty database on start (`alembic upgrade head` does the same):
-
-```bash
-python -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-# PostgreSQL 16 must already be running (native setup: AGENTS.md).
-# .env is not auto-loaded; keep credentials in this Git-ignored file.
-set -a; . ./.env; set +a
-.venv/bin/python -m alembic upgrade head
-.venv/bin/python -m app.server --host 127.0.0.1 --port 8080
-```
-
-On Windows PowerShell, use `.venv\Scripts\python.exe` and set environment
-variables with `$env:NAME = "value"`.
-
-### Frontend
-
-The UI is a React SPA. The container image builds `frontend/dist` in a Node
-stage; uvicorn always serves it for HTML routes (hashed assets are cached
-immutably; `index.html` is `no-store`). For a native run, build first:
-`cd frontend && npm ci && npm run build`.
-
-For day-to-day SPA work, run uvicorn and the Vite dev server together. The Vite
-proxy forwards `/api`, `/auth`, and `/login` to `http://127.0.0.1:8080` with
-`changeOrigin: true` so the Host FastAPI sees is `127.0.0.1` (see ADR-0005).
-Leave `ALLOWED_HOSTS` empty locally, or list `127.0.0.1`; a wrong Host yields
-hard-to-diagnose login failures.
-
-```bash
-# terminal 1
-set -a; . ./.env; set +a
-.venv/bin/python -m app.server --host 127.0.0.1 --port 8080
-
-# terminal 2
-cd frontend && npm ci && npm run dev
-```
-
-Open the Vite URL (default `http://127.0.0.1:5173`). To exercise the production
-serving path without Docker: `cd frontend && npm run build`, then start uvicorn
-and open `http://127.0.0.1:8080`.
-
-Open a draft PR early and use its CI for complete Python, PostgreSQL/migration,
-S3, Playwright, frontend and image verification (#410). Locally run only targeted
-modules, for example:
-
-```bash
-.venv/bin/python -m unittest tests.test_database -v
-```
-
-All database tests require `TEST_POSTGRES_URL` pointing at an **isolated**
-PostgreSQL 16 server with a CREATEDB role. They create uniquely named databases
-and clone a template created once by the real `0001_baseline` Alembic run.
-Missing configuration fails rather
-than skipping database regressions. S3-compatible cases additionally require
-`TEST_S3_ENDPOINT`. See [docs/ci.md](docs/ci.md).
+The domain vocabulary (Vault, Local Copy, Archive Version, …) is defined in
+[CONTEXT.md](CONTEXT.md).
 
 ## Known limits
 
-- FrostVault is a self-hosted single-application deployment, not a managed
-  multi-region service.
-- AWS operations depend on external service availability and may
-  incur storage, retrieval, request, and transfer charges.
-- Glacier restore requests cannot be cancelled after S3 accepts them.
-- Legacy SQLite installations/backups require the previous release for recovery;
-  there is no automatic conversion to PostgreSQL. See [metadata backups](docs/metadata-backups.md#older-formats-and-upgrades).
-- The application protects archive workflows but does not replace offline,
-  independently tested disaster-recovery copies.
+- FrostVault is a single self-hosted application, not a managed multi-region service.
+- It supports Amazon S3; AWS operations may incur storage, retrieval, request and
+  transfer charges, and Glacier restores cannot be cancelled once AWS accepts them.
+- There are no previews and no version history: each Vault keeps the last verified
+  content of each file.
+- Installations from v0.5.x and earlier (including SQLite) need the previous
+  release to read their catalog; see
+  [older formats and upgrades](docs/metadata-backups.md#older-formats).
+
+## Contributing
+
+Issues and pull requests are welcome. Start with [Development](docs/development.md)
+for the native setup with an isolated PostgreSQL 16; CI runs the full Python,
+migration, S3-compatible, Playwright and image checks on every pull request.
 
 ## License
 

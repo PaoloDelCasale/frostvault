@@ -84,7 +84,7 @@ trying addresses.
 ## Bring-up sketch
 
 First configure the database, Owner, OIDC provider, storage and directory
-permissions from the README and `.env.example`. The commands below are an
+permissions from [deployment.md](deployment.md) and `.env.example`. The commands below are an
 operator-run deployment sketch, not a discovery mechanism. The address is
 **illustrative only**; replace it with the verified stable proxy source address.
 
@@ -179,7 +179,7 @@ security-header and rate-limit middleware when adapting the router.
 Public denials must leave the image's **internal loopback** readiness probe
 working; it never passes through Traefik. Do not add a Host or authentication
 exception in FrostVault. For the scraper credential-file example and upgrade
-steps, see [HTTP diagnostics](../README.md#http-diagnostics). No secret value is
+steps, see [HTTP diagnostics](deployment.md#http-diagnostics). No secret value is
 provided in the examples; provisioning and any production rollout are separate
 operator actions.
 
@@ -204,5 +204,5 @@ A successful probe means local dependency-aware readiness, **not** proof that
 Traefik routing, TLS or OIDC works. A database/worker/configuration/Source Volume
 layout 503 must remain unhealthy even if `/health` says the process is alive.
 Host validation still rejects unauthorized hosts for both endpoints and for
-external requests. See [container readiness](../README.md#container-readiness)
+external requests. See [container readiness](deployment.md#container-readiness)
 for Host selection rules, timeouts, startup grace and failure diagnosis.
