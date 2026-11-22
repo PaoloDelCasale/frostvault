@@ -20,7 +20,6 @@ _CAUSES = (
                       "changed while it was being pinned", "escapes the pinned root")),
     ("root_unavailable", ("unavailable", "no longer accessible", "could not be pinned")),
 )
-CAUSES = tuple(code for code, _ in _CAUSES)
 
 
 def source_error_cause(message: str | None) -> str | None:

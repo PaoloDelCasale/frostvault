@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from app.branding import PRODUCT_NAME, PRODUCT_SLUG
+from app.branding import PRODUCT_NAME
 from app.config import is_placeholder
 from app.main import app
 
@@ -163,7 +163,6 @@ class PublicReleaseHygieneTests(unittest.TestCase):
     def test_frostvault_brand_and_apache_license_are_declared(self) -> None:
         files = tracked_text()
         self.assertEqual(PRODUCT_NAME, "FrostVault")
-        self.assertEqual(PRODUCT_SLUG, "frostvault")
         self.assertEqual(app.title, PRODUCT_NAME)
         self.assertEqual(files[Path("README.md")].splitlines()[0], "# FrostVault")
         self.assertIn("  frostvault:\n", files[Path("compose.yaml")])

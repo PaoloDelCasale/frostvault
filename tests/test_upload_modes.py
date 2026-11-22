@@ -81,7 +81,7 @@ class UploadModeTests(unittest.TestCase):
         return self.upload_response
 
     def queue(self):
-        queue_jobs("a.txt", "upload", 2, 1)
+        queue_jobs("a.txt", "upload", 2)
 
     def observe(self):
         """The watcher's observation of the current source bytes."""

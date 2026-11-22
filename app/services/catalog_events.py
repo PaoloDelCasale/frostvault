@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
-from typing import Any, Generic, TypeVar
-
-from ..database import transaction
+from typing import Any
 
 
 MAX_EVENT_DOMAIN_LENGTH = 64
@@ -23,15 +20,6 @@ MAX_EVENT_PAYLOAD_BYTES = 4096
 MAX_EVENT_PAGE_SIZE = 100
 
 _DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
-
-T = TypeVar("T")
-
-@dataclass(frozen=True)
-class MutationPublication(Generic[T]):
-    """The canonical mutation result and its committed-on-success event."""
-
-    result: T
-    event: dict[str, Any]
 
 
 def _now() -> str:
@@ -174,9 +162,7 @@ class CatalogEventStore:
 
     The interface never commits an ordinary ``append_event`` call.  This lets a
     scanner or worker put its canonical writes and the event in one caller-owned
-    transaction.  ``mutate_and_publish`` is the convenience form for a complete
-    mutation callback and owns a transaction only when the caller has not
-    already opened one.
+    transaction.
     """
 
     def __init__(self, connection: Any):
@@ -287,123 +273,6 @@ class CatalogEventStore:
             created_at=stamp,
         )
 
-    # These names keep the seam easy to discover for callers that think in
-    # terms of publishing rather than appending.
-    append = append_event
-    publish = append_event
-
-    def mutate_and_publish(
-        self,
-        vault_id: int,
-        mutation: Callable[[Any], T],
-        *,
-        domain: str | None = None,
-        event_type: str | None = None,
-        scope: str | None = None,
-        payload: Mapping[str, Any] | None = None,
-        payload_json: str | None = None,
-        created_at: str | None = None,
-    ) -> MutationPublication[T]:
-        """Run canonical mutation and revision publication atomically.
-
-        The Vault lock is acquired before invoking ``mutation``.  If either the
-        callback or event insert fails, a transaction owned by this method is
-        rolled back; an outer transaction remains the caller's responsibility.
-        """
-        if not callable(mutation):
-            raise TypeError("mutation must be callable")
-        vault_id = _positive_or_zero(vault_id, name="vault_id")
-        if vault_id == 0:
-            raise ValueError("vault_id must be positive")
-        event_domain, event_scope, event_payload, stamp = _prepare_event(
-            domain=domain,
-            event_type=event_type,
-            scope=scope,
-            payload=payload,
-            payload_json=payload_json,
-            created_at=created_at,
-        )
-        with transaction(self.connection):
-            self._lock_vault(vault_id)
-            result = mutation(self.connection)
-            event = self._append_locked(
-                vault_id=vault_id,
-                domain=event_domain,
-                scope=event_scope,
-                payload_json=event_payload,
-                created_at=stamp,
-            )
-        return MutationPublication(result=result, event=event)
-
-    def current_revision(self, vault_id: int) -> int:
-        vault_id = _positive_or_zero(vault_id, name="vault_id")
-        if vault_id == 0:
-            raise ValueError("vault_id must be positive")
-        row = self.connection.execute(
-            "SELECT revision FROM vault_catalog_revisions WHERE vault_id=%s",
-            (vault_id,),
-        ).fetchone()
-        return int(row["revision"]) if row else 0
-
-    get_current_revision = current_revision
-
-    def read_events(
-        self,
-        *,
-        vault_id: int,
-        after_revision: int = 0,
-        limit: int = MAX_EVENT_PAGE_SIZE,
-    ) -> dict[str, Any]:
-        vault_id = _positive_or_zero(vault_id, name="vault_id")
-        after_revision = _positive_or_zero(after_revision, name="after_revision")
-        if vault_id == 0:
-            raise ValueError("vault_id must be positive")
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        limit = min(int(limit), MAX_EVENT_PAGE_SIZE)
-        state = self.connection.execute(
-            """
-            SELECT revision, retained_from_revision
-            FROM vault_catalog_revisions
-            WHERE vault_id=%s
-            """,
-            (vault_id,),
-        ).fetchone()
-        current = int(state["revision"]) if state else 0
-        retained_from = int(state["retained_from_revision"]) if state else 1
-        rows = self.connection.execute(
-            """
-            SELECT id, vault_id, revision, domain, scope, payload, created_at
-            FROM catalog_events
-            WHERE vault_id=%s AND revision>%s
-            ORDER BY revision
-            LIMIT %s
-            """,
-            (vault_id, after_revision, limit + 1),
-        ).fetchall()
-        has_more = len(rows) > limit
-        visible = rows[:limit]
-        expected = max(after_revision + 1, retained_from)
-        has_gap = after_revision < retained_from - 1
-        if visible and int(visible[0]["revision"]) > expected:
-            has_gap = True
-        if not visible and after_revision < current:
-            # A missing event inside the retained interval is corruption or an
-            # interrupted rebuild, not a normal empty page.  Surface it as a
-            # resync gap rather than allowing a reconnect to silently advance.
-            has_gap = True
-        return {
-            "vault_id": vault_id,
-            "current_revision": current,
-            "retained_from_revision": retained_from,
-            "has_gap": has_gap,
-            "retention_gap": has_gap,
-            "has_more": has_more,
-            "events": [_event_from_row(row) for row in visible],
-        }
-
-    read_since = read_events
-
     def prune_events(
         self,
         *,
@@ -469,22 +338,6 @@ class CatalogEventStore:
             "revision": current,
             "retained_from_revision": retained_from,
         }
-
-    prune_before = prune_events
-
-
-def append_catalog_event(connection: Any, **kwargs: Any) -> dict[str, Any]:
-    return CatalogEventStore(connection).append_event(**kwargs)
-
-
-def publish_catalog_mutation(
-    connection: Any,
-    vault_id: int,
-    mutation: Callable[[Any], T],
-    **kwargs: Any,
-) -> MutationPublication[T]:
-    return CatalogEventStore(connection).mutate_and_publish(vault_id, mutation, **kwargs)
-
 
 def record_catalog_revision(
     connection: Any,

@@ -137,14 +137,6 @@ def parent_and_name(directory_path: str) -> tuple[str, str]:
     return parent, name
 
 
-def _escape_like(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace("%", "\\%")
-        .replace("_", "\\_")
-    )
-
-
 def _tracker(connection: Any) -> "_DirectoryAggregateTracker":
     tracker = getattr(connection, "_directory_aggregate_tracker", None)
     if tracker is None:
@@ -223,10 +215,6 @@ def forget_unit_dirty_marks(connection: Any) -> None:
         unit.clear()
 
 
-def _persist_dirty_directory(connection: Any, vault_id: int, directory: str) -> None:
-    _persist_dirty_directories(connection, vault_id, [directory])
-
-
 def mark_path_dirty(connection: Any, vault_id: int, path: str | None) -> None:
     """Mark every ancestor directory of ``path`` dirty for the next flush."""
     if vault_id is None or not path:
@@ -278,15 +266,6 @@ def mark_paths_dirty(connection: Any, vault_id: int, paths: Iterable[str]) -> No
     _persist_dirty_directories(connection, int(vault_id), directories)
 
 
-def invalidate_for_vault_file(
-    connection: Any,
-    vault_id: int,
-    vault_file_id: str | None,
-) -> None:
-    """Central seam: one Vault File mutation dirties its ancestor directories."""
-    mark_file_id_dirty(connection, vault_id, vault_file_id)
-
-
 def invalidate_for_confirmed_rename(
     connection: Any,
     vault_id: int,
@@ -308,20 +287,6 @@ def invalidate_for_confirmed_rename(
         vault_id,
         (old_path, provisional_path, new_path),
     )
-
-
-def invalidate_for_vault_files(
-    connection: Any,
-    items: Iterable[tuple[int, str]],
-) -> None:
-    """Invalidate many ``(vault_id, vault_file_id)`` pairs with path coalescing."""
-    seen: set[tuple[int, str]] = set()
-    for vault_id, vault_file_id in items:
-        key = (int(vault_id), str(vault_file_id))
-        if not vault_file_id or key in seen:
-            continue
-        seen.add(key)
-        mark_file_id_dirty(connection, int(vault_id), str(vault_file_id))
 
 
 def invalidate_for_archive_version_ids(
@@ -1111,27 +1076,6 @@ def _iter_visible_file_contribution_batches(
             yield batch
         if len(rows) < size:
             return
-
-
-def _iter_visible_file_contributions(
-    connection: Any,
-    vault_id: int,
-    *,
-    path_prefix: str | None = None,
-) -> list[_FileContribution]:
-    """Compatibility helper: materialize contributions (tests / small scopes).
-
-    Production rebuild and dirty refresh must not call this for unbounded
-    prefixes — use batch streaming or :func:`_rebuild_directory` SQL rollup.
-    """
-    contributions: list[_FileContribution] = []
-    for batch in _iter_visible_file_contribution_batches(
-        connection,
-        vault_id,
-        path_prefix=path_prefix,
-    ):
-        contributions.extend(batch)
-    return contributions
 
 
 def _contribution_from_row(row: Mapping[str, Any]) -> _FileContribution | None:

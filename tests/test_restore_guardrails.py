@@ -143,7 +143,7 @@ class HighImpactApprovalTests(unittest.TestCase):
             client.restore_object = Mock()
             client.get_object = Mock()
             with patch("app.database.settings", database_settings):
-                queued = queue_jobs("huge.bin", "recover", 2, 1)
+                queued = queue_jobs("huge.bin", "recover", 2)
                 self.assertTrue(queued["approval_required"])
                 with (
                     patch("app.storage.settings", worker_settings),
@@ -228,7 +228,7 @@ class HighImpactApprovalTests(unittest.TestCase):
                 patch("app.database.settings", database_settings),
                 patch("app.main.settings", runtime),
             ):
-                queue_jobs("priced.bin", "recover", 2, 1, restore_tier="Standard")
+                queue_jobs("priced.bin", "recover", 2, restore_tier="Standard")
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -309,7 +309,7 @@ class DirectoryRestoreTierTests(unittest.TestCase):
             patch("app.database.settings", database_settings),
             patch("app.main.settings", runtime),
         ):
-            return queue_jobs("photos", "recover", 2, 1, True, **kwargs)
+            return queue_jobs("photos", "recover", 2, True, **kwargs)
 
     def test_directory_standard_tier_and_days_reach_every_cold_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -506,7 +506,7 @@ class GroupRestoreApprovalTests(unittest.TestCase):
                 RecoverEstimateRequest(path="photos", is_directory=True, restore_tier="Bulk"),
                 {"id": 2},
             )
-            queued = queue_jobs("photos", "recover", 2, 1, True, restore_tier="Bulk")
+            queued = queue_jobs("photos", "recover", 2, True, restore_tier="Bulk")
         return estimate, queued
 
     def _jobs(self) -> dict[str, dict]:

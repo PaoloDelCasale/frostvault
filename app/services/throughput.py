@@ -58,7 +58,6 @@ STALE_SECONDS = 15
 # No progress for this long: the expected finish is unknown, the Vault is
 # stopped since its last progress (#759).
 STOPPED_SECONDS = 5 * 60
-PHASES = ("upload", "verification")
 _HELD = ("uploading", "verifying", "cleaning")
 
 # Bytes read back from S3 to verify uploads, per Vault, since start (#763).

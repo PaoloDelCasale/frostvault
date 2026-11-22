@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from app import audit
+from app.services import audit_events as audit
 
 
 class AuditLogTests(unittest.TestCase):

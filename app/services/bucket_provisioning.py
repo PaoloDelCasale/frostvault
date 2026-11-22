@@ -141,11 +141,8 @@ def error_code(exc: ClientError) -> str:
     return code if _SAFE_ERROR_CODE.fullmatch(code) else "ClientError"
 
 
-_error_code = error_code
-
-
 def _failed(action: str, exc: ClientError) -> BucketProvisioningError:
-    return BucketProvisioningError(f"S3 refused {action} ({_error_code(exc)})")
+    return BucketProvisioningError(f"S3 refused {action} ({error_code(exc)})")
 
 
 def create_bucket(client: Any, spec: BucketSpec) -> None:
@@ -163,7 +160,7 @@ def create_bucket(client: Any, spec: BucketSpec) -> None:
     try:
         client.create_bucket(**request)
     except ClientError as exc:
-        code = _error_code(exc)
+        code = error_code(exc)
         if code in _ALREADY_OWNED:
             return
         if code in _NAME_TAKEN:
@@ -292,7 +289,7 @@ def _baseline_checks(client: Any, name: str, region: str) -> list[BucketCheck]:
     try:
         location = client.get_bucket_location(Bucket=name).get("LocationConstraint")
     except ClientError as exc:
-        code = _error_code(exc)
+        code = error_code(exc)
         if code in {"NoSuchBucket", "404", "NotFound"}:
             return [BucketCheck("bucket.exists", False, "The bucket does not exist")]
         if code in _OTHER_REGION:
@@ -314,7 +311,7 @@ def _baseline_checks(client: Any, name: str, region: str) -> list[BucketCheck]:
 
 
 def _refused(code: str, action: str, exc: ClientError) -> BucketCheck:
-    return BucketCheck(code, False, f"S3 refused {action} ({_error_code(exc)})")
+    return BucketCheck(code, False, f"S3 refused {action} ({error_code(exc)})")
 
 
 def _versioning_check(client: Any, name: str) -> BucketCheck:
@@ -334,7 +331,7 @@ def _public_access_check(client: Any, name: str) -> BucketCheck:
         configuration = client.get_public_access_block(Bucket=name).get(
             "PublicAccessBlockConfiguration")
     except ClientError as exc:
-        if _error_code(exc) != "NoSuchPublicAccessBlockConfiguration":
+        if error_code(exc) != "NoSuchPublicAccessBlockConfiguration":
             return _refused("bucket.public_access_block",
                             "s3:GetBucketPublicAccessBlock", exc)
         configuration = None
@@ -352,7 +349,7 @@ def _encryption_check(client: Any, name: str) -> BucketCheck:
         rules = client.get_bucket_encryption(Bucket=name).get(
             "ServerSideEncryptionConfiguration", {}).get("Rules") or []
     except ClientError as exc:
-        if _error_code(exc) != "ServerSideEncryptionConfigurationNotFoundError":
+        if error_code(exc) != "ServerSideEncryptionConfigurationNotFoundError":
             return _refused("bucket.encryption", "s3:GetEncryptionConfiguration", exc)
         rules = []
     algorithms = {
@@ -372,7 +369,7 @@ def _ownership_check(client: Any, name: str) -> BucketCheck:
         rules = client.get_bucket_ownership_controls(Bucket=name).get(
             "OwnershipControls", {}).get("Rules") or []
     except ClientError as exc:
-        if _error_code(exc) != "OwnershipControlsNotFoundError":
+        if error_code(exc) != "OwnershipControlsNotFoundError":
             return _refused("bucket.ownership", "s3:GetBucketOwnershipControls", exc)
         rules = []
     enforced = [rule.get("ObjectOwnership") for rule in rules] == [OWNERSHIP]
@@ -401,9 +398,9 @@ def _lifecycle_check(client: Any, spec: BucketSpec, *, extra_rules: bool) -> Buc
     try:
         configuration = client.get_bucket_lifecycle_configuration(Bucket=spec.name)
     except ClientError as exc:
-        if _error_code(exc) != "NoSuchLifecycleConfiguration":
+        if error_code(exc) != "NoSuchLifecycleConfiguration":
             return BucketCheck("bucket.lifecycle", False,
-                               f"S3 refused s3:GetLifecycleConfiguration ({_error_code(exc)})")
+                               f"S3 refused s3:GetLifecycleConfiguration ({error_code(exc)})")
         configuration = {}
     actual = configuration.get("Rules") or []
     wanted_size = spec.transition_minimum_object_size
@@ -435,7 +432,7 @@ def _bucket_tags(client: Any, name: str, *, action: str) -> dict[str, str]:
     try:
         tag_set = client.get_bucket_tagging(Bucket=name).get("TagSet") or []
     except ClientError as exc:
-        if _error_code(exc) == "NoSuchTagSet":
+        if error_code(exc) == "NoSuchTagSet":
             return {}
         raise _failed(action, exc) from None
     return {str(tag["Key"]): str(tag["Value"]) for tag in tag_set}
@@ -473,10 +470,10 @@ def _retention_lock_check(client: Any, spec: BucketSpec) -> BucketCheck:
         configuration = client.get_object_lock_configuration(Bucket=spec.name).get(
             "ObjectLockConfiguration") or {}
     except ClientError as exc:
-        if _error_code(exc) != "ObjectLockConfigurationNotFoundError":
+        if error_code(exc) != "ObjectLockConfigurationNotFoundError":
             return BucketCheck(
                 "bucket.retention_lock", False,
-                f"S3 refused s3:GetBucketObjectLockConfiguration ({_error_code(exc)})")
+                f"S3 refused s3:GetBucketObjectLockConfiguration ({error_code(exc)})")
         configuration = {}
     enabled = configuration.get("ObjectLockEnabled") == "Enabled"
     default = (configuration.get("Rule") or {}).get("DefaultRetention") or {}

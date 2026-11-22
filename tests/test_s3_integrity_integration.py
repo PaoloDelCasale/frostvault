@@ -16,12 +16,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from tests.catalog_support import fingerprint
+from tests.catalog_support import fingerprint, queue_rename_job
 
 from app.main import queue_jobs
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import process_jobs_once, s3_client
-from app.services import vault_moves
+from app.services import upload_remediation, vault_moves
 from app.services.lifecycle_profiles import guided_profile, profile_to_json
 from tests.s3_integration_support import (
     ensure_versioned_bucket, prepare_plain_vault, require_s3_env,
@@ -84,7 +84,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 operation_concurrency=1, restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings), patch("app.storage.settings", worker_settings):
-                queue_jobs(relative_path, "upload", 2, 1)
+                queue_jobs(relative_path, "upload", 2)
                 process_jobs_once()
                 with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
@@ -115,7 +115,8 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                         fingerprint(catalog, 2, relative_path, digest)
                         catalog.confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
                             changed_at=timestamp, vault_id=2)
-                    queue_jobs(relative_path, "rename", 2, 1)
+                    with PostgresConnection(str(database_path)) as connection:
+                        self.assertEqual(len(queue_rename_job(connection, 2, relative_path)), 1)
                     process_jobs_once()
                     with PostgresConnection(str(database_path)) as connection:
                         job = connection.execute("SELECT status,message FROM jobs WHERE action='rename'").fetchone()
@@ -157,7 +158,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     catalog = ArchiveCatalog(connection)
                     local.unlink()
                     catalog.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
-                queue_jobs(relative_path, "recover", 2, 1)
+                queue_jobs(relative_path, "recover", 2)
                 process_jobs_once()
                 with PostgresConnection(str(database_path)) as connection:
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='recover'").fetchone()
@@ -180,7 +181,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
             payload = b"real compatible-provider raw receipt gap"
             source, database_path = self._vault(Path(directory), "receipt/gap.bin", payload)
             with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
-                queue_jobs("receipt/gap.bin", "upload", 2, 1)
+                queue_jobs("receipt/gap.bin", "upload", 2)
                 from app import storage
                 real_send = storage.upload_s3_file
 
@@ -199,7 +200,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     intent = upload_provenance.load_for_job(connection, original["id"])
                     receipt = upload_provenance.receipt(connection,intent.id)
                     vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-                    resumed = upload_provenance.schedule_resume(connection,vault=vault,path="receipt/gap.bin",user_id=1,timestamp="2026-11-06T00:00:00+00:00")
+                    resumed = upload_remediation.schedule_resume(connection,vault=vault,path="receipt/gap.bin",user_id=1,timestamp="2026-11-06T00:00:00+00:00")
                 before = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
                 self.assertEqual([v["VersionId"] for v in before["Versions"]],[receipt["VersionId"]])
                 process_jobs_once()
@@ -224,7 +225,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
             source, database_path = self._vault(Path(directory), relative_path, payload)
             key = f"{self.prefix}/{relative_path}"
             with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
-                queue_jobs(relative_path, "upload", 2, 1)
+                queue_jobs(relative_path, "upload", 2)
                 lost = ClientError({"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}}, "AbortMultipartUpload")
                 with patch.object(_UploadClient, "upload_part", side_effect=RuntimeError("injected crash after CreateMultipartUpload")), \
                         patch.object(_UploadClient, "abort_multipart_upload", side_effect=lost):
@@ -239,7 +240,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     journal = connection.execute("SELECT upload_id,closed_at FROM upload_multiparts WHERE attempt_id=%s", (intent.id,)).fetchall()
                     self.assertEqual([(r["upload_id"], r["closed_at"]) for r in journal], [(left[0]["UploadId"], None)])
                     vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-                    resumed = upload_provenance.schedule_resume(connection, vault=vault, path=relative_path, user_id=1, timestamp="2026-11-07T00:00:00+00:00")
+                    resumed = upload_remediation.schedule_resume(connection, vault=vault, path=relative_path, user_id=1, timestamp="2026-11-07T00:00:00+00:00")
                 process_jobs_once()
                 with PostgresConnection(str(database_path)) as connection:
                     final = connection.execute("SELECT status,message,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()

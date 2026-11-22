@@ -3088,64 +3088,6 @@
         }
       }
     },
-    "/api/upload/cancel": {
-      "post": {
-        "summary": "Cancel Upload",
-        "description": "Backward-compatible endpoint for clients using the old upload route.",
-        "operationId": "cancel_upload_api_upload_cancel_post",
-        "parameters": [
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GroupCancelAction"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobCancelResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/recover": {
       "post": {
         "summary": "Recover",
@@ -6096,21 +6038,6 @@
         ],
         "type": "object"
       },
-      "GroupCancelAction": {
-        "properties": {
-          "group_id": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Group Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "group_id"
-        ],
-        "title": "GroupCancelAction"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -7980,9 +7907,6 @@
           "active_jobs": {
             "type": "number"
           },
-          "delete_enabled": {
-            "type": "boolean"
-          },
           "runtime": {
             "additionalProperties": {},
             "properties": {
@@ -8215,7 +8139,6 @@
           "storage",
           "active_jobs",
           "runtime",
-          "delete_enabled",
           "source_volume"
         ],
         "type": "object"
@@ -10903,12 +10826,6 @@
       "MeVault": {
         "additionalProperties": true,
         "properties": {
-          "cloud_deletion_enabled": {
-            "type": "boolean"
-          },
-          "delete_enabled": {
-            "type": "boolean"
-          },
           "id": {
             "type": "number"
           },
@@ -10923,9 +10840,7 @@
         "required": [
           "id",
           "uuid",
-          "name",
-          "delete_enabled",
-          "cloud_deletion_enabled"
+          "name"
         ],
         "type": "object"
       },

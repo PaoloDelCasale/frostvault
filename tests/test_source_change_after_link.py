@@ -153,7 +153,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 "app.database.settings",
                 SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
             self._run_worker(
                 database_path,
                 sdk_upload=fake_upload,
@@ -224,7 +224,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 "app.database.settings",
                 SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
             self._run_worker(
                 database_path,
                 sdk_upload=fake_upload,
@@ -335,7 +335,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 "app.database.settings",
                 SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
             self._run_worker(
                 database_path,
                 sdk_upload=fake_upload,
@@ -385,7 +385,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 "app.database.settings",
                 SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
             self._run_worker(
                 database_path,
                 sdk_upload=fake_upload,
@@ -433,7 +433,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 "app.database.settings",
                 SimpleNamespace(database_dsn=database_dsn(str(database_path))),
             ):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
 
             with patch(
                 "app.storage.prepare_upload_snapshot",

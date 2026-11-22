@@ -22,6 +22,7 @@ from app.services.upload_provenance import UploadBlocked
 from app.services.upload_snapshot import (
     DEFAULT_PART_SIZE, MULTIPART_THRESHOLD, UploadSnapshot, prepare_upload_snapshot,
 )
+from tests import service_probes
 from tests.catalog_support import seed_vault
 from tests.postgres import PostgresConnection, run_alembic
 
@@ -151,7 +152,7 @@ class SnapshotOnceTests(_Fixture):
                          snapshot=self.snapshot, requested="s3_checksum",
                          local_generation=self.generation(), before=EMPTY, timestamp=T2).id,
                          attempt.id, "a DB retry reuses the attempt")
-        self.assertEqual(provenance.bound_snapshot(self.connection, self.job["id"]).id,
+        self.assertEqual(service_probes.bound_snapshot(self.connection, self.job["id"]).id,
                          attempt.admitted.id)
         self.assertEqual(attempt.target, self.pin())
         self.assertEqual(attempt.target["key"], self.key)
@@ -236,7 +237,7 @@ class SnapshotOnceTests(_Fixture):
             self.prepare(snapshot=changed)
         self.connection.rollback()
         self.assertTrue(provenance.close_unsent_for_job(self.connection, self.job, T2))
-        self.assertIsNone(provenance.bound_snapshot(self.connection, self.job["id"]))
+        self.assertIsNone(service_probes.bound_snapshot(self.connection, self.job["id"]))
         second = self.prepare(snapshot=changed)
         self.connection.commit()
         self.assertNotEqual((second.admitted.id, second.token), (first.admitted.id, first.token))
@@ -390,7 +391,7 @@ class NoWriteTests(_Fixture):
         self.assertEqual(row["no_write_operation"], provenance.ABSENT_OPERATION)
         self.assertEqual(self.count("upload_receipts"), 0)
         self.assertIsNone(provenance.receipt(self.connection, attempt.id))
-        self.assertTrue(provenance.proven_absent(self.connection, attempt.id))
+        self.assertTrue(service_probes.proven_absent(self.connection, attempt.id))
         self.assertTrue(provenance.unsent(self.connection, attempt.id))
         self.assertEqual(provenance.open_multiparts(self.connection, attempt.id), [])
         self.assertIsNone(provenance.outstanding(self.connection, self.file_id))

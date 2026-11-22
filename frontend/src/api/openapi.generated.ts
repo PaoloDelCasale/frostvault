@@ -1270,26 +1270,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/upload/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel Upload
-         * @description Backward-compatible endpoint for clients using the old upload route.
-         */
-        post: operations["cancel_upload_api_upload_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/recover": {
         parameters: {
             query?: never;
@@ -2217,11 +2197,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** GroupCancelAction */
-        GroupCancelAction: {
-            /** Group Id */
-            group_id: string;
-        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2731,7 +2706,6 @@ export interface components {
                 [key: string]: number;
             };
             active_jobs: number;
-            delete_enabled: boolean;
             runtime: {
                 last_error?: string | null;
                 scanning?: boolean;
@@ -3516,8 +3490,6 @@ export interface components {
             [key: string]: unknown;
         };
         MeVault: {
-            cloud_deletion_enabled: boolean;
-            delete_enabled: boolean;
             id: number;
             name: string;
             /** Format: uuid */
@@ -5901,41 +5873,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["JobCancelAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobCancelResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_upload_api_upload_cancel_post: {
-        parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GroupCancelAction"];
             };
         };
         responses: {

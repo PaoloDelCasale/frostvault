@@ -12,14 +12,18 @@ import unittest
 from app.services.cost_estimates import (
     FALLBACK_REGION,
     CostEstimate,
-    available_regions,
     estimate_restore_cost,
     estimate_storage_month,
     list_prices,
 )
+from app.services import cost_estimates
 from app.services.lifecycle_profiles import SUPPORTED_STORAGE_CLASSES
 
 REQUIRED_STORAGE_CLASSES = {"STANDARD", *SUPPORTED_STORAGE_CLASSES}
+
+
+def available_regions() -> tuple[str, ...]:
+    return tuple(sorted(cost_estimates._bundled_prices()["regions"]))
 
 
 class BundledListPriceTests(unittest.TestCase):

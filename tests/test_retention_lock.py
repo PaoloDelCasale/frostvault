@@ -82,12 +82,6 @@ class LockedBucket:
 class EstimateTests(unittest.TestCase):
     def test_only_the_offered_durations(self) -> None:
         self.assertEqual(retention_lock.CHOICES, (30, 90, 180, 365))
-        self.assertEqual(retention_lock.DEFAULT_DAYS, 180)
-        self.assertIsNone(retention_lock.validate_days(None))
-        self.assertEqual(retention_lock.validate_days(90), 90)
-        for wrong in (0, 1, 45, 3650, True):
-            with self.subTest(days=wrong), self.assertRaises(ValueError):
-                retention_lock.validate_days(wrong)
 
     def test_the_estimate_is_the_creation_plus_the_default_days(self) -> None:
         created = NOW - timedelta(days=10)

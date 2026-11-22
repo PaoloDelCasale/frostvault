@@ -680,7 +680,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
 
         vault = self.vault()
         self.assertEqual((vault["s3_bucket"], vault["s3_prefix"]), (self.BUCKET, ""))
-        self.assertEqual(queue_jobs("photos/report.txt", "upload", 2, 1)["item_count"], 1)
+        self.assertEqual(queue_jobs("photos/report.txt", "upload", 2)["item_count"], 1)
         with PostgresConnection(str(self.db_path)) as connection:
             job_id = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
             claimed = ArchiveCatalog(connection).claim_job(

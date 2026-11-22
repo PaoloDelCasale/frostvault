@@ -221,7 +221,7 @@ def _run_plain_recover(
         restore_approval_hold_seconds=3600,
     )
     with patch("app.database.settings", database_settings):
-        queue_jobs(relative_path, "recover", 2, 1)
+        queue_jobs(relative_path, "recover", 2)
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
@@ -244,7 +244,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             database_dsn=database_dsn(str(database_path)),
         )
         with patch("app.database.settings", database_settings):
-            queued = queue_jobs(relative_path, "recover", 2, 1)
+            queued = queue_jobs(relative_path, "recover", 2)
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
@@ -721,7 +721,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
-                queued = queue_jobs("cold.txt", "recover", 2, 1)
+                queued = queue_jobs("cold.txt", "recover", 2)
                 with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         """
@@ -798,7 +798,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("cold.txt", "recover", 2, 1)
+                queue_jobs("cold.txt", "recover", 2)
                 with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         "UPDATE jobs SET status='restoring', updated_at=%s",

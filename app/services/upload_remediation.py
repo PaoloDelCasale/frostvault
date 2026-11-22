@@ -74,10 +74,6 @@ FILE_REMOVED_SQL = """EXISTS (
       AND removed.state = 'cancelled' AND removed.reason = 'file_removed'
 )"""
 CLOSED_SQL = f"({RESOLUTION_SQL} OR {FILE_REMOVED_SQL})"
-# The Job belongs to an episode (alias ``original``).
-LINKED_SQL = """EXISTS (
-    SELECT 1 FROM upload_remediation_jobs linked WHERE linked.job_id = original.id
-)"""
 
 _WORK_SQL = f"""
 SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.held_version_id,
@@ -699,14 +695,6 @@ def sweep_status(connection: Any, current: datetime | None = None) -> dict[str, 
     return {"available": True, "stale": missing or age > SWEEP_STALE_SECONDS,
             "missing_ticks": missing, "oldest_tick_age_seconds": age,
             "last_tick_unixtime": oldest.timestamp() if oldest and not missing else 0.0}
-
-
-def sweep_health(db: Any) -> dict[str, Any]:
-    try:
-        with db() as connection:
-            return sweep_status(connection)
-    except Exception:
-        return {"available": False, "stale": True}
 
 
 def observe(db: Any) -> None:

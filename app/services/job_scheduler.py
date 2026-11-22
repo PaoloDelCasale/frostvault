@@ -8,7 +8,6 @@ from typing import Any, Mapping, Sequence
 USER_OPERATION_PRIORITY = 0
 MANUAL_UPLOAD_PRIORITY = 1
 AUTOMATIC_PRIORITY = 2
-AUTOMATIC_UPLOAD_PRIORITY = AUTOMATIC_PRIORITY
 AGING_SECONDS = 900.0
 
 
@@ -112,7 +111,3 @@ def select_fair_jobs(
 
 def _job_order(job: Mapping[str, Any]) -> tuple[int, str, int]:
     return (job_priority(job), str(job.get("requested_at") or ""), int(job.get("id") or 0))
-
-
-def item_vault_id(job: Mapping[str, Any]) -> Any:
-    return job.get("vault_id")

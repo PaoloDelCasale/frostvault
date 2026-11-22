@@ -87,7 +87,6 @@ STALE_AFTER = timedelta(days=3)
 STALE_GRACE_DAYS = 3
 
 CATEGORIES = ("storage", "requests", "transitions", "retrievals", "data_transfer", "other", "credits")
-ROLES = ("vault", "system", "shared")
 STATES = ("unavailable", "checking", "not_configured", "waiting", "ok", "error")
 # Error codes stored in the status and translated by the UI. The first three
 # are transient: retried after TRANSIENT_RETRY, the others after READ_INTERVAL.
@@ -102,16 +101,6 @@ ERROR_CODES = TRANSIENT_ERRORS + (
 REQUIRED_COLUMNS = (
     "line_item_resource_id", "line_item_unblended_cost", "line_item_currency_code",
     "line_item_usage_type", "line_item_operation",
-)
-OPTIONAL_COLUMNS = (
-    "line_item_net_unblended_cost", "line_item_product_code", "line_item_usage_end_date",
-    "line_item_line_item_type",
-)
-# The columns the setup recommends selecting (docs/billed-cost.md).
-RECOMMENDED_COLUMNS = (
-    "line_item_resource_id", "line_item_unblended_cost", "line_item_net_unblended_cost",
-    "line_item_currency_code", "line_item_usage_type", "line_item_operation",
-    "line_item_product_code", "line_item_usage_end_date", "line_item_line_item_type",
 )
 # A manifest is a small JSON document; a bigger one is not a manifest.
 MANIFEST_MAX_BYTES = 8 * 1024 * 1024

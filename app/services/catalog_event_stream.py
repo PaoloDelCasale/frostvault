@@ -364,36 +364,6 @@ def coalesced_catchup_signal(
     return signal
 
 
-def session_stream_state(session_id: str) -> dict[str, Any] | None:
-    """Return live session vault scope, or None when invalid (compat helper)."""
-    with db() as connection:
-        row = connection.execute(
-            """
-            SELECT s.vault_id AS vault_id,
-                   s.revoked_at AS revoked_at,
-                   s.idle_expires_at AS idle_expires_at,
-                   s.absolute_expires_at AS absolute_expires_at,
-                   s.session_version AS session_session_version,
-                   o.session_version AS owner_session_version
-            FROM sessions s
-            JOIN owner o ON o.id = 1
-            WHERE s.id=%s
-            """,
-            (session_id,),
-        ).fetchone()
-    if row is None or row["revoked_at"]:
-        return None
-    if row["session_session_version"] != row["owner_session_version"]:
-        return None
-    now = datetime.now(timezone.utc)
-    absolute = _parse_iso(row["absolute_expires_at"])
-    idle = _parse_iso(row["idle_expires_at"])
-    if absolute is None or idle is None or now >= absolute or now >= idle:
-        return None
-    vault_id = row["vault_id"]
-    return {"vault_id": int(vault_id) if vault_id is not None else None}
-
-
 DisconnectProbe = Callable[[], Awaitable[bool]]
 
 

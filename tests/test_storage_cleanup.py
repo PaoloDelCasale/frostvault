@@ -303,7 +303,7 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
-                queued = queue_jobs("report.txt", "upload", 2, 1)
+                queued = queue_jobs("report.txt", "upload", 2)
                 listed = jobs(_fake_request(), {"id": 2})
 
             self.assertEqual(queued["item_count"], 1)
@@ -340,7 +340,7 @@ class StorageCleanupTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -847,7 +847,7 @@ class StorageCleanupTests(unittest.TestCase):
             )
 
         queue_jobs.assert_called_once_with(
-            "docs/file.txt", "free-space", 2, 7, False
+            "docs/file.txt", "free-space", 2, False
         )
         self.assertEqual(result["group_id"], "cleanup-group")
         self.assertEqual(result["message"], "Freeing local space started")
@@ -873,7 +873,7 @@ class StorageCleanupTests(unittest.TestCase):
                     ),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertFalse(target.exists())
@@ -973,7 +973,7 @@ class StorageCleanupTests(unittest.TestCase):
                     return_value=SimpleNamespace(head_object=failed_head),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertTrue(target.exists())
@@ -1068,7 +1068,7 @@ class StorageCleanupTests(unittest.TestCase):
                     return_value=SimpleNamespace(head_object=head_object),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertEqual(target.read_text(encoding="utf-8"), "changed")
@@ -1112,7 +1112,7 @@ class StorageCleanupTests(unittest.TestCase):
                 ),
                 patch.object(Path, "rename", rename_then_replace),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertEqual(
@@ -1198,7 +1198,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch("app.storage.s3_client", return_value=client),
                 patch("app.storage.upload_s3_file") as sdk_upload,
             ):
-                queue_jobs("docs/file.txt", "recover", 2, 1)
+                queue_jobs("docs/file.txt", "recover", 2)
                 process_jobs_once()
 
             client.head_object.assert_called()

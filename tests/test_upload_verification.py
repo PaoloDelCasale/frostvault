@@ -145,7 +145,7 @@ def _run_plain_upload(
         with PostgresConnection(str(database_path)) as connection:
             size = connection.execute("SELECT local_size AS size FROM files LIMIT 1").fetchone()["size"]
     with patch("app.database.settings", database_settings):
-        queue_jobs(relative_path, "upload", 2, 1)
+        queue_jobs(relative_path, "upload", 2)
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
@@ -184,7 +184,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                                               "ContentLength": len(payload), "ETag": "etag"},
             )
             with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(path)))):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), mock_sdk_upload(return_value={"VersionId": "upload-response"}):
                     process_jobs_once()
             with PostgresConnection(str(path)) as connection:
@@ -388,7 +388,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 }
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -482,7 +482,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 }
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -580,7 +580,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -664,7 +664,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -753,7 +753,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -816,7 +816,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queued = queue_jobs("report.txt", "upload", 2, 1)
+                queued = queue_jobs("report.txt", "upload", 2)
                 with PostgresConnection(str(database_path)) as connection:
                     job_id_holder["id"] = connection.execute(
                         "SELECT id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",

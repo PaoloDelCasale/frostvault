@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+from app.catalog import ArchiveCatalog
 from tests import catalog_probe
 
 
@@ -32,6 +36,15 @@ def seed_vault(
         (vault_id, target["id"], name, source_root),
     )
     return vault_id
+
+
+def queue_rename_job(connection: Any, vault_id: int, path: str) -> list[int]:
+    """Queue the copy to the renamed file's key, as the scan does after confirming a rename."""
+    job_ids, _total, _eligible = ArchiveCatalog(connection).queue_jobs(
+        vault_id=vault_id, path=path, action="rename", requested_at=datetime.now(timezone.utc).isoformat(),
+        group_id=uuid.uuid4().hex, is_directory=False, origin="automatic",
+    )
+    return job_ids
 
 
 def sha256_hex(payload: bytes) -> str:

@@ -258,7 +258,6 @@ class ArchiveCatalog:
         self.unconfirmed = protection_unconfirmed
         # The whole Vault is unconfirmed: no per-path work is needed.
         self.protection_unconfirmed = protection_unconfirmed.whole_vault
-        self.last_skipped_same_class = 0
         self.last_listing_rows_materialized = 0
 
     # -- shared seams -------------------------------------------------------
@@ -3381,7 +3380,6 @@ class ArchiveCatalog:
         # Every manual upload/recovery/free-space admission therefore observes
         # one serialized Vault state.
         lock_vault(self.connection, vault_id)
-        self.last_skipped_same_class = 0
         if origin not in {"manual", "automatic"}:
             raise ValueError("Unsupported Job origin")
         if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
@@ -3447,7 +3445,6 @@ class ArchiveCatalog:
         ).fetchall()
         eligible = []
         remediation_job_ids: list[int] = []
-        skipped_same = 0
         target_class = (target_storage_class or "").upper() or None
         group_path = "" if whole_vault or recovery_selection else path
         # Only files that ever had an Upload Remediation episode go to its
@@ -3473,11 +3470,9 @@ class ArchiveCatalog:
             if allowed and action == "storage-class" and target_class:
                 current = (row["storage_class"] or "STANDARD").upper()
                 if current == target_class:
-                    skipped_same += 1
                     allowed = False
             if allowed:
                 eligible.append(row)
-        self.last_skipped_same_class = skipped_same
         job_ids = list(remediation_job_ids)
         if not eligible:
             return job_ids, 0, len(remediation_job_ids)

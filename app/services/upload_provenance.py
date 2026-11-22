@@ -504,12 +504,6 @@ def _bound(connection: Any, job_id: int) -> tuple[AdmittedSnapshot, bool] | None
     return (_admitted(row), row["reconcile_only"]) if row else None
 
 
-def bound_snapshot(connection: Any, job_id: int) -> AdmittedSnapshot | None:
-    """The snapshot a Job uploads or reconciles: its only source of expected proof."""
-    bound = _bound(connection, job_id)
-    return bound[0] if bound else None
-
-
 def load_for_job(connection: Any, job_id: int) -> UploadAttempt | None:
     """The attempt of the Job's snapshot that still matters: unsettled or landed.
 
@@ -944,14 +938,6 @@ def bind_for_resume(connection: Any, job_id: int, attempt: UploadAttempt, *,
           reconcile_only=reconcile_only)
 
 
-def proven_absent(connection: Any, attempt_id: str | None) -> bool:
-    """True when this attempt was settled by S3's positive proof of absence."""
-    if not attempt_id:
-        return False
-    return connection.execute("SELECT 1 FROM upload_attempts WHERE id=%s AND outcome='no_write' "
-                              "AND no_write_operation=%s", (attempt_id, ABSENT_OPERATION)).fetchone() is not None
-
-
 def unsent(connection: Any, attempt_id: str | None) -> bool:
     """The attempt carries no provider obligation: never sent, or a settled no-write without receipts."""
     if not attempt_id:
@@ -1210,23 +1196,3 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
     cancelled = connection.execute(_OWNER_CANCELLED_SQL, (file_id,)).fetchone()
     return {"pending": True, "can_resume": not busy and not cancelled,
             "reason": reason, "remedy": REMEDIES.get(reason, REMEDIES["proof_unavailable"])}
-
-
-def _unresumable_reason(connection: Any, vault_id: int, path: str, state: dict[str, Any]) -> str:
-    """Name why exact resume cannot start; never imply the path/volume changed."""
-    if not state["pending"]:
-        return "already_resolved"
-    file = connection.execute(
-        "SELECT id FROM files WHERE vault_id=%s AND path=%s", (vault_id, path),
-    ).fetchone()
-    if file:
-        if connection.execute(_ACTIVE_JOB_SQL, (file["id"],)).fetchone():
-            return "active_operation"
-        if connection.execute(_OWNER_CANCELLED_SQL, (file["id"],)).fetchone():
-            return "owner_cancelled"
-    return state["reason"] if state.get("reason") in REMEDIES else "proof_unavailable"
-
-
-def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_id: int, timestamp: str, remediation_id: str | None = None) -> dict[str, Any]:
-    from .upload_remediation import schedule_resume as schedule
-    return schedule(connection, vault=vault, path=path, user_id=user_id, timestamp=timestamp, remediation_id=remediation_id)

@@ -82,7 +82,6 @@ class ColdStorageTests(unittest.TestCase):
         return client_error("InvalidObjectState", 403, operation)
 
     def test_it_is_not_a_readiness_error_nor_a_permission_refusal(self):
-        self.assertTrue(cloud_preflight_gate.is_cold_storage_error(self.cold()))
         self.assertFalse(cloud_preflight_gate.is_readiness_error(self.cold()))
         self.assertTrue(cloud_preflight_gate.is_readiness_error(client_error("AccessDenied", 403, "GetObject")))
         with probe(True):
@@ -96,7 +95,6 @@ class ColdStorageTests(unittest.TestCase):
             except ClientError as inner:
                 raise RuntimeError("read-back failed") from inner
         except RuntimeError as outer:
-            self.assertTrue(cloud_preflight_gate.is_cold_storage_error(outer))
             self.assertFalse(cloud_preflight_gate.is_readiness_error(outer))
 
     def test_the_worker_handler_leaves_it_alone(self):

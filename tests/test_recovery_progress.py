@@ -76,7 +76,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         self.enterContext(patch("app.database.settings", database))
         runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
         with patch("app.main.settings", runtime):
-            queue_jobs("cold/c0.bin", "recover", VAULT, 1, False, restore_tier="Standard", restore_days=1)
+            queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Standard", restore_days=1)
         client = Mock()
         client.head_object = Mock(return_value={"ContentLength": 1, "StorageClass": "DEEP_ARCHIVE",
                                                 "VersionId": "s3-version-1"})
@@ -156,7 +156,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
     def _resume(self):
         runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
         with patch("app.main.settings", runtime):
-            queue_jobs("cold/c0.bin", "recover", VAULT, 1, False, restore_tier="Bulk", restore_days=3)
+            queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Bulk", restore_days=3)
         client = self._process('ongoing-request="true"')
         client.restore_object.assert_not_called()
 
@@ -192,7 +192,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
             [row] = connection.execute("SELECT message_key FROM jobs WHERE action='recover'").fetchall()
         self.assertEqual(row["message_key"], "job.recovery_stopped")
         with patch("app.main.settings", runtime):
-            queue_jobs("cold/c0.bin", "recover", VAULT, 1, False, restore_tier="Bulk", restore_days=3)
+            queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Bulk", restore_days=3)
         with PostgresConnection(str(self.database_path)) as connection:
             latest = connection.execute(
                 "SELECT requested_at FROM jobs WHERE action='recover' ORDER BY id DESC LIMIT 1").fetchone()["requested_at"]

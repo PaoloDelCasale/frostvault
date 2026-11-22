@@ -16,9 +16,6 @@ TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
 JOB_LEASE_HELD_STATUSES = frozenset(
     {"downloading", "uploading", "verifying", "cleaning"}
 )
-WAITING_JOB_STATUSES = frozenset(
-    {"queued", "pending_approval", "pending_delay", "retrying", "restoring"}
-)
 
 
 def lock_vault(

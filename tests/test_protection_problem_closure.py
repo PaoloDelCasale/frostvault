@@ -23,7 +23,7 @@ from app.services.cost_estimates import estimate_restore_cost, list_prices
 from tests.catalog_support import fingerprint, protect as protect_current, sha256_hex
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, run_alembic
-from tests.test_protection_notifications import NOW, ONLINE
+from tests.test_protection_notifications import NOW, ONLINE, monitor_vault
 
 
 class NotificationMonitorRaceUnitTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class NotificationMonitorRaceUnitTests(unittest.TestCase):
         with patch.object(monitor, "get_policy", return_value=OperationPolicy()), \
              patch("app.services.source_layout.vault_local_access", return_value=ONLINE), \
              patch.object(inbox, "set_problem") as problem:
-            monitor.monitor_vault(c, {"id": 1, "source_root": "/unused"}, now=NOW)
+            monitor_vault(c, {"id": 1, "source_root": "/unused"}, now=NOW)
         delay = problem.call_args.kwargs
         self.assertEqual(delay["event"], "protection_delayed")
         self.assertFalse(delay["active"])
@@ -314,10 +314,10 @@ class ProtectionProblemClosureTests(unittest.TestCase):
                 return self.c.execute(query, params)
         with self.connect() as c, patch("app.services.source_layout.vault_local_access", return_value=ONLINE):
             vault = c.execute("SELECT * FROM vaults WHERE id=%s", (self.vault_id,)).fetchone()
-            monitor.monitor_vault(Interleaved(c), vault, now=NOW)
+            monitor_vault(Interleaved(c), vault, now=NOW)
             self.assertEqual(reached, [True])
             self.assertEqual(c.execute("SELECT count(*) n FROM files WHERE pending_since IS NOT NULL").fetchone()["n"], 0)
             self.assertEqual(c.execute("SELECT count(*) n FROM notifications WHERE event='protection_delayed' AND problem_status='open'").fetchone()["n"], 0)
             # The next cycle must run, not reopen the obsolete timer or a delay.
-            monitor.monitor_vault(c, vault, now=NOW+timedelta(minutes=1))
+            monitor_vault(c, vault, now=NOW+timedelta(minutes=1))
             self.assertEqual(c.execute("SELECT count(*) n FROM files WHERE pending_since IS NOT NULL").fetchone()["n"], 0)

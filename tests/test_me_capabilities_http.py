@@ -1,9 +1,8 @@
 """GET /api/me vault capability seams (issue #59).
 
-Exposes the archive capability flags that the SPA reads from /api/me
-(delete_enabled, cloud_deletion_enabled) so the client can gate actions
-without calling the expensive ``/api/stats`` endpoint. The single owner
-(#412) has no Vault role: every Vault is theirs.
+The SPA reads the selected Vault from /api/me without calling the expensive
+``/api/stats`` endpoint. The single owner (#412) has no Vault role: every
+Vault is theirs, and the Vault block carries no capability flags (#791).
 """
 
 from __future__ import annotations
@@ -77,25 +76,9 @@ class MeCapabilitiesHttpTests(unittest.TestCase):
         self.assertEqual(vault["id"], created["id"])
         self.assertEqual(vault["uuid"], str(created["uuid"]))
         self.assertEqual(vault["name"], "Docs Archive")
-        self.assertTrue(vault["delete_enabled"])
-        for removed in ("role", "can_operate", "is_vault_owner"):
+        for removed in ("role", "can_operate", "is_vault_owner",
+                        "delete_enabled", "cloud_deletion_enabled"):
             self.assertNotIn(removed, vault)
-
-    def test_delete_enabled_false_when_source_is_unavailable(self) -> None:
-        """Manual release is available with automation off, never on an absent source."""
-        from types import SimpleNamespace
-        with patch(
-            "app.main.vault_local_access",
-            return_value=SimpleNamespace(local_operations_allowed=False),
-        ):
-            self._create_vault()
-            payload = self._me()
-
-        self.assertFalse(payload["vault"]["delete_enabled"])
-
-    def test_cloud_deletion_has_no_enablement_setting(self) -> None:
-        self._create_vault()
-        self.assertTrue(self._me()["vault"]["cloud_deletion_enabled"])
 
     def test_owner_without_vault_gets_null_vault_block(self) -> None:
         """Seam 6: before the first Vault exists → a null vault block."""

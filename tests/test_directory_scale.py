@@ -15,8 +15,9 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 
-from app.main import build_directory_items, list_files
+from app.main import list_files
 from app.services import directory_aggregates as aggregates
+from tests.listing_oracles import build_directory_items
 from app.services import metrics as metrics_service
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint, protect, seed_vault
@@ -469,17 +470,12 @@ class DirectoryScaleTests(unittest.TestCase):
 
         with patch.object(
             aggregates,
-            "_iter_visible_file_contributions",
+            "_iter_visible_file_contribution_batches",
             side_effect=blocked_iter,
         ):
-            with patch.object(
-                aggregates,
-                "_iter_visible_file_contribution_batches",
-                side_effect=blocked_iter,
-            ):
-                result = aggregates.flush_directory_aggregates(
-                    self.connection, vault_id=2
-                )
+            result = aggregates.flush_directory_aggregates(
+                self.connection, vault_id=2
+            )
         self.assertEqual(result["rebuilt_directories"], 1)
         page = self.catalog.list_files_page(2)
         self.assertEqual(page["items"][0]["item_count"], 250)
@@ -945,7 +941,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             """,
             (bytes.fromhex("b" * 64), file_id),
         )
-        aggregates.invalidate_for_vault_file(self.connection, 2, file_id)
+        aggregates.mark_file_id_dirty(self.connection, 2, file_id)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = self.catalog.list_files_page(2)["items"][0]
         self.assertEqual(after["available_actions"]["free-space"], 0)

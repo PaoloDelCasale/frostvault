@@ -12,6 +12,7 @@ from pathlib import Path
 from app.services.catalog_events import CatalogEventStore
 from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
+from tests import catalog_event_probe
 
 
 class CatalogStatePersistenceTests(unittest.TestCase):
@@ -26,7 +27,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
     def test_catalog_mutation_and_publication_commit_as_one_transaction(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
-            published = CatalogEventStore(connection).mutate_and_publish(
+            published = catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                 2,
                 lambda conn: conn.execute(
                     "UPDATE vaults SET name='Changed' WHERE id=2"
@@ -62,7 +63,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
     def test_outer_transaction_can_roll_back_a_successful_publication(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "outer failure"):
             with PostgresConnection(str(self.path)) as connection:
-                CatalogEventStore(connection).mutate_and_publish(
+                catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     lambda conn: conn.execute(
                         "UPDATE vaults SET name='Outer failure' WHERE id=2"
@@ -93,7 +94,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
         with PostgresConnection(self.path) as connection:
             connection.execute("UPDATE vaults SET name='Outer mutation' WHERE id=2")
             with self.assertRaisesRegex(RuntimeError, "helper failure"):
-                CatalogEventStore(connection).mutate_and_publish(
+                catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2, fail, domain="files", scope="root", payload={},
                 )
             self.assertEqual(connection.execute(
@@ -110,7 +111,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
     def test_autocommit_caller_gets_one_atomic_publication(self) -> None:
         with PostgresConnection(self.path) as connection:
             connection.autocommit = True
-            CatalogEventStore(connection).mutate_and_publish(
+            catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                 2, lambda conn: conn.execute("UPDATE vaults SET name='Autocommit' WHERE id=2"),
                 domain="files", scope="root", payload={},
             )
@@ -129,7 +130,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "simulated"):
             with PostgresConnection(str(self.path)) as connection:
-                CatalogEventStore(connection).mutate_and_publish(
+                catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     fail,
                     domain="files",
@@ -155,7 +156,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
     def test_concurrent_mutations_serialize_per_vault_revisions(self) -> None:
         def publish(index: int) -> int:
             with PostgresConnection(str(self.path)) as connection:
-                publication = CatalogEventStore(connection).mutate_and_publish(
+                publication = catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     lambda _connection: index,
                     domain="files",
@@ -169,7 +170,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
         self.assertEqual(sorted(revisions), list(range(1, 9)))
         with PostgresConnection(str(self.path)) as connection:
-            self.assertEqual(CatalogEventStore(connection).current_revision(2), 8)
+            self.assertEqual(catalog_event_probe.current_revision(CatalogEventStore(connection), 2), 8)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) AS total FROM catalog_events WHERE vault_id=2"
@@ -188,8 +189,8 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                     payload={},
                 )
             pruned = store.prune_events(vault_id=2, retain_from_revision=3)
-            page = store.read_events(vault_id=2, after_revision=0)
-            contiguous = store.read_events(vault_id=2, after_revision=2)
+            page = catalog_event_probe.read_events(store, vault_id=2, after_revision=0)
+            contiguous = catalog_event_probe.read_events(store, vault_id=2, after_revision=2)
 
         self.assertEqual(pruned["deleted"], 2)
         self.assertEqual(pruned["retained_from_revision"], 3)
@@ -207,7 +208,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
         with PostgresConnection(str(self.path)) as connection:
             with self.assertRaises(ValueError):
-                CatalogEventStore(connection).mutate_and_publish(
+                catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     mutation,
                     domain="invalid domain",
@@ -226,7 +227,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                     domain="files",
                     payload={"large": "x" * 5000},
                 )
-            self.assertEqual(store.current_revision(2), 0)
+            self.assertEqual(catalog_event_probe.current_revision(store, 2), 0)
 
 
 

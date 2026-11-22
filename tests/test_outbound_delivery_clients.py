@@ -15,6 +15,7 @@ from app.config import settings
 
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
+from tests import service_probes
 from tests.owner_fixtures import insert_job, insert_owner, insert_vault
 from tests.test_database import run_alembic
 
@@ -154,9 +155,9 @@ class OutboundDeliveryClientTests(unittest.TestCase):
     def test_existing_incidents_reach_both_channels_once(self) -> None:
         with PostgresConnection(str(self.path)) as connection:
             incident = {"id": 1, "vault_id": 2, "path": "a.txt"}
-            self.assertEqual(notifications.enqueue_archive_version_missing(
+            self.assertEqual(service_probes.enqueue_archive_version_missing(
                 connection, incident=incident), 1)
-            self.assertEqual(notifications.enqueue_archive_version_missing(
+            self.assertEqual(service_probes.enqueue_archive_version_missing(
                 connection, incident=incident), 0)
             conflict = {"vault_id": 2, "file_id": "f", "held_version_id": "v",
                         "path": "a.txt", "observed_at": "2026-11-13T10:00:00+00:00"}

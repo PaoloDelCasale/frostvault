@@ -39,7 +39,6 @@ export type GeneralVaultReconnectResponse = components["schemas"]["GeneralVaultR
 export type GeneralVaultsResponse = components["schemas"]["GeneralVaultsResponse"];
 export type GlobPreviewRequest = components["schemas"]["GlobPreviewRequest"];
 export type GlobPreviewResponse = components["schemas"]["GlobPreviewResponse"];
-export type GroupCancelAction = components["schemas"]["GroupCancelAction"];
 export type HTTPValidationError = components["schemas"]["HTTPValidationError"];
 export type I18nCatalogResponse = components["schemas"]["I18nCatalogResponse"];
 export type JobCancelAction = components["schemas"]["JobCancelAction"];

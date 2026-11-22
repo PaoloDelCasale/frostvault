@@ -57,7 +57,6 @@ from botocore.exceptions import ClientError
 
 # The choices offered when a Vault is created; 180 when the Owner enables it.
 CHOICES = (30, 90, 180, 365)
-DEFAULT_DAYS = 180
 MODE = "GOVERNANCE"
 
 DELETE_MARKER_PROBLEM = "retention_lock_delete_marker"
@@ -107,15 +106,6 @@ class RetentionUnreadable(Exception):
     def __init__(self, until: datetime) -> None:
         super().__init__("GetObjectRetention was refused")
         self.until = until
-
-
-def validate_days(days: int | None) -> int | None:
-    """None (no Retention Lock) or one of the offered durations."""
-    if days is None:
-        return None
-    if isinstance(days, bool) or int(days) not in CHOICES:
-        raise ValueError("A Retention Lock lasts 30, 90, 180 or 365 days")
-    return int(days)
 
 
 def _aware(value: Any) -> datetime | None:

@@ -571,7 +571,7 @@ class LocalOpsGateTests(unittest.TestCase):
 
         source_layout.note_mount_lost("photos")
         with self.assertRaises(HTTPException) as raised:
-            queue_jobs("note.txt", "upload", self.vault_id, 1)
+            queue_jobs("note.txt", "upload", self.vault_id)
         self.assertEqual(raised.exception.status_code, 503)
 
     def test_scan_tree_skips_mass_missing_when_mount_lost(self) -> None:

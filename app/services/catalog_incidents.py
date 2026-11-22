@@ -23,7 +23,6 @@ from . import notifications as notification_service
 INCIDENT_KIND_MISSING = "archive_version_missing"
 INCIDENT_KIND_CLOUD_ONLY_CONFLICT = "cloud_only_conflict"
 MISSING_KEY_PREFIX = "missing:"
-CONFLICT_KEY_PREFIX = "conflict:"
 
 
 def missing_key(version_id: Any) -> str:
@@ -172,7 +171,7 @@ def confirm_cloud_only_replacement(
     queues the upload; Current is replaced (and its exact cleanup frozen)
     only after the new version is verified.
     """
-    from ..audit import audit_log
+    from .audit_events import audit_log
 
     settle_cloud_only_copies(
         connection, vault_id=vault_id, path=path, observed_at=observed_at,
