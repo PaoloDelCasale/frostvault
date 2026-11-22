@@ -9,7 +9,7 @@ A Vault's **Root Identity** (`vaults.root_identity`, version
 `st_ino`. Every scan, upload, exclusion and cloud deletion compares the folder
 on disk against it and fails closed when it differs.
 
-On Unraid, `/mnt/user` is `fuse.shfs`. FUSE, like NFS, ZFS, btrfs subvolumes
+On Unraid, the user shares are `fuse.shfs`. FUSE, like NFS, ZFS, btrfs subvolumes
 and overlayfs, gets an *anonymous* device number (major 0) when it is mounted,
 in mount order. After an ordinary host reboot (Unraid update, 2026-11-21) it
 became `0:46` instead of `0:47`. Every Vault on a user share was then blocked
