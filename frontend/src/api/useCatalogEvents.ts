@@ -59,7 +59,9 @@ function invalidateForSignal(
   if (domains.includes("stats") || signal.has_gap) {
     tasks.push(
       invalidate({
-        queryKey: apiQueryKeys.stats,
+        // Only this Vault's stats: other Vaults' rows have their own events.
+        queryKey: apiQueryKeys.vaultStats(signal.vault_id),
+        exact: true,
         refetchType: "active",
       }),
     );

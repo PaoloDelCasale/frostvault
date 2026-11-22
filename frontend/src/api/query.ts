@@ -13,10 +13,9 @@ import {
   fetchJobs,
   fetchMe,
   fetchNotifications,
-  fetchStats,
   fetchVaults,
 } from "./endpoints";
-import type { FilesQuery, JobsResponse, StatsResponse } from "./types";
+import type { FilesQuery, JobsResponse } from "./types";
 import type { NotificationListStatus } from "./endpoints";
 import {
   catalogPollIntervalMs,
@@ -26,8 +25,9 @@ import {
 export const apiQueryKeys = {
   me: ["me"] as const,
   vaults: ["vaults"] as const,
-  stats: ["stats"] as const,
   jobs: ["jobs"] as const,
+  /** Per-Vault stats, shared by the Vault pages, Overview and catalog events. */
+  vaultStats: (vaultId: number) => ["vault-stats", vaultId] as const,
   i18nCatalog: (locale?: string) => ["i18n", "catalog", locale ?? "default"] as const,
   files: (query: FilesQuery) =>
     [
@@ -90,18 +90,6 @@ export function i18nCatalogQueryOptions(locale?: string) {
     queryFn: () => fetchI18nCatalog(locale),
   };
 }
-
-/** Stats query: poll only while Jobs are active; idle updates are event-driven. */
-export const statsRefetchInterval = (
-  query: { state: { data: StatsResponse | undefined } },
-): number | false =>
-  catalogPollIntervalMs(query.state.data?.active_jobs ?? 0);
-
-export const statsQueryOptions = {
-  queryKey: apiQueryKeys.stats,
-  queryFn: fetchStats,
-  refetchInterval: statsRefetchInterval,
-};
 
 export function filesQueryOptions(
   query: FilesQuery,

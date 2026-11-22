@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type { StatsResponse } from "@/api/types";
+import { apiQueryKeys } from "@/api/query";
 import { vaultApi } from "@/api/vault";
 
 const STATS_REFRESH_MS = 60_000;
@@ -10,7 +11,7 @@ const SCANNING_REFRESH_MS = 10_000;
 /** Shared with the Overview table, so both read one cached request per Vault. */
 export function useVaultStats(vaultId: number) {
   return useQuery({
-    queryKey: ["vault-stats", vaultId],
+    queryKey: apiQueryKeys.vaultStats(vaultId),
     queryFn: () => vaultApi(vaultId).request<StatsResponse>("/api/stats"),
     staleTime: STATS_REFRESH_MS,
     refetchInterval: (query) => (query.state.data?.runtime?.scanning ? SCANNING_REFRESH_MS : STATS_REFRESH_MS),

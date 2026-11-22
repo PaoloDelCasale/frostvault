@@ -2,6 +2,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import {
   QueryClient,
   QueryClientProvider,
+  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -125,10 +126,51 @@ describe("useCatalogEvents", () => {
         { cancelRefetch: false },
       );
       expect(invalidateSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ queryKey: apiQueryKeys.stats }),
+        expect.objectContaining({ queryKey: ["vault-stats", 1], exact: true }),
         { cancelRefetch: false },
       );
     });
+  });
+
+  it("refetches only the event Vault's mounted stats query", async () => {
+    const client = createQueryClient();
+    const catalogHandlers: MessageListener[] = [];
+    const createSource: CatalogEventSourceFactory = () => ({
+      close: vi.fn(),
+      addEventListener: (type, listener) => {
+        if (type === "catalog") catalogHandlers.push(listener);
+      },
+      onerror: null,
+    });
+    const fetched = { 1: 0, 2: 0 };
+    function StatsProbe({ id }: { id: 1 | 2 }) {
+      useQuery({
+        queryKey: apiQueryKeys.vaultStats(id),
+        queryFn: () => ++fetched[id],
+        staleTime: Infinity,
+      });
+      return null;
+    }
+
+    renderWithClient(
+      client,
+      <>
+        <StatsProbe id={1} />
+        <StatsProbe id={2} />
+        <Harness vaultId={1} createSource={createSource} />
+      </>,
+    );
+
+    await waitFor(() => {
+      expect(fetched).toEqual({ 1: 1, 2: 1 });
+      expect(catalogHandlers.length).toBeGreaterThan(0);
+    });
+    catalogHandlers[0]!({
+      data: JSON.stringify({ vault_id: 1, revision: 5, domains: ["stats"], has_gap: false }),
+    } as MessageEvent<string>);
+
+    await waitFor(() => expect(fetched[1]).toBe(2));
+    expect(fetched[2]).toBe(1);
   });
 
   it("ignores out-of-order/duplicate revisions and foreign vaults", async () => {
