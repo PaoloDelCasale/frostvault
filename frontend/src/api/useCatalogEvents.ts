@@ -12,6 +12,11 @@ import { apiQueryKeys } from "./query";
 
 /** Leading + trailing throttle, never a debounce: continuous writes cannot starve refresh. */
 export const CATALOG_REFRESH_MS = 5_000;
+/**
+ * Stats count every File of the Vault in SQL: one isolated event refreshes them
+ * at once, continuous activity at most this often (leading + trailing).
+ */
+export const STATS_REFRESH_MS = 30_000;
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
 const scheduleReconnectTimer = (callback: () => void, ms: number) => window.setTimeout(callback, ms);
@@ -35,6 +40,7 @@ function invalidateForSignal(
   queryClient: QueryClient,
   signal: CatalogRevisionSignal,
   essentialShell = false,
+  includeStats = true,
 ): boolean {
   const domains = normalizeDomains(signal.domains);
   const tasks: Array<Promise<unknown>> = [];
@@ -56,7 +62,7 @@ function invalidateForSignal(
       }),
     );
   }
-  if (domains.includes("stats") || signal.has_gap) {
+  if (includeStats && (domains.includes("stats") || signal.has_gap)) {
     tasks.push(
       invalidate({
         // Only this Vault's stats: other Vaults' rows have their own events.
@@ -107,17 +113,42 @@ export function useCatalogEvents({
     let reconnectTimer: number | null = null;
     let refreshTimer: number | null = null;
     let pendingSignal: CatalogRevisionSignal | null = null;
+    let statsTimer: number | null = null;
+    let lastStatsAt = Number.NEGATIVE_INFINITY;
     const clearRefresh = () => {
       if (refreshTimer != null) cancelSchedule(refreshTimer);
+      if (statsTimer != null) cancelSchedule(statsTimer);
       refreshTimer = null;
+      statsTimer = null;
       pendingSignal = null;
+    };
+    const refreshStats = () => {
+      statsTimer = null;
+      if (closed) return;
+      lastStatsAt = Date.now();
+      void queryClient.invalidateQueries(
+        { queryKey: apiQueryKeys.vaultStats(vaultId), exact: true, refetchType: "active" },
+        { cancelRefetch: false },
+      );
+    };
+    /** True when this flush may refresh stats now; otherwise a trailing refresh is armed. */
+    const statsDueNow = (signal: CatalogRevisionSignal): boolean => {
+      if (!signal.has_gap && !signal.domains.includes("stats")) return false;
+      if (statsTimer != null) return false;
+      const wait = STATS_REFRESH_MS - (Date.now() - lastStatsAt);
+      if (wait <= 0) {
+        lastStatsAt = Date.now();
+        return true;
+      }
+      statsTimer = schedule(refreshStats, wait);
+      return false;
     };
     const flush = () => {
       refreshTimer = null;
       if (closed || !pendingSignal) return;
       const signal = pendingSignal;
       pendingSignal = null;
-      if (invalidateForSignal(queryClient, signal, explicitVault)) pendingSignal = signal;
+      if (invalidateForSignal(queryClient, signal, explicitVault, statsDueNow(signal))) pendingSignal = signal;
       // Keep the cooldown even when a flush emptied the batch.
       refreshTimer = schedule(flush, CATALOG_REFRESH_MS);
     };

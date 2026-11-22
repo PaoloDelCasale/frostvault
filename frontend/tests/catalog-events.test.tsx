@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { CATALOG_REFRESH_MS, STATS_REFRESH_MS } from "@/api/useCatalogEvents";
 import {
   apiQueryKeys,
   openCatalogEventSource,
@@ -171,6 +172,53 @@ describe("useCatalogEvents", () => {
 
     await waitFor(() => expect(fetched[1]).toBe(2));
     expect(fetched[2]).toBe(1);
+  });
+
+  it("refreshes stats at once, then at most every 30 s under continuous events", async () => {
+    const client = createQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const catalogHandlers: MessageListener[] = [];
+    const createSource: CatalogEventSourceFactory = () => ({
+      close: vi.fn(),
+      addEventListener: (type, listener) => {
+        if (type === "catalog") catalogHandlers.push(listener);
+      },
+      onerror: null,
+    });
+    const timers: Array<{ cb: () => void; ms: number }> = [];
+    const schedule = (callback: () => void, ms: number) => timers.push({ cb: callback, ms });
+    const statsCalls = () => invalidateSpy.mock.calls
+      .filter(([filters]) => filters?.queryKey?.[0] === "vault-stats").length;
+    const emit = (revision: number) => catalogHandlers[0]!({
+      data: JSON.stringify({ vault_id: 1, revision, domains: ["files", "stats"], has_gap: false }),
+    } as MessageEvent<string>);
+    const fire = (ms: number) => {
+      const index = timers.findIndex((timer) => timer.ms === ms);
+      expect(index).toBeGreaterThanOrEqual(0);
+      timers.splice(index, 1)[0]!.cb();
+    };
+
+    renderWithClient(
+      client,
+      <Harness vaultId={1} createSource={createSource} schedule={schedule} cancelSchedule={() => {}} />,
+    );
+    await waitFor(() => expect(catalogHandlers.length).toBeGreaterThan(0));
+
+    emit(1);
+    expect(statsCalls()).toBe(1);
+
+    // Continuous activity: files keep the 5 s cadence, stats wait for their window.
+    for (let revision = 2; revision <= 4; revision += 1) {
+      emit(revision);
+      fire(CATALOG_REFRESH_MS);
+    }
+    expect(statsCalls()).toBe(1);
+    const trailing = timers.filter((timer) => timer.ms > CATALOG_REFRESH_MS);
+    expect(trailing).toHaveLength(1);
+    expect(trailing[0]!.ms).toBeLessThanOrEqual(STATS_REFRESH_MS);
+
+    trailing[0]!.cb();
+    expect(statsCalls()).toBe(2);
   });
 
   it("ignores out-of-order/duplicate revisions and foreign vaults", async () => {
