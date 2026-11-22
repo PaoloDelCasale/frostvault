@@ -2601,7 +2601,7 @@ def queue_jobs(
     if archive_version_id and (action != "recover" or is_directory):
         raise HTTPException(
             422,
-            "archive_version_id is only valid for single-file recover or storage-class",
+            "archive_version_id is only valid for single-file recover",
         )
     group_id = uuid.uuid4().hex
     estimated_cost_eur = None
