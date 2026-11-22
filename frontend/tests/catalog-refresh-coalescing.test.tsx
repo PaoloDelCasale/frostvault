@@ -23,12 +23,12 @@ describe("catalog refresh coalescing lifecycle", () => {
     vi.useFakeTimers();
     const { client, emit, view, close } = setup();
     const invalidate = vi.spyOn(client, "invalidateQueries");
-    emit(1); expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey?.[0] === "stats")).toBe(false);
+    emit(1); expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey?.[0] === "vault-stats")).toBe(false);
     invalidate.mockClear();
     emit(2, ["stats"]); emit(3, ["files"]); emit(3, ["files"]); emit(2, ["files"]);
     expect(invalidate).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey?.[0] === "stats")).toBe(true);
+    expect(invalidate.mock.calls.some(([filters]) => filters?.queryKey?.[0] === "vault-stats")).toBe(true);
     expect(invalidate.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === "files")).toHaveLength(1);
     invalidate.mockClear();
     emit(3, ["unknown"], true); // gaps invalidate everything despite duplicate revision
