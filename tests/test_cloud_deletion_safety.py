@@ -117,7 +117,9 @@ class LocalAbsenceTests(unittest.TestCase):
                 (self.root / f"d{d}/e{e}").mkdir(parents=True, exist_ok=True)
                 many.extend(f"d{d}/e{e}/missing{i}.jpg" for i in range(3))
         self.assertEqual(reads(many), few)
-        self.assertEqual(few, 0, "with the local access probe mocked, nothing reads mountinfo")
+        # With the local access probe mocked, only the Root Identity reads it:
+        # once for the opened root, once for the final check (#787, ADR-0055).
+        self.assertEqual(few, 2)
 
 
     def test_traversal_absolute_empty_and_noncanonical_paths_fail_closed(self):

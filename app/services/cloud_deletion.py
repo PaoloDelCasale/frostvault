@@ -227,7 +227,8 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
             descriptors.append(root)
         if (vault.get("root_identity_version") != vault_relocation.ROOT_IDENTITY_VERSION
                 or not vault.get("root_identity")
-                or vault_relocation.opened_root_identity(root) != vault["root_identity"]):
+                or vault_relocation.opened_root_identity(root, vault["source_root"])
+                != vault["root_identity"]):
             raise CloudDeletionError("Vault root identity changed")
         root_device = os.fstat(root).st_dev
         root_mount = source_layout.descriptor_mount_id(root)
@@ -262,8 +263,10 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
             finally:
                 for child in reversed(children):
                     os.close(child)
-        # Do not accept an unlinked/replaced open directory as the configured root.
-        if vault_relocation.root_identity(vault["source_root"]) != vault["root_identity"]:
+        # Do not accept an unlinked/replaced open directory as the configured
+        # root: the descriptor must still be the folder at the Vault path.
+        if (vault_relocation.opened_root_identity(root, vault["source_root"])
+                != vault["root_identity"]):
             raise CloudDeletionError("Vault root changed during absence check")
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
             raise CloudDeletionError("Source Volume changed during absence check")

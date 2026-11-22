@@ -441,6 +441,43 @@ class StartupGuardTests(_GuardFixture):
             "mirror_cleanup_deleted_bytes": None, "mirror_cleanup_last_deleted_at": None})
         self.assertEqual(dict(request), {"automatic": True, "mirror_cleanup": False})
 
+    def test_catalog_of_the_previous_revision_keeps_its_retired_root_identity(self) -> None:
+        """#787: the single retired identity becomes the only element of the set;
+        a Vault without one starts empty. Nothing else is invented."""
+        _migrate_to(self.dsn, "0018_legacy_root_identity")
+        self.execute(
+            "INSERT INTO vault_targets(id, provider, bucket, region, key_layout) VALUES "
+            "(1, 's3', 'frostvault-immich-ab12cd34', 'eu-south-1', 'bucket_root'), "
+            "(2, 's3', 'frostvault-docs-ab12cd34', 'eu-south-1', 'bucket_root'), "
+            "(3, 's3', 'frostvault-new-ab12cd34', 'eu-south-1', 'bucket_root')",
+            "INSERT INTO vaults(id, target_id, name, source_root, root_identity_version, "
+            "root_identity, legacy_root_identity) VALUES "
+            "(1, 1, 'Immich', '/sources/immich', 'linux-stat-dir-v2', 'v2-hash', 'v1-hash'), "
+            "(2, 2, 'Docs', '/sources/docs', 'linux-stat-dir-v1', 'v1-docs', NULL), "
+            "(3, 3, 'New', '/sources/new', NULL, NULL, NULL)")
+        self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
+        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        with PostgresConnection(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT id, root_identity, retired_root_identities FROM vaults ORDER BY id").fetchall()
+            columns = {row["column_name"] for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='vaults'")}
+            for bad in ("retired_root_identities='{v2-hash}'",
+                        "retired_root_identities='{NULL}'",
+                        "root_identity=NULL, root_identity_version=NULL"):
+                with self.subTest(bad=bad), self.assertRaises(psycopg.errors.CheckViolation):
+                    connection.execute(f"UPDATE vaults SET {bad} WHERE id=1")
+                connection.rollback()
+            connection.execute(
+                "UPDATE vaults SET retired_root_identities='{v1-hash,v2-old}' WHERE id=1")
+            connection.rollback()
+        self.assertNotIn("legacy_root_identity", columns)
+        self.assertEqual([dict(row) for row in rows], [
+            {"id": 1, "root_identity": "v2-hash", "retired_root_identities": ["v1-hash"]},
+            {"id": 2, "root_identity": "v1-docs", "retired_root_identities": []},
+            {"id": 3, "root_identity": None, "retired_root_identities": []},
+        ])
+
     def test_failed_upgrade_leaves_the_catalog_at_its_revision(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
         upgrade = schema_guard._alembic_upgrade

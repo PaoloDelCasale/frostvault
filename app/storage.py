@@ -911,8 +911,9 @@ def _scan_tree(
         raise WorkerStopping("Local scan stopped for process shutdown")
 
     unsettled: list[str] = []
-    with PinnedTree(root, subtree=subtree) as tree:
-        if _persisted_scan(vault) and vault_relocation.opened_root_identity(tree.fd) != vault.get("root_identity"):
+    root_check = _scan_root_check(vault) if _persisted_scan(vault) else None
+    with PinnedTree(root, subtree=subtree, root_check=root_check) as tree:
+        if _persisted_scan(vault) and _opened_scan_root_identity(tree.fd, vault) != vault.get("root_identity"):
             raise _ScanRootMismatch("Vault root changed before traversal")
         observe(tree)
         # A folder replaced or removed during the walk invalidates only its own
@@ -941,7 +942,8 @@ def _scan_tree(
             again: list[str] = []
             for relative in replaced:
                 try:
-                    with PinnedTree(root, subtree=root / relative, missing_ok=True) as walk:
+                    with PinnedTree(root, subtree=root / relative, missing_ok=True,
+                                    root_check=root_check) as walk:
                         observe(walk)
                         again.extend(walk.replaced_paths())
                 except TreeIdentityChanged:
@@ -1841,10 +1843,14 @@ def _validate_enrolled_scan_root(vault: dict[str, Any]) -> None:
     # object rather than a persisted row. Real rows always have these columns.
     if "root_identity" not in vault and "root_identity_version" not in vault:
         return
-    if (
-        vault.get("root_identity_version") != vault_relocation.ROOT_IDENTITY_VERSION
-        or not vault.get("root_identity")
-    ):
+    version = vault.get("root_identity_version")
+    if not vault.get("root_identity"):
+        raise RuntimeError("Vault root identity is ambiguous; local scan blocked")
+    if version != vault_relocation.ROOT_IDENTITY_VERSION:
+        # A retired (v1/v2) identity the startup upgrade could not carry over:
+        # the folder it names is not provably this one (#787).
+        if version in vault_relocation.RETIRED_ROOT_IDENTITY_VERSIONS:
+            raise RuntimeError("Vault root identity mismatch; local scan blocked")
         raise RuntimeError("Vault root identity is ambiguous; local scan blocked")
     try:
         observed = vault_relocation.root_identity(vault["source_root"])
@@ -1859,6 +1865,34 @@ def _validate_enrolled_scan_root(vault: dict[str, Any]) -> None:
 
 class _ScanRootMismatch(RuntimeError):
     pass
+
+
+def _scan_root_check(vault: dict[str, Any]) -> Callable[[int], bool] | None:
+    """The in-scan root fence of a Vault whose Root Identity is not its inode.
+
+    On FUSE (ADR-0055) the root's inode is a union branch's and a mover run
+    during the scan may change it: the fence then asks whether the pinned
+    descriptor is still the directory at the Vault path with the enrolled
+    identity, instead of comparing inodes. Folders below the root keep the
+    inode fence: a changed one is a replaced subtree, walked again (#686).
+    Elsewhere the default inode fence stays.
+    """
+    try:
+        on_fuse = vault_relocation.root_is_on_fuse(vault["source_root"])
+    except vault_relocation.VaultRelocationError:
+        return None
+    if not on_fuse:
+        return None
+    expected = vault.get("root_identity")
+    return lambda fd: _opened_scan_root_identity(fd, vault) == expected
+
+
+def _opened_scan_root_identity(fd: int, vault: dict[str, Any]) -> str | None:
+    """The Root Identity of the pinned root descriptor; None when it is not the root."""
+    try:
+        return vault_relocation.opened_root_identity(fd, vault["source_root"])
+    except vault_relocation.VaultRelocationError:
+        return None
 
 
 @contextmanager
@@ -1880,7 +1914,11 @@ def _pinned_verified_scan_root(vault: dict[str, Any]):
     except OSError as exc:
         raise _ScanRootMismatch(f"Vault root could not be pinned: {exc}") from exc
     try:
-        if vault_relocation.opened_root_identity(fd) != vault.get("root_identity"):
+        try:
+            opened = vault_relocation.opened_root_identity(fd, vault["source_root"])
+        except vault_relocation.VaultRelocationError as exc:
+            raise _ScanRootMismatch("Vault root changed while it was being pinned") from exc
+        if opened != vault.get("root_identity"):
             raise _ScanRootMismatch("Vault root changed while it was being pinned")
         pinned = Path(f"/proc/self/fd/{fd}")
         try:

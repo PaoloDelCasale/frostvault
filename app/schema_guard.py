@@ -33,6 +33,7 @@ SCHEMA_REVISIONS = (
     "0010_vault_buckets", "0011_bucket_metrics", "0012_billed_cost",
     "0013_retention_lock", "0014_vault_bucket_deletion", "0015_retained_version_retry",
     "0016_rename_missing_size_idx", "0017_mirror_cleanup", "0018_legacy_root_identity",
+    "0019_retired_root_identities",
 )
 SCHEMA_HEAD = SCHEMA_REVISIONS[-1]
 

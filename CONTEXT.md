@@ -70,8 +70,11 @@ _Avoid_: Marker file, Host path, Mount ID
 
 **Root Identity**:
 The versioned opaque identity of a Vault's root directory; it survives ordinary
-reboots and remounts of the same folder and changes when the folder is replaced
-or a different filesystem is mounted there.
+reboots and remounts of the same folder, and on a union filesystem the folder
+moving between its cache and its disks, and changes when the folder is replaced
+or a different filesystem is mounted there. On a union filesystem it names the
+folder by its Source Volume and path, so a folder recreated at the same path
+keeps it.
 _Avoid_: Marker file, Device number
 
 **Reconnect Folder**:

@@ -164,7 +164,7 @@ def _open_directory(vault: dict[str, Any], parts: tuple[str, ...]) -> Iterator[i
         raise DiskReadError("unavailable") from exc
     try:
         try:
-            identity = opened_root_identity(fd)
+            identity = opened_root_identity(fd, source_root)
         except VaultRelocationError as exc:
             raise DiskReadError("unavailable") from exc
         if identity != vault["root_identity"]:

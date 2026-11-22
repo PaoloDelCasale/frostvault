@@ -2,6 +2,10 @@
 
 Status: accepted by the Owner on 2026-11-22 (issue #784).
 
+Amended by ADR-0055: on a FUSE Source Volume the Root Identity is the Source
+Volume Identity and the root's path (`linux-stat-dir-v3`), and every retired
+identity is kept, not only the v1 one.
+
 ## Context
 
 A Vault's **Root Identity** (`vaults.root_identity`, version
