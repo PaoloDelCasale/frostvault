@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.catalog import ArchiveCatalog
-from tests import catalog_probe
+from tests import catalog_probe, fixtures
 
 
 def seed_vault(
@@ -17,25 +17,8 @@ def seed_vault(
     source_root: str = "/source",
     name: str = "Docs",
 ) -> int:
-    """Insert one active Vault (and its S3 target) with an explicit id."""
-    target = connection.execute(
-        "SELECT id FROM vault_targets WHERE bucket='bucket'"
-    ).fetchone()
-    if target is None:
-        target = connection.execute(
-            """
-            INSERT INTO vault_targets(provider, bucket, region, key_layout)
-            VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix') RETURNING id
-            """
-        ).fetchone()
-    connection.execute(
-        """
-        INSERT INTO vaults(id, target_id, name, source_root)
-        VALUES (%s, %s, %s, %s)
-        """,
-        (vault_id, target["id"], name, source_root),
-    )
-    return vault_id
+    """Alias of ``tests.fixtures.seed_vault`` with an explicit id (#801)."""
+    return fixtures.seed_vault(connection, id=vault_id, name=name, source_root=source_root)["id"]
 
 
 def queue_rename_job(connection: Any, vault_id: int, path: str) -> list[int]:

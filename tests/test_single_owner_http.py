@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
-from unittest.mock import patch
-
-from fastapi.testclient import TestClient
-
-from app.config import settings
 
 from app.main import app
-from app.sessions import create_session
-from tests.owner_fixtures import insert_owner
+from tests.fixtures import FrostVaultTestCase, override_settings
 from tests.spa_fixture import write_spa_dist
-from tests.test_database import run_alembic
 
 # Every operation removed with multi-user support, invites, runtime OIDC
 # configuration and Source Areas.
@@ -62,33 +50,14 @@ REMOVED_OPERATIONS = (
 )
 
 
-class RemovedMultiUserEndpointsTests(unittest.TestCase):
+class RemovedMultiUserEndpointsTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        db_path = Path(self.tmp.name) / "app.db"
-        migrated = run_alembic(db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(db_path)) as connection:
-            insert_owner(connection)
-        configured = replace(
-            settings,
-            database_dsn=database_dsn(str(db_path)),
-            cookie_secure=False,
-            frontend_dist_dir=str(write_spa_dist(Path(self.tmp.name))),
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(app, client=("127.0.0.1", 50001))
-        with PostgresConnection(str(db_path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-        self.client.cookies.set(configured.session_cookie_name, token)
+        super().setUp()
+        self.enterContext(override_settings(
+            frontend_dist_dir=str(write_spa_dist(self.tmp_path)),
+        ))
+        self.client = self.http_client(client=("127.0.0.1", 50001))
+        self.sign_in()
         self.csrf = self.client.get("/api/me").json()["csrf_token"]
 
     def test_removed_endpoints_answer_not_found_to_the_owner(self) -> None:

@@ -6,23 +6,11 @@ JSON.
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
-
-from app.main import app
-from tests.owner_fixtures import insert_owner, insert_vault
-from app.sessions import create_session
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,17 +85,13 @@ def _iter_source_files():
             yield path
 
 
-class FrontendSpaHttpTests(unittest.TestCase):
+class FrontendSpaHttpTests(FrostVaultTestCase):
     PASSWORD = "correct horse battery staple"
+    owner = {"password": PASSWORD}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        self.dist_dir = Path(self._tmp.name) / "dist"
+        super().setUp()
+        self.dist_dir = self.tmp_path / "dist"
         self.dist_dir.mkdir()
         (self.dist_dir / "assets").mkdir()
         (self.dist_dir / "index.html").write_text(
@@ -122,36 +106,17 @@ class FrontendSpaHttpTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, password=self.PASSWORD)
-            self.vault_id = insert_vault(
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(
                 connection, name="Docs Archive", source_root="/source"
             )["id"]
 
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            frontend_dist_dir=str(self.dist_dir),
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
-
-    def _authenticate(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, auth_method="oidc")
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
+        self.enterContext(override_settings(frontend_dist_dir=str(self.dist_dir)))
+        self.client = self.http_client()
 
     def test_root_serves_spa_with_no_flag(self) -> None:
         """Seam 1: GET / returns the SPA with no flag set anywhere."""
-        self.assertFalse(hasattr(self.test_settings, "frontend_spa"))
+        self.assertFalse(hasattr(self.settings, "frontend_spa"))
         self.assertNotIn("FRONTEND_SPA", os.environ)
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200, response.text)
@@ -173,13 +138,13 @@ class FrontendSpaHttpTests(unittest.TestCase):
         denied = self.client.get("/api/vault/operation-policy")
         self.assertEqual(denied.status_code, 401, denied.text)
 
-        self._authenticate()
+        self.sign_in()
         allowed = self.client.get("/api/vault/operation-policy")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_api_me_not_swallowed_by_spa_fallback(self) -> None:
         """Seam 3: GET /api/* unaffected — JSON, not the SPA shell."""
-        self._authenticate()
+        self.sign_in()
         response = self.client.get("/api/me")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
@@ -191,7 +156,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
         denied = self.client.get("/api/files")
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(denied.headers["cache-control"], "no-store")
-        self._authenticate()
+        self.sign_in()
         me = self.client.get("/api/me")
         self.assertNotIn("offline_cache_generation", me.json())
         self.assertNotIn("transition_version", me.json())
@@ -209,7 +174,7 @@ class FrontendSpaHttpTests(unittest.TestCase):
         self.assertIn("spa-shell", response.text)
 
     def test_unknown_api_route_is_not_found_for_every_method(self) -> None:
-        self._authenticate()
+        self.sign_in()
         csrf = self.client.get("/api/me").json()["csrf_token"]
         for method in ("get", "post", "put", "patch", "delete"):
             with self.subTest(method=method):
@@ -245,8 +210,8 @@ class FrontendSpaHttpTests(unittest.TestCase):
             self.assertNotIn("do-not-leak", response.text)
 
     def test_missing_dist_returns_diagnosable_error(self) -> None:
-        missing = Path(self._tmp.name) / "missing-dist"
-        object.__setattr__(self.test_settings, "frontend_dist_dir", str(missing))
+        missing = self.tmp_path / "missing-dist"
+        self.enterContext(override_settings(frontend_dist_dir=str(missing)))
         response = self.client.get("/")
         self.assertEqual(response.status_code, 503, response.text)
         detail = response.json()["detail"]

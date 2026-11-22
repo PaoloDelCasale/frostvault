@@ -1,62 +1,22 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
-
-from app.main import app
-from tests.owner_fixtures import bump_session_version, insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase
+from tests.owner_fixtures import bump_session_version
 
 
-class SessionHttpTests(unittest.TestCase):
+class SessionHttpTests(FrostVaultTestCase):
+    password = "correct horse battery"
+    owner = {"display_name": "Alice", "password": password}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        self.database_path = database_path
-        self.password = "correct horse battery"
-        with PostgresConnection(str(database_path)) as connection:
-            insert_owner(connection, display_name="Alice", password=self.password)
-
-        self.settings = replace(
-            settings,
-            database_dsn=database_dsn(str(database_path)),
-            cookie_secure=False,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
+        super().setUp()
+        self.client = self.http_client()
         self.cookie_name = self.settings.session_cookie_name
 
-    def _login(self) -> "TestClient":
-        response = self.client.post(
-            "/api/login",
-            json={"username": "anything", "password": self.password},
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        return response
-
     def test_login_sets_a_hardened_session_cookie(self) -> None:
-        response = self._login()
+        response = self.sign_in(password=self.password, username="anything").response
 
         set_cookie = response.headers["set-cookie"]
         lowered = set_cookie.lower()
@@ -67,7 +27,7 @@ class SessionHttpTests(unittest.TestCase):
         self.assertNotIn("secure", lowered)
 
     def test_me_is_reachable_with_the_session_cookie(self) -> None:
-        self._login()
+        self.sign_in(password=self.password, username="anything")
 
         response = self.client.get("/api/me")
 
@@ -84,7 +44,7 @@ class SessionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_logout_revokes_the_session_server_side(self) -> None:
-        self._login()
+        self.sign_in(password=self.password, username="anything")
         token = self.client.cookies.get(self.cookie_name)
         self.assertTrue(token)
 
@@ -100,9 +60,9 @@ class SessionHttpTests(unittest.TestCase):
         self.assertEqual(replayed.status_code, 401)
 
     def test_bumped_owner_session_version_revokes_every_session(self) -> None:
-        self._login()
+        self.sign_in(password=self.password, username="anything")
         token = self.client.cookies.get(self.cookie_name)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             bump_session_version(connection)
 
         replayed = self.client.get(
