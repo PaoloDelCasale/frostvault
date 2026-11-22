@@ -37,7 +37,7 @@ class BulkUploadApiTests(unittest.TestCase):
                 patch.object(bulk, "create", side_effect=AssertionError("bulk single file")):
             response = self.client.post("/api/upload", json={"path": "photo.jpg"})
         self.assertEqual(response.status_code, 202)
-        queue.assert_called_once_with("photo.jpg", "upload", 9, 1, False)
+        queue.assert_called_once_with("photo.jpg", "upload", 9, False)
         self.assertNotIn("admission", response.json())
 
     def test_status_is_vault_scoped_and_invalid_uuid_or_scope_is_rejected(self):

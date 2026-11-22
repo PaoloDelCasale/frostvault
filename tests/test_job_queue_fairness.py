@@ -896,7 +896,7 @@ class CancelPendingHttpTests(QueueFixture):
         first, _ = self.queue_manual("manual/a.jpg")
         _, group = self.queue_manual("single/b.jpg")
         self.assertEqual(self.cancel("manual").json()["cancelled_count"], 1)
-        response = self.client.post("/api/upload/cancel", json={"group_id": group},
+        response = self.client.post("/api/jobs/cancel", json={"group_id": group, "action": "upload"},
                                     params={"vault_id": 2}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual({row["path"]: (row["origin"], row["status"]) for row in self.jobs(2)
