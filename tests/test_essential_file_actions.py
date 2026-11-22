@@ -27,6 +27,7 @@ from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint
 from tests.test_rename_sync import CopyWorkerFixture
 from tests.test_upload_worker import A, sha
+from tests import catalog_probe
 
 NEW = "new/photo.txt"
 
@@ -74,7 +75,7 @@ class EssentialFileActionTests(CopyWorkerFixture):
         self.assertEqual(self.file.read_bytes(), A)
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
-            self.assertEqual(str(catalog.get_file_by_path(2, NEW)["id"]), str(self.file_id))
+            self.assertEqual(str(catalog_probe.get_file_by_path(catalog, 2, NEW)["id"]), str(self.file_id))
             self.assertEqual(connection.execute("SELECT count(*) n FROM files").fetchone()["n"], 1)
             self.assertEqual([v["provider_version_id"] for v in catalog.list_versions(2, NEW) if v["recoverable"]],
                              [current["provider_version_id"]])
@@ -102,7 +103,7 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(self.jobs("rename"), [])
                 with self.db() as connection:
-                    current = ArchiveCatalog(connection).get_file_by_path(2, NEW)
+                    current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, NEW)
                     self.assertNotEqual(str(current["id"]), str(self.file_id))
                     # The old file keeps its Current: nothing was removed from the cloud.
                     old = ArchiveCatalog(connection).list_versions(2, "report.txt")
@@ -117,7 +118,7 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.moved()
                 with self.db() as connection:
                     catalog = ArchiveCatalog(connection)
-                    destination_id = str(catalog.get_file_by_path(2, NEW)["id"])
+                    destination_id = str(catalog_probe.get_file_by_path(catalog, 2, NEW)["id"])
                     if state == "archived":
                         catalog.begin_replacement(
                             destination_id, object_key=self.new_key,
@@ -135,7 +136,7 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(self.provider.deleted, [])
                 with self.db() as connection:
-                    self.assertEqual(str(ArchiveCatalog(connection).get_file_by_path(2, NEW)["id"]), destination_id)
+                    self.assertEqual(str(catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, NEW)["id"]), destination_id)
 
     def test_confirmation_rechecks_only_its_fingerprint_group(self) -> None:
         self.moved()

@@ -35,6 +35,7 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
 from tests.test_upload_verification import _observed, _prepare_plain_vault, _sha256_hex
+from tests import catalog_probe
 
 
 def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> None:
@@ -266,7 +267,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                     group_id=str(uuid.uuid4()),
                     is_directory=False,
                 )
-                row = catalog.list_file_rows(2)[0]
+                row = catalog_probe.list_file_rows(catalog, 2)[0]
             self.assertEqual(len(job_ids), 1)
             self.assertEqual(eligible, 1)
             self.assertTrue(row["upload_eligible"])

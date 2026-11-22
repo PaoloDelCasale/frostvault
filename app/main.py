@@ -165,6 +165,14 @@ from .services.storage_classes import (
     source_requires_restore_for_class_change,
     validate_manual_target_class,
 )
+from .services.runtime_status import (
+    runtime_status,
+    scan_lock_for_vault,
+    snapshot_runtime_status_for_stats,
+    status_lock,
+)
+from .services.s3_copy import storage_class_requires_restore
+from .services.vault_paths import InvalidLogicalPath, safe_local_path, safe_relative_path
 from .storage import (
     background_loop,
     cancel_jobs,
@@ -180,18 +188,10 @@ from .storage import (
     stop_background_executors,
     now_iso,
     reconcile_interrupted_jobs,
-    runtime_status,
-    safe_local_path,
-    scan_lock_for_vault,
     queue_scan,
     request_full_scan,
-    snapshot_runtime_status_for_stats,
-    status_lock,
-    safe_relative_path,
-    InvalidLogicalPath,
     scan_vault,
     s3_client,
-    storage_class_requires_restore,
 )
 
 

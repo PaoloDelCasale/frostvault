@@ -251,7 +251,8 @@ class QueuedScanTests(unittest.TestCase):
         gate = threading.Event()
         self.addCleanup(gate.set)
         # The Vault's scan thread is busy, so the waiting scan is still queued.
-        storage._watcher_scan_executor(VAULT_ID).submit(gate.wait, 5)
+        with storage._watcher_scan_pool_lock:
+            storage._watcher_scan_executor_locked(VAULT_ID).submit(gate.wait, 5)
         future = storage.queue_scan({"id": VAULT_ID})
         storage._detach_background_executors()
         self.assertEqual(future.result(timeout=5), {"stopped": 1})

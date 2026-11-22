@@ -26,6 +26,7 @@ from app.services.lifecycle_profiles import guided_profile, profile_to_json
 from tests.s3_integration_support import (
     ensure_versioned_bucket, prepare_plain_vault, require_s3_env,
 )
+from tests import catalog_probe
 
 
 def _snapshot_mtime_ns(connection, version_id):
@@ -87,7 +88,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                 process_jobs_once()
                 with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
-                    observed = catalog.get_file_by_path(2, relative_path)
+                    observed = catalog_probe.get_file_by_path(catalog, 2, relative_path)
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='upload'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
                     version = observed["current_version"]
@@ -119,7 +120,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     with PostgresConnection(str(database_path)) as connection:
                         job = connection.execute("SELECT status,message FROM jobs WHERE action='rename'").fetchone()
                         self.assertEqual(job["status"], "completed", job["message"])
-                        renamed_version = ArchiveCatalog(connection).get_file_by_path(2, relative_path)["current_version"]
+                        renamed_version = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, relative_path)["current_version"]
                         head = s3_client().head_object(Bucket=self.bucket, Key=renamed_version["object_key"], VersionId=renamed_version["provider_version_id"])
                         # A server-side copy keeps the exact metadata (MetadataDirective=COPY).
                         self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
@@ -169,7 +170,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     self.assertIsNotNone(recovered["local_recovered_at"])
                     # Even a catalogless recovery has exact metadata after a
                     # single/multipart storage-class copy (MetadataDirective).
-                    latest = ArchiveCatalog(connection).get_file_by_path(2, relative_path)["current_version"]
+                    latest = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, relative_path)["current_version"]
                     head = s3_client().head_object(Bucket=self.bucket, Key=latest["object_key"], VersionId=latest["provider_version_id"])
                     self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
 

@@ -31,6 +31,7 @@ from app.services import vaults as vaults_service
 from app.services.vaults import VAULT_ROW_SQL
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 class _AdoptionFixture(unittest.TestCase):
     """Shared Source Volume layout for adoption seams."""
@@ -311,7 +312,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
         self.assertGreaterEqual(result.get("local", 0), 1)
         with PostgresConnection(str(self.database_path)) as connection:
-            rows = ArchiveCatalog(connection).list_file_rows(int(vault["id"]))
+            rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertIn("photo.jpg", by_path)
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
@@ -355,7 +356,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         (self.albums / "healthy.jpg").write_bytes(b"healthy new content")
         with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.get_file_by_path(vault["id"], "photo.jpg")["id"]
+            file_id = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")["id"]
             version_id = catalog.begin_replacement(
                 file_id, object_key="only/photo.jpg", provider_version_id="only-copy",
                 size=10, storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00",
@@ -382,7 +383,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
             self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in str(p["message_params"]) for p in problems))
             self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(vault["id"])}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), vault["id"])}
             self.assertEqual(set(rows), {"photo.jpg", "old.jpg", "healthy.jpg"})
             self.assertTrue(all(r["local_exists"] for r in rows.values()))
             self.assertTrue(rows["healthy.jpg"]["upload_eligible"])
@@ -427,7 +428,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
             digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
-            row = catalog.get_file_by_path(vault["id"], "photo.jpg")
+            row = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")
             file_id = row["id"]
             version_id = catalog.begin_replacement(
                 file_id, object_key="only/photo.jpg", provider_version_id="only-copy",
@@ -473,7 +474,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertGreaterEqual(count, 2)
 
         with PostgresConnection(str(self.database_path)) as connection:
-            rows = ArchiveCatalog(connection).list_file_rows(int(vault["id"]))
+            rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
         self.assertEqual(by_path["alias.jpg"]["local_file_type"], "symlink")

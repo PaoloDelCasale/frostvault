@@ -36,6 +36,7 @@ from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn
 from tests.test_cloud_scan_batching import PREFIX, VAULT, VAULT_UUID, _run_scan, _seed_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 MIB = 1024 ** 2
 DEEP_NOW = {"transitions": [{"days": 0, "storage_class": "DEEP_ARCHIVE"}]}
@@ -71,7 +72,7 @@ class ClassEntryFixture(unittest.TestCase):
             catalog.observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=size, mtime_ns=1,
                 observed_at=created_at.isoformat())
-            row = catalog.get_file_by_path(2, path)
+            row = catalog_probe.get_file_by_path(catalog, 2, path)
             return catalog.begin_replacement(
                 row["id"], object_key=PREFIX + path, provider_version_id=f"{path}-v1",
                 size=size, storage_class=storage_class, created_at=created_at.isoformat())

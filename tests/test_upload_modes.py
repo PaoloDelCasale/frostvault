@@ -18,6 +18,7 @@ from app.storage import process_jobs_once
 from tests.postgres import PostgresConnection, database_dsn
 from tests.snapshot_s3_stub import VersionedS3Stub
 from tests.test_upload_verification import _observed, _prepare_plain_vault
+from tests import catalog_probe
 
 
 def _job_snapshot(connection, job_id):
@@ -126,7 +127,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(item["local_copy"]["plaintext_sha256"], item["latest_version"]["plaintext_sha256"])
         self.assertEqual(self.s3.reads, [])
         with PostgresConnection(str(self.identity)) as connection:
-            self.assertTrue(ArchiveCatalog(connection).list_file_rows(2)[0]["cleanup_eligible"])
+            self.assertTrue(catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]["cleanup_eligible"])
 
     def test_requested_mode_frozen_at_admission_and_history_not_rewritten(self):
         self.set_mode("read_back"); self.queue(); self.set_mode("s3_checksum")
@@ -378,7 +379,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertNotEqual(item["local_copy"]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
         self.assertIsNone(item["matched_version_id"])
         with PostgresConnection(str(self.identity)) as connection:
-            listing = ArchiveCatalog(connection).list_file_rows(2)[0]
+            listing = catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]
         self.assertFalse(listing["cleanup_eligible"])
         self.assertNotEqual(listing["state"], "protected")
         self.assertEqual(self.s3.reads, [])
@@ -458,7 +459,7 @@ class UploadModeTests(unittest.TestCase):
         key = f"vaults/{self._vault_uuid()}/a.txt"
         with PostgresConnection(str(self.identity)) as connection:
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.get_file_by_path(2, "a.txt")["id"]
+            file_id = catalog_probe.get_file_by_path(catalog, 2, "a.txt")["id"]
             orphan = catalog.begin_replacement(
                 file_id, object_key=key, provider_version_id="raw-version", size=len(self.payload),
                 storage_class="STANDARD", created_at="2026-11-01T00:00:00+00:00")

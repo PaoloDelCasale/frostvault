@@ -20,6 +20,7 @@ from app.services.protection_states import (
 from app.services.upload_path_rules import inline_eligibility_sql
 from app.services.source_layout import VaultLocalAccess
 from tests.catalog_support import fingerprint, protect, seed_vault
+from tests import catalog_probe
 
 T = '2026-11-03T10:00:00+00:00'
 
@@ -172,7 +173,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
             if verified:
                 self.catalog.promote_replacement(
                     file_id, archive_version_id=version_id, plaintext_sha256='a' * 64, verified_at=T,
-                    local_generation=self.catalog.get_file_by_path(9, path)['generation'])
+                    local_generation=catalog_probe.get_file_by_path(self.catalog, 9, path)['generation'])
                 if availability != 'available':
                     self.connection.execute('UPDATE archive_versions SET availability=%s WHERE id=%s', (availability, version_id))
         if not local:
@@ -188,7 +189,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.seed('cloud', local=False, archive=True, verified=True)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         expected = {'pending': 2, 'protected': 1, 'problem': 1, 'unconfirmed': 1, 'cloud_only': 1}
-        rows = self.catalog.list_file_rows(9)
+        rows = catalog_probe.list_file_rows(self.catalog, 9)
         self.assertEqual(dict(Counter(row['state'] for row in rows)), expected)
         self.assertEqual(self.catalog.summary(9)['states'], expected)
         folder = self.catalog.list_files_page(9)['items'][0]
@@ -275,7 +276,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         file_id, _ = self.seed('._only', path='._only')
         self.assertEqual(self.catalog.summary(9)['states'], {'excluded': 1})
         self.assertEqual(self.catalog.summary(9)['protection_state'], 'excluded')
-        row = self.catalog.list_file_rows(9)[0]
+        row = catalog_probe.list_file_rows(self.catalog, 9)[0]
         self.assertEqual(row['state'], 'excluded')
         # Manual operations stay explicit: the file remains uploadable...
         self.assertTrue(row['upload_eligible'])
@@ -308,7 +309,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         # Availability unknown wins over the rule, yet the last known state is Excluded.
         self.seed('._unknown', path='photos/._unknown', archive=True, verified=True, availability='unknown', match=False)
         self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'excluded': 1, 'unconfirmed': 1})
-        rows = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
         stale = rows['photos/._stale']
         self.assertEqual(stale['state'], 'excluded')
         self.assertTrue(stale['previous_snapshot_protected'])
@@ -339,7 +340,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         summary = self.catalog.summary(9)
         self.assertEqual(summary['states'], expected)
         self.assertEqual(summary['protection_state'], 'stopped')
-        rows = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
         stopped = rows['photos/sub/stopped.jpg']
         self.assertEqual((stopped['state'], stopped['last_known_state']), ('stopped', 'stopped'))
         # A manual upload stays possible.
@@ -380,7 +381,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.catalog.observe_local_copy(vault_id=9, path='photos/sub/stopped.jpg', file_type='regular',
                                         size=13, mtime_ns=2, observed_at='2026-11-03T10:10:00+00:00')
         self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
-        states = {row['path']: row['state'] for row in self.catalog.list_file_rows(9)}
+        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.catalog, 9)}
         self.assertEqual(states['photos/sub/stopped.jpg'], 'pending')
         self.assertEqual(states['photos/sub/auto.jpg'], 'stopped')
 
@@ -398,7 +399,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         # An excluded path stays excluded even when its upload was stopped.
         noise, _ = self.seed('._noise', path='photos/._noise')
         self.job(noise, 'cancelled', key='job.upload_stopped')
-        states = {row['path']: row['state'] for row in self.catalog.list_file_rows(9)}
+        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.catalog, 9)}
         self.assertEqual(states, {
             'photos/failed_auto.jpg': 'problem', 'photos/failed_manual.jpg': 'problem',
             'photos/removed.jpg': 'pending', 'photos/old.jpg': 'pending', 'photos/._noise': 'excluded',
@@ -506,7 +507,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.catalog.block_reconciliation(blocked_id, reason='proof_mismatch', at=T)
         self.seed('unverified', archive=True)
         self.seed('missing-local', archive=True, verified=True, availability='missing')
-        states = {row['path']: row for row in self.catalog.list_file_rows(9)}
+        states = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
         for name in ('failed', 'conflict', 'mismatch', 'missing-local'):
             self.assertEqual(states[f'photos/{name}.jpg']['state'], 'problem')
             self.assertFalse(states[f'photos/{name}.jpg']['cleanup_eligible'])

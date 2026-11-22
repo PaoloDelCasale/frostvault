@@ -354,11 +354,11 @@ class SchedulerFileIsolationTests(unittest.TestCase):
 
     def test_linked_version_reconciliation_does_not_require_local_copy(self) -> None:
         self.catalog.get_job_target.return_value = {"file_id": "file", "archive_version_id": 9}
-        self.assertTrue(storage_module._automatic_upload_ready(self.missing))
+        self.assertEqual(storage_module._automatic_upload_state(self.missing), storage_module.UPLOAD_READY)
 
     def test_sent_intent_reconciliation_does_not_require_local_copy(self) -> None:
         with patch("app.services.upload_provenance.load_for_job", return_value=SimpleNamespace(send_started=True)):
-            self.assertTrue(storage_module._automatic_upload_ready(self.missing))
+            self.assertEqual(storage_module._automatic_upload_state(self.missing), storage_module.UPLOAD_READY)
 
     def test_unready_candidate_is_deferred_and_left_out_of_the_next_query(self) -> None:
         # The same head-of-queue Job must not be re-read and rechecked every tick.

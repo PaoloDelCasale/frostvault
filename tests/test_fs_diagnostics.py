@@ -21,6 +21,7 @@ from app.services.fs_preflight import inspect_entry
 from tests.catalog_support import seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class FilesystemProblemTests(unittest.TestCase):
@@ -54,7 +55,7 @@ class FilesystemProblemTests(unittest.TestCase):
         (self.root / "link.txt").symlink_to(self.root / "ok.txt")
         self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 2)
         with PostgresConnection(str(self.path)) as connection:
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(9)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
         self.assertTrue(rows["ok.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["cleanup_eligible"])

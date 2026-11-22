@@ -19,6 +19,7 @@ from app.services import source_layout, source_identity, vault_relocation
 from app.services.recovery_kit import kit_status, record_metadata_restore
 from tests.postgres import PostgresConnection, database_dsn
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class ListingS3:
@@ -398,7 +399,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(len(s3.reads), 3)
         self.assertTrue(all(read["VersionId"] == "new-" + read["Key"].rsplit("/", 1)[1] for read in s3.reads))
         with PostgresConnection(str(self.db_path)) as connection:
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["same.jpg"]["state"], "protected")
             self.assertEqual(rows["missing.jpg"]["state"], "cloud_only")
             self.assertEqual(rows["conflict.jpg"]["state"], "problem")
@@ -475,7 +476,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [])
         self.assertEqual(sorted(read["VersionId"] for read in s3.reads), sorted("new-" + p for p in content))
         with PostgresConnection(str(self.db_path)) as connection:
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/same.bin"]["state"], "protected")
             self.assertEqual(rows["after/gone.bin"]["state"], "cloud_only")
             self.assertEqual(rows["after/other.bin"]["state"], "problem")
@@ -514,7 +515,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.scan(s3=s3)
         self.assertEqual(self.row()["lifecycle"], "active")
         with PostgresConnection(str(self.db_path)) as connection:
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/cold.bin"]["state"], "protected")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
@@ -535,7 +536,7 @@ class VaultReconnectTests(unittest.TestCase):
             self.assertEqual([(v["provider_version_id"], v["availability"]) for v in versions],
                              [("new-doc.txt", "available")])
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM cleanup_batches").fetchone()["n"], 0)
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["doc.txt"]["state"], "protected")
         self.scan(s3=s3)
         with PostgresConnection(str(self.db_path)) as connection:
@@ -572,7 +573,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(self.row()["lifecycle"], "active")
         with PostgresConnection(str(self.db_path)) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions").fetchone()["n"], 1)
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/new.bin"]["state"], "cloud_only")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
@@ -683,7 +684,7 @@ class ManagedVaultReconnectTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [])
         self.assertEqual(self.row()["lifecycle"], "active")
         with PostgresConnection(str(self.db_path)) as connection:
-            rows = {r["path"]: r for r in ArchiveCatalog(connection).list_file_rows(7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS n FROM metadata_restore_vaults WHERE vault_id=7").fetchone()["n"], 0)
         self.assertEqual(rows["photo.jpg"]["state"], "protected")

@@ -30,6 +30,7 @@ from app.services import notifications
 from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class CatalogIncidentTests(unittest.TestCase):
@@ -55,7 +56,7 @@ class CatalogIncidentTests(unittest.TestCase):
             digest = sha256_hex(b"report")
             fingerprint(catalog, 1, "docs/report.pdf", digest)
             self.version_id = protect(catalog, 1, "docs/report.pdf", digest)
-            self.file_id = catalog.get_file_by_path(1, "docs/report.pdf")["id"]
+            self.file_id = catalog_probe.get_file_by_path(catalog, 1, "docs/report.pdf")["id"]
             self.key = "vaults/x/docs/report.pdf"
 
     def _problems(self, connection) -> list[dict]:

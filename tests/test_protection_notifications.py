@@ -13,6 +13,7 @@ from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.source_layout import VaultLocalAccess
 from tests.owner_fixtures import insert_job
+from tests import catalog_probe
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
@@ -464,7 +465,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                     c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,"
                               "updated_at,finished_at) VALUES (%s,%s,'upload','cancelled','manual',"
                               "'job.upload_stopped',%s,%s,%s)",
-                              (self.vault_id,catalog.get_file_by_path(self.vault_id,name)['id'],NOW,NOW,NOW))
+                              (self.vault_id,catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],NOW,NOW,NOW))
                 if state in ('pending', 'stopped', 'excluded', 'unsupported'):
                     continue
                 fingerprint(catalog,self.vault_id,name,digest)
@@ -472,10 +473,10 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
                 c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s",(availability,version))
                 if state == 'cloud_only':
-                    catalog.mark_local_copy_missing(catalog.get_file_by_path(self.vault_id,name)['id'],observed_at=NOW)
+                    catalog.mark_local_copy_missing(catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],observed_at=NOW)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
-            protected = catalog.get_file_by_path(self.vault_id,'protected.jpg')['id']
+            protected = catalog_probe.get_file_by_path(catalog, self.vault_id,'protected.jpg')['id']
             for status, age in (('completed',1),('completed',9),('failed',1)):
                 c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,total_bytes) "
                           "VALUES (%s,%s,'free-space',%s,'manual',%s,%s,1048576)",

@@ -19,6 +19,7 @@ from app.catalog import ArchiveCatalog
 
 from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class SinglePathLookupPlanTests(unittest.TestCase):
@@ -59,7 +60,7 @@ class SinglePathLookupPlanTests(unittest.TestCase):
                 return original(sql, params)
 
             connection.execute = recording  # type: ignore[method-assign]
-            catalog.get_file_by_path(1, "folder/file-010.txt")
+            catalog_probe.get_file_by_path(catalog, 1, "folder/file-010.txt")
             catalog.mark_local_path_missing(
                 vault_id=1, path="folder/file-011.txt",
                 observed_at="2026-09-30T00:00:01+00:00",

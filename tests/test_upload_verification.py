@@ -32,6 +32,7 @@ from app.storage import (
 from tests.catalog_support import seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -44,7 +45,7 @@ def _observed(connection, path: str) -> dict:
     Current, the replacement in progress or an abandoned (mismatched)
     replacement awaiting cleanup: whichever upload wrote last.
     """
-    row = ArchiveCatalog(connection).get_file_by_path(2, path)
+    row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, path)
     latest = connection.execute(
         """SELECT av.* FROM archive_versions av WHERE av.file_id=%s
            ORDER BY av.created_at DESC, av.id LIMIT 1""", (row["id"],)).fetchone()
@@ -65,7 +66,7 @@ def _versions(connection, path: str) -> list[dict]:
 def _seed_previous_current(connection, path: str, content: bytes, provider_version_id: str) -> tuple[str, str]:
     """A verified Current with older content at the Vault namespace key."""
     catalog = ArchiveCatalog(connection)
-    row = catalog.get_file_by_path(2, path)
+    row = catalog_probe.get_file_by_path(catalog, 2, path)
     uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
     key = f"vaults/{uuid}/{path}"
     version = catalog.begin_replacement(
@@ -245,7 +246,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog.list_file_rows(2)
+                listed = catalog_probe.list_file_rows(catalog, 2)
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -282,7 +283,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog.list_file_rows(2)
+                listed = catalog_probe.list_file_rows(catalog, 2)
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -315,7 +316,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog.list_file_rows(2)
+                listed = catalog_probe.list_file_rows(catalog, 2)
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -641,14 +642,14 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 info = local_file.stat()
                 with PostgresConnection(str(database_path)) as connection:
                     catalog = ArchiveCatalog(connection)
-                    before = catalog.get_file_by_path(2, "report.txt")["generation"]
+                    before = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
                     catalog.observe_local_copies_batch(
                         vault_id=2,
                         entries=[("report.txt", "regular", info.st_size,
                                   info.st_mtime_ns, "2026-07-21T10:05:00+00:00")],
                         seen_at="2026-07-21T10:05:00+00:00",
                     )
-                    after = catalog.get_file_by_path(2, "report.txt")["generation"]
+                    after = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
                 generations.extend((before, after))
 
             def fake_stream(*args, **kwargs) -> int:

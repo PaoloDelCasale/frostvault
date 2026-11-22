@@ -26,6 +26,7 @@ from tests.catalog_support import seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.stress_profile import stress_file_count
 from tests.upload_support import claimed_job_row, job_row, queue_upload
+from tests import catalog_probe
 
 PAYLOAD = b"nested concurrent upload content"
 STAMP = "2026-07-21T10:00:00+00:00"
@@ -971,7 +972,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["status"], "completed")
             # The superseded version left the catalog with its cleanup.
             self.assertIsNone(connection.execute("SELECT 1 FROM archive_versions WHERE id=%s", (previous,)).fetchone())
-            current = ArchiveCatalog(connection).get_file_by_path(2, path)["current_version"]
+            current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, path)["current_version"]
             self.assertEqual(current["integrity"], "verified")
             self.assertEqual(current["availability"], "available")
 

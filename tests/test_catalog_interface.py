@@ -12,6 +12,7 @@ from pathlib import Path
 
 from tests.catalog_support import seed_vault
 from tests.postgres import PostgresConnection, run_alembic
+from tests import catalog_probe
 
 
 class CatalogInterfaceTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class CatalogInterfaceTests(unittest.TestCase):
                     mtime_ns=1_750_000_000_250_000_000,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                observed = catalog.get_file_by_path(2, "reports/annual.txt")
+                observed = catalog_probe.get_file_by_path(catalog, 2, "reports/annual.txt")
 
             self.assertEqual(observed["id"], file_id)
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -65,11 +66,11 @@ class CatalogInterfaceTests(unittest.TestCase):
                     changed_at="2026-07-21T11:00:00+00:00",
                     vault_id=2,
                 )
-                renamed = catalog.get_file_by_path(
+                renamed = catalog_probe.get_file_by_path(catalog, 
                     2, "test/fotodefinitiva.jpg"
                 )
-                old_path = catalog.get_file_by_path(2, "test/fototest.jpg")
-                history = catalog.list_path_history(file_id, vault_id=2)
+                old_path = catalog_probe.get_file_by_path(catalog, 2, "test/fototest.jpg")
+                history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
 
             self.assertEqual(renamed["id"], file_id)
             self.assertIsNone(old_path)
@@ -117,8 +118,8 @@ class CatalogInterfaceTests(unittest.TestCase):
                     scan_id="2026-07-21T10:00:00+00:00",
                     scan_started_at="2026-07-21T10:00:00+00:00",
                 )
-                old = catalog.get_file_by_path(2, "old.txt")
-                new = catalog.get_file_by_path(2, "new.txt")
+                old = catalog_probe.get_file_by_path(catalog, 2, "old.txt")
+                new = catalog_probe.get_file_by_path(catalog, 2, "new.txt")
 
             self.assertEqual(old["replacing_version"]["availability"], "missing")
             self.assertEqual(new["replacing_version"]["availability"], "available")

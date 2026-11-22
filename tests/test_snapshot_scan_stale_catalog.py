@@ -22,6 +22,7 @@ from tests.catalog_support import fingerprint, sha256_hex
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
 PREFIX = f"vaults/{VAULT_UUID}/"
@@ -77,7 +78,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
                 mtime_ns=1, observed_at="2026-07-21T09:00:00+00:00",
             )
             fingerprint(catalog, 2, "report.txt", digest)
-            row = catalog.get_file_by_path(2, "report.txt")
+            row = catalog_probe.get_file_by_path(catalog, 2, "report.txt")
             self.current_id = catalog.begin_replacement(
                 row["id"], object_key=PREFIX + "report.txt", provider_version_id="s3-a",
                 size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00",
@@ -107,7 +108,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
 
     def _file(self) -> dict:
         with PostgresConnection(str(self.database_path)) as connection:
-            return ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+            return catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "report.txt")
 
     def test_uncatalogued_newer_version_is_never_adopted_when_current_is_gone(self) -> None:
         s3 = _ListingS3([_item("s3-b", 12)])

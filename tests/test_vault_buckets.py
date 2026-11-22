@@ -26,6 +26,7 @@ from app.services.vault_paths import object_prefix
 from tests.fake_bucket_s3 import FakeBucketS3, fake_vault_buckets
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 UUID = "2f1c7e36-0000-4000-8000-000000000001"
 DEEP = LifecycleProfile(transitions=(LifecycleTransition(days=0, storage_class="DEEP_ARCHIVE"),))
@@ -691,7 +692,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
         with PostgresConnection(str(self.db_path)) as connection:
             done = connection.execute("SELECT status, message FROM jobs WHERE id=%s", (job_id,)).fetchone()
             self.assertEqual(done["status"], "completed", done["message"])
-            current = ArchiveCatalog(connection).get_file_by_path(2, "photos/report.txt")["current_version"]
+            current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "photos/report.txt")["current_version"]
         # The key is the relative path: no vaults/<uuid>/ prefix in a Vault Bucket.
         self.assertEqual(current["object_key"], "photos/report.txt")
         self.assertEqual([key for key, _ in self.provider.objects], ["photos/report.txt"])

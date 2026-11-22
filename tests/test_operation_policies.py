@@ -33,6 +33,7 @@ from app.services.operation_policies import (
 from tests.catalog_support import fingerprint, protect, seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 def _protect(catalog, path: str, digest: str, provider_version_id: str, verified_at: str) -> str:
@@ -497,7 +498,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         )
 
     def _state(self, connection, name: str) -> str:
-        rows = ArchiveCatalog(connection).list_file_rows(2)
+        rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)
         return next(row["state"] for row in rows if row["path"] == name)
 
     def test_stopped_upload_survives_reconnect_with_the_same_content(self) -> None:
@@ -517,7 +518,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
             self._rescan(connection, watched, invalidate=True)
             self.assertEqual(self._state(connection, "scanned.bin"), "stopped")
             self.assertEqual(self._state(connection, "watched.bin"), "stopped")
-            row = ArchiveCatalog(connection).get_file_by_path(2, "scanned.bin")
+            row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "scanned.bin")
             self.assertEqual(
                 row["local_copy"]["content_observed_at"],
                 datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc),

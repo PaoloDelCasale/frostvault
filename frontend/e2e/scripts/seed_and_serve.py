@@ -63,6 +63,7 @@ def _seed(paths: dict[str, Path]) -> dict:
     # Import after the isolated PostgreSQL DSN and filesystem env are prepared.
     sys.path.insert(0, str(REPO_ROOT))
     from app.catalog import ArchiveCatalog
+    from tests import catalog_probe
     from app.database import db
     from app.security import hash_password
     from app.sessions import create_session, csrf_token_for
@@ -140,7 +141,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             observed_at="2026-07-02T10:00:00+00:00",
         )
         note_digest = hashlib.sha256(note_path.read_bytes()).hexdigest()
-        note = catalog.get_file(note_id, vault_id=primary_id)
+        note = catalog_probe.get_file(catalog, note_id, vault_id=primary_id)
         catalog.publish_local_fingerprint(
             note_id, generation=note["generation"], plaintext_sha256=note_digest,
             size=note_stat.st_size, mtime_ns=note_stat.st_mtime_ns,
@@ -175,7 +176,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,
             observed_at='2026-07-01T13:00:00Z',
         )
-        conflict = catalog.get_file(conflict_file, vault_id=primary_id)
+        conflict = catalog_probe.get_file(catalog, conflict_file, vault_id=primary_id)
         catalog.publish_local_fingerprint(
             conflict_file, generation=conflict["generation"],
             plaintext_sha256=hashlib.sha256(conflict_path.read_bytes()).hexdigest(),

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from typing import Any
+from tests import catalog_probe
 
 
 def seed_vault(
@@ -39,7 +40,7 @@ def sha256_hex(payload: bytes) -> str:
 
 def fingerprint(catalog: Any, vault_id: int, path: str, digest: str) -> bool:
     """Publish ``digest`` for the Local Copy currently observed at ``path``."""
-    row = catalog.get_file_by_path(vault_id, path)
+    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
     local = row["local_copy"]
     return catalog.publish_local_fingerprint(
         row["id"],
@@ -61,7 +62,7 @@ def protect(
     verified_at: str = "2026-07-21T10:02:00+00:00",
 ) -> str:
     """Upload and verify Current for the fingerprinted Local Copy at ``path``."""
-    row = catalog.get_file_by_path(vault_id, path)
+    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
     size = row["local_copy"]["size"] if row["local_copy"] else 1
     version_id = catalog.begin_replacement(
         row["id"],

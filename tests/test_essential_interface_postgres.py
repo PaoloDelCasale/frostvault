@@ -4,6 +4,7 @@ from tests import test_protection_states as fixtures
 from app.catalog import ArchiveCatalog
 from tests.catalog_support import fingerprint, seed_vault
 from tests.owner_fixtures import insert_owner
+from tests import catalog_probe
 
 
 class EssentialSearchPostgresTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class EssentialSearchPostgresTests(unittest.TestCase):
             size=12, storage_class=storage_class, created_at=stamp)
         self.catalog.promote_replacement(
             file_id, archive_version_id=version, plaintext_sha256=digest, verified_at=stamp,
-            local_generation=self.catalog.get_file_by_path(vault_id, path)['generation'])
+            local_generation=catalog_probe.get_file_by_path(self.catalog, vault_id, path)['generation'])
         self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
         return version
 

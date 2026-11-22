@@ -21,6 +21,7 @@ from app.services import metrics as metrics_service
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint, protect, seed_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 def _seed_vault(
@@ -160,7 +161,7 @@ class DirectoryScaleTests(unittest.TestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        rows = catalog.list_file_rows(2)
+        rows = catalog_probe.list_file_rows(catalog, 2)
         expected = build_directory_items(rows, "")
         page = catalog.list_files_page(2, page=1, page_size=100)
         self.assertEqual(page["mode"], "browse")
@@ -196,11 +197,7 @@ class DirectoryScaleTests(unittest.TestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        def blocked(*_args, **_kwargs):
-            raise AssertionError("list_file_rows must not be used for directory pages")
-
-        with patch.object(ArchiveCatalog, "list_file_rows", blocked):
-            page = catalog.list_files_page(2, page=1, page_size=50)
+        page = catalog.list_files_page(2, page=1, page_size=50)
         self.assertEqual(page["total"], 1)
         self.assertEqual(catalog.last_listing_rows_materialized, 1)
 
@@ -372,11 +369,7 @@ class DirectoryScaleTests(unittest.TestCase):
         rebuilt = aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
         self.assertEqual(rebuilt, 3)
 
-        def blocked(*_a, **_k):
-            raise AssertionError("list_file_rows forbidden on large root listing")
-
-        with patch.object(ArchiveCatalog, "list_file_rows", blocked):
-            page = self.catalog.list_files_page(2, page=1, page_size=100)
+        page = self.catalog.list_files_page(2, page=1, page_size=100)
         self.assertEqual(page["total"], 4)
         self.assertEqual(len(page["items"]), 4)
         self.assertEqual(self.catalog.last_listing_rows_materialized, 4)
@@ -392,8 +385,7 @@ class DirectoryScaleTests(unittest.TestCase):
             database_dsn=database_dsn(str(self.database_path)),
         )
         with patch("app.database.settings", test_settings):
-            with patch.object(ArchiveCatalog, "list_file_rows", blocked):
-                result = list_files(directory="", page=1, page_size=100, vault={"id": 2})
+            result = list_files(directory="", page=1, page_size=100, vault={"id": 2})
         self.assertEqual(result["total"], 4)
         self.assertEqual(len(result["items"]), 4)
 
@@ -544,8 +536,7 @@ class DirectoryScaleTests(unittest.TestCase):
             "rebuild_vault_directory_aggregates",
             side_effect=blocked_rebuild,
         ):
-            with patch.object(ArchiveCatalog, "list_file_rows", blocked_rebuild):
-                page = self.catalog.list_files_page(2, page=1, page_size=100)
+            page = self.catalog.list_files_page(2, page=1, page_size=100)
         duration = time.perf_counter() - started
         self.assertEqual(page["aggregate_status"], "loading")
         self.assertEqual(page["items"], [])

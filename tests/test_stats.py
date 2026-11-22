@@ -18,6 +18,7 @@ from app.services.runtime_status import runtime_status, snapshot_runtime_status_
 from app.services.source_layout import VaultLocalAccess
 from tests.catalog_support import seed_vault, sha256_hex
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class StatsTests(unittest.TestCase):
@@ -32,7 +33,7 @@ class StatsTests(unittest.TestCase):
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
             # Current holds other (older) content: the Local Copy is pending.
-            row = catalog.get_file_by_path(9, "photo.jpg")
+            row = catalog_probe.get_file_by_path(catalog, 9, "photo.jpg")
             version = catalog.begin_replacement(
                 row["id"], object_key="vaults/x/photo.jpg", provider_version_id="only-copy",
                 size=44, storage_class="STANDARD", created_at="2026-07-21T00:00:00+00:00",
@@ -54,7 +55,6 @@ class StatsTests(unittest.TestCase):
                 patch("app.main.vault_local_access", return_value=VaultLocalAccess(health == "ok", True, "photos", health)),
                 patch("os.walk", side_effect=AssertionError("no diagnostic walker")),
                 patch("os.path.realpath", side_effect=AssertionError("no root resolution")),
-                patch.object(ArchiveCatalog, "list_file_rows", side_effect=AssertionError("SQL aggregates only")),
             ):
                 payload = stats({"id": 9, "source_root": "/sources/photos"})
             self.assertEqual(payload["states"], {"pending" if health == "ok" else "unconfirmed": 1})
@@ -72,10 +72,9 @@ class StatsTests(unittest.TestCase):
     def test_summary_is_scoped_and_matches_listing(self):
         with PostgresConnection(str(self.path)) as connection:
             catalog = ArchiveCatalog(connection)
-            rows = catalog.list_file_rows(9)
-            with patch.object(ArchiveCatalog, "list_file_rows", side_effect=AssertionError("not an aggregate")):
-                summary = catalog.summary(9)
-                empty = catalog.summary(999)
+            rows = catalog_probe.list_file_rows(catalog, 9)
+            summary = catalog.summary(9)
+            empty = catalog.summary(999)
         self.assertEqual(summary["storage"]["local_bytes"], sum(row["local_size"] for row in rows))
         self.assertEqual(empty["storage"], {"local_bytes": 0, "cloud_bytes": 0})
 
