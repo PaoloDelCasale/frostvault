@@ -1,6 +1,8 @@
 """The fixture module keeps its promises: isolation, restore, one Owner (#801)."""
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,6 +103,16 @@ class OverrideSettingsTests(unittest.TestCase):
 
 
 class DatabaseFixtureTests(unittest.TestCase):
+    def test_importing_the_fixtures_does_not_read_the_application_settings(self) -> None:
+        # The e2e seed script sets DATABASE_URL from a fixture database first.
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import sys, tests.fixtures, tests.postgres; "
+             "sys.exit(any(name == 'app' or name.startswith('app.') for name in sys.modules))"],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+
     def test_fresh_database_is_at_the_schema_head_and_isolated(self) -> None:
         with fresh_database() as first, fresh_database() as second:
             self.assertNotEqual(first.name, second.name)

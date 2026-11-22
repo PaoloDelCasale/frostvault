@@ -14,6 +14,10 @@ Everything a test needs before its first assertion lives here, once:
 ``TEST_POSTGRES_URL`` must name a *test server* with a CREATEDB role. Every
 fixture database has its own unique name; the configured database is never
 mutated. Database tests never skip: missing configuration is an error.
+
+Importing this module imports nothing of the application: ``app.config`` reads
+the environment when first imported, and the e2e seed script sets
+``DATABASE_URL`` from a fixture database before that.
 """
 from __future__ import annotations
 
@@ -30,14 +34,15 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 import psycopg
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
-from app import config
+if TYPE_CHECKING:
+    from app import config
 
 _PREFIX = "fvtest_" + uuid.uuid4().hex[:12] + "_"
 _LOCK = threading.RLock()
@@ -197,9 +202,6 @@ def alembic_upgrade_head(database: Database) -> subprocess.CompletedProcess[str]
 
 # -- Settings -------------------------------------------------------------------
 
-_SETTING_NAMES = frozenset(field.name for field in fields(config.Settings))
-
-
 @contextmanager
 def override_settings(**changes: Any) -> Iterator[config.Settings]:
     """Override fields of ``app.config.settings`` and restore them on exit.
@@ -213,7 +215,8 @@ def override_settings(**changes: Any) -> Iterator[config.Settings]:
     (connection pools, upload pipeline coordinators) on exit. Other runtime
     state (Source Device slots, metrics, runtime status) keeps its own reset.
     """
-    unknown = sorted(set(changes) - _SETTING_NAMES)
+    from app import config
+    unknown = sorted(set(changes) - {field.name for field in fields(config.Settings)})
     if unknown:
         raise TypeError("not a Settings field: " + ", ".join(unknown))
     settings = config.settings
@@ -337,7 +340,7 @@ def sign_in(
     ``send_csrf_header`` also sends the CSRF header with every later request;
     otherwise pass ``.csrf_headers`` where a request needs it.
     """
-    settings = config.settings
+    from app.config import settings
     if password is not None:
         fields_ = {"password": password} if username is None else {
             "username": username, "password": password}
