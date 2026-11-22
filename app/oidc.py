@@ -302,9 +302,10 @@ def complete_login(
     )
 
 
-def sweep_expired_logins(connection: Any) -> int:
+def sweep_expired_logins(connection: Any, *, now: datetime | None = None) -> int:
+    """Delete abandoned login state; one DELETE on ``oidc_login_expires_idx``."""
     removed = connection.execute(
-        "DELETE FROM oidc_login WHERE expires_at <= %s", (_now(),)
+        "DELETE FROM oidc_login WHERE expires_at <= %s", (now or _now(),)
     )
     return int(removed.rowcount or 0)
 

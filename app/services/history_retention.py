@@ -8,6 +8,10 @@ Snapshots, closed remediation episodes, finished Job groups, the catalog
 journal and File rows left without any cloud content) follow the Job window
 once nothing references them any more.
 
+Expired OIDC login state (``oidc_login``, #789) is swept on the same cycle:
+a login abandoned before its callback is never consumed, so nothing else
+deletes it.
+
 Retention only deletes database rows. It never deletes a local file, a cloud
 object or a metadata backup, and it never decides a cloud state.
 
@@ -43,6 +47,7 @@ from typing import Any, Callable, Sequence
 
 import psycopg
 
+from .. import oidc
 from ..config import settings
 from .catalog_events import CatalogEventStore
 from .directory_aggregates import mark_path_dirty
@@ -387,4 +392,6 @@ def collect(db: Callable[[], Any], *, now: datetime | None = None,
         cutoff = now - getattr(windows, spec.window)
         counts[spec.name] = _run_pass(db, spec, cutoff, batch_size)
     counts["catalog_events"] = _prune_catalog_events(db, now - windows.jobs, batch_size)
+    with db() as connection:
+        counts["oidc_logins"] = oidc.sweep_expired_logins(connection, now=now)
     return counts

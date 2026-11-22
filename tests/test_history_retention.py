@@ -282,6 +282,25 @@ class HistoryRetentionTests(unittest.TestCase):
         self.assertEqual([str(row["attempt_id"]) for row in episode], [str(superseded[0])],
                          "the open episode still names its attempt")
 
+    # -- transient login state ----------------------------------------------
+
+    def test_periodic_run_sweeps_expired_oidc_login_state_only(self) -> None:
+        """An abandoned /auth/oidc/login is never consumed; retention removes it (#789)."""
+        now = datetime.now(timezone.utc)
+        with self.db() as connection:
+            for state, expires_at in (("abandoned", now - timedelta(minutes=1)),
+                                      ("in-flight", now + timedelta(minutes=10))):
+                connection.execute(
+                    "INSERT INTO oidc_login(state, nonce, code_verifier, created_at, expires_at) "
+                    "VALUES (%s, 'nonce', 'verifier', %s, %s)",
+                    (state, now - timedelta(minutes=5), expires_at))
+
+        counts = retention.collect(storage.db, now=now, windows=WINDOWS)
+
+        self.assertEqual(counts["oidc_logins"], 1, counts)
+        remaining = [row["state"] for row in self.rows("SELECT state FROM oidc_login")]
+        self.assertEqual(remaining, ["in-flight"], "an unexpired login stays usable")
+
 
 if __name__ == "__main__":
     unittest.main()
