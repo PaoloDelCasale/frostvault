@@ -27,6 +27,21 @@ def _identity(vault: Any) -> str:
     return json.dumps({key: vault.get(key) for key in _IDENTITY_KEYS}, sort_keys=True, default=str)
 
 
+def carry_vault_identity(connection: Any, before: Any, after: Any) -> int:
+    """Keep pending requests admitted for ``before`` valid for the same root ``after``.
+
+    Only for a Root Identity rewritten for a provably unchanged folder (#784):
+    any other change of the Vault still invalidates them.
+    """
+    old, new = _identity(before), _identity(after)
+    if old == new:
+        return 0
+    return connection.execute(
+        "UPDATE bulk_upload_admissions SET vault_identity_json=%s "
+        "WHERE vault_id=%s AND status='pending' AND vault_identity_json=%s",
+        (new, after["id"], old)).rowcount
+
+
 def _ready(vault: Any) -> bool:
     # paused deliberately does not participate: admission is not a claim.
     return vault["lifecycle"] == "active"

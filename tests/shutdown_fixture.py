@@ -42,6 +42,7 @@ async def lifespan(app):
             "validate_nested_mounts_after_identity", "cleanup_abandoned_restore_files",
             "start_restore_residue_sweep",
             "reconcile_interrupted_jobs", "vault_relocation_service.reconcile_vault_root_identities",
+            "vault_relocation_service.upgrade_legacy_root_identities",
             "protection_stop_service.reconcile_all",
         ):
             patches.enter_context(patch(f"app.main.{name}"))

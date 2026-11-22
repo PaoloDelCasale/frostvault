@@ -304,7 +304,8 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
     recorded = now_iso()
     connection.execute("""
         UPDATE vaults SET lifecycle='reconnect_required', root_identity=NULL,
-            root_identity_version=NULL, reconnect_volume_fingerprint=NULL
+            root_identity_version=NULL, legacy_root_identity=NULL,
+            reconnect_volume_fingerprint=NULL
         WHERE lifecycle IN ('active','reconnect_required')
         """)
     connection.execute("DELETE FROM metadata_restore_vaults")

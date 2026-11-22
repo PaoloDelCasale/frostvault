@@ -54,7 +54,7 @@ from typing import Any
 import psycopg
 from botocore.exceptions import ClientError
 
-from . import retention_lock
+from . import retention_lock, root_pins
 from . import upload_provenance as provenance
 from .database_retry import owned_connection
 from .s3_copy import _delete_s3_version
@@ -127,10 +127,10 @@ def _require_candidate(row: dict[str, Any]) -> None:
         raise UploadBlocked("expected_evidence_missing")
 
 
-def _require_pin(batch: dict[str, Any], pinned: dict[str, Any]) -> None:
-    frozen = (batch["provider"], batch["path_since"], batch["source_root"], batch["root_identity"])
-    live = (pinned["provider"], pinned["path_since"], pinned["source_root"], pinned["root_identity"])
-    if frozen != live:
+def _require_pin(batch: dict[str, Any], pinned: dict[str, Any], vault: dict[str, Any]) -> None:
+    frozen = (batch["provider"], batch["path_since"], batch["source_root"])
+    live = (pinned["provider"], pinned["path_since"], pinned["source_root"])
+    if frozen != live or not root_pins.same_root(batch["root_identity"], pinned["root_identity"], vault):
         raise UploadBlocked("identity_changed")
 
 
@@ -235,10 +235,10 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         held = retention_lock.retained_at_keys(
             connection, int(job["vault_id"]), {key} | {r["object_key"] for r in superseded}
         ) if days else set()
-        return (provenance.validated_pin(connection, job), current,
-                batch, superseded, keeper, days, held)
+        return (provenance.validated_pin(connection, job), provenance.validated_vault(connection, job),
+                current, batch, superseded, keeper, days, held)
 
-    pinned, current, batch, superseded, keeper, days, held = w._upload_catalog_unit(
+    pinned, vault, current, batch, superseded, keeper, days, held = w._upload_catalog_unit(
         job, load, shared=True)
     if keeper_id is None:
         if batch is None and (not superseded or current is None):
@@ -256,7 +256,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         if str(batch["keeper_id"]) != str(keeper_id):
             # Another keeper's batch is still open: it is never re-pointed.
             raise UploadBlocked("target_superseded")
-        _require_pin(batch, pinned)
+        _require_pin(batch, pinned, vault)
     if any(row["batch_id"] is None for row in superseded) and batch is not None:
         # Nothing joins a frozen batch.
         raise UploadBlocked("inventory_changed")

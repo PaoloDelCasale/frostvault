@@ -13,11 +13,18 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
-from . import source_directories, source_layout, source_identity, write_access
+from . import bulk_upload_admission, source_directories, source_layout, source_identity, write_access
 from .directory_aggregates import request_vault_rebuild
 from .audit_events import record_audit_event
 
-ROOT_IDENTITY_VERSION = "linux-stat-dir-v1"
+# v2 (#784, ADR-0054): the device number counts only for a real block device.
+# An anonymous device (major 0: FUSE/shfs, NFS, ZFS, btrfs subvolumes, overlay)
+# is renumbered at mount time, so its identity is the inode alone; the
+# filesystem itself stays guarded by the Source Volume Identity.
+ROOT_IDENTITY_VERSION = "linux-stat-dir-v2"
+LEGACY_ROOT_IDENTITY_VERSION = "linux-stat-dir-v1"
+# Every anonymous device number the kernel can hand out: major 0, 20-bit minor.
+_ANONYMOUS_MINORS = 1 << 20
 _TERMINAL_JOB_STATES = ("completed", "failed", "cancelled")
 # Immediate in-process gate closes the validation window before the database
 # transaction publishes persistent scan_required state.
@@ -38,26 +45,40 @@ def _not_writable(reason: str, directory: Path) -> VaultRelocationError:
     return VaultRelocationError(reason, str(error), params=error.message_params)
 
 
-def _identity_from_stat(info: os.stat_result) -> str:
+def _identity_payload(info: os.stat_result) -> dict[str, Any]:
     if not stat.S_ISDIR(info.st_mode):
         raise VaultRelocationError("not_directory", "Destination is not a directory")
     if not info.st_ino or info.st_dev < 0:
         raise VaultRelocationError("identity_ambiguous", "Filesystem has no stable directory identity")
+    return {"dev": int(info.st_dev), "ino": int(info.st_ino)}
+
+
+def device_is_anonymous(st_dev: int) -> bool:
+    """True for a device number the kernel assigns at mount time (major 0)."""
+    return os.major(int(st_dev)) == 0
+
+
+def _identity_from_stat(info: os.stat_result) -> str:
+    fields = _identity_payload(info)
+    # An explicit null keeps the two shapes distinct: no real device has its
+    # number omitted, no anonymous one has it recorded.
+    dev = None if device_is_anonymous(fields["dev"]) else fields["dev"]
     payload = json.dumps(
-        {"dev": int(info.st_dev), "ino": int(info.st_ino), "version": ROOT_IDENTITY_VERSION},
+        {"dev": dev, "ino": fields["ino"], "version": ROOT_IDENTITY_VERSION},
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 
-def root_identity(path: str | Path) -> str:
-    """Opaque identity for a real directory reached without any symlink.
+def _legacy_identity(dev: int, ino: int) -> str:
+    """The v1 identity, byte for byte as ``json.dumps`` wrote it (a test pins this)."""
+    return hashlib.sha256(
+        b'{"dev":%d,"ino":%d,"version":"linux-stat-dir-v1"}' % (dev, ino)
+    ).hexdigest()
 
-    Component checks are deliberately fail-closed but are not an atomic path
-    lookup. Callers which use the directory after this check must pin it with a
-    directory descriptor and verify that descriptor's identity.
-    """
+
+def _root_stat(path: str | Path) -> os.stat_result:
     candidate = Path(os.path.abspath(os.fspath(path)))
     current = Path(candidate.anchor)
     try:
@@ -74,7 +95,17 @@ def root_identity(path: str | Path) -> str:
         raise
     except OSError as exc:
         raise VaultRelocationError("inaccessible", "Directory identity is inaccessible") from exc
-    return _identity_from_stat(info)
+    return info
+
+
+def root_identity(path: str | Path) -> str:
+    """Opaque identity for a real directory reached without any symlink.
+
+    Component checks are deliberately fail-closed but are not an atomic path
+    lookup. Callers which use the directory after this check must pin it with a
+    directory descriptor and verify that descriptor's identity.
+    """
+    return _identity_from_stat(_root_stat(path))
 
 
 def opened_root_identity(fd: int) -> str:
@@ -89,7 +120,8 @@ def enroll_vault_root_identity(connection: Any, vault_id: int, source_root: str)
     """Enroll identity only for a currently healthy real root."""
     identity = root_identity(source_root)
     connection.execute(
-        "UPDATE vaults SET root_identity_version=%s, root_identity=%s WHERE id=%s",
+        "UPDATE vaults SET root_identity_version=%s, root_identity=%s,"
+        " legacy_root_identity=NULL WHERE id=%s",
         (ROOT_IDENTITY_VERSION, identity, vault_id),
     )
     return identity
@@ -118,6 +150,145 @@ def reconcile_vault_root_identities() -> int:
                 continue
             enrolled += 1
     return enrolled
+
+
+# Legacy (v1) identities, #784 and ADR-0054. The verified recovery searches
+# every anonymous device number, so it runs at most once per Vault per process.
+_legacy_recovery_attempted: set[int] = set()
+# A legacy identity whose Source Volume was not healthy waits for a later pass.
+_legacy_upgrade_pending = False
+
+
+def _anonymous_devices_reproducing(stored: str, ino: int) -> list[int]:
+    """Every anonymous device number whose v1 payload with ``ino`` hashes to ``stored``."""
+    try:
+        target = bytes.fromhex(stored)
+    except (TypeError, ValueError):
+        return []
+    if len(target) != hashlib.sha256().digest_size:
+        return []
+    sha256 = hashlib.sha256
+    makedev = os.makedev
+    tail = b',"ino":%d,"version":"linux-stat-dir-v1"}' % ino
+    return [
+        dev for dev in (makedev(0, minor) for minor in range(_ANONYMOUS_MINORS))
+        if sha256(b'{"dev":%d' % dev + tail).digest() == target
+    ]
+
+
+def _device_label(st_dev: int) -> str:
+    return f"{os.major(st_dev)}:{os.minor(st_dev)}"
+
+
+def _upgrade_legacy_root_identity(row: dict[str, Any]) -> str:
+    """Upgrade one v1 identity; returns upgraded, recovered, unmatched or deferred."""
+    from ..database import db
+
+    vault_id = int(row["id"])
+    source_root = str(row["source_root"])
+    stored = str(row["root_identity"])
+    # The scan gate's own condition: a Source Volume whose identity holds but
+    # which waits for a full scan is healthy here, or that scan could never run.
+    access = source_layout.vault_local_access(source_root)
+    if not access.local_operations_allowed and access.volume_health != "scan_required":
+        return "deferred"
+    try:
+        info = _root_stat(source_root)
+        fields = _identity_payload(info)
+        identity = _identity_from_stat(info)
+    except VaultRelocationError as exc:
+        # Unreadable now may be readable later; a symlink or a file in place of
+        # the folder is an observed replacement and stays blocked.
+        return "deferred" if exc.reason == "inaccessible" else "unmatched"
+    previous_device: int | None = None
+    if _legacy_identity(fields["dev"], fields["ino"]) != stored:
+        if not device_is_anonymous(fields["dev"]) or vault_id in _legacy_recovery_attempted:
+            return "unmatched"
+        _legacy_recovery_attempted.add(vault_id)
+        # Only st_dev changed? Then exactly one anonymous device number, with
+        # the current inode, reproduces the stored bytes.
+        devices = _anonymous_devices_reproducing(stored, fields["ino"])
+        if len(devices) != 1:
+            return "unmatched"
+        previous_device = devices[0]
+    with db() as connection:
+        try:
+            # The folder must still be the one just verified when it is written.
+            if root_identity(source_root) != identity:
+                return "unmatched"
+        except VaultRelocationError:
+            return "deferred"
+        before = connection.execute(
+            "SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,),
+        ).fetchone()
+        updated = connection.execute(
+            """
+            UPDATE vaults SET root_identity_version=%s, root_identity=%s,
+                legacy_root_identity=root_identity
+            WHERE id=%s AND source_root=%s AND root_identity_version=%s
+              AND root_identity=%s AND root_released_at IS NULL
+            RETURNING *
+            """,
+            (ROOT_IDENTITY_VERSION, identity, vault_id, source_root,
+             LEGACY_ROOT_IDENTITY_VERSION, stored),
+        ).fetchone()
+        if before is None or updated is None:
+            return "unmatched"
+        # A pending manual bulk upload was admitted for this same root: it
+        # keeps going instead of being invalidated as a changed Vault.
+        bulk_upload_admission.carry_vault_identity(connection, before, updated)
+        if previous_device is None:
+            return "upgraded"
+        record_audit_event(
+            connection,
+            event="vault_root_identity_recovered",
+            actor="system",
+            vault_id=vault_id,
+            outcome="success",
+            source_root=source_root,
+            verified="device_number_only",
+            previous_device=_device_label(previous_device),
+            current_device=_device_label(fields["dev"]),
+            previous_identity_version=LEGACY_ROOT_IDENTITY_VERSION,
+            identity_version=ROOT_IDENTITY_VERSION,
+        )
+    return "recovered"
+
+
+def upgrade_legacy_root_identities() -> dict[str, int]:
+    """Rewrite persisted v1 identities as v2 when the root is provably the same.
+
+    Runs at startup, before scans, workers and watchers, and may run again: a
+    rewritten identity is no longer v1. A Vault whose Source Volume is not
+    healthy is left for a later pass. An identity that no current fact
+    reproduces stays as it is, and blocked: Reconnect Folder recovers it.
+    """
+    global _legacy_upgrade_pending
+    from ..database import db
+
+    with db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, source_root, root_identity FROM vaults
+            WHERE root_identity_version=%s AND root_identity IS NOT NULL
+              AND root_released_at IS NULL
+              AND lifecycle IN ('active', 'reconnect_required')
+            ORDER BY id
+            """,
+            (LEGACY_ROOT_IDENTITY_VERSION,),
+        ).fetchall()
+    counts = {"upgraded": 0, "recovered": 0, "unmatched": 0, "deferred": 0}
+    for row in rows:
+        counts[_upgrade_legacy_root_identity(dict(row))] += 1
+    _legacy_upgrade_pending = counts["deferred"] > 0
+    return counts
+
+
+def upgrade_pending_legacy_root_identities() -> dict[str, int] | None:
+    """Retry the upgrade only while a v1 Vault waited for its Source Volume."""
+    if not _legacy_upgrade_pending:
+        return None
+    return upgrade_legacy_root_identities()
 
 
 def _clean_reason(reason: str) -> str:
@@ -369,7 +540,8 @@ def _reconnect_vault_root(
         """
         UPDATE vaults
         SET source_root=%s, lifecycle='reconnect_required',
-            root_identity_version=%s, root_identity=%s, reconnect_volume_fingerprint=%s
+            root_identity_version=%s, root_identity=%s, legacy_root_identity=NULL,
+            reconnect_volume_fingerprint=%s
         WHERE id=%s AND source_root=%s
         """,
         (str(destination), ROOT_IDENTITY_VERSION, identity, fingerprint,

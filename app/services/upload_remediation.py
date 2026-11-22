@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from time import monotonic
 from typing import Any
 
+from . import root_pins
 from . import upload_provenance as provenance
 from .upload_retry import UPLOAD_RETRY_MAX_ATTEMPTS
 
@@ -327,7 +328,8 @@ def _suspension(connection: Any, state: dict[str, Any], vault: dict[str, Any],
             pinned.target["path"] != state["path"]
             or pinned.target["path_since"] != state["path_since"]
             or pinned.target["source_root"] != vault["source_root"]
-            or pinned.target["root_identity"] != vault.get("root_identity")):
+            or not root_pins.same_root(pinned.target["root_identity"], vault.get("root_identity"),
+                                       vault)):
         return "identity_changed"
     if state["held_version_id"]:
         return "cloud_only_conflict"
