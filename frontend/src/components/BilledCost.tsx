@@ -4,8 +4,8 @@ import { useI18n } from "@/i18n";
 import { formatDate, formatDateTime, formatMoney } from "@/pages/archive/format";
 
 /** The categories of a Billed Cost, in the order the UI lists them (#738). */
-export const BILLED_CATEGORIES = ["storage", "requests", "transitions", "retrievals", "data_transfer", "other", "credits"] as const;
-export type BilledCategories = Record<(typeof BILLED_CATEGORIES)[number], number>;
+const BILLED_CATEGORIES = ["storage", "requests", "transitions", "retrievals", "data_transfer", "other", "credits"] as const;
+type BilledCategories = Record<(typeof BILLED_CATEGORIES)[number], number>;
 type ExportStatus = Pick<BillingExportStatus, "state" | "bucket" | "prefix" | "checked_at" | "next_check_at" | "exported_at" | "data_through" | "error_code" | "error_detail">;
 
 /** An AWS bill amount: exact, never «~», in the billing currency. */
@@ -59,7 +59,7 @@ export function BillingExportState({ status }: { status: ExportStatus }) {
 }
 
 /** The bucket policy AWS Data Exports needs to deliver into the System Bucket. */
-export function billingBucketPolicy(bucket: string): string {
+function billingBucketPolicy(bucket: string): string {
   return JSON.stringify({
     Version: "2012-10-17",
     Statement: [{

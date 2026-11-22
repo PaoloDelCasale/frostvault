@@ -9,7 +9,7 @@ import { vaultFilesUrl } from "@/router";
 import { shellLabel, type ShellTranslator } from "./labels";
 
 /** Lists beyond this many Vaults get a filter field. */
-export const SWITCHER_FILTER_THRESHOLD = 8;
+const SWITCHER_FILTER_THRESHOLD = 8;
 
 export function VaultSwitcher({ vaults, currentVaultId, allVaults = false, problemCounts = {}, t, onNavigate }: {
   vaults: VaultListItem[]; currentVaultId?: number; allVaults?: boolean; problemCounts?: Record<number, number>;
