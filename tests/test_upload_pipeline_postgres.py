@@ -49,7 +49,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path,
                 file_type="regular", size=source.stat().st_size, mtime_ns=source.stat().st_mtime_ns,
                 observed_at=storage.now_iso())
-        queued = queue_jobs(path, "upload", 2, 1)
+        queued = queue_jobs(path, "upload", 2)
         self.assertEqual(queued["item_count"], 1)
         with PostgresConnection(self.worker.db_path) as connection:
             return connection.execute("SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
@@ -65,7 +65,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             enroll_vault_root_identity(connection, 3, str(source))
             ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
                 size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())
-        queue_jobs("other.txt", "upload", 3, 1)
+        queue_jobs("other.txt", "upload", 3)
         with PostgresConnection(self.worker.db_path) as connection:
             return connection.execute("SELECT id FROM jobs WHERE vault_id=3").fetchone()["id"]
 

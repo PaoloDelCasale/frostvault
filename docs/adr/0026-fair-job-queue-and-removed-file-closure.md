@@ -1,5 +1,7 @@
 # Fair Job queue and removed-file closure
 
+Status: accepted; amended by ADR-0037.
+
 > **Amended by [ADR-0037](0037-uploads-share-one-tier-across-vaults.md) (issue #618).**
 > The tiers of points 2–4 order work inside a Vault; across Vaults, manual and
 > automatic uploads share one tier after Owner operations. Point 11 now covers

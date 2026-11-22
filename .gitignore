@@ -3,12 +3,6 @@
 !.env.example
 !.env.local.example
 .env.local
-# Also protect retired/local operator configuration from accidental commits.
-config/*.conf
-data/*.db
-data/*.db-*
-*.sqlite
-*.sqlite3
 *.pem
 *.key
 *.p12
@@ -27,6 +21,8 @@ frontend/e2e/test-results/
 frontend/e2e-report/
 frontend/playwright-report/
 frontend/e2e/e2e-report/
+# Screenshots written by the e2e run.
+frontend/artifacts/
 
 # Agent working notes are not repository content; issues and PRs are the record.
 /sessioni/

@@ -5,7 +5,7 @@ import {
   IDLE_POLL_MS,
   catalogPollIntervalMs,
   jobPollIntervalMs,
-} from "./polling";
+} from "./support/polling";
 
 describe("jobPollIntervalMs", () => {
   it("keeps the dedicated Job progress cadence while active and idle", () => {

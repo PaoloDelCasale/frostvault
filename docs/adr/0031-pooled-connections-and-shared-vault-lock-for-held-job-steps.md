@@ -1,5 +1,7 @@
 # Pooled connections and a shared Vault lock for held Job steps
 
+Status: accepted.
+
 Issue #535. Uploading many small files was slow for two reasons that did not
 depend on the provider. Every `db()` opened a new PostgreSQL connection (about 65
 per uploaded file), and every Job status write locked the Vault row

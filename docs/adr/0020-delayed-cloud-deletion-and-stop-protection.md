@@ -1,5 +1,7 @@
 # Fixed delayed cloud deletion and Stop Protection without local removal
 
+Status: accepted.
+
 Decision #366 Q4, implemented by #428, replaces ADR-0015's independent local
 removal/cloud dispositions with Stop Protection. The Owner keeps local files
 and chooses keep cloud or the same explicit seven-day Cloud-only deletion used

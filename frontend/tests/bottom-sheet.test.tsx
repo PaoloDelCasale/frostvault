@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { BottomSheet } from "@/components/BottomSheet";
+import { BottomSheet } from "./support/BottomSheet";
 
 describe("BottomSheet", () => {
   it("closes on action selection and reports the chosen action", async () => {

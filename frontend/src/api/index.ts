@@ -13,15 +13,10 @@ export type { ApiClientConfig, ApiDownload, ApiFetch } from "./client";
 
 export {
   DEFAULT_PAGE_SIZE,
-  approveRecover,
-  cancelJob,
-  cancelUpload,
   createVault,
   retryVaultBucket,
   fetchVaultBucket,
   cancelVaultCreation,
-  estimateGeneralStorageCost,
-  estimateRecover,
   fetchGeneralVaults,
   markNotificationRead,
   markAllNotificationsRead,
@@ -30,7 +25,6 @@ export {
   downloadGeneralMetadataBackup,
   fetchGeneralSourceVolumes,
   browseSourceVolume,
-  fetchCloudDeletion,
   fetchStopProtection,
   stopProtection,
   cancelStoppedFolderDeletion,
@@ -60,21 +54,13 @@ export {
   fetchMe,
   fetchNotifications,
   fetchOperationPolicy,
-  fetchStats,
   fetchVaults,
   logout,
-  previewCloudDeletion,
-  previewOperationGlobs,
   reconnectGeneralVault,
   fetchRecoveryKitStatus,
   downloadRecoveryKit,
   acknowledgeRecoveryKit,
-  requestScan,
   selectVault,
-  startCloudPurge,
-  startFreeSpace,
-  startRecover,
-  startUpload,
   updateLifecycleDefault,
   updateLocale,
   updateOperationPolicy,
@@ -93,8 +79,6 @@ export type {
   SystemBucket,
 } from "./endpoints";
 
-export { createLatestRequestScope } from "./latest";
-export type { LatestRequestHandle, LatestRequestScope } from "./latest";
 
 export {
   catalogEventsUrl,
@@ -117,26 +101,11 @@ export { useCatalogEvents } from "./useCatalogEvents";
 export type { UseCatalogEventsOptions } from "./useCatalogEvents";
 
 export {
-  ACTIVE_JOB_POLL_MS,
-  IDLE_POLL_MS,
-  catalogPollIntervalMs,
-  jobAwareRefetchInterval,
-  jobPollIntervalMs,
-} from "./polling";
-
-export {
   ApiQueryProvider,
   apiQueryKeys,
-  countActiveJobGroups,
   createAppQueryClient,
-  filesQueryOptions,
-  filesRefetchIntervalFromJobs,
   i18nCatalogQueryOptions,
-  jobsQueryOptions,
-  jobsRefetchInterval,
-  meQueryOptions,
   notificationsQueryOptions,
-  vaultsQueryOptions,
 } from "./query";
 
 export type {
@@ -213,5 +182,3 @@ export type {
   VaultMoveResponse,
 } from "./types";
 
-export type {
-} from "./endpoints";

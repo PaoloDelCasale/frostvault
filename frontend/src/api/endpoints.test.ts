@@ -4,7 +4,6 @@ import { configureApiClient, resetApiClientForTests } from "./client";
 import {
   downloadGeneralMetadataBackup,
   fetchGeneralMetadataBackups,
-  estimateGeneralStorageCost,
   runGeneralMetadataBackup,
   createVault,
   fetchI18nCatalog,
@@ -12,11 +11,11 @@ import {
   fetchNotifications,
   fetchVaults,
   reconnectGeneralVault,
-  requestScan,
   selectVault,
   markNotificationRead,
   markAllNotificationsRead,
 } from "./endpoints";
+import { estimateGeneralStorageCost, requestScan } from "../../tests/support/endpointProbes";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

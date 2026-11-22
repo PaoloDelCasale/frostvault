@@ -868,8 +868,8 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
             observer, ticks = self.changing(directory)
             task = self.start(stack, directory, [observer], real_scan)
             try:
-                await self.settle(lambda: storage.snapshot_runtime_status_for_stats(9402)["scan_queued"])
-                waiting = storage.snapshot_runtime_status_for_stats(9402)
+                await self.settle(lambda: runtime_status.snapshot_runtime_status_for_stats(9402)["scan_queued"])
+                waiting = runtime_status.snapshot_runtime_status_for_stats(9402)
                 self.assertEqual(waiting["scan_waiting_for"], "auto_admission")
                 # The watcher is not blocked by the queued scan: it goes on
                 # consuming events, keeping the batch while the Vault is held.
@@ -880,7 +880,7 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
                 lock.release()
                 await self.settle(lambda: scans == ["scan"] and applied)
                 self.assertIn((Change.added, str(Path(directory) / "new.jpg")), applied[0])
-                await self.settle(lambda: not storage.snapshot_runtime_status_for_stats(9402)["scan_queued"])
+                await self.settle(lambda: not runtime_status.snapshot_runtime_status_for_stats(9402)["scan_queued"])
             finally:
                 await self.stop(task)
 

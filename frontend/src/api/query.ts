@@ -6,21 +6,9 @@ import {
 import type { ReactNode } from "react";
 import { createElement } from "react";
 
-import {
-  fetchFileVersions,
-  fetchFiles,
-  fetchI18nCatalog,
-  fetchJobs,
-  fetchMe,
-  fetchNotifications,
-  fetchVaults,
-} from "./endpoints";
-import type { FilesQuery, JobsResponse } from "./types";
+import { fetchI18nCatalog, fetchNotifications } from "./endpoints";
+import type { FilesQuery } from "./types";
 import type { NotificationListStatus } from "./endpoints";
-import {
-  catalogPollIntervalMs,
-  jobAwareRefetchInterval,
-} from "./polling";
 
 export const apiQueryKeys = {
   me: ["me"] as const,
@@ -74,38 +62,10 @@ export function ApiQueryProvider({
   return createElement(QueryClientProvider, { client: queryClient }, children);
 }
 
-export const meQueryOptions = {
-  queryKey: apiQueryKeys.me,
-  queryFn: fetchMe,
-};
-
-export const vaultsQueryOptions = {
-  queryKey: apiQueryKeys.vaults,
-  queryFn: fetchVaults,
-};
-
 export function i18nCatalogQueryOptions(locale?: string) {
   return {
     queryKey: apiQueryKeys.i18nCatalog(locale),
     queryFn: () => fetchI18nCatalog(locale),
-  };
-}
-
-export function filesQueryOptions(
-  query: FilesQuery,
-  options?: RequestInit,
-) {
-  return {
-    queryKey: apiQueryKeys.files(query),
-    queryFn: () => fetchFiles(query, options),
-  };
-}
-
-export function fileVersionsQueryOptions(path: string) {
-  return {
-    queryKey: apiQueryKeys.fileVersions(path),
-    queryFn: () => fetchFileVersions(path),
-    enabled: Boolean(path),
   };
 }
 
@@ -116,36 +76,5 @@ export function notificationsQueryOptions(
   return {
     queryKey: apiQueryKeys.notificationsByStatus(status),
     queryFn: () => fetchNotifications({ status, limit }),
-  };
-}
-
-/** Count Job groups that are not yet terminal (completed/failed/cancelled). */
-export function countActiveJobGroups(data: JobsResponse | undefined): number {
-  if (!data?.groups) return 0;
-  return data.groups.filter(
-    (group) => !["completed", "failed", "cancelled"].includes(group.status),
-  ).length;
-}
-
-/**
- * Files list cadence mirrors jobs: 1s while any Job group is active, otherwise
- * no fixed polling. External filesystem discovery is event-driven (#227).
- */
-export function filesRefetchIntervalFromJobs(
-  jobs: JobsResponse | undefined,
-): number | false {
-  return catalogPollIntervalMs(countActiveJobGroups(jobs));
-}
-
-/** Jobs query keeps a dedicated active/idle cadence for progress only. */
-export const jobsRefetchInterval = jobAwareRefetchInterval<JobsResponse>(
-  countActiveJobGroups,
-);
-
-export function jobsQueryOptions() {
-  return {
-    queryKey: apiQueryKeys.jobs,
-    queryFn: fetchJobs,
-    refetchInterval: jobsRefetchInterval,
   };
 }

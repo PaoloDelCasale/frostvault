@@ -11,7 +11,7 @@ export const STORAGE_BADGE_VARIANT_CLASSES = {
   "deep-archive": "border-[var(--storage-archive-border)] bg-violet-soft text-[var(--storage-archive-fg)]",
 } as const satisfies Record<StorageClass, string>;
 
-export const STORAGE_BADGE_LABELS: Record<StorageClass, string> = {
+const STORAGE_BADGE_LABELS: Record<StorageClass, string> = {
   standard: "Standard",
   glacier: "Glacier",
   "deep-archive": "Deep Archive",

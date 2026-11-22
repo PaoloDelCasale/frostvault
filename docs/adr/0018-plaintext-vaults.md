@@ -1,5 +1,7 @@
 # Plaintext Vaults with fail-closed bucket public-access checks
 
+Status: accepted; superseded by ADR-0023 for the proof of new uploads only.
+
 > ADR-0023 supersedes the CRC32/read-back-only proof contract below **for new
 > uploads only**, with independent SHA256 full/composite evidence and visible
 > exact Read-back fallback. Shared-operation verification is not weakened.

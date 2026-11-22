@@ -14,11 +14,11 @@ export function formatMegabytesPerSecond(bytesPerSecond: number, t: Translate): 
 }
 
 /** Megabits per second, to compare with the line: «105,6 Mbit/s». */
-export function formatMegabitsPerSecond(bytesPerSecond: number, t: Translate): string {
+function formatMegabitsPerSecond(bytesPerSecond: number, t: Translate): string {
   return t("speed.megabits_per_second", { value: formatDecimal((bytesPerSecond * 8) / 1e6) });
 }
 
-export function formatFilesPerSecond(filesPerSecond: number, t: Translate): string {
+function formatFilesPerSecond(filesPerSecond: number, t: Translate): string {
   return t("speed.files_per_second", { value: formatDecimal(filesPerSecond) });
 }
 

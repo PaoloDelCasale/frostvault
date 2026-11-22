@@ -21,6 +21,7 @@ import psycopg
 from app.catalog import ArchiveCatalog, VaultFileNotFound
 from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
 from tests.postgres import PostgresConnection, run_alembic
+from tests import catalog_probe
 
 DIGEST_A = sha256_hex(b"content-a")
 DIGEST_B = sha256_hex(b"content-b")
@@ -90,9 +91,9 @@ class RenameMatchingTests(_CatalogFixture):
                 changed_at="2026-07-21T11:05:00+00:00",
                 vault_id=2,
             )
-            renamed = catalog.get_file_by_path(2, "reports/new-name.txt")
-            old_path = catalog.get_file_by_path(2, "reports/old-name.txt")
-            history = catalog.list_path_history(confirmed_id, vault_id=2)
+            renamed = catalog_probe.get_file_by_path(catalog, 2, "reports/new-name.txt")
+            old_path = catalog_probe.get_file_by_path(catalog, 2, "reports/old-name.txt")
+            history = catalog_probe.list_path_history(catalog, confirmed_id, vault_id=2)
             files = connection.execute("SELECT count(*) AS n FROM files").fetchone()["n"]
             closed = connection.execute(
                 "SELECT file_id::text AS file_id, path FROM file_path_history"
@@ -138,7 +139,7 @@ class RenameMatchingTests(_CatalogFixture):
                     changed_at="2026-07-21T11:05:00+00:00",
                     vault_id=2,
                 )
-            self.assertEqual(catalog.get_file_by_path(2, "archive/notes.txt")["id"], new_id)
+            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, "archive/notes.txt")["id"], new_id)
         self.assertEqual(candidates, [])
         self.assertNotEqual(old_id, new_id)
 
@@ -166,8 +167,8 @@ class RenameMatchingTests(_CatalogFixture):
                     vault_file_id=missing_ids[0], new_path="b/one.txt",
                     changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
                 )
-            before_a = catalog.get_file_by_path(2, "a/one.txt")
-            before_b = catalog.get_file_by_path(2, "b/one.txt")
+            before_a = catalog_probe.get_file_by_path(catalog, 2, "a/one.txt")
+            before_b = catalog_probe.get_file_by_path(catalog, 2, "b/one.txt")
         self.assertEqual(candidates, [])
         self.assertNotEqual(before_a["id"], before_b["id"])
         self.assertEqual(before_a["id"], missing_ids[0])
@@ -185,8 +186,8 @@ class RenameMatchingTests(_CatalogFixture):
                 mtime_ns=1_750_000_000_000_000_000, observed_at="2026-07-21T11:00:00+00:00",
             )
             candidates = catalog.list_rename_candidates(vault_id=2)
-            old_file = catalog.get_file_by_path(2, "reports/old-name.txt")
-            new_file = catalog.get_file_by_path(2, "reports/new-name.txt")
+            old_file = catalog_probe.get_file_by_path(catalog, 2, "reports/old-name.txt")
+            new_file = catalog_probe.get_file_by_path(catalog, 2, "reports/new-name.txt")
         self.assertEqual(candidates, [])
         self.assertEqual(old_file["id"], old_id)
         self.assertEqual(new_file["id"], new_id)
@@ -220,9 +221,9 @@ class FolderRenameTests(_CatalogFixture):
 
             for old_relative, file_id in ids.items():
                 new_relative = old_relative.replace("docs/", "archive/", 1)
-                observed = catalog.get_file_by_path(2, new_relative)
-                missing = catalog.get_file_by_path(2, old_relative)
-                history = catalog.list_path_history(file_id, vault_id=2)
+                observed = catalog_probe.get_file_by_path(catalog, 2, new_relative)
+                missing = catalog_probe.get_file_by_path(catalog, 2, old_relative)
+                history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
                 self.assertEqual(observed["id"], file_id)
                 self.assertIsNone(missing)
                 self.assertEqual(
@@ -253,9 +254,9 @@ class FolderRenameTests(_CatalogFixture):
                     )
                     history = [
                         entry["path"]
-                        for entry in catalog.list_path_history(confirmed, vault_id=2)
+                        for entry in catalog_probe.list_path_history(catalog, confirmed, vault_id=2)
                     ]
-                    observed = catalog.get_file_by_path(2, new_path)
+                    observed = catalog_probe.get_file_by_path(catalog, 2, new_path)
                 self.assertEqual(confirmed, file_id)
                 self.assertEqual(observed["id"], file_id)
                 self.assertEqual(history, [old_path, new_path])
@@ -268,13 +269,13 @@ class RenameSafetyTests(_CatalogFixture):
             old_id, _ = self.seed_rename(
                 catalog, old_path="photos/a.jpg", new_path="photos/b.jpg", protected=True,
             )
-            keeper = catalog.get_file(old_id, vault_id=2)["current_version"]
+            keeper = catalog_probe.get_file(catalog, old_id, vault_id=2)["current_version"]
             self.assertEqual(keeper["integrity"], "verified")
             catalog.confirm_file_rename(
                 vault_file_id=old_id, new_path="photos/b.jpg",
                 changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
             )
-            renamed = catalog.get_file_by_path(2, "photos/b.jpg")
+            renamed = catalog_probe.get_file_by_path(catalog, 2, "photos/b.jpg")
             versions = connection.execute(
                 "SELECT id::text AS id, object_key FROM archive_versions"
             ).fetchall()
@@ -304,7 +305,7 @@ class RenameSafetyTests(_CatalogFixture):
                     vault_file_id=old_id, new_path="docs/b.txt",
                     changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
                 )
-            self.assertEqual(catalog.get_file_by_path(2, "docs/b.txt")["id"], new_id)
+            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, "docs/b.txt")["id"], new_id)
 
     def test_identity_with_any_job_is_never_consumed(self) -> None:
         with self.connect() as connection:
@@ -367,7 +368,7 @@ class RenameSafetyTests(_CatalogFixture):
                 connection.execute(
                     "SELECT status FROM jobs ORDER BY id"
                 ).fetchall(),
-                catalog.get_file_by_path(2, "trip/day1/a.jpg")["id"],
+                catalog_probe.get_file_by_path(catalog, 2, "trip/day1/a.jpg")["id"],
                 connection.execute("SELECT count(*) AS n FROM file_path_history").fetchone()["n"],
             )
         # The whole selection is revoked, not only the renamed file.
@@ -393,7 +394,7 @@ class RenameSafetyTests(_CatalogFixture):
                 file_id, generation=token["generation"], plaintext_sha256=DIGEST_A,
                 size=3, mtime_ns=7,
             )
-            renamed = catalog.get_file_by_path(2, "b.txt")
+            renamed = catalog_probe.get_file_by_path(catalog, 2, "b.txt")
         self.assertFalse(published)
         self.assertIsNone(renamed["local_copy"]["plaintext_sha256"])
 
@@ -432,7 +433,7 @@ class RenameSafetyTests(_CatalogFixture):
             catalog.rename_file(
                 file_id, new_path="c.txt", changed_at="2026-07-21T12:00:00+00:00", vault_id=2,
             )
-            history = catalog.list_path_history(file_id, vault_id=2)
+            history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
             with self.assertRaises(psycopg.errors.RestrictViolation):
                 connection.execute("UPDATE file_path_history SET path='z.txt'")
         self.assertEqual([entry["path"] for entry in history], ["a.txt", "b.txt", "c.txt"])
@@ -484,8 +485,8 @@ class RenameConfirmationRaceTests(_CatalogFixture):
 
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            current = catalog.get_file_by_path(2, "concurrent/new.txt")
-            history = catalog.list_path_history(old_id, vault_id=2)
+            current = catalog_probe.get_file_by_path(catalog, 2, "concurrent/new.txt")
+            history = catalog_probe.list_path_history(catalog, old_id, vault_id=2)
             files = connection.execute("SELECT count(*) AS n FROM files").fetchone()["n"]
         self.assertEqual(current["id"], old_id)
         self.assertEqual(
@@ -580,8 +581,8 @@ class RenameConfirmationRaceTests(_CatalogFixture):
 
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            source = catalog.get_file(old_id, vault_id=2)
-            provisional = catalog.get_file(new_id, vault_id=2)
+            source = catalog_probe.get_file(catalog, old_id, vault_id=2)
+            provisional = catalog_probe.get_file(catalog, new_id, vault_id=2)
             history = connection.execute(
                 "SELECT count(*) AS n FROM file_path_history"
             ).fetchone()["n"]

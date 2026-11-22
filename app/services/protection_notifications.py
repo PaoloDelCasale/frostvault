@@ -149,16 +149,6 @@ def publish_vault_problems(connection: Any, observation: VaultObservation) -> No
                       params=counts)
 
 
-def monitor_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -> None:
-    """Observe one Vault and write its Problems, in the caller's transaction.
-
-    For a single Vault (tests, one-off checks). The periodic cycle is
-    :func:`maintain_notifications`, which commits the observation before it
-    takes the Owner lock.
-    """
-    publish_vault_problems(connection, observe_vault(connection, vault, now=now))
-
-
 def weekly_summary(connection: Any, *, now: datetime) -> dict[str, Any]:
     """Dates are persisted successful evidence; missing dates remain explicit."""
     from .component_health import load_vault_health

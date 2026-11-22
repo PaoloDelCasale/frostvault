@@ -18,6 +18,7 @@ from app.config import settings
 from app.services import notifications, source_layout, vault_relocation, watch_plan
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests import catalog_probe
 
 
 class RecoveryProblemTests(unittest.TestCase):
@@ -70,7 +71,7 @@ class RecoveryProblemTests(unittest.TestCase):
         self.assertEqual(storage.scan_tree(self.vault, storage.now_iso()), 2)
 
         with PostgresConnection(str(self.path)) as connection:
-            paths = {row["path"] for row in ArchiveCatalog(connection).list_file_rows(9)}
+            paths = {row["path"] for row in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
         self.assertEqual(paths, {"ok.txt", "sub/nested.txt"})
         problems = self.problems("file_name_unsupported")
         self.assertEqual(

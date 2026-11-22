@@ -1,5 +1,7 @@
 # Separate upload facts from replacement authority
 
+Status: accepted; superseded in part by ADR-0025.
+
 > **Superseded in part by [ADR-0025](0025-proven-absence-closes-an-ambiguous-send.md)**
 > (#484, #486), only for: (1) "Zero token matches is not absence proof", now
 > refined by positive S3 proof of absence; (2) "reconcile-only ... cannot PUT":

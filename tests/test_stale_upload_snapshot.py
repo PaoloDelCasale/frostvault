@@ -11,6 +11,7 @@ from unittest.mock import patch
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import upload_provenance as provenance
+from tests import service_probes
 from tests import test_upload_provenance_worker as base
 from tests.postgres import PostgresConnection
 from tests.upload_support import claimed_job_row
@@ -89,7 +90,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         self.assertEqual((closed[0]["send_started"], closed[0]["settled"], closed[0]["landed_version_id"]), (True, True, None))
         self.assertIsNotNone(closed[0]["snapshot_closed_at"])
         with PostgresConnection(self.db_path) as connection:
-            self.assertTrue(provenance.proven_absent(connection, closed[0]["id"]))
+            self.assertTrue(service_probes.proven_absent(connection, closed[0]["id"]))
             self.assertIsNone(provenance.load_for_job(connection, job))
             self.assertIsNone(provenance.outstanding(connection, self.file_id))
 

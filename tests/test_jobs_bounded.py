@@ -180,7 +180,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertEqual(len(first_ids | second_ids),52)
 
     def test_sql_weighted_progress_and_terminal_precedence_match_reference_reducer(self):
-        from app.main import build_job_groups
+        from tests.listing_oracles import build_job_groups
         from app.services.upload_remediation import project_jobs
         self.seed_group(4)
         with PostgresConnection(self.database_path) as connection:

@@ -13,11 +13,14 @@ from unittest.mock import patch
 from app import storage
 from app.services import notifications, worker_errors
 from app.services.operation_policies import SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED
-from app.services.scan_causes import CAUSES, source_error_cause
+from app.services import scan_causes
+from app.services.scan_causes import source_error_cause
 from tests.catalog_support import seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection
 from tests.test_database import run_alembic
+
+CAUSES = tuple(code for code, _ in scan_causes._CAUSES)
 
 
 class SourceErrorCauseTests(unittest.TestCase):

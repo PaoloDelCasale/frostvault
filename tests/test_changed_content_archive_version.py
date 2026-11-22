@@ -1,7 +1,7 @@
 """Archive a changed Local Copy of a Vault File already present on S3 (#295).
 
 Admission seams on the rebuilt model (ADR-0035): ``ArchiveCatalog.queue_jobs``
-and ``list_file_rows`` admit new bytes when Current holds older content, and
+and the unpaged listing admit new bytes when Current holds older content, and
 directory aggregates offer the upload. Disposable PostgreSQL 16 only.
 
 Former worker cases now owned by the real upload worker suites (one Current
@@ -33,6 +33,7 @@ from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
 from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 class ChangedContentAdmissionTests(unittest.TestCase):
@@ -67,24 +68,24 @@ class ChangedContentAdmissionTests(unittest.TestCase):
 
     def test_changed_content_can_queue_second_archive_version(self) -> None:
         self.protected("report.txt", b"alpha")
-        file_id = self.catalog.get_file_by_path(2, "report.txt")["id"]
+        file_id = catalog_probe.get_file_by_path(self.catalog, 2, "report.txt")["id"]
         self.assertEqual(self.queue(), ([], 0), "matched content is protected")
         self.observe("report.txt", len(b"alpha") + 4, 2)
         job_ids, eligible = self.queue()
         self.assertEqual((len(job_ids), eligible), (1, 1))
-        row = self.catalog.list_file_rows(2)[0]
+        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
         self.assertEqual(row["state"], "pending")
         self.assertTrue(row["previous_snapshot_protected"])
         self.assertTrue(row["upload_eligible"])
         self.assertFalse(row["cleanup_eligible"])
-        after = self.catalog.get_file_by_path(2, "report.txt")
+        after = catalog_probe.get_file_by_path(self.catalog, 2, "report.txt")
         self.assertEqual(after["id"], file_id, "the same Vault File gets the new version")
         self.assertIsNone(after["local_copy"]["plaintext_sha256"])
 
     def test_protected_content_does_not_queue_duplicate(self) -> None:
         self.protected("report.txt", b"same-bytes")
         self.assertEqual(self.queue(), ([], 0))
-        row = self.catalog.list_file_rows(2)[0]
+        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
         self.assertFalse(row["upload_eligible"])
         self.assertTrue(row["cleanup_eligible"])
 
@@ -109,7 +110,7 @@ class ChangedContentAdmissionTests(unittest.TestCase):
         self.catalog.begin_replacement(
             file_id, object_key="vaults/x/report.txt", provider_version_id="s3-unverified",
             size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00")
-        row = self.catalog.list_file_rows(2)[0]
+        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
         self.assertTrue(row["upload_eligible"])
         self.assertEqual(self.queue()[1], 1)
 

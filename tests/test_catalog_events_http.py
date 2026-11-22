@@ -27,7 +27,6 @@ from app.services.catalog_event_stream import (
     MAX_CATCHUP_EVENTS,
     coalesced_catchup_from_connection,
     iter_catalog_event_sse,
-    session_stream_state,
     stream_tick_snapshot,
 )
 from app.services.catalog_events import CatalogEventStore, record_catalog_revision
@@ -36,6 +35,7 @@ from app.storage import apply_filesystem_changes
 from tests.catalog_support import seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.test_database import run_alembic
+from tests import catalog_event_probe
 
 
 _ORIGINAL_STORAGE_PATCH_TARGETS = {
@@ -230,8 +230,8 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
         with PostgresConnection(str(self.db_path)) as connection:
             store = CatalogEventStore(connection)
-            self.assertEqual(store.current_revision(1), 1)
-            page = store.read_events(vault_id=1, after_revision=0)
+            self.assertEqual(catalog_event_probe.current_revision(store, 1), 1)
+            page = catalog_event_probe.read_events(store, vault_id=1, after_revision=0)
             self.assertEqual(len(page["events"]), 1)
             event = page["events"][0]
             self.assertEqual(event["domain"], "catalog")
@@ -265,7 +265,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 )
 
         with PostgresConnection(str(self.db_path)) as connection:
-            self.assertEqual(CatalogEventStore(connection).current_revision(1), 1)
+            self.assertEqual(catalog_event_probe.current_revision(CatalogEventStore(connection), 1), 1)
             presence = connection.execute(
                 """
                 SELECT local_presence AS presence FROM files
@@ -438,7 +438,6 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 await asyncio.sleep(0.08)
                 with PostgresConnection(str(self.db_path)) as connection:
                     self.assertTrue(revoke_session(connection, self.owner_session_id))
-                self.assertIsNone(session_stream_state(self.owner_session_id))
 
             await asyncio.gather(consume(), revoke())
             return self._parse_sse("".join(frames))

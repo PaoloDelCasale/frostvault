@@ -519,24 +519,6 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     return True
 
 
-def enqueue_archive_version_missing(
-    connection: Any, *, incident: Mapping[str, Any]
-) -> int:
-    """Notify the Owner of unexpected loss."""
-    return _enqueue_incident_notification(
-        connection,
-        incident=incident,
-        event="archive_version_missing",
-        params={
-            "path": str(incident.get("path") or ""),
-            "archive_version_id": str(incident.get("archive_version_id") or ""),
-            "provider_version_id": str(incident.get("provider_version_id") or ""),
-            "observed_at": str(incident.get("opened_at") or now_iso()),
-            "reason": str(incident.get("reason") or "missing_in_cloud"),
-        },
-    )
-
-
 def cloud_only_conflict_key(file_id: Any, held_version_id: Any) -> str:
     """The one problem of a Cloud-only Conflict: its file and held version."""
     return f"conflict:{file_id}:{held_version_id}"

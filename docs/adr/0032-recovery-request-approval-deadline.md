@@ -1,5 +1,7 @@
 # Recovery requests have one approval decision and a cancellation deadline
 
+Status: accepted.
+
 Issue #536 completes the request-level Restore Approval from #533/#534.
 A selection of files and/or folders inside one Vault is one recovery request.
 Overlapping selections include each Vault File once. Cross-Vault selections are

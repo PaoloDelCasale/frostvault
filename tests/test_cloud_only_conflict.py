@@ -101,7 +101,7 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self.assertEqual(self.scan(), 0)
         self.assertEqual(self.file_row()["held_version_id"], self.original["id"])
         with self.assertRaises(HTTPException) as manual:
-            queue_jobs(PATH, "upload", 2, 1)
+            queue_jobs(PATH, "upload", 2)
         self.assertEqual(manual.exception.status_code, 409)
         self.assertEqual(self.run_queued(), [])
         self.assertEqual(self.uploads(), ["completed"], "only the original upload")

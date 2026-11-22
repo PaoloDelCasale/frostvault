@@ -65,13 +65,13 @@ from app.storage import (
     process_upload,
     process_jobs_once,
     reconcile_interrupted_jobs,
-    remove_local_copies,
     scan_tree,
     scan_cloud,
 )
 from tests.test_database import run_alembic
 from tests.catalog_support import fingerprint, protect, seed_vault
 from tests.owner_fixtures import insert_owner, insert_vault
+from tests import catalog_probe
 
 
 class RecordingConnection:
@@ -211,11 +211,11 @@ class StorageCleanupTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                visible = catalog.get_file_by_path(2, "visible.txt")
-                temporary = catalog.get_file_by_path(
+                visible = catalog_probe.get_file_by_path(catalog, 2, "visible.txt")
+                temporary = catalog_probe.get_file_by_path(catalog, 
                     2, f".archive.zip.restore-{restore_id}.tmp"
                 )
-                partial = catalog.get_file_by_path(
+                partial = catalog_probe.get_file_by_path(catalog, 
                     2, f".archive.zip.restore-{restore_id}.tmp.deadbeef.partial"
                 )
 
@@ -246,7 +246,7 @@ class StorageCleanupTests(unittest.TestCase):
                 )
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "visible.txt")
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "visible.txt")
 
             self.assertEqual(count, 1)
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -303,7 +303,7 @@ class StorageCleanupTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", test_settings):
-                queued = queue_jobs("report.txt", "upload", 2, 1)
+                queued = queue_jobs("report.txt", "upload", 2)
                 listed = jobs(_fake_request(), {"id": 2})
 
             self.assertEqual(queued["item_count"], 1)
@@ -340,7 +340,7 @@ class StorageCleanupTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2, 1)
+                queue_jobs("report.txt", "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),
@@ -361,7 +361,7 @@ class StorageCleanupTests(unittest.TestCase):
                     process_jobs_once()
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(2, "report.txt")
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "report.txt")
 
             # Without a completed read-back the sent version stays Replacing:
             # catalogued, unverified, never Current (ADR-0035).
@@ -420,9 +420,9 @@ class StorageCleanupTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as database:
                 catalog = ArchiveCatalog(database)
-                added_file = catalog.get_file_by_path(2, "docs/added.txt")
-                deleted_file = catalog.get_file_by_path(2, "docs/deleted.txt")
-                partial_file = catalog.get_file_by_path(
+                added_file = catalog_probe.get_file_by_path(catalog, 2, "docs/added.txt")
+                deleted_file = catalog_probe.get_file_by_path(catalog, 2, "docs/deleted.txt")
+                partial_file = catalog_probe.get_file_by_path(catalog, 
                     2, f"docs/{partial.name}"
                 )
 
@@ -536,7 +536,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertTrue(claim.is_file())
 
             with PostgresConnection(str(database_path)) as connection:
-                file_row = ArchiveCatalog(connection).get_file_by_path(
+                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
                 job_id = connection.execute(
@@ -583,7 +583,7 @@ class StorageCleanupTests(unittest.TestCase):
                     "SELECT status, message FROM jobs WHERE id=%s",
                     (job_id,),
                 ).fetchone()
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
             self.assertEqual(job["status"], "queued")
@@ -654,7 +654,7 @@ class StorageCleanupTests(unittest.TestCase):
             target.rename(claim)
 
             with PostgresConnection(str(database_path)) as connection:
-                file_row = ArchiveCatalog(connection).get_file_by_path(
+                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
                 job_id = connection.execute(
@@ -847,7 +847,7 @@ class StorageCleanupTests(unittest.TestCase):
             )
 
         queue_jobs.assert_called_once_with(
-            "docs/file.txt", "free-space", 2, 7, False
+            "docs/file.txt", "free-space", 2, False
         )
         self.assertEqual(result["group_id"], "cleanup-group")
         self.assertEqual(result["message"], "Freeing local space started")
@@ -873,12 +873,12 @@ class StorageCleanupTests(unittest.TestCase):
                     ),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertFalse(target.exists())
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "missing")
@@ -930,7 +930,7 @@ class StorageCleanupTests(unittest.TestCase):
             self.assertEqual(processed, 1)
             self.assertFalse(target.exists())
             with PostgresConnection(str(database_path)) as connection:
-                file_row = ArchiveCatalog(connection).get_file_by_path(
+                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
                 events = connection.execute(
@@ -973,7 +973,7 @@ class StorageCleanupTests(unittest.TestCase):
                     return_value=SimpleNamespace(head_object=failed_head),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertTrue(target.exists())
@@ -1068,7 +1068,7 @@ class StorageCleanupTests(unittest.TestCase):
                     return_value=SimpleNamespace(head_object=head_object),
                 ),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertEqual(target.read_text(encoding="utf-8"), "changed")
@@ -1112,7 +1112,7 @@ class StorageCleanupTests(unittest.TestCase):
                 ),
                 patch.object(Path, "rename", rename_then_replace),
             ):
-                queue_jobs("docs/file.txt", "free-space", 2, 1)
+                queue_jobs("docs/file.txt", "free-space", 2)
                 process_jobs_once()
 
             self.assertEqual(
@@ -1120,7 +1120,7 @@ class StorageCleanupTests(unittest.TestCase):
                 "newer content",
             )
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "docs/file.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -1132,7 +1132,7 @@ class StorageCleanupTests(unittest.TestCase):
             payload = target.read_bytes()
             target.unlink()
             with PostgresConnection(str(database_path)) as connection:
-                file = ArchiveCatalog(connection).get_file_by_path(2, "docs/file.txt")
+                file = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "docs/file.txt")
                 ArchiveCatalog(connection).mark_local_copy_missing(
                     file["id"], observed_at="2026-07-21T11:00:00+00:00"
                 )
@@ -1198,7 +1198,7 @@ class StorageCleanupTests(unittest.TestCase):
                 patch("app.storage.s3_client", return_value=client),
                 patch("app.storage.upload_s3_file") as sdk_upload,
             ):
-                queue_jobs("docs/file.txt", "recover", 2, 1)
+                queue_jobs("docs/file.txt", "recover", 2)
                 process_jobs_once()
 
             client.head_object.assert_called()
@@ -1219,24 +1219,6 @@ class StorageCleanupTests(unittest.TestCase):
             with patch("app.database.settings", database_settings):
                 listed = jobs(_fake_request(), {"id": 2})
             self.assertEqual(listed["items"][0]["status"], "completed")
-
-    def test_remove_local_copies_removes_source_only(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            source = base / "source"
-            restore = base / "restore"
-            for root in (source, restore):
-                target = root / "docs" / "file.txt"
-                target.parent.mkdir(parents=True)
-                target.write_text("content", encoding="utf-8")
-
-            deleted = remove_local_copies({"source_root": str(source)}, "docs/file.txt")
-
-            self.assertEqual(len(deleted), 1)
-            self.assertFalse((source / "docs" / "file.txt").exists())
-            self.assertTrue((restore / "docs" / "file.txt").exists())
-
-
 
 
 if __name__ == "__main__":

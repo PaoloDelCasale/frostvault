@@ -1,5 +1,7 @@
 # Depend on Authlib for OIDC at the library level
 
+Status: accepted.
+
 Generic OpenID Connect login uses Authlib (with cryptography) as a JOSE and
 OAuth 2.0 toolkit, not as a framework integration. We call Authlib to build the
 Authorization Code + PKCE (S256) request and to verify id_token signatures

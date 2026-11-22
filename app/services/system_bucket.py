@@ -21,7 +21,6 @@ there is no System Bucket: metadata backups stay local, as in development.
 from __future__ import annotations
 
 import os
-import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,7 +31,6 @@ from . import bucket_provisioning as buckets
 from .s3_lifecycle_rules import ABORT_RULE_ID
 
 NAME_STEM = "frostvault-system"
-NAME_PATTERN = re.compile(r"^frostvault-system-[a-z0-9]{8}$")
 ROLE_TAGS = {"frostvault:role": "system"}
 ABORT_RULE = {
     "ID": ABORT_RULE_ID,

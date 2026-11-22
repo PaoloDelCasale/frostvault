@@ -13,6 +13,12 @@ from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.source_layout import VaultLocalAccess
 from tests.owner_fixtures import insert_job
+from tests import catalog_probe
+
+
+def monitor_vault(connection, vault, *, now):
+    """Observe one Vault and write its Problems, in the caller's transaction."""
+    monitor.publish_vault_problems(connection, monitor.observe_vault(connection, vault, now=now))
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
@@ -187,11 +193,11 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
                     mtime_ns=1,observed_at=(NOW-timedelta(hours=25)).isoformat())
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
-            monitor.monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW)
             # Keep changing the live file; timer must remain continuous.
             catalog.observe_local_copy(vault_id=self.vault_id,path='live.lrcat',file_type='regular',size=2,
                     mtime_ns=int(NOW.timestamp()*1e9),observed_at=NOW.isoformat())
-            monitor.monitor_vault(c,vault,now=NOW+timedelta(seconds=30))
+            monitor_vault(c,vault,now=NOW+timedelta(seconds=30))
             notes = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchall()
             self.assertEqual(len(notes),1)
             self.assertEqual(notes[0]['message_params']['unstable'],1)
@@ -199,7 +205,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'],0)
             for row in c.execute('SELECT id FROM files WHERE vault_id=%s',(self.vault_id,)).fetchall():
                 catalog.mark_local_copy_missing(str(row['id']),observed_at=NOW+timedelta(minutes=1))
-            monitor.monitor_vault(c,vault,now=NOW+timedelta(minutes=1))
+            monitor_vault(c,vault,now=NOW+timedelta(minutes=1))
             self.assertEqual(inbox.count_open_problems(c),0)
             self.assertEqual(inbox.count_unread_notifications(c),0)
 
@@ -218,7 +224,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                           "updated_at,finished_at) VALUES (%s,%s,'upload',%s,%s,%s,%s,%s,%s)",
                           (self.vault_id,ids[name],status,origin,key,observed,observed,observed))
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
-            monitor.monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW)
             note = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchone()
             self.assertEqual((note['message_params']['pending'],note['message_params']['overdue']),(1,1))
             timers = {row['path']: row['pending_since'] for row in c.execute(
@@ -230,11 +236,11 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         with self.connect() as c:
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
             with patch('app.services.source_layout.vault_local_access',return_value=VaultLocalAccess(False,True,None,'absent')):
-                monitor.monitor_vault(c,vault,now=NOW)
-                monitor.monitor_vault(c,vault,now=NOW)
+                monitor_vault(c,vault,now=NOW)
+                monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),1)
             with patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
-                monitor.monitor_vault(c,vault,now=NOW)
+                monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
 
     def test_manual_upload_is_never_a_problem_and_an_old_one_is_resolved(self):
@@ -247,8 +253,8 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                               vault_id=self.vault_id,active=True,params={'component':'suspended'})
             self.assertEqual(inbox.count_open_problems(c),1)
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
-            monitor.monitor_vault(c,vault,now=NOW)
-            monitor.monitor_vault(c,vault,now=NOW+timedelta(days=2))
+            monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW+timedelta(days=2))
             self.assertEqual(inbox.count_open_problems(c),0)
             row = c.execute("SELECT problem_status FROM notifications WHERE dedupe_key=%s",
                             (f'blocked:{self.vault_id}:suspended',)).fetchone()
@@ -259,15 +265,15 @@ class FixedNotificationPostgresTests(unittest.TestCase):
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
             record_component_health(c,vault_id=self.vault_id,component='source',ok=False,error='Incomplete: unreadable path')
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
-            monitor.monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
             # But a real root blockage cannot be cleared by a mount-only check.
             inbox.set_problem(c,key=f'blocked:{self.vault_id}:source',event='protection_blocked',
                               vault_id=self.vault_id,active=True,params={'component':'source'})
-            monitor.monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),1)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True)
-            monitor.monitor_vault(c,vault,now=NOW)
+            monitor_vault(c,vault,now=NOW)
             self.assertEqual(inbox.count_open_problems(c),0)
 
     def test_summary_is_weekly_and_contains_required_persisted_evidence(self):
@@ -464,7 +470,7 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                     c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,"
                               "updated_at,finished_at) VALUES (%s,%s,'upload','cancelled','manual',"
                               "'job.upload_stopped',%s,%s,%s)",
-                              (self.vault_id,catalog.get_file_by_path(self.vault_id,name)['id'],NOW,NOW,NOW))
+                              (self.vault_id,catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],NOW,NOW,NOW))
                 if state in ('pending', 'stopped', 'excluded', 'unsupported'):
                     continue
                 fingerprint(catalog,self.vault_id,name,digest)
@@ -472,10 +478,10 @@ class FixedNotificationPostgresTests(unittest.TestCase):
                 availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
                 c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s",(availability,version))
                 if state == 'cloud_only':
-                    catalog.mark_local_copy_missing(catalog.get_file_by_path(self.vault_id,name)['id'],observed_at=NOW)
+                    catalog.mark_local_copy_missing(catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],observed_at=NOW)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
-            protected = catalog.get_file_by_path(self.vault_id,'protected.jpg')['id']
+            protected = catalog_probe.get_file_by_path(catalog, self.vault_id,'protected.jpg')['id']
             for status, age in (('completed',1),('completed',9),('failed',1)):
                 c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,total_bytes) "
                           "VALUES (%s,%s,'free-space',%s,'manual',%s,%s,1048576)",

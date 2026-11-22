@@ -13,11 +13,10 @@ from fastapi import HTTPException
 from app.catalog import ArchiveCatalog
 
 from app.main import (
-    build_directory_items,
-    build_job_groups,
     list_files,
     normalize_directory,
 )
+from tests.listing_oracles import build_directory_items, build_job_groups
 from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
 

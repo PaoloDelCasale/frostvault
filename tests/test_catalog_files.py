@@ -18,6 +18,7 @@ import psycopg
 from app.catalog import ArchiveCatalog, ReplacementInProgress, StaleReplacement
 from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
 from tests.postgres import PostgresConnection, run_alembic
+from tests import catalog_probe
 
 DIGEST_A = sha256_hex(b"content-a")
 DIGEST_B = sha256_hex(b"content-b")
@@ -46,7 +47,7 @@ class _Fixture(unittest.TestCase):
         )
 
     def file(self, path: str = "a.txt") -> dict:
-        return self.catalog.get_file_by_path(2, path)
+        return catalog_probe.get_file_by_path(self.catalog, 2, path)
 
     def rejects(self, statement: str, params=(), error=psycopg.errors.IntegrityError) -> None:
         self.connection.execute("SAVEPOINT rejected")
@@ -562,14 +563,16 @@ class ExplicitStateTests(_Fixture):
         methods = (
             "_observe", "observe_replaced_local_copy", "publish_local_fingerprint",
             "begin_replacement", "promote_replacement", "abandon_replacement",
-            "mark_unseen_archive_versions_missing", "get_file", "get_file_by_path",
+            "mark_unseen_archive_versions_missing",
             "list_rename_candidates", "confirm_file_rename", "rename_file",
         )
         import app.catalog as catalog_module
 
         sources = [inspect.getsource(getattr(ArchiveCatalog, name)) for name in methods]
         sources.append(inspect.getsource(catalog_module._only_cloud_copy_sql))
-        sources.append(catalog_module._FILE_JOINS_SQL)
+        sources.extend(inspect.getsource(probe) for probe in (
+            catalog_probe.get_file, catalog_probe.get_file_by_path))
+        sources.append(catalog_probe._FILE_JOINS_SQL)
         for source in sources:
             self.assertNotIn("version_number", source)
             self.assertNotIn("DESC LIMIT 1", source.replace("\n", " "))

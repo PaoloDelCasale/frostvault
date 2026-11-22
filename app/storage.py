@@ -29,10 +29,7 @@ import psycopg
 from boto3.s3.transfer import TransferConfig
 from .services.s3_clients import s3_client as _cached_s3_client
 from .services.s3_upload import upload_file
-from .services.upload_snapshot import (
-    PartDigests, UploadSnapshot, prepare_upload_snapshot, validated_s3_proof,
-    UploadProofMismatch, unsupported_checksum_api,
-)
+from .services.upload_snapshot import PartDigests, prepare_upload_snapshot, validated_s3_proof
 from watchfiles import Change
 
 # The native observer runs in a child process with its own GIL (ADR-0053).
@@ -58,7 +55,6 @@ from .services.s3_preflight import check_bucket_readiness, failure_message_key, 
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
-    invalidate_for_vault_file,
     lock_vaults_in_order,
     mark_path_dirty,
     process_directory_aggregate_maintenance,
@@ -70,28 +66,19 @@ from .services import metadata_backups as metadata_backup_service
 from .services import system_bucket as system_bucket_service
 from .services import retention_lock as retention_lock_service
 from .services import metrics as metrics_service
-# Helpers extracted from this module.  Names storage itself no longer calls
-# stay importable here because tests and ``app.main`` reach them through
-# ``app.storage`` (``patch("app.storage.<name>")`` and direct imports).
+# ``prepare_upload_snapshot``, ``validated_s3_proof`` and
+# ``_verification_version_head`` are not called here: the Upload execution
+# reads them from this module, which it receives as its worker adapter.
 from .services.s3_copy import (
-    S3_SINGLE_COPY_MAX_BYTES,
     _object_version_entries,
-    _delete_s3_version,
     _verification_version_head,
-    _head_object_with_checksum,
-    _full_object_sha256_checksum,
-    _sha256_s3_version,
-    _copy_storage_class_version,
-    _verify_storage_class_destination,
     restore_header_state,
     storage_class_requires_restore,
 )
 from .services.vault_paths import (
-    InvalidLogicalPath,
     RESTORE_TEMPORARY_RE,
     CLEANUP_TEMPORARY_RE,
     VERIFY_TEMPORARY_RE,
-    safe_relative_path,
     safe_local_path,
     safe_local_entry_path,
     object_key_to_path,
@@ -113,7 +100,6 @@ from .services.runtime_status import (
     runtime_status,
     status_lock,
     scan_lock_for_vault,
-    snapshot_runtime_status_for_stats,
 )
 from .services.fs_preflight import (
     PinnedTree, TreeIdentityChanged, inspect_entry, is_storable_name, removal_is_unproven,
@@ -123,12 +109,7 @@ from .services.local_files import (
     hash_stable_regular_file,
     restore_claimed_local_copy,
     _local_stat_unchanged,
-    _require_linked_upload_digest,
 )
-
-
-def _runtime_settings():
-    return settings_snapshot(settings)
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
 from .services import cloud_deletion as cloud_deletion_service
@@ -157,6 +138,10 @@ from .services.operation_policies import (
     auto_upload_path_is_included,
     file_is_stable,
 )
+
+
+def _runtime_settings():
+    return settings_snapshot(settings)
 
 
 # Short-lived journals compensate committed observation batches if a pinned root
@@ -3189,12 +3174,6 @@ def _identify_new_local_copies(
     return summary
 
 
-def _claim_write_succeeded(result: Any) -> bool:
-    """Normalize real cursors and lightweight unit-test recording seams."""
-    rowcount = getattr(result, "rowcount", None)
-    return rowcount is None or rowcount != 0
-
-
 def _job_counter_action(action: str | None) -> str:
     value = str(action or "other")
     return value if value in _JOB_COUNTER_ACTIONS else "other"
@@ -4237,17 +4216,6 @@ def job_progress_callback(
     return update
 
 
-def remove_local_copies(vault: dict[str, Any], logical_path: str) -> list[Path]:
-    """Delete the source copy after the caller has verified the cloud copy."""
-    target = safe_local_entry_path(vault["source_root"], logical_path)
-    if not target.exists():
-        return []
-    if not target.is_file():
-        raise RuntimeError(f"The local path is not a file: {target}")
-    target.unlink()
-    return [target]
-
-
 class SourceVolumeUnavailable(RuntimeError):
     """The Source Volume cannot be read right now; this is not an identity change."""
 
@@ -4465,11 +4433,6 @@ def _automatic_upload_state(job: dict[str, Any]) -> str:
         return UPLOAD_READY if stable else UPLOAD_NOT_READY
 
 
-def _automatic_upload_ready(job: dict[str, Any]) -> bool:
-    """Boolean view of ``_automatic_upload_state`` for callers that only gate."""
-    return _automatic_upload_state(job) == UPLOAD_READY
-
-
 def _enrolled_root_still_healthy(vault: Mapping[str, Any]) -> bool:
     """True when the enrolled Source Volume is still reachable and unchanged."""
     try:
@@ -4631,35 +4594,8 @@ def _close_stale_upload_snapshot(job: dict[str, Any]) -> None:
 
 def process_upload(job: dict[str, Any]) -> None:
     """Compatibility hook: the UploadExecution Module owns the per-file protocol."""
-    import sys
     from .services.upload_execution import UploadExecution
     UploadExecution(sys.modules[__name__]).run(job)
-
-
-def ensure_scheduled_current_version(
-    *,
-    bucket: str,
-    object_key: str,
-    expected_version_id: str | None,
-    operation: str,
-) -> None:
-    """Abort when the live current VersionId differs from the scheduled Archive Version.
-
-    Unversioned delete_object is still required to create an S3 Delete Marker;
-    this Head/compare detects concurrent uploads before that hide (REQ-004).
-    """
-    if not expected_version_id:
-        raise RuntimeError(
-            f"{operation} aborted: scheduled Archive Version has no provider VersionId"
-        )
-    head = s3_client().head_object(Bucket=bucket, Key=object_key)
-    current_version = head.get("VersionId")
-    if not current_version or current_version != expected_version_id:
-        raise RuntimeError(
-            f"{operation} aborted: current VersionId "
-            f"{current_version!r} does not match scheduled Archive Version "
-            f"{expected_version_id!r}"
-        )
 
 
 def _copy_worker() -> Any:
@@ -5740,14 +5676,6 @@ def _wait_for_source_volume(job: dict[str, Any]) -> None:
                             "remedy": provenance.REMEDIES[SOURCE_VOLUME_PROBLEM]},
                 )
         notify()
-
-
-def _clear_source_volume_problem(job: dict[str, Any]) -> None:
-    """The volume was read again: resolve the Vault's open problem, if any."""
-    with db() as connection:
-        opened = _source_volume_problem_open(connection, job)
-    if opened:
-        _resolve_source_volume_problem(job)
 
 
 def _source_volume_problem_open(connection: Any, job: dict[str, Any]) -> bool:
@@ -7322,20 +7250,14 @@ _watcher_scan_pool_lock = threading.Lock()
 _watcher_scan_futures: set[Future[Any]] = set()
 
 
-def _watcher_scan_executor(vault_id: int) -> ThreadPoolExecutor:
-    """One thread per Vault for its paired scans (#690).
+def _watcher_scan_executor_locked(vault_id: int) -> ThreadPoolExecutor:
+    """One thread per Vault for its paired scans (#690); the caller holds the pool lock.
 
     The paired scans of one Vault take turns; another Vault's full scan, which
     can last hours on a large adoption, never delays them. Manual scans of
     different Vaults already ran side by side. Dedicated threads keep the long
     scans off the default executor, which the watchers and every request share.
     """
-    with _watcher_scan_pool_lock:
-        return _watcher_scan_executor_locked(vault_id)
-
-
-def _watcher_scan_executor_locked(vault_id: int) -> ThreadPoolExecutor:
-    """Return the Vault's paired-scan pool; the caller holds the pool lock."""
     pool = _watcher_scan_pools.get(int(vault_id))
     if pool is None:
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"watcher-scan-{int(vault_id)}")

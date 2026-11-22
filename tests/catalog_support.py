@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+from app.catalog import ArchiveCatalog
+from tests import catalog_probe
 
 
 def seed_vault(
@@ -33,13 +38,22 @@ def seed_vault(
     return vault_id
 
 
+def queue_rename_job(connection: Any, vault_id: int, path: str) -> list[int]:
+    """Queue the copy to the renamed file's key, as the scan does after confirming a rename."""
+    job_ids, _total, _eligible = ArchiveCatalog(connection).queue_jobs(
+        vault_id=vault_id, path=path, action="rename", requested_at=datetime.now(timezone.utc).isoformat(),
+        group_id=uuid.uuid4().hex, is_directory=False, origin="automatic",
+    )
+    return job_ids
+
+
 def sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
 def fingerprint(catalog: Any, vault_id: int, path: str, digest: str) -> bool:
     """Publish ``digest`` for the Local Copy currently observed at ``path``."""
-    row = catalog.get_file_by_path(vault_id, path)
+    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
     local = row["local_copy"]
     return catalog.publish_local_fingerprint(
         row["id"],
@@ -61,7 +75,7 @@ def protect(
     verified_at: str = "2026-07-21T10:02:00+00:00",
 ) -> str:
     """Upload and verify Current for the fingerprinted Local Copy at ``path``."""
-    row = catalog.get_file_by_path(vault_id, path)
+    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
     size = row["local_copy"]["size"] if row["local_copy"] else 1
     version_id = catalog.begin_replacement(
         row["id"],

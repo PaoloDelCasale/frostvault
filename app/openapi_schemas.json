@@ -1850,12 +1850,6 @@
     "MeVault": {
       "additionalProperties": true,
       "properties": {
-        "cloud_deletion_enabled": {
-          "type": "boolean"
-        },
-        "delete_enabled": {
-          "type": "boolean"
-        },
         "id": {
           "type": "number"
         },
@@ -1870,9 +1864,7 @@
       "required": [
         "id",
         "uuid",
-        "name",
-        "delete_enabled",
-        "cloud_deletion_enabled"
+        "name"
       ],
       "type": "object"
     },
@@ -2226,9 +2218,6 @@
         "active_jobs": {
           "type": "number"
         },
-        "delete_enabled": {
-          "type": "boolean"
-        },
         "runtime": {
           "additionalProperties": {},
           "properties": {
@@ -2461,7 +2450,6 @@
         "storage",
         "active_jobs",
         "runtime",
-        "delete_enabled",
         "source_volume"
       ],
       "type": "object"

@@ -17,6 +17,7 @@ from app.services import history_retention as retention
 from app.services.catalog_events import CatalogEventStore
 from tests import test_upload_remediation as remediation_tests
 from tests import test_upload_worker as worker
+from tests import catalog_event_probe
 
 A = worker.A
 B = b"second content of the report\n" * 64
@@ -165,7 +166,7 @@ class HistoryRetentionTests(unittest.TestCase):
         self.assertGreaterEqual(counts["catalog_events"], 5, counts)
         self.assertEqual(self.rows("SELECT COUNT(*) AS n FROM catalog_events WHERE vault_id=2")[0]["n"], 0)
         with self.db() as connection:
-            page = CatalogEventStore(connection).read_events(vault_id=2, after_revision=1)
+            page = catalog_event_probe.read_events(CatalogEventStore(connection), vault_id=2, after_revision=1)
         self.assertTrue(page["retention_gap"], page)
         self.assertEqual(page["retained_from_revision"], int(revision) + 1)
 

@@ -166,7 +166,7 @@ class SmallUploadCostTests(unittest.TestCase):
                     "ON CONFLICT (vault_id) DO UPDATE SET upload_verification=EXCLUDED.upload_verification",
                     (mode,))
         with counted() as cost:
-            main.queue_jobs(path, "upload", 2, 1)
+            main.queue_jobs(path, "upload", 2)
         job_id = self.rows("SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
                            "WHERE f.path=%s AND j.status='queued'", path)[0]["id"]
         # The scheduler hands the worker the candidate row it read for the

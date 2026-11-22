@@ -333,12 +333,6 @@ def restore_reconciliation_pending(connection: Any, vault_id: int) -> bool:
     ).fetchone() is not None
 
 
-def finish_restore_reconciliation(connection: Any, vault_id: int) -> None:
-    connection.execute(
-        "DELETE FROM metadata_restore_vaults WHERE vault_id=%s", (int(vault_id),),
-    )
-
-
 def remember_cloud_update(connection: Any, file_id: str) -> None:
     """Count a Vault File found updated in the cloud after the restored backup."""
     connection.execute("""

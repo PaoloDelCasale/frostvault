@@ -1,5 +1,7 @@
 # A healthy watcher start is paired with a scan
 
+Status: accepted.
+
 Issues #494, #495, #496 and #497 show one fault with four faces: the filesystem
 watcher is the only thing that notices change between the six-hour scans, so
 whatever stops it, or happens before it exists, stays invisible and keeps the

@@ -22,6 +22,7 @@ from app.storage import process_jobs_once
 from tests.catalog_support import fingerprint, protect
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 def _sha(payload: bytes) -> str:
@@ -128,7 +129,7 @@ class RecoveryHttpTests(unittest.TestCase):
     def test_superseded_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
         with PostgresConnection(str(self.database_path)) as connection:
             catalog = ArchiveCatalog(connection)
-            generation = catalog.get_file_by_path(self.vault_id, "docs/note.txt")["generation"]
+            generation = catalog_probe.get_file_by_path(catalog, self.vault_id, "docs/note.txt")["generation"]
             newest = catalog.begin_replacement(
                 self.file_id, object_key="vaults/x/docs/note.txt", provider_version_id="v2", size=5,
                 storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00")

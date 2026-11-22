@@ -36,6 +36,7 @@ from app.storage import CLOUD_SCAN_WRITE_BATCH_SIZE, scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
@@ -58,7 +59,7 @@ def _known_version(
         vault_id=2, path=path, file_type="regular", size=1, mtime_ns=1,
         observed_at="2026-07-20T10:00:00+00:00",
     )
-    row = catalog.get_file_by_path(2, path)
+    row = catalog_probe.get_file_by_path(catalog, 2, path)
     version_id = catalog.begin_replacement(
         row["id"], object_key=PREFIX + path, provider_version_id=provider_version_id,
         size=1, storage_class="STANDARD", created_at="2026-07-20T10:00:00+00:00",
@@ -66,7 +67,7 @@ def _known_version(
     if verify:
         digest = sha256_hex(path.encode())
         fingerprint(catalog, 2, path, digest)
-        row = catalog.get_file_by_path(2, path)
+        row = catalog_probe.get_file_by_path(catalog, 2, path)
         catalog.promote_replacement(
             row["id"], archive_version_id=version_id, plaintext_sha256=digest,
             verified_at="2026-07-20T10:01:00+00:00", local_generation=row["generation"],
@@ -205,7 +206,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 self.assertEqual(_availability(connection, kept), "available")
-                current = ArchiveCatalog(connection).get_file_by_path(2, "kept.txt")
+                current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "kept.txt")
             self.assertEqual(current["current_version"]["id"], kept)
 
     def test_complete_listing_marks_unseen_missing(self) -> None:
@@ -278,7 +279,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 files = connection.execute(
                     "SELECT count(*) AS n FROM files"
                 ).fetchone()["n"]
-                current = ArchiveCatalog(connection).get_file_by_path(2, "a.txt")
+                current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "a.txt")
             self.assertEqual([row["provider_version_id"] for row in versions], ["a-v1"])
             self.assertEqual(files, before)
             self.assertEqual(current["current_version"]["id"], known)
@@ -413,7 +414,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             with PostgresConnection(str(database_path)) as connection:
                 _seed_vault(connection)
                 _known_version(connection, "held.txt", "held-v1")
-                file_id = ArchiveCatalog(connection).get_file_by_path(2, "held.txt")["id"]
+                file_id = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "held.txt")["id"]
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(vault_id, file_id, action, status)

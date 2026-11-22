@@ -43,6 +43,7 @@ from app.storage import (
 from app.services.vault_relocation import enroll_vault_root_identity
 from tests.catalog_support import seed_vault
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -140,7 +141,7 @@ def _add_cloud_only_version(
             mtime_ns=1_700_000_000_000_000_000,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        generation = catalog.get_file_by_path(2, relative_path)["generation"]
+        generation = catalog_probe.get_file_by_path(catalog, 2, relative_path)["generation"]
         version_id = catalog.begin_replacement(
             file_id, object_key=object_key, provider_version_id=provider_version_id,
             size=len(payload), storage_class=storage_class,
@@ -220,7 +221,7 @@ def _run_plain_recover(
         restore_approval_hold_seconds=3600,
     )
     with patch("app.database.settings", database_settings):
-        queue_jobs(relative_path, "recover", 2, 1)
+        queue_jobs(relative_path, "recover", 2)
         with (
             patch("app.storage.settings", worker_settings),
             patch("app.storage.validate_cloud_vault"),
@@ -243,7 +244,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             database_dsn=database_dsn(str(database_path)),
         )
         with patch("app.database.settings", database_settings):
-            queued = queue_jobs(relative_path, "recover", 2, 1)
+            queued = queue_jobs(relative_path, "recover", 2)
             with PostgresConnection(str(database_path)) as connection:
                 connection.execute(
                     """
@@ -289,7 +290,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
             self.assertEqual(destination.read_bytes(), payload)
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
                 local = connection.execute(
@@ -337,7 +338,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
             self.assertEqual(destination.read_bytes(), conflict)
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -447,8 +448,8 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
 
             with PostgresConnection(str(database_path)) as connection:
                 catalog = ArchiveCatalog(connection)
-                observed = catalog.get_file_by_path(2, "report.txt")
-                listed = catalog.list_file_rows(2)
+                observed = catalog_probe.get_file_by_path(catalog, 2, "report.txt")
+                listed = catalog_probe.list_file_rows(catalog, 2)
                 job = connection.execute(
                     "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("report.txt",),
@@ -549,7 +550,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -616,7 +617,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination.write_bytes(preexisting)
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "missing")
@@ -635,7 +636,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
             with PostgresConnection(str(database_path)) as connection:
-                observed = ArchiveCatalog(connection).get_file_by_path(
+                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -720,7 +721,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
-                queued = queue_jobs("cold.txt", "recover", 2, 1)
+                queued = queue_jobs("cold.txt", "recover", 2)
                 with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         """
@@ -797,7 +798,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
                 database_dsn=database_dsn(str(database_path)),
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs("cold.txt", "recover", 2, 1)
+                queue_jobs("cold.txt", "recover", 2)
                 with PostgresConnection(str(database_path)) as connection:
                     connection.execute(
                         "UPDATE jobs SET status='restoring', updated_at=%s",

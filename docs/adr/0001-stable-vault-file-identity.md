@@ -1,5 +1,7 @@
 # Keep Vault File identity stable across renames
 
+Status: accepted.
+
 A Vault File keeps one stable identity while Path History records confirmed
 renames and Archive Versions retain the cloud key used at upload time. S3 has no
 native rename and versions belong to keys. Stable identity avoids duplicate

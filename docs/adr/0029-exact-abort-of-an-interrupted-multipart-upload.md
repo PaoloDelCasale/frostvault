@@ -1,5 +1,7 @@
 # Exact abort of an interrupted multipart upload
 
+Status: accepted.
+
 Issue #491. [ADR-0025](0025-proven-absence-closes-an-ambiguous-send.md) refuses to
 prove absence while an incomplete multipart upload exists for the key, because it
 could be the dead sender's. A multipart upload that crashed after

@@ -34,10 +34,11 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services import upload_provenance as provenance
+from app.services import upload_remediation
 from app.services.vault_relocation import enroll_vault_root_identity
 from app.services.vaults import VAULT_ROW_SQL
 from app.services.upload_snapshot import UploadSnapshot
-from tests.catalog_support import seed_vault
+from tests.catalog_support import queue_rename_job, seed_vault
 from tests.owner_fixtures import insert_owner
 from tests.postgres import PostgresConnection, database_dsn, run_alembic
 from tests.upload_provenance_provider import VersionedProvider
@@ -95,7 +96,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
 
     def queue(self):
-        queued = queue_jobs("report.txt", "upload", 2, 1)
+        queued = queue_jobs("report.txt", "upload", 2)
         self.assertEqual(queued["item_count"], 1)
         with PostgresConnection(self.db_path) as connection:
             return connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
@@ -115,7 +116,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.hook = lambda *args, **kwargs: None
         with PostgresConnection(self.db_path) as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
-            result = provenance.schedule_resume(connection, vault=vault, path="report.txt", user_id=1, timestamp=storage.now_iso())
+            result = upload_remediation.schedule_resume(connection, vault=vault, path="report.txt", user_id=1, timestamp=storage.now_iso())
         self.run_job(result["job_id"])
         return result["job_id"]
 
@@ -166,7 +167,11 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                 plaintext_sha256=hashlib.sha256(A).hexdigest(), size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, match_current=True))
         def process(action):
-            queue_jobs("renamed.txt", action, 2, 1)
+            if action == "rename":
+                with PostgresConnection(self.db_path) as connection:
+                    queue_rename_job(connection, 2, "renamed.txt")
+            else:
+                queue_jobs("renamed.txt", action, 2)
             with PostgresConnection(self.db_path) as connection:
                 queued = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
             self.run_job(queued)
@@ -686,8 +691,8 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
             catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
-        queued = queue_jobs("renamed.txt","rename",2,1)
-        self.assertEqual(queued["item_count"],1)
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(len(queue_rename_job(connection, 2, "renamed.txt")), 1)
         with PostgresConnection(self.db_path) as connection:
             job = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
         self.run_job(job)
@@ -749,8 +754,8 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.deletes, 0)
         foreign_writes = set(self.provider.objects) - {(self.key, keeper_version)}
         self.assertEqual(len(foreign_writes), 1)
-        queued = queue_jobs("renamed.txt","rename",2,1)
-        self.assertEqual(queued["item_count"],1)
+        with PostgresConnection(self.db_path) as connection:
+            self.assertEqual(len(queue_rename_job(connection, 2, "renamed.txt")), 1)
         with PostgresConnection(self.db_path) as connection:
             job = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
         self.run_job(job)
@@ -776,7 +781,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
         with PostgresConnection(self.db_path) as connection:
             with self.assertRaises(provenance.UploadBlocked):
-                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+                upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
         with PostgresConnection(self.db_path) as connection:
             connection.execute("UPDATE vaults SET lifecycle='active' WHERE id=2")
             group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (2) RETURNING id").fetchone()["id"]
@@ -784,7 +789,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         with PostgresConnection(self.db_path) as connection:
             self.assertFalse(provenance.describe(connection,vault_id=2,path="report.txt")["can_resume"])
             with self.assertRaises(provenance.UploadBlocked):
-                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+                upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
         self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
 
     def test_cloud_only_conflict_after_ack_cannot_publish_or_cleanup(self):
@@ -797,7 +802,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         with PostgresConnection(self.db_path) as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
             with self.assertRaises(provenance.UploadBlocked):
-                provenance.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
+                upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
         self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
         self.assertIn((self.key,keeper_version),self.provider.objects)
         self.assertIsNone(self.row(job)["archive_version_id"])
@@ -874,7 +879,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                     ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=self.file.stat().st_size, mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
 
     def queue_path(self, path):
-        queued = queue_jobs(path, "upload", 2, 1)
+        queued = queue_jobs(path, "upload", 2)
         self.assertEqual(queued["item_count"], 1)
         with PostgresConnection(self.db_path) as connection:
             return connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]

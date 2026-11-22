@@ -119,12 +119,6 @@ def dispatch_ready(state: dict[str, Any], now: datetime) -> bool:
 COLD_STORAGE_CODES = frozenset({'InvalidObjectState'})
 
 
-def is_cold_storage_error(error: BaseException) -> bool:
-    return any(isinstance(item, ClientError)
-               and item.response.get('Error', {}).get('Code') in COLD_STORAGE_CODES
-               for item in exception_chain(error))
-
-
 def is_readiness_error(error: BaseException) -> bool:
     """Only structured provider auth failures, including SDK/service wrappers."""
     return any(isinstance(item, ClientError)

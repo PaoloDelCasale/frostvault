@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createLatestRequestScope } from "./latest";
+import { createLatestRequestScope } from "./support/latest";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

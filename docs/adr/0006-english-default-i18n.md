@@ -34,5 +34,5 @@ switching for historical Jobs and couples persistence to presentation.
 
 - Catalog parity and critical-key coverage are enforced by unit tests.
 - Legacy Job rows without `message_key` continue to display their stored prose.
-- Contributors add keys to both locale files and update `CRITICAL_KEYS` when a
+- Contributors add keys to both locale files and update `CRITICAL_KEYS` (`tests/i18n_checks.py`) when a
   string is user-visible on a critical path (see `docs/translation-workflow.md`).

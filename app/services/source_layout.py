@@ -166,10 +166,6 @@ def sources_layout_is_ready() -> bool:
     return _structural_error is None
 
 
-def structural_error_message() -> str | None:
-    return _structural_error
-
-
 def ensure_managed_directory() -> Path:
     """Create ``managed`` under the sources root when absent.
 
@@ -540,11 +536,6 @@ def _lexical_source_alias(vault_source_root: str | Path) -> tuple[str, str | Non
     if alias == MANAGED_DIR_NAME:
         return "managed", MANAGED_DIR_NAME
     return "custom", alias
-
-
-def source_alias_for_root(vault_source_root: str | Path) -> tuple[str, str | None]:
-    """Public lexical-only classifier used by relocation preflight."""
-    return _lexical_source_alias(vault_source_root)
 
 
 def _canonical_root_stays_within(root: str | Path, boundary: str | Path) -> bool:

@@ -22,6 +22,7 @@ from tests.catalog_support import fingerprint, sha256_hex
 from tests.owner_fixtures import insert_owner, insert_vault
 from tests.postgres import PostgresConnection, database_dsn
 from tests.test_database import run_alembic
+from tests import catalog_probe
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
 PREFIX = f"vaults/{VAULT_UUID}/"
@@ -62,7 +63,7 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 mtime_ns=1_000, observed_at="2026-07-21T10:00:00+00:00",
             )
             fingerprint(catalog, 2, OLD_PATH, digest)
-            row = catalog.get_file_by_path(2, OLD_PATH)
+            row = catalog_probe.get_file_by_path(catalog, 2, OLD_PATH)
             self.version_id = catalog.begin_replacement(
                 row["id"], object_key=PREFIX + OLD_PATH, provider_version_id="s3-v-old",
                 size=32, storage_class="STANDARD", created_at="2026-07-21T10:01:00+00:00",
@@ -83,8 +84,8 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
                 vault_file_id=self.file_id, new_path=NEW_PATH,
                 changed_at="2026-07-21T11:00:00+00:00", vault_id=2,
             )
-            self.assertEqual(catalog.get_file_by_path(2, NEW_PATH)["id"], self.file_id)
-            self.assertIsNone(catalog.get_file_by_path(2, OLD_PATH))
+            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, NEW_PATH)["id"], self.file_id)
+            self.assertIsNone(catalog_probe.get_file_by_path(catalog, 2, OLD_PATH))
 
     def _scan(self, versions: list[dict]) -> tuple[int, dict]:
         report: dict = {}
@@ -109,10 +110,10 @@ class CloudRediscoveryIdentityTests(unittest.TestCase):
     def _assert_identity_kept(self, connection: PostgresConnection) -> None:
         catalog = ArchiveCatalog(connection)
         self.assertIsNone(
-            catalog.get_file_by_path(2, OLD_PATH),
+            catalog_probe.get_file_by_path(catalog, 2, OLD_PATH),
             "cloud rediscovery must not mint an orphan Vault File at the old path",
         )
-        current = catalog.get_file_by_path(2, NEW_PATH)
+        current = catalog_probe.get_file_by_path(catalog, 2, NEW_PATH)
         self.assertEqual(current["id"], self.file_id)
         self.assertEqual(current["current_version"]["id"], self.version_id)
         self.assertIsNone(current["replacing_version"])

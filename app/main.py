@@ -31,7 +31,7 @@ from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
 from .config import settings, settings_snapshot, validate_settings, warn_removed_settings
 from .diagnostics import require_metrics_token
-from .audit import audit_log
+from .services.audit_events import audit_log
 from .i18n import (
     DEFAULT_LOCALE,
     LOCALE_COOKIE_NAME,
@@ -159,12 +159,14 @@ from .sessions import (
     session_actor,
     set_session_vault,
 )
-from .services.storage_classes import (
-    cold_class_warning,
-    normalize_storage_class,
-    source_requires_restore_for_class_change,
-    validate_manual_target_class,
+from .services.runtime_status import (
+    runtime_status,
+    scan_lock_for_vault,
+    snapshot_runtime_status_for_stats,
+    status_lock,
 )
+from .services.s3_copy import storage_class_requires_restore
+from .services.vault_paths import InvalidLogicalPath, safe_local_path, safe_relative_path
 from .storage import (
     background_loop,
     cancel_jobs,
@@ -180,18 +182,10 @@ from .storage import (
     stop_background_executors,
     now_iso,
     reconcile_interrupted_jobs,
-    runtime_status,
-    safe_local_path,
-    scan_lock_for_vault,
     queue_scan,
     request_full_scan,
-    snapshot_runtime_status_for_stats,
-    status_lock,
-    safe_relative_path,
-    InvalidLogicalPath,
     scan_vault,
     s3_client,
-    storage_class_requires_restore,
 )
 
 
@@ -915,87 +909,6 @@ def normalize_directory(value: str, *, api: bool = False) -> str:
         raise HTTPException(422, "Invalid folder") from exc
 
 
-def build_directory_items(
-    rows: list[dict[str, Any]], directory: str, state_filter: str = ""
-) -> list[dict[str, Any]]:
-    """Build one file-manager level from the flat file catalog."""
-    prefix = f"{directory}/" if directory else ""
-    folders: dict[str, dict[str, Any]] = {}
-    files: list[dict[str, Any]] = []
-
-    for row in rows:
-        relative = row["path"][len(prefix):]
-        folder_name, separator, _ = relative.partition("/")
-        if separator:
-            folder = folders.setdefault(
-                folder_name,
-                {
-                    "item_count": 0,
-                    "total_size": 0,
-                    "local_size": 0,
-                    "cloud_size": 0,
-                    "state_counts": {},
-                    "action_counts": {
-                        "upload": 0,
-                        "recover": 0,
-                        "free-space": 0,
-                        "cloud-purge": 0,
-                    },
-                    "storage_classes": set(),
-                    "matches_filter": False,
-                },
-            )
-            folder["item_count"] += 1
-            local_size = row.get("local_size")
-            cloud_size = row.get("cloud_size")
-            folder["total_size"] += local_size if local_size is not None else (cloud_size or 0)
-            folder["local_size"] += local_size or 0
-            folder["cloud_size"] += cloud_size or 0
-            folder["state_counts"][row["state"]] = folder["state_counts"].get(row["state"], 0) + 1
-            action_flags = {
-                "upload": row.get("upload_eligible", row["state"] == "pending"),
-                "recover": row.get("recover_eligible", row["state"] == "cloud_only"),
-                "free-space": row.get("cleanup_eligible", row["state"] == "protected"),
-                "cloud-purge": row["state"] == "cloud_only",
-            }
-            for action, eligible in action_flags.items():
-                if eligible:
-                    folder["action_counts"][action] += 1
-            if row.get("storage_class"):
-                folder["storage_classes"].add(row["storage_class"])
-            if not state_filter or row["state"] == state_filter:
-                folder["matches_filter"] = True
-            continue
-        if not state_filter or row["state"] == state_filter:
-            files.append({**row, "type": "file", "name": relative})
-
-    folder_items = []
-    for name, aggregate in folders.items():
-        if not aggregate["matches_filter"]:
-            continue
-        states = aggregate["state_counts"]
-        from .services.protection_states import aggregate_state
-        state = aggregate_state(states)
-        storage_classes = sorted(aggregate["storage_classes"])
-        folder_items.append({
-            "type": "directory",
-            "name": name,
-            "path": f"{prefix}{name}",
-            "item_count": aggregate["item_count"],
-            "total_size": aggregate["total_size"],
-            "local_size": aggregate["local_size"],
-            "cloud_size": aggregate["cloud_size"],
-            "state": state,
-            "state_counts": states,
-            "storage_class": storage_classes[0] if len(storage_classes) == 1 else None,
-            "storage_class_count": len(storage_classes),
-            "available_actions": aggregate["action_counts"],
-        })
-    folder_items.sort(key=lambda item: item["name"].casefold())
-    files.sort(key=lambda item: item["name"].casefold())
-    return [*folder_items, *files]
-
-
 @app.get("/login")
 def login_page():
     return _spa_index_response()
@@ -1356,8 +1269,6 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
             "id": vault["id"],
             "uuid": str(vault["uuid"]),
             "name": vault["name"],
-            "delete_enabled": vault_local_access(vault["source_root"]).local_operations_allowed,
-            "cloud_deletion_enabled": True,
         }
     else:
         selected_id = request.state.session.get("vault_id")
@@ -2085,7 +1996,6 @@ def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = Non
             "health": access.volume_health,
             "local_operations_allowed": access.local_operations_allowed,
         },
-        "delete_enabled": access.local_operations_allowed,
     }
 
 
@@ -2295,109 +2205,6 @@ def download_metadata_backup(
             "X-Checksum-SHA256": artifact["digest_sha256"],
         },
     )
-
-
-def build_job_groups(
-    rows: list[dict[str, Any]],
-    *,
-    locale: str = DEFAULT_LOCALE,
-) -> list[dict[str, Any]]:
-    """Aggregate file jobs by operation, weighting progress by transferred bytes."""
-    groups: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        group_id = row.get("group_id") or f"job-{row['id']}"
-        display_message = present_job_message(row, locale)
-        group = groups.setdefault(
-            group_id,
-            {
-                "id": group_id,
-                "path": row.get("group_path") or row["path"],
-                "action": row["action"],
-                "status": "completed",
-                "message": "",
-                "message_key": row.get("message_key"),
-                "total_bytes": 0,
-                "transferred_bytes": 0,
-                "item_count": 0,
-                "completed_count": 0,
-                "failed_count": 0,
-                "resolved_failed_count": 0,
-                "unresolved_failed_count": 0,
-                "cancelled_count": 0,
-                "updated_at": row["updated_at"],
-                "pending_until": row.get("pending_until"),
-                "estimated_cost_eur": row.get("estimated_cost_eur"),
-                "estimated_hours": row.get("estimated_hours"),
-                "restore_tier": row.get("restore_tier"),
-                "restore_days": row.get("restore_days"),
-            },
-        )
-        if row.get("pending_until"):
-            group["pending_until"] = row["pending_until"]
-        if row.get("estimated_cost_eur") is not None:
-            group["estimated_cost_eur"] = row["estimated_cost_eur"]
-        if row.get("estimated_hours") is not None:
-            group["estimated_hours"] = row["estimated_hours"]
-        if row.get("restore_tier"):
-            group["restore_tier"] = row["restore_tier"]
-        if row.get("restore_days") is not None:
-            group["restore_days"] = row["restore_days"]
-        total_bytes = int(row.get("total_bytes") or 0)
-        transferred = int(row.get("transferred_bytes") or 0)
-        group["total_bytes"] += total_bytes
-        group["transferred_bytes"] += total_bytes if row["status"] == "completed" else min(transferred, total_bytes)
-        group["item_count"] += 1
-        if row["status"] == "completed":
-            group["completed_count"] += 1
-            if not group["message"]:
-                group["message"] = display_message
-                group["message_key"] = row.get("message_key")
-        elif row["status"] == "failed":
-            group["failed_count"] += 1
-            resolved = (row.get("remediation") or {}).get("state") == "resolved"
-            group["resolved_failed_count" if resolved else "unresolved_failed_count"] += 1
-            group["message"] = display_message or translate(
-                "job.operation_failed", locale=locale
-            )
-            group["message_key"] = row.get("message_key") or "job.operation_failed"
-        elif row["status"] == "cancelled":
-            group["cancelled_count"] += 1
-            group["message"] = display_message or translate(
-                "job.operation_stopped", locale=locale
-            )
-            group["message_key"] = row.get("message_key") or "job.operation_stopped"
-        else:
-            group["status"] = row["status"]
-            group["message"] = display_message
-            group["message_key"] = row.get("message_key")
-        if str(row["updated_at"]) > str(group["updated_at"]):
-            group["updated_at"] = row["updated_at"]
-
-    for group in groups.values():
-        active_count = (
-            group["item_count"]
-            - group["completed_count"]
-            - group["failed_count"]
-            - group["cancelled_count"]
-        )
-        if active_count == 0:
-            group["status"] = (
-                "failed"
-                if group["failed_count"]
-                else "cancelled"
-                if group["cancelled_count"]
-                else "completed"
-            )
-        total_bytes = group["total_bytes"]
-        finished_count = (
-            group["completed_count"] + group["failed_count"] + group["cancelled_count"]
-        )
-        group["percent"] = round(
-            100 * group["transferred_bytes"] / total_bytes
-            if total_bytes
-            else 100 * finished_count / group["item_count"]
-        )
-    return list(groups.values())
 
 
 @app.get("/api/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
@@ -2757,67 +2564,51 @@ def queue_jobs(
     path: str,
     action: str,
     vault_id: int,
-    user_id: int,
     is_directory: bool = False,
     *,
     archive_version_id: str | None = None,
     restore_tier: str | None = None,
     restore_days: int | None = None,
-    target_storage_class: str | None = None,
-    whole_vault: bool = False,
     recovery_selection: list[tuple[str, bool]] | None = None,
 ) -> dict[str, Any]:
     if recovery_selection:
         recovery_selection = [(safe_relative_path(p).as_posix(), directory) for p, directory in recovery_selection]
-        if action != "recover" or archive_version_id or whole_vault:
+        if action != "recover" or archive_version_id:
             raise HTTPException(422, "Invalid recovery selection")
-        logical_path = ""
-    elif whole_vault:
         logical_path = ""
     else:
         logical_path = safe_relative_path(path).as_posix()
-    if action not in {"upload", "recover", "free-space", "rename", "storage-class"}:
+    if action not in {"upload", "recover", "free-space"}:
         raise HTTPException(422, "Invalid operation")
-    if action in {"upload", "recover", "free-space", "rename", "storage-class"}:
-        with db() as connection:
-            vault_row = connection.execute(
-                "SELECT source_root, lifecycle FROM vaults WHERE id=%s",
-                (vault_id,),
-            ).fetchone()
-        if vault_row is None:
-            raise HTTPException(404, "Vault not found")
-        if protection_stop_service.local_work_suspended(vault_row):
-            raise HTTPException(409, "Vault is no longer protected")
-        if vault_relocation_service.local_work_suspended(vault_row):
-            raise HTTPException(409, "Local work is suspended pending reconnect scan")
-        access = vault_local_access(vault_row["source_root"])
-        if action in {"upload", "recover", "free-space", "rename"} and not access.local_operations_allowed:
-            raise HTTPException(
-                503,
-                "Local storage for this vault is unavailable"
-                + (f" ({access.volume_health})" if access.volume_health else ""),
-            )
-    if archive_version_id and (
-        action not in {"recover", "storage-class"} or is_directory or whole_vault
-    ):
+    with db() as connection:
+        vault_row = connection.execute(
+            "SELECT source_root, lifecycle FROM vaults WHERE id=%s",
+            (vault_id,),
+        ).fetchone()
+    if vault_row is None:
+        raise HTTPException(404, "Vault not found")
+    if protection_stop_service.local_work_suspended(vault_row):
+        raise HTTPException(409, "Vault is no longer protected")
+    if vault_relocation_service.local_work_suspended(vault_row):
+        raise HTTPException(409, "Local work is suspended pending reconnect scan")
+    access = vault_local_access(vault_row["source_root"])
+    if not access.local_operations_allowed:
+        raise HTTPException(
+            503,
+            "Local storage for this vault is unavailable"
+            + (f" ({access.volume_health})" if access.volume_health else ""),
+        )
+    if archive_version_id and (action != "recover" or is_directory):
         raise HTTPException(
             422,
-            "archive_version_id is only valid for single-file recover or storage-class",
+            "archive_version_id is only valid for single-file recover",
         )
     group_id = uuid.uuid4().hex
     estimated_cost_eur = None
     estimated_hours = None
     resolved_tier = None
     resolved_days = None
-    resolved_target_class = None
-    if action == "storage-class":
-        try:
-            resolved_target_class = validate_manual_target_class(
-                target_storage_class or ""
-            )
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-    directory_recover = action == "recover" and (is_directory or whole_vault or bool(recovery_selection))
+    directory_recover = action == "recover" and (is_directory or bool(recovery_selection))
     if directory_recover:
         resolved_tier, resolved_days = resolve_directory_restore(
             restore_tier, restore_days
@@ -2826,16 +2617,9 @@ def queue_jobs(
         if action == "free-space":
             _require_local_release(connection, vault_id, logical_path)
         catalog = ArchiveCatalog(connection)
-        if action in {"recover", "storage-class"} and not is_directory and not whole_vault and not recovery_selection:
+        if action == "recover" and not is_directory and not recovery_selection:
             versions = catalog.list_versions(vault_id, logical_path)
-            if action == "recover":
-                selectable = [row for row in versions if row["recoverable"]]
-            else:
-                selectable = [
-                    row
-                    for row in versions
-                    if row.get("availability") == "available"
-                ]
+            selectable = [row for row in versions if row["recoverable"]]
             if archive_version_id:
                 selected = next(
                     (
@@ -2845,56 +2629,17 @@ def queue_jobs(
                     ),
                     None,
                 )
-                if selected is None or (
-                    action == "recover" and (
-                        not selectable or selected["id"] != selectable[0]["id"]
-                    )
-                ):
+                if selected is None or not selectable or selected["id"] != selectable[0]["id"]:
                     raise HTTPException(
-                        409,
-                        (
-                            "The selected Archive Version is not recoverable"
-                            if action == "recover"
-                            else "The selected Archive Version is not available"
-                        ),
+                        409, "The selected Archive Version is not recoverable"
                     )
-                if action == "storage-class" and selected.get("availability") != "available":
-                    raise HTTPException(
-                        409, "The selected Archive Version is not available"
-                    )
-            elif len(selectable) == 1:
-                archive_version_id = selectable[0]["id"]
-                selected = selectable[0]
             elif selectable:
                 selected = selectable[0]
                 archive_version_id = selected["id"]
             else:
                 selected = None
-            if action == "storage-class" and selected is not None:
-                current_class = normalize_storage_class(selected.get("storage_class"))
-                if current_class == resolved_target_class:
-                    raise HTTPException(
-                        409,
-                        "Archive Version is already in the requested storage class",
-                    )
-            if (
-                action in {"recover", "storage-class"}
-                and selected is not None
-                and (
-                    (
-                        action == "recover"
-                        and storage_class_requires_restore(
-                            selected.get("storage_class")
-                        )
-                    )
-                    or (
-                        action == "storage-class"
-                        and source_requires_restore_for_class_change(
-                            selected.get("storage_class"),
-                            restore_state=selected.get("restore_state"),
-                        )
-                    )
-                )
+            if selected is not None and storage_class_requires_restore(
+                selected.get("storage_class")
             ):
                 resolved_days = int(
                     restore_days
@@ -2926,13 +2671,10 @@ def queue_jobs(
             restore_days=resolved_days,
             estimated_cost_eur=estimated_cost_eur,
             estimated_hours=estimated_hours,
-            target_storage_class=resolved_target_class,
-            whole_vault=whole_vault,
             recovery_selection=recovery_selection,
         )
         if action in {"recover", "free-space"} and job_ids:
             _require_writable_destinations(connection, vault_row["source_root"], job_ids)
-        skipped_same_class = int(getattr(catalog, "last_skipped_same_class", 0) or 0)
         if directory_recover and not (
             job_ids
             and connection.execute(
@@ -2950,11 +2692,6 @@ def queue_jobs(
                 estimated_cost_eur = impact["estimated_cost_eur"]
                 estimated_hours = impact["estimated_hours"]
         if not eligible_count:
-            if action == "storage-class" and skipped_same_class:
-                raise HTTPException(
-                    409,
-                    "All selected Archive Versions are already in the requested storage class",
-                )
             raise HTTPException(409, "No files are eligible for this operation")
     if not job_ids:
         raise HTTPException(409, "An operation is already running on the selected files")
@@ -2971,18 +2708,6 @@ def queue_jobs(
     }
     if action == "recover":
         result["approval_required"] = approval_required
-    if action == "storage-class":
-        result["target_storage_class"] = resolved_target_class
-        result["skipped_same_class"] = skipped_same_class
-        warning = cold_class_warning(resolved_target_class or "")
-        if warning:
-            result["cost_warning"] = warning
-        result["requires_restore"] = bool(resolved_tier)
-        if resolved_tier:
-            result["restore_tier"] = resolved_tier
-            result["restore_days"] = resolved_days
-            result["estimated_cost_eur"] = estimated_cost_eur
-            result["estimated_hours"] = estimated_hours
     return result
 
 
@@ -3150,7 +2875,7 @@ def upload(
         return {"group_id": admission["group_id"], "job_ids": [], "item_count": admission["admitted_count"],
                 "total_bytes": admission["total_bytes"], "admission": admission,
                 **_api_message(request, "api.upload_admission_started")}
-    queued = queue_jobs(action.path, "upload", vault["id"], user["id"], False)
+    queued = queue_jobs(action.path, "upload", vault["id"], False)
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
@@ -3173,7 +2898,8 @@ def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = 
     never PUTs by itself: the Job may send only when S3 positively proves the
     earlier send never landed (ADR-0025), and never on a path with paused protection.
     """
-    from .services.upload_provenance import schedule_resume, UploadBlocked
+    from .services.upload_provenance import UploadBlocked
+    from .services.upload_remediation import schedule_resume
     logical_path = safe_relative_path(action.path).as_posix()
     if action.is_directory:
         raise HTTPException(422, "Reconciliation requires one stable Vault File")
@@ -3229,7 +2955,7 @@ def confirm_cloud_only_replacement(
             raise HTTPException(
                 409, "No conflict with a cloud-only file at this path"
             ) from exc
-    return queue_jobs(logical_path, "upload", vault_id, None)
+    return queue_jobs(logical_path, "upload", vault_id)
 
 
 @app.post(
@@ -3457,17 +3183,6 @@ def cancel_job(
     return cancel_job_group(action.group_id, action.action, vault, _actor(request))
 
 
-@app.post("/api/upload/cancel", response_model=response_model("JobCancelResponse"))
-def cancel_upload(
-    action: GroupCancelAction,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
-):
-    """Backward-compatible endpoint for clients using the old upload route."""
-    return cancel_job_group(action.group_id, "upload", vault, _actor(request))
-
-
 @app.post(
     "/api/recover",
     status_code=202,
@@ -3484,7 +3199,6 @@ def recover(
         action.path,
         "recover",
         vault["id"],
-        user["id"],
         action.is_directory,
         archive_version_id=action.archive_version_id,
         restore_tier=action.restore_tier,
@@ -3533,7 +3247,7 @@ def free_space(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     queued = queue_jobs(
-        action.path, "free-space", vault["id"], user["id"], action.is_directory
+        action.path, "free-space", vault["id"], action.is_directory
     )
     return {**queued, **_api_message(request, "api.free_space_started")}
 

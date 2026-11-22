@@ -71,10 +71,6 @@ def _bundled_prices() -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def available_regions() -> tuple[str, ...]:
-    return tuple(sorted(_bundled_prices()["regions"]))
-
-
 def list_prices(region: str | None = None) -> PriceList:
     """Return the bundled prices of ``region`` (default: the configured one).
 

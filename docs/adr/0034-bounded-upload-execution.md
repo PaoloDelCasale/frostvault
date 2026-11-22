@@ -1,5 +1,7 @@
 # Keep per-file upload evidence while restructuring execution
 
+Status: accepted; amended in part by ADR-0035 and ADR-0038, superseded in part by ADR-0040.
+
 > **Amended in part by [ADR-0038](0038-a-never-written-key-needs-no-listing-before-its-put.md)**
 > (#622): a key the catalog never wrote pins a presumed-empty inventory without
 > listing; permit waits are woken by releases instead of polling.

@@ -1,5 +1,7 @@
 # Verify Vault Root Relocation by enrolled directory identity
 
+Status: superseded by ADR-0019 (#427).
+
 > Superseded by ADR-0019 (#427): one explicit Reconnect Folder accepts a
 > different directory or Source Volume, retaining fail-closed identity checks
 > and mandatory reconciliation. The original decision below is historical.

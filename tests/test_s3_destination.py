@@ -114,7 +114,7 @@ class S3UploadPrefixTests(unittest.TestCase):
                 restore_poll_interval=900,
             )
             with patch("app.database.settings", database_settings):
-                queue_jobs(relative_path, "upload", 2, 1)
+                queue_jobs(relative_path, "upload", 2)
                 with (
                     patch("app.storage.settings", worker_settings),
                     patch("app.storage.validate_cloud_vault"),

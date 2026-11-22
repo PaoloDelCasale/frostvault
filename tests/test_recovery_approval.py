@@ -151,7 +151,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         selection = [("photos", True), ("photos/p00.jpg", False)]
         with patch("app.database.settings", self.database_settings), patch("app.main.settings", self._runtime()):
             estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, 1, recovery_selection=selection)
+            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
         self.assertAlmostEqual(estimate["estimate"]["estimated_cost_eur"], queued["estimated_cost_eur"], places=6)
         self.assertTrue(queued["approval_required"])
 
@@ -159,7 +159,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         selection = [(f"photos/p{i:02d}.jpg", False) for i in range(self.COLD_FILES)]
         with patch("app.database.settings", self.database_settings), patch("app.main.settings", self._runtime()):
             estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p} for p, _ in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, 1, recovery_selection=selection)
+            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
             approved = self._approve(queued["group_id"])
         self.assertTrue(estimate["high_impact"])
         self.assertTrue(queued["approval_required"])
@@ -173,7 +173,7 @@ class RecoveryApprovalTests(unittest.TestCase):
         selection = [("photos", True), ("photos/p00.jpg", False), ("photos", True)]
         with patch("app.database.settings", self.database_settings), patch("app.main.settings", self._runtime()):
             estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, 1, recovery_selection=selection)
+            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
             cancelled = main.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
         self.assertEqual(queued["item_count"], self.COLD_FILES + 1)
         self.assertEqual(cancelled["cancelled_count"], queued["item_count"])

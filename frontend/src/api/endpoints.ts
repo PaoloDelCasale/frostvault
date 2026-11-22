@@ -27,18 +27,11 @@ import type {
   GeneralVaultsResponse,
   SourceVolumeInventoryResponse,
   SourceDirectoryBrowseResponse,
-  CloudDeletionPreview,
-  CloudDeletionSettings,
-  CloudPurgePayload,
-  FileOperationPayload,
-  FileOperationResponse,
   FilesQuery,
   FilesResponse,
   FileVersionsResponse,
-  GlobPreviewResponse,
   I18nCatalogResponse,
   LoginOptionsResponse,
-  JobCancelPayload,
   JobCancelResponse,
   JobsResponse,
   LifecycleProfileSelection,
@@ -47,11 +40,6 @@ import type {
   MetadataBackupRunAction,
   MeResponse,
   OperationPolicy,
-  RecoverEstimateResponse,
-  ScanResponse,
-  StatsResponse,
-  StorageEstimateRequest,
-  StorageEstimateResponse,
   VaultBucketStatus,
   VaultCreateRequest,
   VaultCreationCancelled,
@@ -324,20 +312,6 @@ export function updateOperationPolicy(
   });
 }
 
-export function previewOperationGlobs(payload: {
-  paths: string[];
-  include_globs: string[];
-  exclude_globs: string[];
-}): Promise<GlobPreviewResponse> {
-  return apiRequest<GlobPreviewResponse>(
-    "/api/vault/operation-policy/preview-globs",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
 export function fetchLifecycle(vaultId?: number): Promise<LifecycleResponse> {
   return apiRequest<LifecycleResponse>(scoped("/api/vault/lifecycle", vaultId));
 }
@@ -351,10 +325,6 @@ export function updateLifecycleDefault(
     method: "PUT",
     body: JSON.stringify(payload),
   });
-}
-
-export function fetchCloudDeletion(): Promise<CloudDeletionSettings> {
-  return apiRequest<CloudDeletionSettings>("/api/cloud-deletion");
 }
 
 /** List the authenticated user's visible in-app notifications and unread count. */
@@ -436,15 +406,6 @@ export function downloadGeneralMetadataBackup(
     {},
     `metadata-backup-${runId}.bak.enc`,
   );
-}
-
-export function estimateGeneralStorageCost(
-  payload: StorageEstimateRequest,
-): Promise<StorageEstimateResponse> {
-  return apiRequest<StorageEstimateResponse>("/api/general/cost-estimates/storage", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 export function fetchRecoveryKitStatus(): Promise<RecoveryKitStatus> {
@@ -569,16 +530,6 @@ export function retryVaultDeletion(vaultId: number): Promise<VaultDeletionStatus
   return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion/retry`, { method: "POST", body: "{}" });
 }
 
-export function requestScan(): Promise<ScanResponse> {
-  return apiRequest<ScanResponse>("/api/scan", {
-    method: "POST",
-  });
-}
-
-export function fetchStats(): Promise<StatsResponse> {
-  return apiRequest<StatsResponse>("/api/stats");
-}
-
 export function fetchJobs(): Promise<JobsResponse> {
   return apiRequest<JobsResponse>("/api/jobs");
 }
@@ -587,90 +538,6 @@ export function fetchFileVersions(path: string): Promise<FileVersionsResponse> {
   return apiRequest<FileVersionsResponse>(
     `/api/files/versions?path=${encodeURIComponent(path)}`,
   );
-}
-
-export function estimateRecover(payload: {
-  path: string;
-  archive_version_id?: string;
-  restore_tier?: string;
-  restore_days?: number;
-}): Promise<RecoverEstimateResponse> {
-  return apiRequest<RecoverEstimateResponse>("/api/recover/estimate", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function startUpload(
-  payload: FileOperationPayload,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/upload", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function startRecover(
-  payload: FileOperationPayload,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/recover", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function approveRecover(
-  groupId: string,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/recover/approve", {
-    method: "POST",
-    body: JSON.stringify({ group_id: groupId }),
-  });
-}
-
-export function startFreeSpace(
-  payload: FileOperationPayload,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/free-space", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function previewCloudDeletion(payload: {
-  path: string;
-  is_directory?: boolean;
-}): Promise<CloudDeletionPreview> {
-  return apiRequest<CloudDeletionPreview>("/api/cloud-deletion/preview", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function startCloudPurge(
-  payload: CloudPurgePayload,
-): Promise<FileOperationResponse> {
-  return apiRequest<FileOperationResponse>("/api/cloud-purge", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function cancelJob(
-  payload: JobCancelPayload,
-): Promise<JobCancelResponse> {
-  return apiRequest<JobCancelResponse>("/api/jobs/cancel", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-/** Legacy upload-cancel route — prefer cancelJob for all actions. */
-export function cancelUpload(groupId: string): Promise<JobCancelResponse> {
-  return apiRequest<JobCancelResponse>("/api/upload/cancel", {
-    method: "POST",
-    body: JSON.stringify({ group_id: groupId }),
-  });
 }
 
 export { DEFAULT_PAGE_SIZE };
