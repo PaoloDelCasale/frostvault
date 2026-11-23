@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import settings, validate_settings, warn_removed_settings
+from .config import settings, validate_settings
 from .diagnostics import require_metrics_token
 from .services.audit_events import audit_log
 from .i18n import (
@@ -3982,7 +3982,7 @@ def _spa_dist_file_response(full_path: str) -> FileResponse | None:
 def spa_fallback(full_path: str):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
     head = full_path.split("/", 1)[0]
-    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES or head == "admin" or full_path.startswith("vault/access"):
+    if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
         raise HTTPException(status_code=404, detail="Not Found")
     built = _spa_dist_file_response(full_path)
     if built is not None:
