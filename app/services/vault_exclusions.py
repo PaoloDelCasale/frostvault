@@ -132,7 +132,7 @@ def exclusion_reasons(policy: OperationPolicy, path: str, *, is_directory: bool)
     normalized = path.replace("\\", "/")
     rules = [pattern for pattern in normalize_globs(policy.exclude_globs) if path_matches(normalized, pattern)]
     fixed = [pattern for pattern in AUTO_UPLOAD_EXCLUSIONS
-             if any(name_matches(part, pattern) for part in _parts(normalized))]
+             if any(name_matches(part, pattern) for part in normalized.split("/"))]
     include = normalize_globs(policy.include_globs)
     not_included = bool(include) and not any(path_matches(normalized, pattern) for pattern in include)
     return {

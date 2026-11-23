@@ -1,9 +1,13 @@
-"""#802: the path-rule semantics every caller relied on before the module moved.
+"""#802, #811: the path-rule semantics every caller relies on.
 
 ``tests/fixtures/path_rules_golden.json`` was recorded from the code at commit
 4a778eee (four separate implementations) and must not change with a refactor:
 the same file passed before and after ``app/services/path_rules.py`` took
-ownership of the glob semantics. It pins, for one corpus of patterns and paths
+ownership of the glob semantics. #811 recorded its Python tables again, once:
+the Python matchers now split the text of a path on ``/`` as SQL always did,
+and admission reads a policy's globs through ``normalize_globs``. Only entries
+with a path or a glob that is not normalized changed; the SQL tables and the
+emitted SQL are those of 4a778eee. It pins, for one corpus of patterns and paths
 (segments, ``**``, regex/LIKE special characters, case, trailing slashes, empty
 and root paths, unicode):
 
@@ -12,9 +16,10 @@ and root paths, unicode):
 - the Excluded Folder rules, in Python and in SQL (PostgreSQL);
 - glob normalization, validation, and the SQL text the upload rules emit.
 
-Where the implementations disagree with each other the disagreement is listed
-in ``KNOWN_*_DIVERGENCES`` below: it is today's behavior, documented, not
-endorsed. A change there is a behavior change and belongs to its own issue.
+The implementations agree with each other on the whole corpus, normalized
+paths or not (#811): the tests below compare them and allow no exception. The
+SQL projection reads the globs as stored, so it is compared with admission for
+the globs ``normalize_globs`` leaves as they are, the only ones a policy stores.
 
 Record again (only for a deliberate, reviewed behavior change):
 ``TEST_POSTGRES_URL=... python -m tests.test_path_rules_characterization --record``
@@ -29,13 +34,15 @@ from typing import Any, Callable
 
 from app.services.excluded_folders import excluded_folders
 from app.services.operation_policies import (
-    AutoUploadPathMatcher, OperationPolicy, auto_upload_path_is_included, path_is_included,
+    AUTO_UPLOAD_EXCLUSIONS, AutoUploadPathMatcher, OperationPolicy, auto_upload_path_is_included,
+    path_is_included,
 )
 from app.services.path_rules import (
-    GlobSet, ParsedPath, UnsafeGlob, folder_rule, normalize_globs, normalized_path_sql,
-    path_matches, sql_glob_match, sql_path_regex, validate_glob,
+    GlobSet, ParsedPath, UnsafeGlob, folder_rule, name_matches, normalize_globs,
+    normalized_path_sql, path_matches, sql_glob_match, sql_path_regex, validate_glob,
 )
 from app.services.upload_path_rules import eligibility_sql, inline_eligibility_sql
+from app.services.vault_exclusions import exclusion_reasons
 from tests.fixtures import empty_database
 
 GOLDEN = Path(__file__).parent / "fixtures" / "path_rules_golden.json"
@@ -98,39 +105,20 @@ NORMALIZE_INPUTS: list[list[Any]] = [
     ["/abs/**"], [" /abs"], ["\\abs"], ["é*", "É*", "é*"], [1, None], ["a", "a"],
 ]
 
-# --- Divergences that exist today (4a778eee); see the module docstring. -------------
-# The Python matcher and its SQL translation (one glob, and the admission rule built
-# on it), as (pattern, path) the two read differently.
-# Python parses the path with PurePosixPath (collapsing "//", "./" and a trailing "/",
-# keeping "/" as the root part of an absolute path); SQL reads the stored text and
-# splits it on "/". Catalog paths are relative and normalized, so none of these is
-# reachable from a scan.
-KNOWN_ADMISSION_DIVERGENCES: set[tuple[str, str]] = {
-    # A trailing "/" or a doubled "//" disappears in Python, not in SQL.
-    ("**/b", "a/b/"), ("**/a/b/**", "a//b/c"),
-    # "." is a part for SQL only: PurePosixPath drops it.
-    (".", "./x"), (".", "a/./b"),
-    # "/" is the root part of an absolute path for Python only.
-    ("/", "/abs/x"),
-    # The empty glob (never stored: normalization drops it) matches the empty part SQL
-    # gets from splitting "a//b", "a/" or "/a".
-    ("", "photos/"), ("", "dir/x/"), ("", "a/b/"), ("", "/abs/x"), ("", "/"), ("", "//"),
-    ("", "a//b/c"), ("", "photos//a.jpg"),
-}
-# Excluded Folder rules, Python (``contains_path``) against SQL (``not_inside_sql``).
-KNOWN_FOLDER_DIVERGENCES: set[tuple[str, str]] = {
-    # Python drops empty segments ("a//b", trailing "/"); the regex reads the text.
-    ("photos/**", "photos/"), ("ph*/**", "photos/"), ("**/a/b/**", "a/b/"),
-    ("**/a/b/**", "a//b/c"), ("a\\b/**", "a/b/"), ("a\\b/**", "a//b/c"),
-}
-# Paths an Excluded Folder rule reports inside the folder while admission, under the
-# same single exclude glob, still includes them.
-KNOWN_FOLDER_NOT_EXCLUDED_BY_ADMISSION: set[tuple[str, str]] = {
-    # Only with a glob that skipped normalization: Excluded Folders normalize the
-    # policy's globs ("a\\b/**" becomes "a/b/**"), path_is_included reads them as stored.
-    # set_policy stores normalized globs, so a saved policy never holds this one.
-    ("a\\b/**", "a/b/c"), ("a\\b/**", "a//b/c"), ("a\\b/**", "a/b/c/d.txt"),
-}
+# Paths the fixed noise exclusions read part by part, normalized or not (#811).
+NOISE_PATHS = [
+    ".DS_Store", "x/.DS_Store", "x/Thumbs.db/y", "._a", "a.lock", "db-wal", "x/y-journal",
+    "x//.DS_Store", "./a.lock", "a.lock/", "/Thumbs.db", "x/./._a", "x/._a/", "a\\._b", "a\\b.lock\\c",
+    "x/.DS_Store ", "DS_Store", "lock", "a.lock.bak", "x/wal",
+]
+
+
+def _stored(pattern: str) -> bool:
+    """Whether ``normalize_globs`` stores the glob as it is written."""
+    try:
+        return normalize_globs((pattern,)) == (pattern,)
+    except ValueError:
+        return False
 
 
 def _bits(pattern: str, check: Callable[[str], bool]) -> str:
@@ -180,10 +168,10 @@ def python_results() -> dict[str, Any]:
     }
 
 
-def _sql_bits(connection: Any, sql: str, params: list[Any]) -> str:
+def _sql_bits(connection: Any, sql: str, params: list[Any], paths: list[str] = PATHS) -> str:
     rows = connection.execute(
         f"SELECT ({sql}) AS hit FROM unnest(%s::text[]) WITH ORDINALITY AS f(path, ord) ORDER BY ord",
-        [*params, PATHS],
+        [*params, paths],
     ).fetchall()
     return "".join("1" if row["hit"] else "0" for row in rows)
 
@@ -279,9 +267,42 @@ class PythonCharacterizationTests(_Characterization):
         for pattern in PATTERNS:
             for policy in (OperationPolicy(include_globs=(pattern,)), OperationPolicy(exclude_globs=(pattern,)),
                            OperationPolicy(include_globs=("**/*", pattern), exclude_globs=(pattern, "*.tmp"))):
-                matcher = AutoUploadPathMatcher(policy)
+                try:
+                    matcher = AutoUploadPathMatcher(policy)
+                except ValueError:  # an absolute glob: refused by both, never stored
+                    self.assertRaises(ValueError, path_is_included, "a", policy)
+                    continue
                 for path in PATHS:
                     self.assertEqual(matcher(path), auto_upload_path_is_included(path, policy), (pattern, path))
+
+    def test_admission_reads_the_globs_of_a_policy_normalized(self):
+        """#811: one way in for a policy's globs, whoever built the policy."""
+        def included(globs: Any, path: str) -> Any:
+            return _outcome(lambda: (path_is_included(path, OperationPolicy(include_globs=globs)),
+                                     path_is_included(path, OperationPolicy(exclude_globs=globs))))
+
+        for pattern in PATTERNS:
+            if _stored(pattern):
+                continue
+            normalized = _outcome(lambda: normalize_globs((pattern,)))
+            for path in PATHS:
+                expected = normalized if isinstance(normalized, str) else included(normalized, path)
+                self.assertEqual(included((pattern,), path), expected, (pattern, path))
+
+    def test_the_reasons_of_an_exclusion_are_the_admission_rule(self):
+        """``exclusion_reasons`` explains exactly what admission decides."""
+        for pattern in PATTERNS:
+            for policy in (OperationPolicy(include_globs=(pattern,)), OperationPolicy(exclude_globs=(pattern,))):
+                for path in PATHS:
+                    reasons = _outcome(lambda: exclusion_reasons(policy, path, is_directory=False))
+                    if isinstance(reasons, str):  # an absolute glob
+                        self.assertEqual(reasons, "error:ValueError", (pattern, path))
+                        continue
+                    self.assertEqual(
+                        reasons["excluded"],
+                        bool(reasons["rules"] or reasons["fixed"] or reasons["not_included"]), (pattern, path))
+                    self.assertEqual(
+                        reasons["excluded"], not auto_upload_path_is_included(path, policy), (pattern, path))
 
     def test_an_excluded_folder_is_excluded_by_admission(self):
         """ADR-0044: a pruned folder must hold only paths admission excludes."""
@@ -293,7 +314,7 @@ class PythonCharacterizationTests(_Characterization):
             policy = OperationPolicy(exclude_globs=(pattern,))
             found.update((pattern, path) for path, bit in zip(PATHS, inside)
                          if bit == "1" and path_is_included(path, policy))
-        self.assertEqual(found, KNOWN_FOLDER_NOT_EXCLUDED_BY_ADMISSION)
+        self.assertEqual(found, set())
 
 
 class PostgresCharacterizationTests(_Characterization):
@@ -311,7 +332,7 @@ class PostgresCharacterizationTests(_Characterization):
             with self.subTest(table=name):
                 self.assert_table(name, self.observed[name])
 
-    def test_one_glob_in_python_and_in_sql_agrees_except_where_pinned(self):
+    def test_one_glob_in_python_and_in_sql_agrees(self):
         """The equivalence of the two matchers of ``path_rules``, glob by glob."""
         found = set()
         for pattern in PATTERNS:
@@ -322,18 +343,40 @@ class PostgresCharacterizationTests(_Characterization):
             hits = _sql_bits(self.connection, sql, list(params))
             found.update((pattern, path) for path, hit in zip(PATHS, hits)
                          if (hit == "1") != path_matches(path, pattern))
-        self.assertEqual(found, KNOWN_ADMISSION_DIVERGENCES)
+        self.assertEqual(found, set())
 
-    def test_python_and_sql_admission_agree_except_where_pinned(self):
+    def test_python_and_sql_admission_agree(self):
         python = python_results()
         found = _pairs(python["admission_include_python"], self.observed["admission_include_sql"])
         found |= _pairs(python["admission_exclude_python"], self.observed["admission_exclude_sql"])
-        self.assertEqual(found, KNOWN_ADMISSION_DIVERGENCES)
+        self.assertEqual({(pattern, path) for pattern, path in found if _stored(pattern)}, set())
 
-    def test_python_and_sql_folder_rules_agree_except_where_pinned(self):
+    def test_python_and_sql_folder_rules_agree(self):
         python = python_results()
         found = _pairs(python["folder_contains_python"], self.observed["folder_inside_sql"])
-        self.assertEqual(found, KNOWN_FOLDER_DIVERGENCES)
+        self.assertEqual(found, set())
+
+    def test_every_caller_reads_the_fixed_exclusions_alike(self):
+        """#811: the noise exclusions match a part of the path split on ``/``.
+
+        ``exclusion_reasons`` split the text while admission parsed it with
+        ``PurePosixPath``; the per-cycle matcher and the SQL projection are
+        the other two readers. One reading now, normalized path or not.
+        """
+        policy = OperationPolicy()
+        matcher = AutoUploadPathMatcher(policy)
+        paths = [*PATHS, *NOISE_PATHS]
+        sql = _sql_bits(self.connection, *eligibility_sql(policy), paths)
+        self.assertEqual(sql, _sql_bits(self.connection, *eligibility_sql(None), paths))
+        for path, hit in zip(paths, sql):
+            parts = path.replace("\\", "/").split("/")
+            fixed = [pattern for pattern in AUTO_UPLOAD_EXCLUSIONS
+                     if any(name_matches(part, pattern) for part in parts)]
+            with self.subTest(path=path):
+                self.assertEqual(exclusion_reasons(policy, path, is_directory=False)["fixed"], fixed)
+                self.assertEqual(auto_upload_path_is_included(path, policy), not fixed)
+                self.assertEqual(matcher(path), not fixed)
+                self.assertEqual(hit == "1", not fixed)
 
 
 def _record() -> None:  # pragma: no cover - maintenance entry point

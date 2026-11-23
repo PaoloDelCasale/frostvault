@@ -12,6 +12,14 @@ apply, the fixed noise exclusions and what an excluded path implies stay with
 the callers (``operation_policies``, ``upload_path_rules``,
 ``excluded_folders``, ``vault_exclusions``).
 
+The contract. A path is a catalog path: relative to the Vault root and
+normalized (no empty, ``.`` or ``..`` segment, no leading or trailing ``/``).
+Its parts are its text split on ``/``, in Python as in SQL, which decides at
+scale (#811): nothing here parses a path again, so a path outside the contract
+is read segment by segment as written (``a//b`` has an empty part, ``./x`` a
+``.`` part), the same by every matcher. The globs of a policy have one way in,
+:func:`normalize_globs`: every caller matches the globs it returns.
+
 The dialect. A path is read with its backslashes as separators. A glob without
 ``**`` matches the whole path or any single part of it (``fnmatch`` case
 sensitive, ``*`` crossing ``/``). A glob with ``**`` matches the whole path;
@@ -26,7 +34,6 @@ import functools
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase, translate as fnmatch_translate
-from pathlib import PurePosixPath
 from typing import Any, Sequence
 
 # --- Normalization and validation ----------------------------------------------------
@@ -71,36 +78,21 @@ def validate_glob(pattern: str) -> None:
 name_matches = fnmatchcase
 
 
-def _path_parts(normalized: str) -> tuple[tuple[str, ...], bool]:
-    """``PurePosixPath(normalized).parts``, and whether ``"/".join`` rebuilds it.
-
-    A relative path with no empty or ``.`` segment parses to its plain split,
-    so most catalog paths skip building a ``PurePosixPath``; any other path
-    (absolute, ``//``, ``./``, trailing ``/``) takes the exact pathlib parse.
-    """
-    if (normalized and normalized[0] != "/" and normalized[-1] != "/"
-            and "//" not in normalized and "/./" not in normalized
-            and normalized != "." and not normalized.startswith("./")
-            and not normalized.endswith("/.")):
-        return tuple(normalized.split("/")), True
-    return PurePosixPath(normalized).parts, False
-
-
 class ParsedPath:
-    """A normalized path parsed once for every glob it is matched against (#767)."""
+    """A normalized path split once for every glob it is matched against (#767)."""
 
-    __slots__ = ("parts", "_plain", "_tails")
+    __slots__ = ("parts", "_tails")
 
     def __init__(self, normalized: str) -> None:
-        self.parts, self._plain = _path_parts(normalized)
+        # The text split on "/", as string_to_array does in SQL.
+        self.parts = tuple(normalized.split("/"))
         self._tails: list[str] | None = None
 
     def tails(self) -> list[str]:
-        # str(PurePosixPath(*parts[index:])) for every index.
+        # What follows the start or any "/": the SQL "(?:^|/)suffix$".
         if self._tails is None:
             parts = self.parts
-            self._tails = (["/".join(parts[index:]) for index in range(len(parts))] if self._plain
-                           else [str(PurePosixPath(*parts[index:])) for index in range(len(parts))])
+            self._tails = ["/".join(parts[index:]) for index in range(len(parts))]
         return self._tails
 
 
