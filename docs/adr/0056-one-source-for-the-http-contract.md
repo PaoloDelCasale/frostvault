@@ -62,7 +62,7 @@ it changes 18,348 lines (#829).
   Session's Vault, or without that the first operational Vault by name, which
   the dependency then writes into the Session;
 - 24 more use the same query-or-Session addressing without `vault` in their
-  path (see "Not decided here").
+  path (browsing, Jobs, Uploads, recovery, the catalog event stream).
 
 `VaultMoveRequest` also carries `vault_id` in its body, and `POST
 /api/vault/move` answers 409 `api.vault_move.vault_changed` when the body and
@@ -86,10 +86,12 @@ on the Session's Vault for them.
    validate or filter with it; the shared test client (`tests/fixtures.py`)
    validates every JSON success body against the declared model and fails on a
    missing field, a wrong type, or an undeclared field of a closed model.
-3. **One address for a Vault: `/api/vaults/{vault_id}/…`.** The 13
-   `/api/vault/…` operations move there and the old addresses are removed, with
-   no alias. `vault_id` leaves the body of `VaultMoveRequest`. The frontend
-   changes in the same pull request.
+3. **One address for a Vault: `/api/vaults/{vault_id}/…`.** All 37
+   operations that take their Vault from the query or the Session move there:
+   the 13 under `/api/vault/…` and the 24 others (the Owner extended the
+   decision to these on 2026-11-23). The old addresses are removed, with no
+   alias. `vault_id` leaves the body of `VaultMoveRequest`. The frontend
+   changes in the same pull request as each group of routes.
 4. **Errors keep the shape of #797**: `ApiErrorResponse` (`detail`, `code`,
    `message_key`, `message_params`), produced by the single handler from
    `app/errors.py`. It becomes a Pydantic model like every other schema; its
@@ -136,21 +138,54 @@ What the move keeps and what it drops:
   with a path it no longer repeats. `VaultMoveRequest` stays `extra="forbid"`:
   a client that still sends `vault_id` gets 422.
 
-### Not decided here
+### The other 24 operations
 
-24 operations keep the query-or-Session addressing after this ADR: `/api/files`,
-`/api/files/detail`, `/api/files/versions`, `/api/files/jobs`,
-`/api/files/cloud-only-conflict/replace`, `/api/stats`, `/api/jobs`,
-`/api/jobs/{job_id}`, `/api/jobs/cancel`, `/api/job-groups/{group_id}/jobs`,
-`/api/scan`, `/api/catalog/revision`, `/api/catalog/events`, `/api/upload`,
-`/api/upload/admissions/{group_id}`, `/api/upload/reconcile`,
-`/api/upload/cancel-pending`, `/api/upload/retry-failed`, `/api/recover`,
-`/api/recover/estimate`, `/api/recover/approve`, `/api/free-space`,
-`/api/cloud-deletion/preview`, `/api/cloud-purge`. The Owner's decision names
-the `/api/vault/…` routes; moving these too is a larger change (most of the
-browse and Job surface, the SSE stream, and `retry-failed`, where a missing id
-means the whole installation) and needs its own decision. Until then
-`current_vault`, `POST /api/vaults/select` and the Session's Vault stay.
+The rule is mechanical: the path after `/api/` goes after
+`/api/vaults/{vault_id}/`, and `?vault_id=` goes away.
+
+| Method | Old address | New address |
+|---|---|---|
+| GET | `/api/files` | `/api/vaults/{vault_id}/files` |
+| GET | `/api/files/detail` | `/api/vaults/{vault_id}/files/detail` |
+| GET | `/api/files/versions` | `/api/vaults/{vault_id}/files/versions` |
+| GET | `/api/files/jobs` | `/api/vaults/{vault_id}/files/jobs` |
+| POST | `/api/files/cloud-only-conflict/replace` | `/api/vaults/{vault_id}/files/cloud-only-conflict/replace` |
+| GET | `/api/stats` | `/api/vaults/{vault_id}/stats` |
+| GET | `/api/jobs` | `/api/vaults/{vault_id}/jobs` |
+| GET | `/api/jobs/{job_id}` | `/api/vaults/{vault_id}/jobs/{job_id}` |
+| POST | `/api/jobs/cancel` | `/api/vaults/{vault_id}/jobs/cancel` |
+| GET | `/api/job-groups/{group_id}/jobs` | `/api/vaults/{vault_id}/job-groups/{group_id}/jobs` |
+| POST | `/api/scan` | `/api/vaults/{vault_id}/scan` |
+| GET | `/api/catalog/revision` | `/api/vaults/{vault_id}/catalog/revision` |
+| GET | `/api/catalog/events` | `/api/vaults/{vault_id}/catalog/events` |
+| POST | `/api/upload` | `/api/vaults/{vault_id}/upload` |
+| GET | `/api/upload/admissions/{group_id}` | `/api/vaults/{vault_id}/upload/admissions/{group_id}` |
+| POST | `/api/upload/reconcile` | `/api/vaults/{vault_id}/upload/reconcile` |
+| POST | `/api/upload/cancel-pending` | `/api/vaults/{vault_id}/upload/cancel-pending` |
+| POST | `/api/upload/retry-failed?vault_id=` | `/api/vaults/{vault_id}/upload/retry-failed` |
+| POST | `/api/recover` | `/api/vaults/{vault_id}/recover` |
+| POST | `/api/recover/estimate` | `/api/vaults/{vault_id}/recover/estimate` |
+| POST | `/api/recover/approve` | `/api/vaults/{vault_id}/recover/approve` |
+| POST | `/api/free-space` | `/api/vaults/{vault_id}/free-space` |
+| POST | `/api/cloud-deletion/preview` | `/api/vaults/{vault_id}/cloud-deletion/preview` |
+| POST | `/api/cloud-purge` | `/api/vaults/{vault_id}/cloud-purge` |
+
+None collides with an existing path. The pull request that moves a route
+checks the table against the code and corrects it if a route was missed.
+
+- `POST /api/upload/retry-failed` without an id already means the whole
+  installation, never the Session's Vault. It stays at that address for that
+  meaning and loses its `vault_id` query parameter; one Vault's retry is the
+  new path. Unlike the others, the per-Vault retry accepts any existing Vault
+  as today, not only operational ones.
+- Installation-wide reads stay where they are: `/api/files/search`,
+  `/api/upload-activity`, `/api/general…`, `/api/problems`,
+  `/api/cloud-deletion`.
+- When the last route has moved, `current_vault` and the `?vault_id=`
+  parameter are deleted. The Session's Vault stops being an address for any
+  operation. It still tells `/api/me` which Vault the UI opens on, written by
+  `POST /api/vaults/select`; whether that remains is settled in the last
+  addressing pull request, with the Owner if the visible behaviour changes.
 
 `StorageEstimateRequest.vault_id` is not an address: it selects what to
 estimate, as an alternative to `size_bytes`. It stays.
@@ -161,13 +196,19 @@ Several pull requests under #805, in this order. Each one lists every changed
 address and every changed schema name in its description, for the release
 notes. Sizes exclude the generated `openapi.json` and TypeScript.
 
-1. **Addressing.** `app/routes/policy.py` (9 routes), `app/routes/storage_plan.py`
+1. **Addressing, Vault settings.** `app/routes/policy.py` (9 routes), `app/routes/storage_plan.py`
    (4 routes, `VaultMoveRequest`), `app/routes/deps.py` (the path dependency),
    `app/locales/en.json` and `it.json` (one message removed),
    `frontend/src/api/vault.ts` (13 calls from `scoped` to `owned`), 10 Python
    test modules (70 references) and 11 frontend test files (46 references).
    About 300 lines, most of them test addresses.
-2. **The pipeline.** The pass-through declaration and the test-time check
+2. **Addressing, browsing and Jobs.** The 24 other operations, in two pull
+   requests: `app/routes/browse.py` (files, stats) with its frontend calls;
+   then `app/routes/jobs.py` (Jobs, scan, catalog revision and event stream,
+   Uploads, recovery, cloud deletion) with `frontend/src/api/catalogEvents.ts`.
+   The second deletes `current_vault`. Each proves that the SQL emitted per
+   request does not grow and that the event stream reconnects as before.
+3. **The pipeline.** The pass-through declaration and the test-time check
    (`app/api_models.py`, `tests/fixtures.py`, `tests/test_openapi_contract.py`),
    `scripts/export_openapi.py` and the CI step (`.github/workflows/migrations.yml`,
    `docs/ci.md`), removal of the 9 orphans and of the dead
@@ -175,7 +216,7 @@ notes. Sizes exclude the generated `openapi.json` and TypeScript.
    Pydantic models. This pull request proves on one route that the response
    bytes and the per-request cost do not change. About 250 lines, plus the
    orphans' entries deleted from the JSON file.
-3. **Schemas, one router per pull request.** Each moves its response schemas
+4. **Schemas, one router per pull request.** Each moves its response schemas
    from the JSON file into Pydantic models in the router module, replaces its
    bare `JsonObjectResponse` declarations, and fixes the mismatches the check
    finds by correcting the model, never the route's payload:
@@ -219,7 +260,7 @@ callers see did not change, apart from the mismatches it lists.
 
 ## Consequences
 
-- This narrows ADR-0022 for the 13 moved operations: its "unscoped legacy API
+- This narrows ADR-0022 for the 37 moved operations: its "unscoped legacy API
   consumers still use Session selection" no longer applies to them. A script
   or bookmark calling an old address gets 404; the release
   notes list the table above.
@@ -232,5 +273,8 @@ callers see did not change, apart from the mismatches it lists.
 - The contract is only as checked as the tests that call a route: an operation
   no test calls is documented but unverified. The check reports which
   operations it never saw, so the gap is visible.
-- "One address for a Vault" is true for the Vault's own settings after pull
-  request 1, and not yet for browsing, Jobs and uploads.
+- "One address for a Vault" is true for the Vault's own settings after step
+  1, and for browsing, Jobs and Uploads after step 2.
+- A request without a Vault no longer falls back to the Session's Vault or to
+  the first operational one: the 403 `api.no_vault` and 409
+  `api.session_changed` answers of these routes go away with the fallback.
