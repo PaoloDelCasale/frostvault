@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
 
-import { fetchGeneralSourceVolumes, type SourceVolumeInventoryItem } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, fetchGeneralSourceVolumes } from "@/api";
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n/useI18n";
 import { errorMessage } from "@/lib/errorMessage";
@@ -21,26 +21,9 @@ const HEALTH_TONE_CLASSES: Record<HealthTone, string> = {
 
 export function SourceVolumesSection() {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
-  const [items, setItems] = useState<SourceVolumeInventoryItem[] | null>(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchGeneralSourceVolumes()
-      .then((volumes) => {
-        if (!cancelled) setItems(volumes.items);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(errorMessage(reason, translateRef.current));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const loaded = useQuery({ queryKey: apiQueryKeys.sourceVolumes, queryFn: fetchGeneralSourceVolumes, ...readOnMount });
+  const items = loaded.data?.items;
+  const error = loaded.error ? errorMessage(loaded.error, t) : "";
 
   if (!items) {
     return error ? (

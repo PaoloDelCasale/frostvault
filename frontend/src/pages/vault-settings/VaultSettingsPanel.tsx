@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiQueryKeys, fetchGeneralVaults, vaultApi } from "@/api";
+import { readOnMount, apiQueryKeys, fetchGeneralVaults, vaultApi } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { notify } from "@/components/toastQueue";
@@ -40,14 +40,11 @@ function SettingsSection({ id, title, summary, more, danger, highlighted, childr
 
 export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId: number; vaultName: string; onStopped: () => void }) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const client = useQueryClient();
   const [auto, setAuto] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [stop, setStop] = useState(false);
   const [reconnect, setReconnect] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [minimumOpened, setMinimumOpened] = useState(false);
   const [autoSaved, flashAutoSaved] = useSavedFlash();
   const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
@@ -66,12 +63,10 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     const timer = window.setTimeout(() => setHighlight(""), 4000);
     return () => window.clearTimeout(timer);
   }, [vaultId]);
-  useEffect(() => {
-    let live = true;
-    setLoadError("");
-    void vaultApi(vaultId).policy().then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+  // One read of the policy serves this toggle and the sections below.
+  const policy = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId), queryFn: () => vaultApi(vaultId).policy(), ...readOnMount });
+  const loadError = policy.error ? errorMessage(policy.error, t) : "";
+  useEffect(() => { if (policy.data) setAuto(policy.data.auto_upload); }, [policy.data]);
   async function toggle() {
     if (auto === null) return;
     setBusy(true);

@@ -26,10 +26,8 @@ export const apiQueryKeys = {
   billingExport: ["billing-export"] as const,
   uploadActivity: ["upload-activity"] as const,
   recoveryKit: ["recovery-kit"] as const,
-  metadataBackups: ["metadata-backups"] as const,
   sourceVolumes: ["source-volumes"] as const,
-  sourceDirectory: (volumeAlias: string, path: string, reconnectVaultId?: number) =>
-    ["source-directory", volumeAlias, path, reconnectVaultId ?? null] as const,
+  sourceDirectory: (volumeAlias: string, path: string) => ["source-directory", volumeAlias, path] as const,
 
   /** Prefix of every open-Problems page. */
   problems: ["problems"] as const,
@@ -76,7 +74,6 @@ export const apiQueryKeys = {
   cloudUsage: (vaultId: number) => ["cloud-usage", vaultId] as const,
   billedCost: (vaultId: number) => ["billed-cost", vaultId] as const,
   stopProtection: (vaultId: number) => ["stop-protection", vaultId] as const,
-  vaultDeletion: (vaultId: number) => ["vault-deletion", vaultId] as const,
   recoverPreview: (targets: readonly { vaultId: number; path: string; isDirectory: boolean }[], tier: string) =>
     ["recover-preview", targets, tier] as const,
 };
@@ -94,6 +91,21 @@ export const catalogRefreshedKeys = [
   apiQueryKeys.problems,
   apiQueryKeys.notifications,
 ] as const;
+
+/**
+ * Cadence of a read a screen makes for itself: once when it mounts and when
+ * its key changes, never again by itself (no focus, reconnect, interval or
+ * retry). Nothing is kept once the screen is gone, so coming back reads anew
+ * and shows the loading state, never an earlier answer.
+ */
+export const readOnMount = {
+  staleTime: 0,
+  gcTime: 0,
+  retry: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  refetchInterval: false,
+} as const;
 
 export function createAppQueryClient(
   config: QueryClientConfig = {},

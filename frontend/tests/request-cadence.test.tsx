@@ -92,9 +92,7 @@ describe("request cadence (#800)", () => {
       "GET /api/jobs?action=storage-class&active_only=true&vault_id=1",
       "GET /api/vault/lifecycle?vault_id=1",
       "GET /api/vault/move?vault_id=1",
-      "GET /api/vault/operation-policy?vault_id=1",
-      "GET /api/vault/operation-policy?vault_id=1",
-      "GET /api/vault/operation-policy?vault_id=1",
+      // One read for the four sections that show the policy: four before #800.
       "GET /api/vault/operation-policy?vault_id=1",
       "GET /api/vaults/1/billed-cost",
       "GET /api/vaults/1/cloud-usage",
@@ -196,6 +194,14 @@ describe("request cadence (#800)", () => {
       "GET /api/vault/operation-policy?vault_id=1",
       "GET /api/vaults",
     ]);
+    // A blanket refresh (Overview, when a bucket becomes ready) reads the
+    // lists again, never the sign-in bootstrap.
+    calls.length = 0;
+    await act(async () => { await client.invalidateQueries(); });
+    await settle();
+    expect(calls).not.toContain("GET /api/me");
+    expect(calls).not.toContain("GET /api/vaults");
+    expect(calls).toContain("GET /api/general");
     cleanup(); client.clear();
     window.history.replaceState({}, "", "/");
   });

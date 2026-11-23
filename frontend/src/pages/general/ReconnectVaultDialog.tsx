@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { browseSourceVolume, fetchGeneralSourceVolumes, vaultApi, type GeneralVault, type SourceVolumeInventoryItem } from "@/api";
+import { apiQueryKeys, readOnMount, browseSourceVolume, fetchGeneralSourceVolumes, vaultApi, type GeneralVault } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { FormField, FormInput } from "@/components/FormField";
@@ -25,12 +26,8 @@ type Props = {
 
 export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCompleted }: Props) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
-  const [volumes, setVolumes] = useState<SourceVolumeInventoryItem[]>([]);
   const [alias, setAlias] = useState("");
   const [path, setPath] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // Shown inside the dialog: a Toast behind the modal would go unseen (#651).
@@ -40,15 +37,12 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    setAlias(""); setPath(null); setReason(""); setVolumes([]); setLoadError(""); setError("");
-    void fetchGeneralSourceVolumes().then((data) => {
-      if (!cancelled) setVolumes(data.items);
-    }).catch((error: unknown) => {
-      if (!cancelled) setLoadError(errorMessage(error, translateRef.current));
-    });
-    return () => { cancelled = true; };
+    setAlias(""); setPath(null); setReason(""); setError("");
   }, [open, vault?.id]);
+  // Each opening reads the volumes anew; a list from before is never offered again.
+  const loaded = useQuery({ queryKey: apiQueryKeys.sourceVolumes, queryFn: fetchGeneralSourceVolumes, enabled: open, ...readOnMount });
+  const volumes = open && !loaded.isFetching ? loaded.data?.items ?? [] : [];
+  const loadError = open && loaded.error ? errorMessage(loaded.error, t) : "";
   const ready = !!alias && (managedSelected || path !== null) && reason.trim().length >= 3;
 
   async function submit(event: FormEvent) {

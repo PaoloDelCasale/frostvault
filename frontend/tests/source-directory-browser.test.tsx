@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,7 @@ import type { SourceDirectoryBrowseResponse } from "@/api";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -61,7 +62,7 @@ function renderBrowser(
     t: (key, params) => translate(messages, key, params),
     setLocale: vi.fn(async () => undefined),
   };
-  return render(
+  return renderWithQueryClient(
     <I18nContext.Provider value={value}>{ui}</I18nContext.Provider>,
   );
 }

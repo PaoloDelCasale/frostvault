@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { vaultApi, type MirrorCleanupStatus } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi, type MirrorCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
@@ -29,24 +30,20 @@ const foldersOf = (text: string) => text.split("\n").map((line) => line.trim()).
  */
 export function MirrorCleanupPanel({ vaultId, paused, onNotice }: { vaultId: number; paused?: boolean; onNotice: (message: string, error?: boolean) => void }) {
   const { t, locale } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [status, setStatus] = useState<MirrorCleanupStatus | null>(null);
   const [draft, setDraft] = useState<Draft>({ grace: "", files: "", gib: "", folders: "" });
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [enabledSaved, flashEnabledSaved] = useSavedFlash();
   const [minimumSaved, flashMinimumSaved] = useSavedFlash();
   const localeRef = useRef(locale);
   localeRef.current = locale;
   function accept(next: MirrorCleanupStatus) { setStatus(next); setDraft(draftOf(next, localeRef.current)); }
+  const loaded = useQuery({ queryKey: apiQueryKeys.mirrorCleanup(vaultId), queryFn: () => vaultApi(vaultId).mirrorCleanup(), ...readOnMount });
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
   useEffect(() => {
-    let live = true;
-    setStatus(null); setLoadError("");
-    void vaultApi(vaultId).mirrorCleanup().then((data) => { if (live) accept(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+    if (loaded.data) accept(loaded.data);
+    else setStatus(null);
+  }, [loaded.data]);
   const statusRef = useRef(status);
   statusRef.current = status;
   useEffect(() => { if (statusRef.current) setDraft(draftOf(statusRef.current, locale)); }, [locale]);

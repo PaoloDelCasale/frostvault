@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { vaultApi, type OperationPolicy } from "@/api";
+import { apiQueryKeys, readOnMount, vaultApi, type OperationPolicy } from "@/api";
 import { FormField, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -15,8 +16,6 @@ const periods: ReleasePeriod[] = [90, 180, 365, 730];
 
 export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
   const { t, ready } = useI18n();
-  const [loadState, setLoadState] = useState("");
-  const [loadError, setLoadError] = useState("");
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [days, setDays] = useState<ReleasePeriod>(180);
@@ -28,20 +27,11 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
     setDays(data.local_release_after_days ?? 180);
   }
 
-  useEffect(() => {
-    if (!ready) return;
-    setLoadState(t("folder_settings.retention_loading"));
-    setLoadError("");
-    void (async () => {
-      try {
-        acceptPolicy(await vaultApi(vaultId).policy());
-        setLoadState(t("folder_settings.retention_loaded"));
-      } catch (error) {
-        setLoadState("");
-        setLoadError(errorMessage(error, t));
-      }
-    })();
-  }, [ready, t, vaultId]);
+  // Read once with the other settings sections; a save answers with the policy it stored.
+  const loaded = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId), queryFn: () => vaultApi(vaultId).policy(), ...readOnMount });
+  const loadState = !ready || loaded.isError ? "" : t(loaded.data ? "folder_settings.retention_loaded" : "folder_settings.retention_loading");
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
+  useEffect(() => { if (loaded.data) acceptPolicy(loaded.data); }, [loaded.data]);
 
   // Saving is offered only for a change from the stored retention.
   const dirty = policy !== null && (enabled ? days : null) !== (policy.local_release_after_days ?? null);

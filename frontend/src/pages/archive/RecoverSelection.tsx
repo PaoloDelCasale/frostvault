@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { vaultApi, type ArchiveListItem, type RecoverEstimateResponse } from "@/api";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi, type ArchiveListItem, type RecoverEstimateResponse } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
@@ -22,21 +23,25 @@ function requestScope(targets: Target[]) {
   return selection.length === 1 ? selection[0] : { path: "", selection };
 }
 export function RecoverSelection({ targets, onClose, onDone, t }: { targets: Target[]; onClose: () => void; onDone: () => void; t: (key: string, params?: Record<string, string | number>) => string }) {
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [tier, setTier] = useState("Bulk");
-  const [previews, setPreviews] = useState<Preview[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [completed, setCompleted] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    let live = true;
-    setPreviews(null); setError("");
-    void Promise.all(groupByVault(targets).map(async (group) => {
+  const selection = targets.map(({ item, vaultId }) => ({ vaultId, path: item.path, isDirectory: item.type === "directory" }));
+  const loaded = useQuery({
+    queryKey: apiQueryKeys.recoverPreview(selection, tier),
+    queryFn: (): Promise<Preview[]> => Promise.all(groupByVault(targets).map(async (group) => {
       const api = vaultApi(group[0].vaultId);
       const [estimate, policy] = await Promise.all([api.estimate({ ...requestScope(group), restore_tier: tier }), api.policy()]);
       return { targets: group, estimate, retention: policy.local_release_after_days ?? null };
-    })).then((data) => { if (live) setPreviews(data); }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, t)); });
-    return () => { live = false; };
-  }, [targets, tier, t]);
+    })),
+    ...readOnMount,
+  });
+  const previews = loaded.isFetching ? null : loaded.data ?? null;
+  // A new estimate replaces whatever the last one, or the last attempt to recover, reported.
+  useEffect(() => { setError(loaded.error ? errorMessage(loaded.error, translateRef.current) : ""); }, [loaded.error, targets, tier]);
   async function recover() {
     if (!previews || busy) return;
     setBusy(true); setError("");

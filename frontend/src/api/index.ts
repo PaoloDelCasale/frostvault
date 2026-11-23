@@ -80,6 +80,7 @@ export type { UseCatalogEventsOptions } from "./useCatalogEvents";
 export {
   ApiQueryProvider,
   apiQueryKeys,
+  readOnMount,
   createAppQueryClient,
   i18nCatalogQueryOptions,
   notificationsQueryOptions,

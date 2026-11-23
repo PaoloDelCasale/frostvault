@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { acknowledgeRecoveryKit, downloadRecoveryKit, fetchRecoveryKitStatus, type RecoveryKitStatus } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, acknowledgeRecoveryKit, downloadRecoveryKit, fetchRecoveryKitStatus, type RecoveryKitStatus } from "@/api";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/pages/archive/format";
@@ -10,18 +11,11 @@ export function RecoveryKitSection() {
   const [status, setStatus] = useState<RecoveryKitStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      void fetchRecoveryKitStatus().then((data) => { if (!cancelled) setStatus(data); })
-        .catch(() => { if (!cancelled) setError("recovery_kit.error"); });
-    };
-    refresh();
-    // Cloud-first reconnect is asynchronous; keep the durable warning's count
-    // current without downloading secret material or per-file notifications.
-    const timer = window.setInterval(refresh, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+  // Cloud-first reconnect is asynchronous; keep the durable warning's count
+  // current without downloading secret material or per-file notifications.
+  const loaded = useQuery({ queryKey: apiQueryKeys.recoveryKit, queryFn: fetchRecoveryKitStatus, ...readOnMount, refetchInterval: 30_000, refetchIntervalInBackground: true });
+  useEffect(() => { if (loaded.data) setStatus(loaded.data); }, [loaded.data, loaded.dataUpdatedAt]);
+  useEffect(() => { if (loaded.error) setError("recovery_kit.error"); }, [loaded.error, loaded.errorUpdatedAt]);
 
   async function download() {
     setBusy(true); setError("");

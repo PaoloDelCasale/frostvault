@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { vaultApi, type StopProtectionStatus } from "@/api";
+import { apiQueryKeys, readOnMount, vaultApi, type StopProtectionStatus } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
@@ -37,19 +38,20 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
     setOperation(null);
     setChoice("keep");
     setConfirmation("");
     setReason("");
     setError("");
-    void vaultApi(vaultId).stopProtection().then((value) => {
-      if (!cancelled) setOperation(value);
-    }).catch((failure: unknown) => {
-      if (!cancelled) setError(errorMessage(failure, translateRef.current));
-    });
-    return () => { cancelled = true; };
   }, [open, vaultId]);
+  // Each opening reads the status anew; an answer from before is never shown again.
+  const loaded = useQuery({ queryKey: apiQueryKeys.stopProtection(vaultId), queryFn: () => vaultApi(vaultId).stopProtection(), enabled: open, ...readOnMount });
+  useEffect(() => {
+    if (open && loaded.data && !loaded.isFetching) setOperation(loaded.data);
+  }, [open, vaultId, loaded.data, loaded.dataUpdatedAt, loaded.isFetching]);
+  useEffect(() => {
+    if (open && loaded.error) setError(errorMessage(loaded.error, translateRef.current));
+  }, [open, loaded.error, loaded.errorUpdatedAt]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

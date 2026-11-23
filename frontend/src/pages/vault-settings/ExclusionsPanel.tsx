@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
-import { vaultApi, type GlobPreviewResponse, type OperationPolicy, type OperationPolicyGlobEdit } from "@/api";
+import { apiQueryKeys, readOnMount, vaultApi, type GlobPreviewResponse, type OperationPolicy, type OperationPolicyGlobEdit } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -39,21 +40,16 @@ function RuleList({ field, rules, busy, onAdd, onRemove }: {
 /** «Esclusioni» in the Vault settings: the rules, the fixed noise exclusions and a preview (#754). */
 export function ExclusionsPanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
-  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState<{ field: Field; rule: string } | null>(null);
   const [paths, setPaths] = useState("");
   const [preview, setPreview] = useState<GlobPreviewResponse | null>(null);
-  useEffect(() => {
-    let live = true;
-    setPolicy(null); setLoadError(""); setPreview(null);
-    void vaultApi(vaultId).policy().then((data) => { if (live) setPolicy(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+  // Read once with the other settings sections; an edit answers with the rules it stored.
+  const loaded = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId), queryFn: () => vaultApi(vaultId).policy(), ...readOnMount });
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
+  useEffect(() => { setPolicy(loaded.data ?? null); }, [loaded.data]);
+  useEffect(() => { setPreview(null); }, [vaultId]);
   async function edit(field: Field, action: "add" | "remove", rule: string): Promise<boolean> {
     setBusy(true);
     try {

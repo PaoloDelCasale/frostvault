@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { ApiError, browseSourceVolume, createVault, fetchGeneralSourceVolumes, selectVault, vaultApi, type VaultBucketStatus, type VaultCreationCancelled, type VaultCreationMode } from "@/api";
+import { apiQueryKeys, readOnMount, ApiError, browseSourceVolume, createVault, fetchGeneralSourceVolumes, selectVault, vaultApi, type VaultBucketStatus, type VaultCreationCancelled, type VaultCreationMode } from "@/api";
 
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -44,37 +45,30 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [volumesFailed, setVolumesFailed] = useState(false);
-  const [volumesAttempt, setVolumesAttempt] = useState(0);
   // A Vault saved while its bucket is not ready yet (#735).
   const [pending, setPending] = useState<VaultBucketStatus | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [cancelled, setCancelled] = useState<VaultCreationCancelled | null>(null);
 
+  const volumes = useQuery({ queryKey: apiQueryKeys.sourceVolumes, queryFn: fetchGeneralSourceVolumes, ...readOnMount });
   useEffect(() => {
-    let cancelled = false;
+    if (!volumes.data) return;
     // Any free directory of a healthy, writable Source Volume can be adopted.
-    void fetchGeneralSourceVolumes()
-      .then((response) => {
-        if (cancelled) return;
-        const usable = response.items
-          .filter((item) => item.health === "ok" && item.access === "rw")
-          .map((item) => item.alias)
-          .sort();
-        setVolumesFailed(false);
-        setVolumeOptions(usable);
-        if (usable.length > 0) {
-          setVolumeAlias(usable[0]);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setVolumeOptions([]);
-        setVolumesFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [volumesAttempt]);
+    const usable = volumes.data.items
+      .filter((item) => item.health === "ok" && item.access === "rw")
+      .map((item) => item.alias)
+      .sort();
+    setVolumesFailed(false);
+    setVolumeOptions(usable);
+    if (usable.length > 0) {
+      setVolumeAlias(usable[0]);
+    }
+  }, [volumes.data, volumes.dataUpdatedAt]);
+  useEffect(() => {
+    if (!volumes.error) return;
+    setVolumeOptions([]);
+    setVolumesFailed(true);
+  }, [volumes.error, volumes.errorUpdatedAt]);
 
   // FrostVault keeps working in the background: follow it until the Vault is active.
   const pendingVault = pending?.vault_id ?? null;
@@ -279,7 +273,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
                 <div className="grid gap-2 rounded-[10px] border border-line bg-canvas px-3.5 py-3 text-sm text-ink" role="status" data-testid="vault-create-volumes-error">
                   <p className="m-0">{t("ui.vault_create.volumes_failed")}</p>
                   <div>
-                    <Button type="button" variant="secondary" onClick={() => setVolumesAttempt((value) => value + 1)}>
+                    <Button type="button" variant="secondary" onClick={() => void volumes.refetch()}>
                       {t("ui.retry")}
                     </Button>
                   </div>

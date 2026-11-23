@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { vaultApi, type DuplicateCleanupStatus } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi, type DuplicateCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
@@ -24,24 +25,20 @@ const draftOf = (status: DuplicateCleanupStatus, locale: string): Draft => ({
  */
 export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: number; paused?: boolean; onNotice: (message: string, error?: boolean) => void }) {
   const { t, locale } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [status, setStatus] = useState<DuplicateCleanupStatus | null>(null);
   const [draft, setDraft] = useState<Draft>({ grace: "", files: "", gib: "" });
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [enabledSaved, flashEnabledSaved] = useSavedFlash();
   const [minimumSaved, flashMinimumSaved] = useSavedFlash();
   const localeRef = useRef(locale);
   localeRef.current = locale;
   function accept(next: DuplicateCleanupStatus) { setStatus(next); setDraft(draftOf(next, localeRef.current)); }
+  const loaded = useQuery({ queryKey: apiQueryKeys.duplicateCleanup(vaultId), queryFn: () => vaultApi(vaultId).duplicateCleanup(), ...readOnMount });
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
   useEffect(() => {
-    let live = true;
-    setStatus(null); setLoadError("");
-    void vaultApi(vaultId).duplicateCleanup().then((data) => { if (live) accept(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+    if (loaded.data) accept(loaded.data);
+    else setStatus(null);
+  }, [loaded.data]);
   // The caps are written in the page language: show them again when it changes.
   const statusRef = useRef(status);
   statusRef.current = status;

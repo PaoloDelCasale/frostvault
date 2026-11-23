@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { vaultApi, type MinimumStorageSummary } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
 import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatMonth } from "@/pages/archive/format";
@@ -12,19 +12,10 @@ import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatM
  */
 export function MinimumStoragePanel({ vaultId }: { vaultId: number }) {
   const { t, locale } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
-  const [summary, setSummary] = useState<MinimumStorageSummary | null>(null);
-  const [loadError, setLoadError] = useState("");
-  useEffect(() => {
-    let live = true;
-    setSummary(null); setLoadError("");
-    void vaultApi(vaultId).minimumStorage().then((data) => { if (live) setSummary(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+  const loaded = useQuery({ queryKey: apiQueryKeys.minimumStorage(vaultId), queryFn: () => vaultApi(vaultId).minimumStorage(), ...readOnMount });
+  const summary = loaded.data;
 
-  if (loadError) return <p role="alert" className="text-sm text-destructive">{loadError}</p>;
+  if (loaded.error) return <p role="alert" className="text-sm text-destructive">{errorMessage(loaded.error, t)}</p>;
   if (!summary) return <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>;
   const classes = (summary.by_storage_class ?? []).filter((entry) => entry.minimum_days > 0);
   const amount = (count: number, bytes: number) => t("minimum_storage.amount", { count, count_shown: formatGroupedCount(count, locale), bytes: formatBytes(bytes, locale) });
