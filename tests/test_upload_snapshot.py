@@ -19,8 +19,9 @@ from app.services.s3_upload import upload_file, _UploadClient, _shared_budget
 from app.services.upload_snapshot import (
     CHUNK_SIZE, MULTIPART_THRESHOLD, prepare_upload_snapshot, SnapshotPayload, UploadSnapshot,
     composite_checksum, sha256_b64, check_s3_proof, UploadProofMismatch,
-    unsupported_checksum_api, validated_s3_proof,
+    validated_s3_proof,
 )
+from app.services.s3 import checksum_mode_unsupported
 from app.storage import OperationCancelled
 
 
@@ -165,24 +166,24 @@ class UploadSnapshotTests(unittest.TestCase):
         from botocore.exceptions import ClientError
         for code in ("NotImplemented", "UnsupportedOperation", "XNotImplemented", "501"):
             with self.subTest(code=code):
-                self.assertTrue(unsupported_checksum_api(ClientError({"Error": {"Code": code}}, "HeadObject")))
+                self.assertTrue(checksum_mode_unsupported(ClientError({"Error": {"Code": code}}, "HeadObject")))
         for code in ("InvalidRequest", "InvalidArgument"):
             for argument in (None, "Bucket", "VersionId"):
                 with self.subTest(code=code, argument=argument):
                     error = {"Code": code, "Message": "Request mentioning ChecksumMode is invalid"}
                     if argument is not None:
                         error["ArgumentName"] = argument
-                    self.assertFalse(unsupported_checksum_api(ClientError({"Error": error}, "HeadObject")))
+                    self.assertFalse(checksum_mode_unsupported(ClientError({"Error": error}, "HeadObject")))
             for argument in ("ChecksumMode", "x-amz-checksum-mode"):
-                self.assertTrue(unsupported_checksum_api(ClientError({"Error": {
+                self.assertTrue(checksum_mode_unsupported(ClientError({"Error": {
                     "Code": code, "ArgumentName": argument,
                 }}, "HeadObject")))
         for code in ("AccessDenied", "NoSuchBucket", "NoSuchVersion", "SlowDown"):
-            self.assertFalse(unsupported_checksum_api(ClientError({"Error": {
+            self.assertFalse(checksum_mode_unsupported(ClientError({"Error": {
                 "Code": code, "ArgumentName": "ChecksumMode",
             }}, "HeadObject")))
-        self.assertFalse(unsupported_checksum_api(ClientError({"Error": {"Code": "NotImplemented"}}, "PutObject")))
-        self.assertFalse(unsupported_checksum_api(RuntimeError("unsupported checksum")))
+        self.assertFalse(checksum_mode_unsupported(ClientError({"Error": {"Code": "NotImplemented"}}, "PutObject")))
+        self.assertFalse(checksum_mode_unsupported(RuntimeError("unsupported checksum")))
 
     def test_linked_digest_uses_immutable_AV_snapshot_without_originating_Job(self):
         from app.services.local_files import _require_linked_upload_digest

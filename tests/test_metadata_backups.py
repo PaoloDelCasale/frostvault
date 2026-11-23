@@ -425,7 +425,7 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
         with (
             override_settings(metadata_backup_bucket="frostvault-backups"),
             patch(
-                "app.storage.s3_client",
+                "app.services.s3.s3_client",
                 side_effect=RuntimeError("AWS credentials are not configured"),
             ),
         ):
@@ -458,7 +458,7 @@ class DefaultObjectStoreFailClosedTests(unittest.TestCase):
             patch.object(metadata_backups.system_bucket,
                          "aws_credentials_configured", return_value=True),
             patch.object(metadata_backups.system_bucket, "ensure", return_value=system) as ensure,
-            patch("app.storage.s3_client", return_value=client) as s3_client,
+            patch("app.services.s3.s3_client", return_value=client) as s3_client,
         ):
             store = metadata_backups.default_object_store()
         ensure.assert_called_once_with(configured)

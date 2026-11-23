@@ -16,7 +16,9 @@ from .cloud_deletion import lock_vault
 from .cost_estimates import estimate_storage_month, list_prices
 from .lifecycle_policies import load_vault_plan
 from .lifecycle_profiles import ALLOWED_TARGETS
-from .s3_copy import S3_SINGLE_COPY_MAX_BYTES, restore_header_state
+from . import s3
+from .s3 import restore_header_state
+from .s3_copy import S3_SINGLE_COPY_MAX_BYTES
 from .vault_paths import object_prefix
 
 MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
@@ -88,8 +90,6 @@ def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> N
     flag alone must neither admit expired restores nor hide a manually restored
     exact source, including when a Local Copy is already present.
     """
-    from .. import storage as worker
-
     bucket = vault["s3_bucket"]
     client = None
     for row in rows:
@@ -99,7 +99,7 @@ def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> N
             if not str(row.get("object_key") or "").startswith(_namespace(vault)):
                 raise MoveBlocked("Source key is outside this Vault")
             if client is None:
-                client = worker.s3_client()
+                client = s3.s3_client()
             head = client.head_object(Bucket=bucket, Key=row["object_key"], VersionId=row["provider_version_id"])
             if (str(head.get("VersionId")) != row["provider_version_id"] or head.get("DeleteMarker")
                     or head.get("ContentLength") != row["size"]):

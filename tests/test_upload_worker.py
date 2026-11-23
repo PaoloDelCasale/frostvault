@@ -91,7 +91,7 @@ class UploadWorkerCase(FrostVaultTestCase):
             self.uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
         self.key = f"vaults/{self.uuid}/report.txt"
         self.enterContext(patch("app.storage.validate_cloud_vault"))
-        self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
+        self.enterContext(patch("app.services.s3.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
         self.addCleanup(storage.shutdown_state.reset)
         # Job ids restart at 1 in every disposable catalog: a cancel flag

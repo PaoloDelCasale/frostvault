@@ -47,11 +47,12 @@ import psycopg
 
 from . import source_devices, upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
+from .s3 import checksum_mode_unsupported
 from .snapshot_cleanup import RESUME_NEEDED_SQL
 from .upload_retry import classify_upload_failure
 from .upload_snapshot import (
     MULTIPART_THRESHOLD, FileOwnership, SnapshotPayload, UploadSnapshot,
-    UploadProofMismatch, unsupported_checksum_api,
+    UploadProofMismatch,
 )
 
 # The Local Copy fingerprint read with the pre-hash observation (#703): its
@@ -879,7 +880,7 @@ class UploadExecution:
             except UploadProofMismatch:
                 raise
             except Exception as exc:
-                if not unsupported_checksum_api(exc):
+                if not checksum_mode_unsupported(exc):
                     raise
                 fallback = "checksum_api_unsupported"
         if expected.verification == "s3_checksum" and proof is not None:

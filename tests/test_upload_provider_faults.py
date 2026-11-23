@@ -126,7 +126,7 @@ class ListingFaultTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "inventory_changed")
 
     def test_a_malformed_provider_answer_is_a_changed_inventory(self):
-        from app.services.s3_copy import ProviderResponseError
+        from app.services.s3 import ProviderResponseError
         with probe(True), self.assertRaises(provenance.UploadBlocked) as caught:
             self.listing(ProviderResponseError("S3 version listing is malformed"))()
         self.assertEqual(caught.exception.reason, "inventory_changed")

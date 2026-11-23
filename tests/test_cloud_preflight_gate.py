@@ -68,7 +68,7 @@ class CloudPreflightPolicyTests(unittest.TestCase):
         self.assertLessEqual(gate.reprobe_seconds(10**9), 60)
 
     def test_probe_transport_has_short_timeouts_without_changing_transfer_retries(self):
-        with patch.object(storage, 'is_placeholder', return_value=False), patch.object(storage.boto3, 'client') as client:
+        with patch('app.services.s3.credentials_are_placeholders', return_value=False), patch('app.services.s3.client_factory') as client:
             storage.s3_client(preflight=True)
             config = client.call_args.kwargs['config']
             self.assertEqual((config.connect_timeout, config.read_timeout), (2, 3))

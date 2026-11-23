@@ -28,6 +28,7 @@ from typing import Any, Callable, Protocol
 
 from ..config import is_placeholder, settings
 from . import bucket_provisioning as buckets
+from . import s3
 from .s3_lifecycle_rules import ABORT_RULE_ID
 
 NAME_STEM = "frostvault-system"
@@ -112,9 +113,7 @@ def aws_credentials_configured() -> bool:
     access = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
     secret = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
     if access or secret:
-        return bool(access and secret) and not (
-            is_placeholder(access, "REPLACE_ME", "REPLACE-WITH-ACCESS-KEY")
-            or is_placeholder(secret, "REPLACE_ME", "REPLACE-WITH-SECRET-KEY"))
+        return bool(access and secret) and not s3.credentials_are_placeholders()
     return any(os.getenv(name, "").strip() for name in _CREDENTIAL_SOURCE_VARIABLES)
 
 
@@ -245,9 +244,7 @@ def _finish_creation(store: SystemBucketStore, client: Any,
 
 
 def _default_client(region: str) -> Any:
-    from ..storage import s3_client
-
-    return s3_client(region=region)
+    return s3.s3_client(region=region)
 
 
 def _now() -> str:

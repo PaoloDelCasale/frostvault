@@ -55,6 +55,8 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from .s3 import GONE_CODES, TRANSIENT_CODES, error_code, version_already_gone
+
 # The choices offered when a Vault is created; 180 when the Owner enables it.
 CHOICES = (30, 90, 180, 365)
 MODE = "GOVERNANCE"
@@ -88,7 +90,6 @@ PROBE_KEY = ".frostvault-retention-probe"
 # Error codes that say a version is not locked at all.
 _NOT_LOCKED = frozenset({"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError",
                          "InvalidRequest"})
-_GONE = frozenset({"NoSuchKey", "NoSuchVersion", "NotFound", "404"})
 # What S3 answers to a DELETE of a locked version without the bypass.
 _LOCK_REFUSALS = frozenset({"AccessDenied"})
 
@@ -134,12 +135,6 @@ def locked_at(created_at: Any, days: int | None, at: datetime) -> datetime | Non
     return until if until is not None and until > at else None
 
 
-def error_code(exc: BaseException) -> str:
-    if not isinstance(exc, ClientError):
-        return ""
-    return str((exc.response or {}).get("Error", {}).get("Code") or "")
-
-
 def observed_until(client: Any, *, bucket: str, key: str, version_id: str) -> datetime | None:
     """The exact version's RetainUntilDate from ``GetObjectRetention``, or None.
 
@@ -152,7 +147,7 @@ def observed_until(client: Any, *, bucket: str, key: str, version_id: str) -> da
         code = error_code(exc)
         if code in _NOT_LOCKED:
             return None
-        if code in _GONE:
+        if code in GONE_CODES:
             raise VersionGone(key) from None
         raise
     retention = (response or {}).get("Retention") or {}
@@ -204,7 +199,7 @@ def probe_retention_read(client: Any, bucket: str) -> str | None:
         client.get_object_retention(Bucket=bucket, Key=PROBE_KEY)
     except ClientError as exc:
         code = error_code(exc)
-        if code in _GONE or code in _NOT_LOCKED:
+        if code in GONE_CODES or code in _NOT_LOCKED:
             return None
         return code or "Error"
     return None
@@ -476,10 +471,10 @@ def _claim(connection: Any, now: datetime, limit: int) -> tuple[list[dict[str, A
 
 
 def _is_transient(error: BaseException | str) -> bool:
-    from .upload_retry import _TRANSIENT_ERROR_CODES, is_provider_transient
+    from .upload_retry import is_provider_transient
 
     if isinstance(error, str):
-        return error in _TRANSIENT_ERROR_CODES
+        return error in TRANSIENT_CODES
     return is_provider_transient(error)
 
 
@@ -490,8 +485,6 @@ def _sweep_bucket(client: Any, bucket: str, rows: list[dict[str, Any]],
     Returns the rows by outcome: ``deleted`` ids, ``deferred`` (id, until),
     ``unreadable`` (id, until) and ``failed`` (id, error, transient).
     """
-    from .s3_copy import _s3_version_already_gone
-
     result: dict[str, Any] = {"deleted": [], "deferred": [], "unreadable": [], "failed": []}
     try:
         response = client.delete_objects(Bucket=bucket, Delete={"Objects": [
@@ -509,7 +502,7 @@ def _sweep_bucket(client: Any, bucket: str, rows: list[dict[str, Any]],
         if code is None:
             result["deleted"].append(row["id"])
             continue
-        if code in _GONE:
+        if code in GONE_CODES:
             result["deleted"].append(row["id"])
             continue
         try:
@@ -522,7 +515,7 @@ def _sweep_bucket(client: Any, bucket: str, rows: list[dict[str, Any]],
             result["unreadable"].append((row["id"], exc.until))
             continue
         except Exception as exc:  # noqa: BLE001 - nothing decided: retried
-            if _s3_version_already_gone(exc):
+            if version_already_gone(exc):
                 result["deleted"].append(row["id"])
                 continue
             result["failed"].append((row["id"], (code or "DeleteError")[:200], _is_transient(exc)))

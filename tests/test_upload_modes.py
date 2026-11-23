@@ -86,7 +86,7 @@ class UploadModeTests(FrostVaultTestCase):
                 mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06T00:00:00+00:00")
 
     def run_worker(self):
-        with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=self.s3), patch("app.storage.upload_s3_file", side_effect=self.upload), patch("app.storage._record_verification_failure", side_effect=self.verification_failures.append):
+        with patch("app.storage.validate_cloud_vault"), patch("app.services.s3.s3_client", return_value=self.s3), patch("app.storage.upload_s3_file", side_effect=self.upload), patch("app.storage._record_verification_failure", side_effect=self.verification_failures.append):
             process_jobs_once()
 
     def rows(self):

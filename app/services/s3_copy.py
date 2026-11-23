@@ -1,19 +1,19 @@
-"""Exact-VersionId S3 helpers shared by the worker.
+"""Storage Class copies of one exact provider VersionId.
 
-Listing, deletion, checksum read-back and storage-class copies for one
-provider VersionId.  Nothing here touches the catalog or the Job row: callers
+CopyObject up to 5 GiB and multipart UploadPartCopy above, with the read-back
+of the destination. Nothing here touches the catalog or the Job row: callers
 pass ``check_active`` when a long copy must observe cancellation and lease
-loss between provider calls.
+loss between provider calls. The other exact-VersionId operations live in
+``s3``.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
-import re
 from typing import Any, Callable
 from urllib.parse import urlencode
 
-from botocore.exceptions import ClientError
+from .s3 import full_object_sha256_checksum, head_object_with_checksum, sha256_version
 
 
 # S3 CopyObject is limited to objects up to 5 GiB.  Multipart copy keeps the
@@ -39,183 +39,6 @@ S3_COPY_CHECKSUM_TYPE = "FULL_OBJECT"
 
 
 S3_OBJECT_HASH_CHUNK_BYTES = 1024 * 1024
-
-
-class ProviderResponseError(RuntimeError):
-    """The provider answered, but incompletely or not in the documented shape.
-
-    A fault of the answer, never of FrostVault's own code: callers that turn a
-    provider failure into a per-file outcome may name it (#628).
-    """
-
-
-def _object_version_entries(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Read exact-version postconditions without treating a retry as evidence.
-
-    S3's list API is used rather than a current-key HEAD because a delete marker
-    and a noncurrent Archive Version are both meaningful durable outcomes.
-    """
-    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": object_key}
-    versions: dict[str, dict[str, Any]] = {}
-    markers: dict[str, dict[str, Any]] = {}
-    continuations: set[tuple[str, str]] = set()
-    while True:
-        page = client.list_object_versions(**kwargs)
-        if not isinstance(page, dict) or page.get("IsTruncated") not in (True, False):
-            raise ProviderResponseError("S3 version listing did not confirm complete pagination")
-        for field, entries, other in (("Versions", versions, markers), ("DeleteMarkers", markers, versions)):
-            items = page.get(field) or []
-            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-                raise ProviderResponseError("S3 version listing is malformed")
-            for item in items:
-                if item.get("Key") != object_key:
-                    continue
-                version = str(item.get("VersionId") or "")
-                if not version or version == "null" or version in entries or version in other:
-                    raise ProviderResponseError("S3 version listing has ambiguous exact identities")
-                entries[version] = item
-        if not page.get("IsTruncated"):
-            break
-        next_key = page.get("NextKeyMarker")
-        next_version = page.get("NextVersionIdMarker")
-        if not next_key:
-            raise ProviderResponseError("S3 version listing omitted its continuation marker")
-        continuation = (str(next_key), str(next_version or ""))
-        if continuation in continuations:
-            raise ProviderResponseError("S3 version listing repeated its continuation marker")
-        continuations.add(continuation)
-        kwargs["KeyMarker"] = next_key
-        if next_version:
-            kwargs["VersionIdMarker"] = next_version
-        else:
-            kwargs.pop("VersionIdMarker", None)
-    return versions, markers
-
-
-def _s3_version_already_gone(exc: BaseException) -> bool:
-    if not isinstance(exc, ClientError):
-        return False
-    code = str(exc.response.get("Error", {}).get("Code") or "")
-    return code in {"NoSuchVersion", "NoSuchKey", "NotFound", "404"}
-
-
-def _delete_s3_version(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    version_id: str,
-) -> None:
-    try:
-        client.delete_object(
-            Bucket=bucket, Key=object_key, VersionId=version_id
-        )
-    except Exception as exc:
-        if _s3_version_already_gone(exc):
-            return
-        raise
-
-
-def _verification_version_head(
-    client: Any,
-    job: dict[str, Any],
-    target: dict[str, Any],
-) -> dict[str, Any]:
-    """Reconfirm the exact provider VersionId around a streamed read."""
-    object_key = str(target.get("object_key") or "")
-    expected_version = str(target.get("provider_version_id") or "")
-    if not object_key or not expected_version:
-        raise RuntimeError("Upload verification target has no exact S3 VersionId")
-    head = client.head_object(Bucket=job["s3_bucket"], Key=object_key,
-                              VersionId=expected_version)
-    observed_version = head.get("VersionId")
-    if not observed_version:
-        raise RuntimeError("Upload verification found no S3 VersionId")
-    if str(observed_version) != expected_version:
-        raise RuntimeError("Archive Version changed during upload verification")
-    expected_size = target.get("cloud_size")
-    observed_size = head.get("ContentLength")
-    if expected_size is not None and observed_size is not None:
-        if int(observed_size) != int(expected_size):
-            raise RuntimeError("Archive Version size changed during upload verification")
-    return head
-
-
-def _head_object_with_checksum(client: Any, **kwargs: Any) -> dict[str, Any]:
-    """Read a version with provider checksum fields when supported.
-
-    Some S3-compatible providers reject ``ChecksumMode``. Falling back to a
-    normal HEAD keeps the operation portable; the caller then obtains an
-    equivalent proof by hashing the exact VersionId instead of publishing on
-    size/ETag metadata alone.
-    """
-    try:
-        return client.head_object(**kwargs, ChecksumMode="ENABLED")
-    except Exception:
-        return client.head_object(**kwargs)
-
-
-def _full_object_sha256_checksum(head: dict[str, Any]) -> str | None:
-    checksum = head.get("ChecksumSHA256")
-    if not checksum:
-        return None
-    checksum_type = str(head.get("ChecksumType") or "FULL_OBJECT").upper()
-    if checksum_type != S3_COPY_CHECKSUM_TYPE:
-        return None
-    return str(checksum)
-
-
-def _sha256_s3_version(
-    client: Any,
-    *,
-    bucket: str,
-    object_key: str,
-    version_id: str,
-    check_active: Callable[[str], None] | None = None,
-) -> str:
-    """Hash one exact provider VersionId and return its S3 checksum encoding."""
-    response = client.get_object(
-        Bucket=bucket,
-        Key=object_key,
-        VersionId=version_id,
-    )
-    body = response.get("Body") if isinstance(response, dict) else None
-    if body is None:
-        raise RuntimeError("S3 did not return a body for integrity verification")
-    digest = hashlib.sha256()
-    try:
-        iter_chunks = getattr(body, "iter_chunks", None)
-        if callable(iter_chunks):
-            chunks = iter_chunks(chunk_size=S3_OBJECT_HASH_CHUNK_BYTES)
-        else:
-            read = getattr(body, "read", None)
-            if not callable(read):
-                raise RuntimeError("S3 returned an unreadable body")
-
-            def read_chunks():
-                while True:
-                    chunk = read(S3_OBJECT_HASH_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    yield chunk
-
-            chunks = read_chunks()
-        for chunk in chunks:
-            if not isinstance(chunk, (bytes, bytearray, memoryview)):
-                raise RuntimeError("S3 returned a non-binary body")
-            digest.update(chunk)
-            if check_active is not None:
-                check_active("Storage class change stopped")
-    finally:
-        close = getattr(body, "close", None)
-        if callable(close):
-            close()
-    return base64.b64encode(digest.digest()).decode("ascii")
 
 
 def _source_object_tagging(
@@ -259,7 +82,7 @@ def copy_metadata(source_head: dict[str, Any], token: str) -> dict[str, str]:
     return metadata
 
 
-def _multipart_source_checksum(
+def multipart_source_checksum(
     client: Any, *, bucket: str, object_key: str, version_id: str,
     size: int, expected_sha256: str, check_active: Callable[[str], None],
 ) -> str:
@@ -448,7 +271,7 @@ def _multipart_copy_storage_class(
         raise
 
 
-def _copy_storage_class_version(
+def copy_storage_class_version(
     client: Any,
     *,
     bucket: str,
@@ -510,7 +333,7 @@ def _copy_storage_class_version(
     return copy_result.get("VersionId")
 
 
-def _verify_storage_class_destination(
+def verify_storage_class_destination(
     client: Any,
     *,
     bucket: str,
@@ -535,7 +358,7 @@ def _verify_storage_class_destination(
     kwargs: dict[str, Any] = {"Bucket": bucket, "Key": object_key}
     if candidate_version_id:
         kwargs["VersionId"] = candidate_version_id
-    destination = _head_object_with_checksum(client, **kwargs)
+    destination = head_object_with_checksum(client, **kwargs)
     observed_version_id = destination.get("VersionId") or candidate_version_id
     if not observed_version_id:
         raise RuntimeError(
@@ -561,7 +384,7 @@ def _verify_storage_class_destination(
         raise RuntimeError(
             "Storage class copy read-back returned the wrong object size"
         )
-    destination_checksum = _full_object_sha256_checksum(destination)
+    destination_checksum = full_object_sha256_checksum(destination)
     if expected_composite_checksum and destination.get("ChecksumType") == "COMPOSITE":
         # Some compatible providers expose a non-AWS composite encoding. Never
         # accept that metadata: only an independent exact-VersionId full SHA256
@@ -575,7 +398,7 @@ def _verify_storage_class_destination(
         # The matching composite is independently anchored to the verified full
         # source digest, not an ETag or provider-supplied part hash alone.
     if destination_checksum is None:
-        destination_checksum = _sha256_s3_version(
+        destination_checksum = sha256_version(
             client,
             bucket=bucket,
             object_key=object_key,
@@ -591,19 +414,3 @@ def _verify_storage_class_destination(
         if destination.get("ETag")
         else None
     )
-
-
-def restore_header_state(value: str | None) -> tuple[str, str | None]:
-    if not value:
-        return "not_requested", None
-    if 'ongoing-request="true"' in value:
-        return "restoring", None
-    match = re.search(r'expiry-date="([^"]+)"', value)
-    return "available", match.group(1) if match else None
-
-
-ARCHIVE_RESTORE_REQUIRED = frozenset({"GLACIER", "DEEP_ARCHIVE"})
-
-
-def storage_class_requires_restore(storage_class: str | None) -> bool:
-    return (storage_class or "").upper() in ARCHIVE_RESTORE_REQUIRED

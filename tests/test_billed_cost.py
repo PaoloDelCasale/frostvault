@@ -716,7 +716,7 @@ class RunDueTests(unittest.TestCase):
 
     def test_the_pass_uses_its_own_short_timeout_client(self):
         with patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "example"}), \
-                patch("app.services.s3_clients.new_service_client") as factory:
+                patch("app.services.s3.new_service_client") as factory:
             bc._default_client("eu-south-1")
         service = factory.call_args.args[0]
         config = factory.call_args.kwargs["config"]

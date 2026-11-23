@@ -163,7 +163,7 @@ class ReadTests(unittest.TestCase):
 
     def test_the_client_gives_up_fast(self) -> None:
         with patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "AKIATESTONLY", "AWS_SECRET_ACCESS_KEY": "test-only"}), \
-                patch("app.services.s3_clients.new_service_client") as new_client:
+                patch("app.services.s3.new_service_client") as new_client:
             bucket_metrics._default_client("eu-south-1")
         config = new_client.call_args.kwargs["config"]
         self.assertEqual((new_client.call_args.args, new_client.call_args.kwargs["region"]),

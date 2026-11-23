@@ -68,7 +68,7 @@ class ExactCopyTests(unittest.TestCase):
                  plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vaults/11111111-1111-1111-1111-111111111111/photo',restore_state='not_requested')
         self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER',
                                              'Restore':'ongoing-request="false", expiry-date="Fri, 06 Nov 2026 12:00:00 GMT"'}
-        with patch('app.storage.s3_client',return_value=self.client):
+        with patch('app.services.s3.s3_client',return_value=self.client):
             moves.refresh_cold_sources(VAULT,[row])
         self.assertIsNone(moves.eligibility(row,'DEEP_ARCHIVE'))
         self.assertEqual(self.client.head_object.call_args.kwargs['VersionId'],'source')
@@ -78,7 +78,7 @@ class ExactCopyTests(unittest.TestCase):
         row=dict(storage_class='GLACIER',busy=False,integrity='verified',availability='available',
                  plaintext_sha256='a'*64,size=3,provider_version_id='source',object_key='vaults/11111111-1111-1111-1111-111111111111/photo',restore_state='available')
         self.client.head_object.return_value={'VersionId':'source','ContentLength':3,'StorageClass':'GLACIER'}
-        with patch('app.storage.s3_client',return_value=self.client):
+        with patch('app.services.s3.s3_client',return_value=self.client):
             moves.refresh_cold_sources(VAULT,[row])
             self.assertEqual(moves.eligibility(row,'DEEP_ARCHIVE'),'explicit_restore_required')
             self.client.head_object.side_effect=RuntimeError('provider unavailable')
@@ -88,7 +88,7 @@ class ExactCopyTests(unittest.TestCase):
 
     def test_small_copy_preserves_metadata_tags_and_exact_source_with_provenance(self):
         self.client.copy_object.return_value = {"VersionId":"dest"}
-        result = s3_copy._copy_storage_class_version(self.client,bucket="bucket",object_key="vault/photo",
+        result = s3_copy.copy_storage_class_version(self.client,bucket="bucket",object_key="vault/photo",
             source_version_id="source",target_class="GLACIER_IR",source_size=3,
             source_head={"Metadata":{"custom":"kept"},"ContentType":"image/jpeg"},intent_token="intent")
         self.assertEqual(result,"dest")
@@ -140,7 +140,7 @@ class ExactCopyTests(unittest.TestCase):
         self.client.head_object.return_value = {"VersionId":"dest","ContentLength":3,"StorageClass":"DEEP_ARCHIVE",
                                               "ChecksumSHA256":"wrong"}
         with self.assertRaisesRegex(RuntimeError,"integrity"):
-            s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+            s3_copy.verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
                 candidate_version_id="dest",target_class="DEEP_ARCHIVE",expected_size=3,
                 expected_sha256_checksum=self.checksum)
         self.client.delete_object.assert_not_called()
@@ -151,7 +151,7 @@ class ExactCopyTests(unittest.TestCase):
         expected = base64.b64encode(hashlib.sha256(b"".join(hashlib.sha256(p).digest()
             for p in (b"abcd",b"efgh",b"ijk"))).digest()).decode()+"-3"
         with patch.multiple(s3_copy,S3_MULTIPART_COPY_MIN_PART_BYTES=4,S3_MULTIPART_COPY_PART_BYTES=4,S3_OBJECT_HASH_CHUNK_BYTES=3):
-            actual = s3_copy._multipart_source_checksum(self.client,bucket="b",object_key="k",version_id="source",
+            actual = s3_copy.multipart_source_checksum(self.client,bucket="b",object_key="k",version_id="source",
                 size=11,expected_sha256=checksum,check_active=Mock())
         self.assertEqual(actual,expected)
         self.assertEqual(self.client.get_object.call_args.kwargs["VersionId"],"source")
@@ -159,7 +159,7 @@ class ExactCopyTests(unittest.TestCase):
     def test_multipart_source_mismatch_fails_before_copy(self):
         self.client.get_object.return_value = {"Body":io.BytesIO(b"bad")}
         with self.assertRaisesRegex(RuntimeError,"plaintext digest"):
-            s3_copy._multipart_source_checksum(self.client,bucket="b",object_key="k",version_id="source",
+            s3_copy.multipart_source_checksum(self.client,bucket="b",object_key="k",version_id="source",
                 size=3,expected_sha256=self.checksum,check_active=Mock())
         self.client.create_multipart_upload.assert_not_called()
 
@@ -169,7 +169,7 @@ class ExactCopyTests(unittest.TestCase):
         self.client.upload_part_copy.return_value={"CopyPartResult":{"ETag":"part"}}
         active = Mock(side_effect=[None,RuntimeError("cancelled")])
         with self.assertRaisesRegex(RuntimeError,"cancelled"):
-            s3_copy._copy_storage_class_version(self.client,bucket="b",object_key="k",source_version_id="source",
+            s3_copy.copy_storage_class_version(self.client,bucket="b",object_key="k",source_version_id="source",
                 target_class="DEEP_ARCHIVE",source_size=s3_copy.S3_SINGLE_COPY_MAX_BYTES+1,
                 source_head={"Metadata":{"keep":"yes"}},intent_token="intent",check_active=active)
         self.client.abort_multipart_upload.assert_called_once_with(Bucket="b",Key="k",UploadId="u")
@@ -180,7 +180,7 @@ class ExactCopyTests(unittest.TestCase):
         self.client.head_object.return_value={"VersionId":"dest","ContentLength":3,"StorageClass":"STANDARD_IA",
                                               "ChecksumType":"COMPOSITE","ChecksumSHA256":"provider-incompatible"}
         self.client.get_object.return_value={'Body':io.BytesIO(b'abc')}
-        s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+        s3_copy.verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
             candidate_version_id="dest",target_class="STANDARD_IA",expected_size=3,
             expected_sha256_checksum=self.checksum,expected_composite_checksum="expected-2")
         self.assertEqual(self.client.get_object.call_args.kwargs['VersionId'],'dest')
@@ -190,7 +190,7 @@ class ExactCopyTests(unittest.TestCase):
                                               "ChecksumType":"COMPOSITE","ChecksumSHA256":"provider-incompatible"}
         self.client.get_object.return_value={'Body':io.BytesIO(b'bad')}
         with self.assertRaisesRegex(RuntimeError,'integrity'):
-            s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+            s3_copy.verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
                 candidate_version_id="dest",target_class="STANDARD_IA",expected_size=3,
                 expected_sha256_checksum=self.checksum,expected_composite_checksum="expected-2")
         self.client.delete_object.assert_not_called()
@@ -198,7 +198,7 @@ class ExactCopyTests(unittest.TestCase):
     def test_cold_composite_destination_verifies_without_get_or_restore(self):
         self.client.head_object.return_value={"VersionId":"dest","ContentLength":3,"StorageClass":"DEEP_ARCHIVE",
                                               "ChecksumType":"COMPOSITE","ChecksumSHA256":"composite-2"}
-        s3_copy._verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
+        s3_copy.verify_storage_class_destination(self.client,bucket="b",object_key="k",source_version_id="source",
             candidate_version_id="dest",target_class="DEEP_ARCHIVE",expected_size=3,
             expected_sha256_checksum=self.checksum,expected_composite_checksum="composite-2")
         self.client.get_object.assert_not_called()

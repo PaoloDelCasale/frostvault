@@ -42,10 +42,12 @@ from typing import Any, Callable
 
 from . import upload_provenance as provenance
 from .database_retry import owned_connection, retry_database_unit
+from .s3 import (
+    full_object_sha256_checksum, head_object_with_checksum, restore_header_state, sha256_version,
+    storage_class_requires_restore,
+)
 from .s3_copy import (
-    COPY_TOKEN_KEY, S3_SINGLE_COPY_MAX_BYTES, _copy_storage_class_version,
-    _head_object_with_checksum, _multipart_source_checksum, _sha256_s3_version,
-    _full_object_sha256_checksum, restore_header_state, storage_class_requires_restore,
+    COPY_TOKEN_KEY, S3_SINGLE_COPY_MAX_BYTES, copy_storage_class_version, multipart_source_checksum,
 )
 from .upload_provenance import UploadBlocked
 
@@ -182,7 +184,7 @@ def _receipt_versions(connection: Any, attempt_id: str) -> set[str]:
 # -- the copy --------------------------------------------------------------
 
 def _source_head(client: Any, bucket: str, current: dict[str, Any]) -> dict[str, Any]:
-    head = _head_object_with_checksum(
+    head = head_object_with_checksum(
         client, Bucket=bucket, Key=current["object_key"], VersionId=current["provider_version_id"])
     if (str(head.get("VersionId") or "") != str(current["provider_version_id"])
             or head.get("DeleteMarker")
@@ -284,13 +286,13 @@ def _send(w: Any, job: dict[str, Any], attempt: Attempt, client: Any, head: dict
     if attempt.size > S3_SINGLE_COPY_MAX_BYTES:
         # The independent composite proof is read from the exact source once,
         # before the send, and frozen with the send start.
-        composite = _multipart_source_checksum(
+        composite = multipart_source_checksum(
             client, bucket=attempt.bucket, object_key=attempt.source_key,
             version_id=attempt.source_provider_version_id, size=attempt.size,
             expected_sha256=attempt.expected_checksum, check_active=lambda *_: active())
     active()
     _mark_send_started(w, job, attempt, composite)
-    return _copy_storage_class_version(
+    return copy_storage_class_version(
         client, bucket=attempt.bucket, object_key=attempt.destination_key,
         source_key=attempt.source_key, source_version_id=attempt.source_provider_version_id,
         target_class=attempt.storage_class, source_size=attempt.size, source_head=head,
@@ -300,7 +302,7 @@ def _send(w: Any, job: dict[str, Any], attempt: Attempt, client: Any, head: dict
 
 
 def _exact_destination(client: Any, attempt: Attempt, version: str) -> dict[str, Any]:
-    head = _head_object_with_checksum(
+    head = head_object_with_checksum(
         client, Bucket=attempt.bucket, Key=attempt.destination_key, VersionId=version)
     if str(head.get("VersionId") or "") != version or head.get("DeleteMarker"):
         raise UploadBlocked("ambiguous_receipt")
@@ -459,12 +461,12 @@ def _verify_and_promote(w: Any, job: dict[str, Any], version: dict[str, Any],
     active()
     head = _exact_destination(client, attempt, str(version["provider_version_id"]))
     observed_class = (head.get("StorageClass") or "STANDARD").upper()
-    checksum = _full_object_sha256_checksum(head)
+    checksum = full_object_sha256_checksum(head)
     if attempt.composite_checksum and head.get("ChecksumType") == "COMPOSITE":
         checksum = (attempt.expected_checksum
                     if head.get("ChecksumSHA256") == attempt.composite_checksum else None)
     if checksum is None and not storage_class_requires_restore(observed_class):
-        checksum = _sha256_s3_version(
+        checksum = sha256_version(
             client, bucket=bucket, object_key=attempt.destination_key,
             version_id=str(version["provider_version_id"]), check_active=lambda *_: active())
     proven = (_owns(head, attempt) and observed_class == attempt.storage_class.upper()

@@ -18,7 +18,7 @@ import zlib
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from app.services.s3_clients import shutdown_s3_clients
+from app.services.s3 import shutdown_s3_clients
 from app.services.s3_upload import upload_file
 from app.services.upload_snapshot import MULTIPART_THRESHOLD, prepare_upload_snapshot
 from app.storage import s3_client

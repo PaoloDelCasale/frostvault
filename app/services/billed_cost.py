@@ -65,7 +65,7 @@ from botocore.exceptions import (
 )
 
 from . import system_bucket
-from .bucket_provisioning import error_code as _aws_error_code
+from . import s3
 
 PREFIX = "billing/cur/"
 # A read, or a deterministic error, makes the next look due a day later; while
@@ -603,7 +603,7 @@ def classify_error(exc: BaseException) -> tuple[str, str | None]:
     if isinstance(exc, ClientError):
         operation = str(getattr(exc, "operation_name", "") or "")
         action = {"ListObjectsV2": "s3:ListBucket", "GetObject": "s3:GetObject"}.get(operation, "S3")
-        code = _aws_error_code(exc)
+        code = s3.safe_error_code(exc)
         status = int((exc.response.get("ResponseMetadata") or {}).get("HTTPStatusCode") or 0)
         if code in _THROTTLING or status == 429:
             return "s3_throttled", code
@@ -620,7 +620,7 @@ def classify_error(exc: BaseException) -> tuple[str, str | None]:
     if isinstance(exc, BotoCoreError):
         return "s3_unreachable", type(exc).__name__[:100]
     if isinstance(exc, RuntimeError) and "credentials are not configured" in str(exc):
-        # ``storage.s3_client`` with placeholder credentials.
+        # ``s3.s3_client`` with placeholder credentials.
         return "credentials", None
     return "internal", type(exc).__name__[:100]
 
@@ -806,18 +806,11 @@ class DatabaseStore:
 
 def _default_client(region: str) -> Any:
     """A private S3 client for this pass: 3 s to connect, 10 s per read, 2 attempts."""
-    import os
-
     from botocore.config import Config
 
-    from ..config import is_placeholder
-    from .s3_clients import new_service_client
-
-    if (is_placeholder(os.getenv("AWS_ACCESS_KEY_ID", ""), "REPLACE_ME", "REPLACE-WITH-ACCESS-KEY")
-            or is_placeholder(os.getenv("AWS_SECRET_ACCESS_KEY", ""), "REPLACE_ME",
-                              "REPLACE-WITH-SECRET-KEY")):
+    if s3.credentials_are_placeholders():
         raise BillingExportError("credentials")
-    return new_service_client(
+    return s3.new_service_client(
         "s3", region=region,
         config=Config(connect_timeout=3, read_timeout=10,
                       retries={"mode": "standard", "total_max_attempts": 2}))

@@ -32,7 +32,7 @@ from . import write_access
 from .cost_estimates import CostEstimate, PriceList, estimate_restore_cost, list_prices
 from .operation_policies import blocking_path_for, local_release_blocking_paths
 from .restore_estimates import is_high_impact_restore, normalize_restore_tier
-from .s3_copy import storage_class_requires_restore
+from .s3 import storage_class_requires_restore
 from .source_layout import vault_local_access
 from .vault_paths import safe_relative_path
 

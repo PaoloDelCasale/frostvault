@@ -13,7 +13,7 @@ from .services.job_admission import (
     TERMINAL_JOB_STATUSES,
     lock_vault,
 )
-from .services.s3_copy import storage_class_requires_restore
+from .services.s3 import storage_class_requires_restore
 from .services.protection_states import (
     CURRENT_JOIN_SQL, PROTECTED_SQL, UNCONFIRMED_EXEMPT, VISIBLE_SQL, aggregate_state,
     current_is_recoverable, masked_state_sql,

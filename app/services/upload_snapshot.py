@@ -466,21 +466,3 @@ def validated_s3_proof(proof: dict[str, Any], *, version_id: str,
             "source": source}
 
 
-def unsupported_checksum_api(exc: Exception) -> bool:
-    """Accept explicit capability errors, never generic malformed requests.
-
-    Some compatible providers identify an unsupported checksum-mode argument
-    structurally. Do not infer capability from arbitrary provider messages or
-    from InvalidRequest/InvalidArgument alone: that could hide configuration
-    errors and incur an unexpected read-back.
-    """
-    from botocore.exceptions import ClientError
-    if not isinstance(exc, ClientError) or exc.operation_name != "HeadObject":
-        return False
-    error = exc.response.get("Error", {})
-    code = str(error.get("Code"))
-    if code in {"NotImplemented", "UnsupportedOperation", "XNotImplemented", "501"}:
-        return True
-    return code in {"InvalidRequest", "InvalidArgument"} and error.get("ArgumentName") in {
-        "ChecksumMode", "x-amz-checksum-mode"
-    }

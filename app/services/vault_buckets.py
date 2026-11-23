@@ -46,6 +46,7 @@ from typing import Any, Callable
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import bucket_provisioning as buckets
+from . import s3
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .s3_lifecycle_rules import vault_bucket_lifecycle_rules
 
@@ -246,9 +247,7 @@ def _vault_lock(vault_id: int) -> threading.Lock:
 
 
 def _default_client(region: str) -> Any:
-    from ..storage import s3_client
-
-    return s3_client(region=region)
+    return s3.s3_client(region=region)
 
 
 def client_for_region(region: str, client_for: Callable[[str], Any] | None = None) -> Any:
@@ -283,7 +282,7 @@ _PHASES = {"creation": "the bucket creation", "configuration": "the bucket confi
 def _sdk_failure(phase: str, exc: BaseException) -> _Failed:
     action = _PHASES[phase]
     if isinstance(exc, ClientError):
-        code = buckets.error_code(exc)
+        code = s3.safe_error_code(exc)
         return _Failed(f"S3 refused {action} ({code})")
     # Provider messages can name accounts or endpoints: the type is enough.
     return _Failed(f"S3 could not be reached during {action} ({type(exc).__name__})")

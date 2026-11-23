@@ -35,7 +35,7 @@ from s3transfer.upload import InterruptReader
 from s3transfer.utils import OSUtils, ReadFileChunk
 
 from . import source_devices
-from .s3_clients import configure_upload_client
+from .s3 import ACCESS_DENIED_CODES, configure_upload_client, error_code, reset_after_fork
 from .upload_snapshot import (
     UploadSnapshot, CHUNK_SIZE, MULTIPART_THRESHOLD, payload_matches, validated_snapshot_buffer,
 )
@@ -55,7 +55,7 @@ _small_executor: ThreadPoolExecutor | None = None
 _inherited_transport: list[Any] = []
 
 
-def _after_fork() -> None:
+def _reset_transport_after_fork() -> None:
     global _budget_lock, _budgets, _small_slots, _small_lock, _small_executor
     _inherited_transport.append((_small_executor, _budgets))
     _budget_lock = threading.Lock()
@@ -65,8 +65,8 @@ def _after_fork() -> None:
     _small_executor = None
 
 
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_after_fork)
+# The S3 module owns the one fork handler: the clients first, then this.
+reset_after_fork(_reset_transport_after_fork)
 
 
 def _small_pool() -> ThreadPoolExecutor:
@@ -336,7 +336,7 @@ class _UploadClient:
         except ClientError as exc:
             # Completion may have succeeded but its response was interrupted.
             # Never delete a completed object to compensate an ambiguous result.
-            if exc.response.get("Error", {}).get("Code") != "NoSuchUpload":
+            if error_code(exc) != "NoSuchUpload":
                 self.abort_error = exc
                 raise
             result = {}
@@ -362,7 +362,7 @@ def abort_refused(error: BaseException | None) -> bool:
     """An AbortMultipartUpload the provider refused for permission (403/AccessDenied)."""
     if not isinstance(error, ClientError):
         return False
-    return (error.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+    return (error_code(error) in ACCESS_DENIED_CODES
             or error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)
 
 

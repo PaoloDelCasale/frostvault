@@ -11,6 +11,7 @@ from typing import Any, Literal
 from botocore.exceptions import ClientError
 
 from ..config import is_placeholder
+from .s3 import CREDENTIAL_CODES, error_code
 
 CheckStatus = Literal["pass", "fail", "warn"]
 
@@ -63,21 +64,11 @@ def _normalize_bucket_region(location: str | None) -> str:
     return location
 
 
-def _client_error_code(exc: ClientError) -> str:
-    return exc.response.get("Error", {}).get("Code", "ClientError")
-
-
 def _http_status(exc: ClientError) -> int | None:
     status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
     return status if isinstance(status, int) else None
 
 
-# Provider error codes proving the request signature or token was rejected,
-# i.e. the credentials themselves are wrong or expired, not under-privileged.
-CREDENTIAL_ERROR_CODES = frozenset({
-    "SignatureDoesNotMatch", "InvalidAccessKeyId", "InvalidClientTokenId",
-    "UnrecognizedClientException", "ExpiredToken", "InvalidToken", "TokenRefreshRequired",
-})
 # A bodyless HEAD 403 reaches botocore as the bare status code.
 _FORBIDDEN_CODES = frozenset({"403", "Forbidden", "AccessDenied"})
 # Likewise a missing bucket answers HeadBucket with a bare 404.
@@ -99,8 +90,8 @@ def _credential_failure(code: str) -> PreflightCheck:
 
 
 def _permission_failure(action: str, exc: ClientError) -> PreflightCheck:
-    code = _client_error_code(exc)
-    if code in CREDENTIAL_ERROR_CODES:
+    code = error_code(exc, missing="ClientError")
+    if code in CREDENTIAL_CODES:
         return _credential_failure(code)
     return PreflightCheck(
         code="bucket.permissions",
@@ -118,8 +109,8 @@ def _head_bucket_failure(client: Any, bucket: str, exc: ClientError) -> Prefligh
     s3:HeadBucket action). One read-only GetBucketLocation, already part of the
     documented minimum policy and of this preflight, returns an error code.
     """
-    code = _client_error_code(exc)
-    if code in CREDENTIAL_ERROR_CODES:
+    code = error_code(exc, missing="ClientError")
+    if code in CREDENTIAL_CODES:
         return _credential_failure(code)
     if code in _NOT_FOUND_CODES or _http_status(exc) == 404:
         return PreflightCheck(
@@ -146,8 +137,8 @@ def _head_bucket_failure(client: Any, bucket: str, exc: ClientError) -> Prefligh
     try:
         client.get_bucket_location(Bucket=bucket)
     except ClientError as probe_exc:
-        probe_code = _client_error_code(probe_exc)
-        if probe_code in CREDENTIAL_ERROR_CODES:
+        probe_code = error_code(probe_exc, missing="ClientError")
+        if probe_code in CREDENTIAL_CODES:
             return _credential_failure(probe_code)
         if probe_code == "AccessDenied":
             return PreflightCheck(
