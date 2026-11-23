@@ -8,7 +8,7 @@ import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime, formatGroupedCount, formatMoney, formatUtcDate } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatMoney, formatUtcDate } from "@/lib/format";
 
 const HOUR_MS = 3_600_000;
 const COUNTDOWN_TICK_MS = 60_000;

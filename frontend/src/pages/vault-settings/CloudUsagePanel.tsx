@@ -4,7 +4,7 @@ import { apiQueryKeys, vaultApi, type VaultCloudUsage } from "@/api";
 import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, billedMoney } from "@/components/BilledCost";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount, formatMonth } from "@/pages/archive/format";
+import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount, formatMonth } from "@/lib/format";
 import { systemUrl } from "@/router";
 
 type Translate = ReturnType<typeof useI18n>["t"];

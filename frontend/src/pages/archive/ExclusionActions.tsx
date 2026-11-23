@@ -7,7 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
 import { navigate, vaultSettingsUrl } from "@/router";
-import { formatBytes, formatEur } from "./format";
+import { formatBytes, formatEur } from "@/lib/format";
 import { EXCLUSIONS_SECTION, hasGlobCharacters, ownRule } from "./exclusionRules";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;

@@ -5,7 +5,7 @@ import { apiQueryKeys, uploadBacklog, useUploadActivity, vaultApi, type UploadAc
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Popover } from "@/components/Popover";
-import { formatBytes } from "@/pages/archive/format";
+import { formatBytes } from "@/lib/format";
 import { vaultFilesUrl } from "@/router";
 import { errorMessage } from "@/lib/errorMessage";
 import { SpeedSparkline } from "@/components/SpeedSparkline";

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureApiClient, resetApiClientForTests, type MetadataBackupRun } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { MetadataBackupsSection } from "@/pages/general/MetadataBackupsSection";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { jsonResponse } from "./support/http";
 import { renderWithQueryClient } from "./support/queryClient";
 

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiQueryKeys, readOnMount, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/lib/format";
 
 /**
  * The Vault's Governance Retention Lock (#736, ADR-0050): read-only, fixed

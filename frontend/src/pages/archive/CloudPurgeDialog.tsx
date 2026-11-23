@@ -7,7 +7,7 @@ import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { Button } from "@/components/ui/button";
 
-import { formatBytes, pickDurationUnit } from "./format";
+import { formatBytes, pickDurationUnit } from "@/lib/format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 

@@ -1,4 +1,4 @@
-import { formatClock } from "./format";
+import { formatClock } from "@/lib/format";
 
 type T = (key: string, params?: Record<string, string | number>) => string;
 

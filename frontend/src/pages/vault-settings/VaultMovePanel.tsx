@@ -6,7 +6,7 @@ import { MenuSelect } from "@/components/MenuSelect";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
-import { formatBytes, formatDate, formatEur } from "@/pages/archive/format";
+import { formatBytes, formatDate, formatEur } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 /** "≈ 0.27 €"; a sub-cent "< 0.01 €" is already a bound, so it gets no "≈". */

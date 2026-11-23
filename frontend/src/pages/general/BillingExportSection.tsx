@@ -5,7 +5,7 @@ import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, Bi
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatMonth } from "@/pages/archive/format";
+import { formatMonth } from "@/lib/format";
 import { vaultSettingsUrl } from "@/router";
 
 

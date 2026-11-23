@@ -15,7 +15,7 @@ import { FileDetails } from "./FileDetails";
 import { ExcludeDialog, ExclusionMenu, IncludeDialog, type ExclusionTarget } from "./ExclusionActions";
 import { EXCLUSIONS_SECTION, ownRule } from "./exclusionRules";
 import { RecoverSelection, type Target } from "./RecoverSelection";
-import { formatBytes, formatDateTime, formatNumber } from "./format";
+import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;

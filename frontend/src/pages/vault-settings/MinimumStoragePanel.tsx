@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiQueryKeys, readOnMount, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatMonth } from "@/pages/archive/format";
+import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatMonth } from "@/lib/format";
 
 /**
  * Minimum Storage Duration of the Vault's versions (#731): per storage class,

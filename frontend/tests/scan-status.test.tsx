@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ScanStatus } from "@/components/ScanStatus";
-import { formatDayMonth, formatNumber, formatTimeOfDay } from "@/pages/archive/format";
+import { formatDayMonth, formatNumber, formatTimeOfDay } from "@/lib/format";
 
 // Echo the key and its params, so the test reads what the component asked for.
 const t = (key: string, params?: Record<string, string | number>) =>

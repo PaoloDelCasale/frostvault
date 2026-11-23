@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { problemLink } from "@/lib/problemLink";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 
 /** Problems per page, as returned by /api/problems. */
 const PAGE_SIZE = 100;

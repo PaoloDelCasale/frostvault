@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiQueryKeys, readOnMount, acknowledgeRecoveryKit, downloadRecoveryKit, fetchRecoveryKitStatus, type RecoveryKitStatus } from "@/api";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { useI18n } from "@/i18n/useI18n";
 
 export function RecoveryKitSection() {

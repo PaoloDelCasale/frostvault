@@ -6,7 +6,7 @@ import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, onCompleted }: {

@@ -1,4 +1,4 @@
-import { formatBytes } from "./format";
+import { formatBytes } from "@/lib/format";
 
 export function VerificationEvidence({ method, requested, fallback, egress, t }: {
   method?: string | null; requested?: string | null; fallback?: string | null; egress?: number | null;

@@ -8,7 +8,7 @@ import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";
 import type { I18nContextValue } from "@/i18n/context";
 import { useI18n } from "@/i18n/useI18n";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 export type MetadataBackupOutcome =

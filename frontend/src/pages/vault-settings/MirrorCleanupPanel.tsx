@@ -9,7 +9,7 @@ import { useSavedFlash } from "@/components/useSavedFlash";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDate, formatDateTime } from "@/pages/archive/format";
+import { formatBytes, formatDate, formatDateTime } from "@/lib/format";
 import { GIB, numberFormat, parseAmount, whole } from "./cleanupAmounts";
 
 type Draft = { grace: string; files: string; gib: string; folders: string };

@@ -6,7 +6,7 @@ import { ScanStatus } from "@/components/ScanStatus";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
 import { expectedFinishText, phaseSpeeds, stoppedText } from "@/lib/throughput";
 import { adoptionOf } from "@/lib/adoption";
-import { formatBytes, formatNumber } from "@/pages/archive/format";
+import { formatBytes, formatNumber } from "@/lib/format";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";

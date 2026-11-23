@@ -15,7 +15,7 @@ import { errorMessage } from "@/lib/errorMessage";
 import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
 import { billedMoney } from "@/components/BilledCost";
-import { formatBytes, formatMonth, formatMoney } from "@/pages/archive/format";
+import { formatBytes, formatMonth, formatMoney } from "@/lib/format";
 import { vaultFilesUrl } from "@/router";
 
 const STATS_REFRESH_MS = 60_000;

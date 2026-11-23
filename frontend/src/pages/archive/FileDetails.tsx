@@ -9,7 +9,7 @@ import { StorageBadge } from "@/components/StorageBadge";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { VerificationEvidence } from "./VerificationEvidence";
 import { itemStateBadge } from "./protectionLabel";
-import { formatBytes, formatDateTime, formatUtcDate, recoveryTimeKey } from "./format";
+import { formatBytes, formatDateTime, formatUtcDate, recoveryTimeKey } from "@/lib/format";
 import { recoveryTimeline } from "./recoveryLabel";
 import type { Target } from "./RecoverSelection";
 import { errorMessage } from "@/lib/errorMessage";

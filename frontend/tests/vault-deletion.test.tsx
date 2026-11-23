@@ -9,7 +9,7 @@ import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultDeletionDialog } from "@/components/VaultDeletionDialog";
 import { problemLink } from "@/lib/problemLink";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { jsonResponse } from "./support/http";
 import { renderWithQueryClient } from "./support/queryClient";
 

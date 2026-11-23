@@ -1,4 +1,4 @@
-import { formatBytes, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
+import { formatBytes, formatGroupedCount, formatUtcDate } from "@/lib/format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 

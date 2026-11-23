@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { recoveryTimeline } from "@/pages/archive/recoveryLabel";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatEur } from "@/pages/archive/format";
+import { formatEur } from "@/lib/format";
 
 type Props = { vaultId: number; moves?: boolean; t: (key: string, params?: Record<string, string | number>) => string };
 

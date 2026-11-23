@@ -4,7 +4,7 @@ import { apiQueryKeys, readOnMount, vaultApi, type ArchiveListItem, type Recover
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatEur } from "./format";
+import { formatEur } from "@/lib/format";
 
 export type Target = { item: ArchiveListItem; vaultId: number; vaultName: string };
 type Preview = { targets: Target[]; estimate: RecoverEstimateResponse; retention: number | null };

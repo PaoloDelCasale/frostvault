@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 import { jsonResponse } from "./support/http";
 import { renderWithQueryClient } from "./support/queryClient";
 
