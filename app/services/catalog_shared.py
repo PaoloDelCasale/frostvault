@@ -3,8 +3,9 @@
 ``ArchiveCatalog`` is being divided along its clusters, each in a Module of its
 own. This Module holds what more than one of them needs, so that none has to
 reach into another: the boundary conversions of timestamps, digests and ids, the
-error of a Vault File that is not there, and the revocation of pending Delayed
-Cloud Deletions that a reappearance and a rename share.
+error of a Vault File that is not there, the Vault lock an identity creation
+takes first, and the revocation of pending Delayed Cloud Deletions that a
+reappearance and a rename share.
 
 It imports no cluster and no other service.
 """
@@ -68,6 +69,16 @@ def digest_hex(value: Any) -> str | None:
 
 def id_text(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def vault_lock_touch(connection: Any, vault_id: int) -> None:
+    # Serialize identity creation per Vault across scanner and worker
+    # transactions, and keep the repository-wide lock order: Vault row
+    # first, then file rows. Taken once per batch, never once per file.
+    connection.execute(
+        "UPDATE vaults SET name=name WHERE id=%s",
+        (vault_id,),
+    )
 
 
 def revoke_deletion_consents(
