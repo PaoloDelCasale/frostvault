@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_models import JsonObjectResponse, documented_schemas, response_model
 from .branding import PRODUCT_NAME
-from .config import settings, settings_snapshot, validate_settings, warn_removed_settings
+from .config import settings, validate_settings, warn_removed_settings
 from .diagnostics import require_metrics_token
 from .services.audit_events import audit_log
 from .i18n import (
@@ -492,10 +492,6 @@ def current_user(request: Request) -> dict[str, Any]:
 def _actor(request: Request) -> str:
     """The audit actor of this signed-in request: ``owner`` or ``emergency``."""
     return session_actor(getattr(request.state, "session", None))
-
-
-def _runtime_settings():
-    return settings_snapshot(settings)
 
 
 class ReauthRequired(HTTPException):
@@ -2147,8 +2143,8 @@ def run_metadata_backup(
                 reason="manual",
                 backup_dir=settings.metadata_backup_dir,
                 object_store=object_store,
-                retention=_runtime_settings().metadata_backup_retention,
-                s3_prefix=_runtime_settings().metadata_backup_s3_prefix,
+                retention=settings.metadata_backup_retention,
+                s3_prefix=settings.metadata_backup_s3_prefix,
             )
         except metadata_backup_service.BackupError as exc:
             raise HTTPException(500, str(exc)) from exc
@@ -2406,7 +2402,7 @@ def resolve_directory_restore(
     The directory Cost Estimate and the queued Jobs share this so the dialog,
     the estimate and the actual restore agree (#532).
     """
-    runtime = _runtime_settings()
+    runtime = settings
     requested = (tier or "").strip()
     if requested:
         if requested not in DIRECTORY_RESTORE_TIERS:
@@ -2440,7 +2436,7 @@ def recovery_request_impact(
     The directory Cost Estimate and queueing share this so the dialog and the
     queued Jobs agree on ``high_impact``.
     """
-    runtime = _runtime_settings()
+    runtime = settings
     prices = list_prices(runtime.aws_region)
     size_bytes = 0
     cost = 0.0
@@ -2516,7 +2512,7 @@ def _hold_high_impact_recovery(
         estimated_hours=impact["estimated_hours"],
     )
     if impact["high_impact"]:
-        hold_seconds = int(_runtime_settings().restore_approval_hold_seconds)
+        hold_seconds = int(settings.restore_approval_hold_seconds)
         deadline = (
             datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
         ).isoformat()
@@ -2644,10 +2640,10 @@ def queue_jobs(
                 resolved_days = int(
                     restore_days
                     if restore_days is not None
-                    else _runtime_settings().restore_days
+                    else settings.restore_days
                 )
                 resolved_tier = normalize_restore_tier(
-                    restore_tier or _runtime_settings().restore_tier,
+                    restore_tier or settings.restore_tier,
                     storage_class=str(selected.get("storage_class") or ""),
                 )
                 estimate = estimate_restore(
@@ -2738,8 +2734,8 @@ def file_versions(
         "reconciliation": reconciliation,
         "remediations": remediations,
         "supported_restore_tiers": list(SUPPORTED_RESTORE_TIERS),
-        "default_restore_tier": _runtime_settings().restore_tier,
-        "default_restore_days": _runtime_settings().restore_days,
+        "default_restore_tier": settings.restore_tier,
+        "default_restore_days": settings.restore_days,
     }
 
 
@@ -2798,10 +2794,10 @@ def recover_estimate(
     days = int(
         action.restore_days
         if action.restore_days is not None
-        else _runtime_settings().restore_days
+        else settings.restore_days
     )
     tier = normalize_restore_tier(
-        action.restore_tier or _runtime_settings().restore_tier,
+        action.restore_tier or settings.restore_tier,
         storage_class=str(selected.get("storage_class") or ""),
     )
     estimate_payload = None
