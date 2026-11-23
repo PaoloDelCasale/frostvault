@@ -266,7 +266,7 @@ class WorkerRefusalTests(unittest.TestCase):
 
     def test_the_worker_handler_does_not_invalidate_the_gate_for_a_per_file_refusal(self):
         job = {**self.job, "claim_token": "t", "status": "queued", "source_root": "/s"}
-        with patch.object(storage, "_runtime_settings"), patch.object(storage, "_load_claimed_job_status", return_value={"status": "queued"}), \
+        with patch.object(storage, "_load_claimed_job_status", return_value={"status": "queued"}), \
                 patch.object(storage.source_layout, "vault_local_access", return_value=MagicMock(local_operations_allowed=True)), \
                 patch.object(storage, "process_upload", side_effect=client_error("AccessDenied", 403, "HeadObject")), \
                 patch.object(storage, "_claim_is_lost", return_value=False), \
@@ -286,7 +286,7 @@ class WaitStateKeptTests(unittest.TestCase):
         self.assertEqual(kept["message_key"], "job.source_volume_waiting")
         self.assertEqual((kept["message_params"]["attempt"], kept["message_params"]["since"]), (3, "2026-11-07T10:00:00+00:00"))
         self.assertEqual(storage._keep_wait_state({**waiting, "message_key": None}), {})
-        with patch.object(storage, "_runtime_settings"), patch.object(storage, "_load_claimed_job_status", return_value={"status": "retrying"}), \
+        with patch.object(storage, "_load_claimed_job_status", return_value={"status": "retrying"}), \
                 patch.object(storage.source_layout, "vault_local_access", return_value=MagicMock(local_operations_allowed=True)), \
                 patch.object(storage, "process_upload", side_effect=cloud_preflight_gate.CloudPreflightBlocked("blocked")), \
                 patch.object(storage, "set_job") as set_job:

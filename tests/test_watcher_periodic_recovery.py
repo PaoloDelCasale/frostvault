@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.services import watch_plan
+from tests.fixtures import override_settings
 
 
 class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -52,7 +53,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 return {"local": 1}
 
             stack.enter_context(patch("app.storage.scan_vault", side_effect=scan))
-            runtime = SimpleNamespace(
+            runtime = dict(
                 operation_concurrency=1, queue_poll_interval=2, scan_interval=37,
                 audit_interval=10**9, metadata_backup_interval_seconds=0,
                 metadata_backup_verify_interval_seconds=0,
@@ -70,7 +71,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
                         (root / "new").mkdir()
                         (root / "new" / "b.bin").write_bytes(b"no native event delivered")
                     # No watcher is running and no event is submitted anywhere.
-                    now += runtime.scan_interval - 0.01
+                    now += runtime["scan_interval"] - 0.01
                 elif len(cycles) == 2:
                     now += 0.02
                 else:
@@ -97,7 +98,7 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             ):
                 stack.enter_context(patch.object(owner, name))
             stack.enter_context(patch.object(storage, "persisted_maintenance_ages", return_value={"audit": 0}))
-            stack.enter_context(patch.object(storage, "_runtime_settings", return_value=runtime))
+            stack.enter_context(override_settings(**runtime))
             stack.enter_context(patch.object(storage, "claimable_queue_depth", return_value=0))
             stack.enter_context(patch.object(storage, "observe_stuck_lease_jobs", return_value=(0, 0.0)))
             stack.enter_context(patch.object(storage, "observe_failed_job_backlog", return_value=(0, 0.0)))

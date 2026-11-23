@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from botocore.exceptions import ClientError
+from tests.fixtures import override_settings
 from app.services.s3_preflight import (
     BUCKET_NOT_FOUND_KEY, check_bucket_readiness, failure_message_key, preflight_failure_message,
 )
@@ -193,8 +194,7 @@ class BucketPreflightTests(unittest.TestCase):
         from app.storage import _validate_cloud_vault
         error = ClientError({"Error": {"Code": "404"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "HeadBucket")
         client = ready_client(head_bucket=Mock(side_effect=error))
-        with patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings:
-            settings.aws_region = "eu-south-1"
+        with patch("app.storage.s3_client", return_value=client), override_settings(aws_region="eu-south-1"):
             with self.assertRaises(RuntimeError) as raised:
                 _validate_cloud_vault({"s3_bucket": "my-archive-bucket"})
         self.assertEqual(str(raised.exception),
@@ -220,8 +220,7 @@ class BucketPreflightTests(unittest.TestCase):
         }))
         with tempfile.TemporaryDirectory() as directory:
             job = {"id": 891, "s3_bucket": "my-archive-bucket"}
-            with patch("app.storage.cloud_preflight_gate.check", side_effect=lambda _connect, probe: (probe(), {"status": "ready"})[1]), patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings, patch("app.storage.upload_s3_file") as transfer:
-                settings.aws_region = "eu-south-1"
+            with patch("app.storage.cloud_preflight_gate.check", side_effect=lambda _connect, probe: (probe(), {"status": "ready"})[1]), patch("app.storage.s3_client", return_value=client), override_settings(aws_region="eu-south-1"), patch("app.storage.upload_s3_file") as transfer:
                 for operation in (storage.process_upload, storage.process_rename, storage.process_recover, storage.process_free_space):
                     with self.subTest(operation=operation.__name__), self.assertRaisesRegex(RuntimeError, "Block Public Access"):
                         operation(job)
@@ -235,8 +234,7 @@ class BucketPreflightTests(unittest.TestCase):
             client = ready_client(get_public_access_block=Mock(return_value={
                 "PublicAccessBlockConfiguration": response,
             }))
-            with patch("app.storage.cloud_preflight_gate.check", side_effect=lambda _connect, probe: (probe(), {"status": "ready"})[1]), patch("app.storage.s3_client", return_value=client), patch("app.storage.settings") as settings:
-                settings.aws_region = "eu-south-1"
+            with patch("app.storage.cloud_preflight_gate.check", side_effect=lambda _connect, probe: (probe(), {"status": "ready"})[1]), patch("app.storage.s3_client", return_value=client), override_settings(aws_region="eu-south-1"):
                 if succeeds:
                     validate_cloud_vault({"s3_bucket": "my-archive-bucket"})
                 else:
