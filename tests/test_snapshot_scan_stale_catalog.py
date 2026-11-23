@@ -9,19 +9,15 @@ known version the complete listing did not show is marked missing.
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
@@ -57,21 +53,14 @@ class _ListingS3:
         return {"VersionId": kwargs["VersionId"]}
 
 
-class SnapshotScanStaleCatalogTests(unittest.TestCase):
+class SnapshotScanStaleCatalogTests(FrostVaultTestCase):
     def setUp(self) -> None:
+        super().setUp()
         # Direct scan_cloud calls have no registered scan generation.
-        runtime = patch("app.storage.runtime_status", {})
-        runtime.start()
-        self.addCleanup(runtime.stop)
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "catalog.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.enterContext(patch("app.storage.runtime_status", {}))
         digest = sha256_hex(b"report")
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection)
-            insert_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
             catalog = ArchiveCatalog(connection)
             self.file_id = catalog.observe_local_copy(
                 vault_id=2, path="report.txt", file_type="regular", size=4,
@@ -90,9 +79,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
 
     def _scan(self, s3: _ListingS3, scan_id: str = "2026-07-21T13:00:00+00:00") -> dict:
         report: dict = {}
-        settings = SimpleNamespace(database_dsn=database_dsn(str(self.database_path)))
         with (
-            patch("app.database.settings", settings),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client", return_value=s3),
         ):
@@ -100,14 +87,14 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         return report
 
     def _versions(self) -> dict[str, str]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT provider_version_id, availability FROM archive_versions"
             ).fetchall()
         return {row["provider_version_id"]: row["availability"] for row in rows}
 
     def _file(self) -> dict:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "report.txt")
 
     def test_uncatalogued_newer_version_is_never_adopted_when_current_is_gone(self) -> None:
@@ -134,7 +121,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
                 self.assertIsNone(current["replacing_version"])
 
     def test_listed_pending_replacement_is_not_promoted(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             pending_id = ArchiveCatalog(connection).begin_replacement(
                 self.file_id, object_key=PREFIX + "report.txt", provider_version_id="s3-b",
                 size=4, storage_class="STANDARD", created_at="2026-07-21T12:00:00+00:00",
@@ -147,7 +134,7 @@ class SnapshotScanStaleCatalogTests(unittest.TestCase):
         current = self._file()
         self.assertEqual(current["current_version"]["id"], self.current_id)
         self.assertEqual(current["replacing_version"]["id"], pending_id)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             integrity = connection.execute(
                 "SELECT integrity FROM archive_versions WHERE id=%s", (pending_id,)
             ).fetchone()["integrity"]

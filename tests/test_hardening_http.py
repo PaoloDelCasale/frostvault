@@ -1,66 +1,23 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
-
-from app.main import app
 from app.main import _safe_return_to
 from app.sessions import is_reauth_recent
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class HardeningHttpTestCase(unittest.TestCase):
+class HardeningHttpTestCase(FrostVaultTestCase):
     """Shared harness: a migrated PostgreSQL database with the single owner."""
 
-    settings_overrides: dict[str, object] = {}
+    password = "correct horse battery"
+    owner = {"display_name": "Alice", "password": password}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        database_path = Path(self._tmp.name) / "app.db"
-        self.database_path = database_path
-        migrated = run_alembic(database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        self.password = "correct horse battery"
-        with PostgresConnection(str(database_path)) as connection:
-            insert_owner(connection, display_name="Alice", password=self.password)
-
-        self.settings = replace(
-            settings,
-            database_dsn=database_dsn(str(database_path)),
-            cookie_secure=False,
-            **self.settings_overrides,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
+        super().setUp()
+        self.client = self.http_client()
         self.cookie_name = self.settings.session_cookie_name
-
-    def _login(self) -> None:
-        response = self.client.post(
-            "/api/login",
-            json={"password": self.password},
-        )
-        self.assertEqual(response.status_code, 200, response.text)
 
     def _csrf(self) -> str:
         return self.client.get("/api/me").json()["csrf_token"]
@@ -80,7 +37,7 @@ class HostHardeningTests(HardeningHttpTestCase):
 
 class CsrfExposureTests(HardeningHttpTestCase):
     def test_me_exposes_a_csrf_token_and_readable_cookie(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
 
         response = self.client.get("/api/me")
 
@@ -97,19 +54,19 @@ class CsrfEnforcementTests(HardeningHttpTestCase):
     settings_overrides = {"allowed_hosts": "testserver"}
 
     def test_mutation_without_a_csrf_header_is_rejected(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         response = self.client.post("/api/logout")
         self.assertEqual(response.status_code, 403, response.text)
 
     def test_mutation_with_a_wrong_csrf_header_is_rejected(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         response = self.client.post(
             "/api/logout", headers={"X-CSRF-Token": "not-the-token"}
         )
         self.assertEqual(response.status_code, 403, response.text)
 
     def test_mutation_with_the_session_csrf_token_passes(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         token = self._csrf()
         response = self.client.post(
             "/api/logout", headers={"X-CSRF-Token": token}
@@ -117,7 +74,7 @@ class CsrfEnforcementTests(HardeningHttpTestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_cross_origin_mutation_is_rejected_even_with_a_token(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         token = self._csrf()
         response = self.client.post(
             "/api/logout",
@@ -148,7 +105,7 @@ class OpenRedirectGuardTests(unittest.TestCase):
 
 class ReauthTests(HardeningHttpTestCase):
     def _expire_reauth(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s",
                 (datetime(2000, 1, 1, tzinfo=timezone.utc),),
@@ -156,9 +113,9 @@ class ReauthTests(HardeningHttpTestCase):
 
     def _delete_from_cloud(self, csrf: str):
         """«Elimina dal cloud» is one of the two re-authenticated actions."""
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             if not connection.execute("SELECT id FROM vaults").fetchone():
-                insert_vault(connection)
+                seed_vault(connection)
         return self.client.post(
             "/api/cloud-purge",
             headers={"X-CSRF-Token": csrf},
@@ -169,12 +126,12 @@ class ReauthTests(HardeningHttpTestCase):
         self.assertNotEqual(response.json(), {"error": "reauth_required"})
 
     def test_fresh_login_counts_as_recent_reauth(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         csrf = self._csrf()
         self._assert_not_reauth_required(self._delete_from_cloud(csrf))
 
     def test_stale_reauth_blocks_a_sensitive_action(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         csrf = self._csrf()
         self._expire_reauth()
 
@@ -184,7 +141,7 @@ class ReauthTests(HardeningHttpTestCase):
         self.assertEqual(response.json(), {"error": "reauth_required"})
 
     def test_break_glass_password_reauth_restores_access(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         csrf = self._csrf()
         self._expire_reauth()
         self.assertEqual(self._delete_from_cloud(csrf).status_code, 403)
@@ -199,7 +156,7 @@ class ReauthTests(HardeningHttpTestCase):
         self._assert_not_reauth_required(self._delete_from_cloud(csrf))
 
     def test_break_glass_reauth_with_a_wrong_password_is_rejected(self) -> None:
-        self._login()
+        self.sign_in(password=self.password)
         csrf = self._csrf()
 
         response = self.client.post(

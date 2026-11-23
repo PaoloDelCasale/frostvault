@@ -7,63 +7,28 @@ Vault is theirs, and the Vault block carries no capability flags (#791).
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
-
-from app.main import app
-from app.sessions import create_session
-from tests.owner_fixtures import insert_owner, insert_vault
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 from tests.spa_fixture import write_spa_dist
-from tests.test_database import run_alembic
 
 
-class MeCapabilitiesHttpTests(unittest.TestCase):
+class MeCapabilitiesHttpTests(FrostVaultTestCase):
     PASSWORD = "correct horse battery staple"
+    owner = {"password": PASSWORD}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.dist_dir = write_spa_dist(Path(self._tmp.name))
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, password=self.PASSWORD)
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            frontend_dist_dir=str(self.dist_dir),
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
+        super().setUp()
+        self.dist_dir = write_spa_dist(self.tmp_path)
+        self.enterContext(override_settings(frontend_dist_dir=str(self.dist_dir)))
+        self.client = self.http_client()
 
     def _create_vault(self, **values) -> dict:
-        with PostgresConnection(str(self.database_path)) as connection:
-            return insert_vault(connection, name="Docs Archive", **values)
+        with self.database.connect() as connection:
+            return seed_vault(connection, name="Docs Archive", **values)
 
     def _me(self) -> dict:
-        with PostgresConnection(str(self.database_path)) as connection:
-            raw_token = create_session(connection, auth_method="oidc")
-        self.client.cookies.set(self.test_settings.session_cookie_name, raw_token)
+        self.sign_in()
         response = self.client.get("/api/me")
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()

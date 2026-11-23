@@ -6,52 +6,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.security import hash_password
+from tests.fixtures import create_owner, seed_vault
 
 
-def insert_owner(
-    connection: Any,
-    *,
-    display_name: str = "Owner",
-    password: str | None = None,
-    password_hash: str | None = "hash",
-) -> None:
-    """Create the single Owner, with an Emergency Password when given."""
-    if password is not None:
-        password_hash = hash_password(password)
-    connection.execute(
-        "INSERT INTO owner(id, display_name, password_hash) VALUES (1, %s, %s)",
-        (display_name, password_hash),
-    )
+# Aliases of ``tests.fixtures`` for files not yet migrated (#801).
+insert_owner = create_owner
+insert_vault = seed_vault
 
 
 def bump_session_version(connection: Any) -> None:
     connection.execute("UPDATE owner SET session_version = session_version + 1 WHERE id = 1")
-
-
-def insert_vault(
-    connection: Any,
-    *,
-    name: str = "Docs",
-    source_root: str = "/sources/managed/docs",
-    bucket: str = "bucket",
-    **values: Any,
-) -> dict[str, Any]:
-    """Create a Vault (and its Vault Target on first use)."""
-    target = connection.execute(
-        "SELECT id FROM vault_targets WHERE bucket=%s", (bucket,)
-    ).fetchone() or connection.execute(
-        "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-        "VALUES ('s3', %s, 'eu-south-1', 'vault_prefix') RETURNING id",
-        (bucket,),
-    ).fetchone()
-    columns = {"name": name, "source_root": source_root, "target_id": target["id"], **values}
-    names = ", ".join(columns)
-    placeholders = ", ".join(["%s"] * len(columns))
-    return connection.execute(
-        f"INSERT INTO vaults({names}) VALUES ({placeholders}) RETURNING *",
-        tuple(columns.values()),
-    ).fetchone()
 
 
 def insert_job(

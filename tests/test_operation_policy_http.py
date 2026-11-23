@@ -2,63 +2,23 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
-
-from fastapi.testclient import TestClient
 
 from app import main
 from app.catalog import ArchiveCatalog
-from app.config import settings
-
-from tests.owner_fixtures import insert_owner, insert_vault
-from app.sessions import create_session, csrf_token_for
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 
-class OperationPolicyHttpTests(unittest.TestCase):
+class OperationPolicyHttpTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "app.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            self.owner_id = 1
-            self.vault_id = insert_vault(connection, source_root="/source")["id"]
-        test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.path)),
-            cookie_secure=False,
-        )
-        self.patchers = [
-            patch("app.main.settings", test_settings),
-            patch("app.database.settings", test_settings),
-            patch("app.sessions.settings", test_settings),
-        ]
-        for patcher in self.patchers:
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
-
-    def _authenticate(self, user_id: int) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.client.cookies.set(settings.csrf_cookie_name, csrf)
-
-    def _headers(self) -> dict[str, str]:
-        return {"X-CSRF-Token": self.client.cookies.get(settings.csrf_cookie_name) or ""}
+        super().setUp()
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection, source_root="/source")["id"]
+        self.client = self.http_client()
 
     def test_owner_reads_default_automatic_policy(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         response = self.client.get("/api/vault/operation-policy")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
@@ -69,10 +29,10 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(body["exclude_globs"], [])
 
     def test_owner_can_update_policy_and_preview_globs(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         update = self.client.put(
             "/api/vault/operation-policy",
-            headers=self._headers(),
+            headers=self.signed_in.csrf_headers,
             json={
                 "auto_upload": True,
                 "local_release_after_days": 90,
@@ -88,7 +48,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertEqual(update.json()["local_release_after_days"], 90)
         preview = self.client.post(
             "/api/vault/operation-policy/preview-globs",
-            headers=self._headers(),
+            headers=self.signed_in.csrf_headers,
             json={
                 "paths": ["a.txt", "tmp/x.txt", "photo.jpg"],
                 "include_globs": ["**/*.txt"],
@@ -102,72 +62,72 @@ class OperationPolicyHttpTests(unittest.TestCase):
     def test_changing_upload_globs_refreshes_excluded_rollups_but_other_fields_do_not(self) -> None:
         from app.catalog import ArchiveCatalog
         from app.services import directory_aggregates as aggregates
-        self._authenticate(self.owner_id)
-        with PostgresConnection(str(self.path)) as connection:
+        self.sign_in()
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=self.vault_id, path="raw/shot.raw", file_type="regular",
                                                           size=1, mtime_ns=1, observed_at="2026-11-03T10:00:00Z")
             aggregates.rebuild_vault_directory_aggregates(connection, self.vault_id)
 
         def status() -> str:
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 return connection.execute("SELECT status FROM directory_aggregate_status WHERE vault_id=%s",
                                           (self.vault_id,)).fetchone()["status"]
 
         endpoint = "/api/vault/operation-policy"
         self.assertEqual(status(), "ready")
-        self.assertEqual(self.client.put(endpoint, headers=self._headers(), json={"stability_seconds": 900}).status_code, 200)
+        self.assertEqual(self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"stability_seconds": 900}).status_code, 200)
         self.assertEqual(status(), "ready")
-        self.assertEqual(self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["*.raw"]}).status_code, 200)
+        self.assertEqual(self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": ["*.raw"]}).status_code, 200)
         self.assertEqual(status(), "rebuild_required")
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             aggregates.rebuild_vault_directory_aggregates(connection, self.vault_id)
             item = ArchiveCatalog(connection).list_files_page(self.vault_id)["items"][0]
         self.assertEqual(item["state_counts"], {"excluded": 1})
 
     def test_globs_postgresql_cannot_read_are_refused_with_422_and_supported_ones_saved(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         endpoint = "/api/vault/operation-policy"
         for field in ("exclude_globs", "include_globs"):
             for glob in ("[z-a]*", "a\u0000b"):
                 with self.subTest(field=field, glob=glob):
-                    response = self.client.put(endpoint, headers=self._headers(), json={field: [glob]})
+                    response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={field: [glob]})
                     self.assertEqual(response.status_code, 422, response.text)
         for glob in ("*a" * 6500 + "*", "a" * 1025):
             with self.subTest(length=len(glob)):
-                response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": [glob]})
+                response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": [glob]})
                 self.assertEqual(response.status_code, 422, response.text)
         too_many = [f"g{index}*" for index in range(101)]
-        self.assertEqual(self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": too_many}).status_code, 422)
-        response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["[a-z[:digit:]]*", "[[.a.]]"]})
+        self.assertEqual(self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": too_many}).status_code, 422)
+        response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": ["[a-z[:digit:]]*", "[[.a.]]"]})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.client.get(endpoint).json()["exclude_globs"], ["[a-z[:digit:]]*", "[[.a.]]"])
 
     def test_an_older_stored_unsupported_glob_does_not_block_unrelated_edits(self) -> None:
-        self._authenticate(self.owner_id)
-        with PostgresConnection(str(self.path)) as connection:
+        self.sign_in()
+        with self.database.connect() as connection:
             connection.execute(
                 "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
                 "VALUES (%s, TRUE, 300, '[]', '[\"[z-a]*\"]')", (self.vault_id,))
         endpoint = "/api/vault/operation-policy"
-        response = self.client.put(endpoint, headers=self._headers(), json={"stability_seconds": 600})
+        response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"stability_seconds": 600})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["exclude_globs"], ["[z-a]*"])
-        response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": []})
+        response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": []})
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_removing_a_folder_exclusion_looks_inside_again(self) -> None:
         """#688: a narrowed folder exclusion requests a full scan; adding one does not."""
         from app.services import watch_plan
-        self._authenticate(self.owner_id)
+        self.sign_in()
         endpoint = "/api/vault/operation-policy"
         self.addCleanup(watch_plan.forget, self.vault_id)
         with patch("app.main.request_full_scan") as request:
             for globs in (["backups/**", "*.tmp"], ["backups/**"], ["backups/**", "**/cache/**"]):
-                response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": globs})
+                response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": globs})
                 self.assertEqual(response.status_code, 200, response.text)
             request.assert_not_called()
             watch_plan.note_excluded_directories(self.vault_id, {"backups", "a/cache"})
-            response = self.client.put(endpoint, headers=self._headers(), json={"exclude_globs": ["**/cache/**"]})
+            response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": ["**/cache/**"]})
             self.assertEqual(response.status_code, 200, response.text)
             request.assert_called_once()
             self.assertEqual(request.call_args.args[0]["id"], self.vault_id)
@@ -175,45 +135,45 @@ class OperationPolicyHttpTests(unittest.TestCase):
             self.assertEqual(watch_plan.unobserved(self.vault_id).excluded, {"a/cache"})
 
     def test_local_release_accepts_only_off_or_the_four_periods(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         for period in (None, 90, 180, 365, 730):
             with self.subTest(period=period):
-                response = self.client.put("/api/vault/operation-policy", headers=self._headers(),
+                response = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
                                            json={"local_release_after_days": period})
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["local_release_after_days"], period)
         for period in (-1, 0, 1, 30, 91, 181, 366, 731, True, "six months"):
             with self.subTest(invalid=period):
-                response = self.client.put("/api/vault/operation-policy", headers=self._headers(),
+                response = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
                                            json={"local_release_after_days": period})
                 self.assertEqual(response.status_code, 422, response.text)
 
     def test_independent_upload_panel_cannot_reenable_or_disable_local_release(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         endpoint = "/api/vault/operation-policy"
         for period in (180, None):
-            response = self.client.put(endpoint, headers=self._headers(), json={"local_release_after_days": period})
+            response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"local_release_after_days": period})
             self.assertEqual(response.status_code, 200, response.text)
-            response = self.client.put(endpoint, headers=self._headers(), json={"auto_upload": False, "exclude_globs": ["keep/**"]})
+            response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"auto_upload": False, "exclude_globs": ["keep/**"]})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["local_release_after_days"], period)
-        response = self.client.put(endpoint, headers=self._headers(), json={"local_release_after_days": 90})
+        response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"local_release_after_days": 90})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["auto_upload"])
         self.assertEqual(response.json()["exclude_globs"], ["keep/**"])
 
     def test_owner_can_request_storage_cost_estimates(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         response = self.client.post(
             "/api/general/cost-estimates/storage",
-            headers=self._headers(),
+            headers=self.signed_in.csrf_headers,
             json={"size_bytes": 1024, "storage_class": "STANDARD"},
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["size_bytes"], 1024)
 
     def test_policy_rejects_removed_bandwidth_and_window_fields(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         for field, value in (
             ("auto_local_cleanup", True),
             ("local_retention_days", 90),
@@ -224,7 +184,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
             with self.subTest(field=field):
                 response = self.client.put(
                     "/api/vault/operation-policy",
-                    headers=self._headers(),
+                    headers=self.signed_in.csrf_headers,
                     json={"auto_upload": True, field: value},
                 )
                 self.assertEqual(response.status_code, 422, response.text)
@@ -241,15 +201,14 @@ class OperationPolicyHttpTests(unittest.TestCase):
         )
 
     def test_vault_estimate_uses_bundled_list_prices_and_cloud_size(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self._archive_version(connection, "a.bin", 1024**3)
             self._archive_version(connection, "b.bin", 1024**3)
-        self._authenticate(self.owner_id)
-        regional = replace(main.settings, aws_region="eu-south-1")
-        with patch("app.main.settings", regional):
+        self.sign_in()
+        with override_settings(aws_region="eu-south-1"):
             estimate = self.client.post(
                 "/api/general/cost-estimates/storage",
-                headers=self._headers(),
+                headers=self.signed_in.csrf_headers,
                 json={"vault_id": self.vault_id, "storage_class": "STANDARD"},
             )
         self.assertEqual(estimate.status_code, 200, estimate.text)
@@ -261,22 +220,22 @@ class OperationPolicyHttpTests(unittest.TestCase):
         self.assertIn("disclaimer", body["assumptions"])
 
     def test_vault_estimate_refuses_missing_vaults_and_ambiguous_sizes(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         missing = self.client.post(
             "/api/general/cost-estimates/storage",
-            headers=self._headers(),
+            headers=self.signed_in.csrf_headers,
             json={"vault_id": 999, "storage_class": "STANDARD"},
         )
         self.assertEqual(missing.status_code, 404, missing.text)
         ambiguous = self.client.post(
             "/api/general/cost-estimates/storage",
-            headers=self._headers(),
+            headers=self.signed_in.csrf_headers,
             json={"vault_id": self.vault_id, "size_bytes": 1, "storage_class": "STANDARD"},
         )
         self.assertEqual(ambiguous.status_code, 422, ambiguous.text)
 
     def test_quota_and_price_book_endpoints_are_gone(self) -> None:
-        self._authenticate(self.owner_id)
+        self.sign_in()
         removed = (
             ("GET", "/api/vault/quotas"),
             ("GET", f"/api/admin/vaults/{self.vault_id}/quotas"),
@@ -289,7 +248,7 @@ class OperationPolicyHttpTests(unittest.TestCase):
         for method, path in removed:
             with self.subTest(method=method, path=path):
                 response = self.client.request(
-                    method, path, headers=self._headers(), json={}
+                    method, path, headers=self.signed_in.csrf_headers, json={}
                 )
                 self.assertEqual(response.status_code, 404, response.text)
         paths = main.app.openapi()["paths"]

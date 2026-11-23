@@ -2,30 +2,17 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
-from app.main import app
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase
 
 
-class OfflineRetirementHttpTests(unittest.TestCase):
+class OfflineRetirementHttpTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        self.dist_dir = Path(self._tmp.name) / "dist"
+        self.dist_dir = self.tmp_path / "dist"
         self.dist_dir.mkdir()
         (self.dist_dir / "assets").mkdir()
         (self.dist_dir / "index.html").write_text(
@@ -37,22 +24,14 @@ class OfflineRetirementHttpTests(unittest.TestCase):
             (Path(__file__).resolve().parents[1] / "frontend/public/sw.js").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
-
-        self._settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            frontend_dist_dir=str(self.dist_dir),
-            cookie_secure=False,
-            allowed_hosts="",
-            trusted_proxies="",
-            oidc_enabled=False,
-        )
-        for target in ("app.main.settings", "app.database.settings"):
-            patcher = patch(target, self._settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
+        self.settings_overrides = {
+            "frontend_dist_dir": str(self.dist_dir),
+            "allowed_hosts": "",
+            "trusted_proxies": "",
+            "oidc_enabled": False,
+        }
+        super().setUp()
+        self.client = self.http_client()
 
     def test_retirement_script_is_served_without_auth_and_without_stale_caching(self) -> None:
         response = self.client.get("/sw.js?old-version=1")
