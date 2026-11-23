@@ -468,15 +468,15 @@ def _listing_sql(connection: Any, vault: dict[str, Any],
     the Vault; a folder view its direct child files in ``state`` and each
     child folder holding at least one file in ``state``.
     """
-    from ..catalog import ArchiveCatalog
+    from .file_listing import FileListing
 
     vault_id = int(vault["id"])
-    catalog = ArchiveCatalog(connection, protection_unconfirmed=_unconfirmed(connection, vault))
+    reads = FileListing(connection, protection_unconfirmed=_unconfirmed(connection, vault))
     if listing.q:
-        clauses, params = catalog.direct_child_file_clauses(
+        clauses, params = reads.direct_child_file_clauses(
             vault_id, directory="", state=listing.state, search=listing.q)
         return "(" + " AND ".join(clauses) + ")", params
-    clauses, params = catalog.direct_child_file_clauses(
+    clauses, params = reads.direct_child_file_clauses(
         vault_id, directory=listing.directory, state=listing.state)
     prefix = f"{listing.directory}/" if listing.directory else ""
     start = len(prefix) + 1
@@ -484,11 +484,11 @@ def _listing_sql(connection: Any, vault: dict[str, Any],
     folder = f"({nested} AND {_HAS_COPY_SQL})"
     folder_params: list[Any] = [prefix, start]
     if listing.state:
-        if catalog.protection_unconfirmed or catalog.unconfirmed.by_path:
-            blocked, blocked_params = catalog.unconfirmed.sql("f.path")
-            state = masked_state_sql(blocked, catalog.protection_state_sql(vault_id))
+        if reads.protection_unconfirmed or reads.unconfirmed.by_path:
+            blocked, blocked_params = reads.unconfirmed.sql("f.path")
+            state = masked_state_sql(blocked, reads.protection_state_sql(vault_id))
         else:
-            blocked_params, state = [], catalog.protection_state_sql(vault_id)
+            blocked_params, state = [], reads.protection_state_sql(vault_id)
         folder = f"""({folder} AND split_part(substr(f.path, %s), '/', 1) IN (
             SELECT split_part(substr(f.path, %s), '/', 1) FROM files f {CURRENT_JOIN_SQL}
             WHERE f.vault_id = %s AND {nested} AND {VISIBLE_SQL} AND ({state}) = %s))"""

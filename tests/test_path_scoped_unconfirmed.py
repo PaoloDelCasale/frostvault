@@ -15,6 +15,7 @@ from app.catalog import ArchiveCatalog
 from app.i18n import DEFAULT_LOCALE, translate
 from app.services import directory_aggregates as aggregates
 from app.services.component_health import record_component_health
+from app.services.file_listing import FileListing
 from app.services.operation_policies import (
     SOURCE_SCAN_INCOMPLETE, UnconfirmedScope, blocking_path_for, local_release_blocking_paths,
     unconfirmed_scope,
@@ -67,24 +68,24 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             scope = self.scope(connection)
             self.assertEqual(scope.paths, ("priv/secret",))
-            catalog = ArchiveCatalog(connection, protection_unconfirmed=scope)
-            summary = catalog.summary(2)
-            root = {item["path"]: item for item in catalog.list_files_page(2)["items"]}
-            priv = {item["path"]: item for item in catalog.list_files_page(2, directory="priv")["items"]}
-            inside = catalog.get_file_item(2, "priv/secret/c.txt")
-            outside = catalog.get_file_item(2, "priv/b.txt")
+            listing = FileListing(connection, protection_unconfirmed=scope)
+            summary = listing.summary(2)
+            root = {item["path"]: item for item in listing.list_files_page(2)["items"]}
+            priv = {item["path"]: item for item in listing.list_files_page(2, directory="priv")["items"]}
+            inside = listing.get_file_item(2, "priv/secret/c.txt")
+            outside = listing.get_file_item(2, "priv/b.txt")
             unconfirmed_root = [item["path"] for item in
-                                catalog.list_files_page(2, state="unconfirmed")["items"]]
+                                listing.list_files_page(2, state="unconfirmed")["items"]]
             protected_root = [item["path"] for item in
-                              catalog.list_files_page(2, state="protected")["items"]]
+                              listing.list_files_page(2, state="protected")["items"]]
             protected_priv = [item["path"] for item in
-                              catalog.list_files_page(2, directory="priv", state="protected")["items"]]
+                              listing.list_files_page(2, directory="priv", state="protected")["items"]]
             unconfirmed_priv = [item["path"] for item in
-                                catalog.list_files_page(2, directory="priv", state="unconfirmed")["items"]]
+                                listing.list_files_page(2, directory="priv", state="unconfirmed")["items"]]
             searched = [item["path"] for item in
-                        catalog.list_files_page(2, search="txt", state="protected")["items"]]
+                        listing.list_files_page(2, search="txt", state="protected")["items"]]
             searched_unconfirmed = [item["path"] for item in
-                                    catalog.list_files_page(2, search="txt", state="unconfirmed")["items"]]
+                                    listing.list_files_page(2, search="txt", state="unconfirmed")["items"]]
             # The gate and the displayed state read the same rule.
             with patch("app.services.source_layout.vault_local_access", return_value=ONLINE):
                 self.assertEqual(local_release_blocking_paths(connection, 2), scope.paths)
@@ -119,9 +120,9 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
             record_component_health(connection, vault_id=2, component="cloud", ok=False,
                                     error="listing failed")
             scope = self.scope(connection)
-            catalog = ArchiveCatalog(connection, protection_unconfirmed=scope)
-            summary = catalog.summary(2)
-            item = catalog.get_file_item(2, "a.txt")
+            listing = FileListing(connection, protection_unconfirmed=scope)
+            summary = listing.summary(2)
+            item = listing.get_file_item(2, "a.txt")
             self.assertTrue(scope.whole_vault)
             # Resolving the path Problem while the scan is incomplete fails closed.
             record_component_health(connection, vault_id=2, component="cloud", ok=True)
@@ -145,14 +146,14 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
     def test_excluded_keeps_its_state_in_a_blocked_path(self) -> None:
         with self.database.connect() as connection:
             self.add_excluded(connection)
-            catalog = ArchiveCatalog(connection, protection_unconfirmed=self.scope(connection))
-            summary = catalog.summary(2)
-            item = catalog.get_file_item(2, "priv/secret/.DS_Store")
-            secret = {entry["path"]: entry for entry in catalog.list_files_page(2, directory="priv")["items"]}["priv/secret"]
+            listing = FileListing(connection, protection_unconfirmed=self.scope(connection))
+            summary = listing.summary(2)
+            item = listing.get_file_item(2, "priv/secret/.DS_Store")
+            secret = {entry["path"]: entry for entry in listing.list_files_page(2, directory="priv")["items"]}["priv/secret"]
             excluded = [entry["path"] for entry in
-                        catalog.list_files_page(2, directory="priv/secret", state="excluded")["items"]]
+                        listing.list_files_page(2, directory="priv/secret", state="excluded")["items"]]
             unconfirmed = [entry["path"] for entry in
-                           catalog.list_files_page(2, directory="priv/secret", state="unconfirmed")["items"]]
+                           listing.list_files_page(2, directory="priv/secret", state="unconfirmed")["items"]]
         self.assertEqual(summary["states"], {"protected": 3, "unconfirmed": 1, "excluded": 1})
         self.assertEqual(item["state"], "excluded")
         self.assertEqual(secret["state"], "unconfirmed")
@@ -165,13 +166,13 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
             self.add_excluded(connection)
             record_component_health(connection, vault_id=2, component="cloud", ok=False,
                                     error="listing failed")
-            catalog = ArchiveCatalog(connection, protection_unconfirmed=self.scope(connection))
-            summary = catalog.summary(2)
-            item = catalog.get_file_item(2, "priv/secret/.DS_Store")
-            root_excluded = [entry["path"] for entry in catalog.list_files_page(2, state="excluded")["items"]]
-            root_unconfirmed = [entry["path"] for entry in catalog.list_files_page(2, state="unconfirmed")["items"]]
-            root_protected = catalog.list_files_page(2, state="protected")["items"]
-            secret = {entry["path"]: entry for entry in catalog.list_files_page(2, directory="priv")["items"]}["priv/secret"]
+            listing = FileListing(connection, protection_unconfirmed=self.scope(connection))
+            summary = listing.summary(2)
+            item = listing.get_file_item(2, "priv/secret/.DS_Store")
+            root_excluded = [entry["path"] for entry in listing.list_files_page(2, state="excluded")["items"]]
+            root_unconfirmed = [entry["path"] for entry in listing.list_files_page(2, state="unconfirmed")["items"]]
+            root_protected = listing.list_files_page(2, state="protected")["items"]
+            secret = {entry["path"]: entry for entry in listing.list_files_page(2, directory="priv")["items"]}["priv/secret"]
         self.assertEqual(summary["states"], {"unconfirmed": 4, "excluded": 1})
         self.assertEqual(summary["protection_state"], "unconfirmed")
         self.assertEqual(item["state"], "excluded")
