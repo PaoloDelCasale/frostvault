@@ -291,7 +291,7 @@ class NewVaultTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
         self.assertIs(row["duplicate_cleanup_beyond_minimum"], False)
-        self.assertIs(duplicate_cleanup._settings(row)["beyond_minimum"], False)
+        self.assertIs(duplicate_cleanup.CLEANUP.settings(row)["beyond_minimum"], False)
         self.assertEqual(str(row["uuid"]), vault["uuid"])
         self.assertNotEqual(vault["uuid"], VAULT_UUID)
 
