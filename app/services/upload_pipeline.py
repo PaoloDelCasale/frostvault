@@ -43,7 +43,6 @@ from typing import Any, Callable, Iterator
 
 import psycopg
 
-from .database_retry import owned_connection
 from .upload_snapshot import MAX_PART_SIZE, MIB, MULTIPART_THRESHOLD, UploadSnapshot
 
 
@@ -308,7 +307,7 @@ def journal_status() -> dict[str, Any]:
     return {"held": bool(pending), "uncertain_facts": pending}
 
 
-def pipeline_for(worker: Any) -> _Pipeline:
+def pipeline_for() -> _Pipeline:
     from .. import database
     with _registry_lock:
         dsn = database.settings.database_dsn
@@ -326,32 +325,6 @@ def bind(pipeline: _Pipeline, job: dict[str, Any], check: Callable[[], None]) ->
         _current.reset(token)
 
 
-class _CatalogWorker:
-    """Give existing snapshot inventory/cleanup units the same DB admission.
-
-    This is not a new protocol or a replacement for their target/keeper/claim
-    fences. It only owns connection capacity, before checkout through commit.
-    Exact deletion keeps its original locked, non-retried provider effect; it
-    never waits for a new permit while holding those locks.
-    """
-
-    def __init__(self, worker: Any, job: dict[str, Any]):
-        self.worker, self.job = worker, job
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.worker, name)
-
-    @contextmanager
-    def db(self):
-        with catalog_capacity(self.job), owned_connection(self.worker.db()) as connection:
-            yield connection
-
-
-def catalog_worker(worker: Any, job: dict[str, Any]) -> Any:
-    current = _current.get()
-    return _CatalogWorker(worker, job) if current is not None and current[1]["id"] == job["id"] else worker
-
-
 def preparation_capacity(job: dict[str, Any]):
     current = _current.get()
     if current is None or current[1]["id"] != job["id"]:
@@ -365,8 +338,7 @@ def catalog_capacity(job: dict[str, Any]):
 
     No ambient authority is transferred to SDK threads. Their receipt callback
     captures its journal/latch explicitly and bypasses this nonurgent capacity.
-    Other Job types and standalone recovery/cleanup retain existing behavior;
-    claimed-upload inventory/cleanup units use catalog_worker explicitly.
+    Other Job types and standalone recovery/cleanup retain existing behavior.
     """
     current = _current.get()
     if current is None or current[1]["id"] != job["id"]:

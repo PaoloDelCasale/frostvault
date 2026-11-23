@@ -59,6 +59,7 @@ from . import upload_provenance as provenance
 from .database_retry import owned_connection
 from .s3 import delete_version, error_code
 from .upload_provenance import UploadBlocked
+from .worker_seam import CopyWorker
 
 
 def _superseded(connection: Any, file_id: str) -> list[dict[str, Any]]:
@@ -174,7 +175,7 @@ def _held_at(held: set[tuple[str, str]], key: str) -> set[str]:
     return {version for object_key, version in held if object_key == key}
 
 
-def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any], *,
+def require_sole_keeper(worker: CopyWorker, job: dict[str, Any], keeper: dict[str, Any], *,
                         client: Any, bucket: str) -> None:
     """Check the postcondition of a keeper that superseded nothing (#622).
 
@@ -188,7 +189,7 @@ def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any]
     every step that opens one, so the listing opens its own, as ``cleanup``
     does (#628).
     """
-    if keeper["object_key"] != worker._upload_key(job):
+    if keeper["object_key"] != worker.upload_key(job):
         raise UploadBlocked("identity_changed")
     if client is None:
         client = worker.s3_client()
@@ -203,12 +204,12 @@ def require_sole_keeper(worker: Any, job: dict[str, Any], keeper: dict[str, Any]
                 keeper["object_key"])
 
         _require_sole(observed, keeper["provider_version_id"],
-                      worker._upload_catalog_unit(job, retained, shared=True))
+                      worker.catalog_unit(job, retained, shared=True))
         return
     _require_sole(observed, keeper["provider_version_id"])
 
 
-def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any) -> None:
+def cleanup(worker: CopyWorker, job: dict[str, Any], keeper_id: str | None, client: Any) -> None:
     """Delete exactly what ``keeper_id`` superseded, then remove the rows with the proof.
 
     ``keeper_id=None`` resumes an open cleanup of the file's Current (a Job that
@@ -217,7 +218,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
     w = worker
     active = lambda: w.ensure_job_active(job["id"], "Snapshot cleanup stopped")
     provider = provenance.provider_identity(client) if client is not None else None
-    key = w._upload_key(job)
+    key = w.upload_key(job)
 
     def load(catalog: Any) -> tuple[Any, ...]:
         connection = catalog.connection
@@ -238,7 +239,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         return (provenance.validated_pin(connection, job), provenance.validated_vault(connection, job),
                 current, batch, superseded, keeper, days, held)
 
-    pinned, vault, current, batch, superseded, keeper, days, held = w._upload_catalog_unit(
+    pinned, vault, current, batch, superseded, keeper, days, held = w.catalog_unit(
         job, load, shared=True)
     if keeper_id is None:
         if batch is None and (not superseded or current is None):
@@ -265,12 +266,12 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
     if superseded or batch is not None:
         # Before the batch is frozen or anything is deleted. Each DELETE checks
         # the Source Volume/root again; listings alone are no effect.
-        w._require_upload_source_identity(job)
+        w.require_upload_source_identity(job)
     if keeper is None:
         def keeper_row(catalog: Any) -> dict[str, Any]:
             return _keeper(catalog.connection, job, str(keeper_id), key)
 
-        keeper = w._upload_catalog_unit(job, keeper_row, shared=True)
+        keeper = w.catalog_unit(job, keeper_row, shared=True)
     keep = (keeper["object_key"], keeper["provider_version_id"])
     candidates = {(row["object_key"], row["provider_version_id"]): row for row in superseded}
     allowed = set(candidates) | {keep}
@@ -303,13 +304,13 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
                 (frozen["id"], job["file_id"], [str(r["id"]) for r in candidates.values()]))
             return frozen
 
-        batch = w._upload_catalog_unit(job, freeze)
+        batch = w.catalog_unit(job, freeze)
 
     for (object_key, version), row in sorted(candidates.items()):
         if row["deleted_at"] is not None or version not in observed[object_key]["versions"]:
             continue
         active()
-        w._require_upload_source_identity(job)
+        w.require_upload_source_identity(job)
         w.validate_cloud_vault(job)
         current_listing = _listing(client, bucket, keys)
         _require_known(current_listing, allowed | held, keep)
@@ -338,7 +339,7 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         raise UploadBlocked("inventory_changed")
     if batch is None:
         return
-    w._require_upload_source_identity(job)
+    w.require_upload_source_identity(job)
 
     def complete(catalog: Any) -> None:
         connection = catalog.connection
@@ -359,10 +360,10 @@ def cleanup(worker: Any, job: dict[str, Any], keeper_id: str | None, client: Any
         connection.execute("DELETE FROM cleanup_batches WHERE id=%s", (batch["id"],))
         catalog._mark_file_aggregates_dirty(int(job["vault_id"]), str(job["file_id"]))
 
-    w._upload_catalog_unit(job, complete)
+    w.catalog_unit(job, complete)
 
 
-def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
+def _locked_until(w: CopyWorker, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
                   keep: tuple[str, str], client: Any, row: dict[str, Any],
                   days: int | None) -> tuple[datetime | None, bool]:
     """Delete one frozen candidate, or say until when a Retention Lock keeps it.
@@ -400,7 +401,7 @@ def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: di
     return until, False
 
 
-def _hand_over(w: Any, job: dict[str, Any], batch: dict[str, Any], row: dict[str, Any],
+def _hand_over(w: CopyWorker, job: dict[str, Any], batch: dict[str, Any], row: dict[str, Any],
                until: datetime, *, unreadable: bool = False) -> None:
     """Hand a locked candidate to ``retained_versions`` and record it handled (#736).
 
@@ -425,10 +426,10 @@ def _hand_over(w: Any, job: dict[str, Any], batch: dict[str, Any], row: dict[str
         if unreadable:
             retention_lock.report_unreadable(connection, int(job["vault_id"]))
 
-    w._upload_catalog_unit(job, record, shared=True)
+    w.catalog_unit(job, record, shared=True)
 
 
-def _delete_fenced(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
+def _delete_fenced(w: CopyWorker, job: dict[str, Any], pinned: dict[str, Any], batch: dict[str, Any],
                    keep: tuple[str, str], client: Any, object_key: str, version: str) -> None:
     """One exact DELETE while every fence is held; never replayed by a DB retry.
 
@@ -449,7 +450,7 @@ def _delete_fenced(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: d
             raise
 
 
-def _delete_holding_fences(w: Any, connection: Any, job: dict[str, Any], pinned: dict[str, Any],
+def _delete_holding_fences(w: CopyWorker, connection: Any, job: dict[str, Any], pinned: dict[str, Any],
                            batch: dict[str, Any], keep: tuple[str, str], client: Any,
                            object_key: str, version: str) -> bool:
     provenance.require_target(connection, job, pinned, shared=True)
@@ -471,11 +472,11 @@ def _delete_holding_fences(w: Any, connection: Any, job: dict[str, Any], pinned:
     return True
 
 
-def _record_deleted(w: Any, job: dict[str, Any], batch: dict[str, Any], version_ids: list[str]) -> None:
+def _record_deleted(w: CopyWorker, job: dict[str, Any], batch: dict[str, Any], version_ids: list[str]) -> None:
     def record(catalog: Any) -> None:
         catalog.connection.execute(
             """UPDATE cleanup_candidates SET deleted_at=now()
                WHERE batch_id=%s AND archive_version_id = ANY(%s::uuid[]) AND deleted_at IS NULL""",
             (batch["id"], version_ids))
 
-    w._upload_catalog_unit(job, record, shared=True)
+    w.catalog_unit(job, record, shared=True)

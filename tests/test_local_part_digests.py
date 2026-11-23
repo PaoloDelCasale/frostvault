@@ -33,6 +33,7 @@ from tests import test_stale_upload_snapshot as stale
 from tests import test_upload_provenance_worker as worker_fixtures
 from tests.test_scan_fingerprints import _quiet_scan_patches
 from tests.test_vault_adoption import _AdoptionFixture
+from tests.upload_support import fake_worker
 
 CHANGED = "Local file changed since fingerprinting"
 MTIME_NS = 1_700_000_000_123_456_789
@@ -89,7 +90,6 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
     """The execution seam with stubbed catalog units and transport (no DB)."""
 
     def setUp(self) -> None:
-        from app import storage
         from app.services import upload_execution as execution
         from app.services.upload_pipeline import _Pipeline
 
@@ -104,11 +104,10 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         self.bound = False
         self.fingerprint = self.recorded(BIG_A)
         self.catalog = MagicMock()
-        worker = MagicMock()
-        worker.OperationCancelled, worker.JobLeaseLost = storage.OperationCancelled, storage.JobLeaseLost
+        worker = fake_worker()
         worker.safe_local_path.return_value = self.source
         worker.prepare_upload_snapshot.side_effect = self.hash
-        worker._upload_catalog_unit.side_effect = (
+        worker.catalog_unit.side_effect = (
             lambda job, mutation, shared=False: mutation(self.catalog))
         worker.upload_s3_file.side_effect = self.transport
         self.worker = worker

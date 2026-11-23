@@ -14,6 +14,7 @@ import psycopg
 
 from app.services import upload_provenance as provenance
 from app.services.upload_pipeline import ACCOUNTED_CHUNK
+from tests.upload_support import fake_worker
 
 
 class ReceiptJournalTests(unittest.TestCase):
@@ -44,7 +45,6 @@ class ReceiptJournalTests(unittest.TestCase):
 
 class JournalAdmissionTests(unittest.TestCase):
     def setUp(self):
-        from app import storage
         from app.services.upload_execution import UploadExecution
         from app.services.upload_pipeline import _Pipeline
         from app.services.upload_snapshot import prepare_upload_snapshot
@@ -61,8 +61,7 @@ class JournalAdmissionTests(unittest.TestCase):
                 "bucket": "bucket", "key": "old/file"}),
             "inventory_json": json.dumps({"versions": [], "markers": []}),
             "snapshot_json": snapshot.as_json(), "token": "intent-token"}
-        worker = MagicMock()
-        worker.OperationCancelled, worker.JobLeaseLost = storage.OperationCancelled, storage.JobLeaseLost
+        worker = fake_worker()
         connection = worker.db.return_value.__enter__.return_value
         def query(sql, *args):
             result = MagicMock()
@@ -87,7 +86,6 @@ class JournalAdmissionTests(unittest.TestCase):
         self.execution._refresh_journal_gate(self.coordinator)
         self.coordinator.require_send_admission()
         self.assertEqual(self.provider.puts, 0)
-        self.worker._resume_materialized_upload.assert_not_called()
 
     def test_cancelled_intent_cannot_force_provider_reads_on_other_sends(self):
         self.worker.s3_client.side_effect = AssertionError("Admission must be DB-only, even for cancelled intents")
@@ -95,8 +93,6 @@ class JournalAdmissionTests(unittest.TestCase):
             self.execution._refresh_journal_gate(self.coordinator)
             self.coordinator.require_send_admission()
             append.assert_not_called()
-        self.worker._publish_upload_receipt.assert_not_called()
-        self.worker._resume_materialized_upload.assert_not_called()
         self.assertEqual((self.provider.puts, self.provider.deletes, self.provider.aborted), (0, 0, []))
 
     def test_failed_probe_or_commit_keeps_send_admission_closed(self):
@@ -156,11 +152,10 @@ class SinglePutPayloadTests(unittest.TestCase):
         self.events, self.puts, self.match = [], [], False
         self.put_error: BaseException | None = None
         self.prepare = prepare_upload_snapshot
-        worker = MagicMock()
-        worker.OperationCancelled, worker.JobLeaseLost = storage.OperationCancelled, storage.JobLeaseLost
+        worker = fake_worker()
         worker.safe_local_path.return_value = self.source
         worker.prepare_upload_snapshot.side_effect = self.hash
-        worker._upload_catalog_unit.side_effect = (
+        worker.catalog_unit.side_effect = (
             lambda job, mutation, shared=False: mutation(SimpleNamespace(connection=MagicMock())))
 
         def put(**kwargs):

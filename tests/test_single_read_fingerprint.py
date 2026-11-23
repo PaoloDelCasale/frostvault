@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.fixtures import override_settings
+from tests.upload_support import fake_worker
 from app.services import source_devices, throughput
 from app.services import upload_provenance as provenance
 from app.services.source_devices import DeviceSlots, RotationalProbe, UploadFingerprints
@@ -45,7 +46,6 @@ class UploadFingerprintTests(unittest.TestCase):
     """The upload execution with stubbed catalog units and transport."""
 
     def setUp(self) -> None:
-        from app import storage
         from app.services import upload_execution as execution
         from app.services.upload_pipeline import _Pipeline
 
@@ -64,11 +64,10 @@ class UploadFingerprintTests(unittest.TestCase):
         self.check = lambda: None
         self.catalog = MagicMock()
         self.catalog.publish_local_fingerprint.side_effect = self.published
-        worker = MagicMock()
-        worker.OperationCancelled, worker.JobLeaseLost = storage.OperationCancelled, storage.JobLeaseLost
+        worker = fake_worker()
         worker.safe_local_path.return_value = self.source
         worker.prepare_upload_snapshot.side_effect = self.hash
-        worker._upload_catalog_unit.side_effect = (
+        worker.catalog_unit.side_effect = (
             lambda job, mutation, shared=False: mutation(self.catalog))
         worker.upload_s3_file.side_effect = self.transport
         self.worker = worker

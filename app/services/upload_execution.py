@@ -27,9 +27,10 @@ A receipt or a materialized version alone never makes a version Current nor
 completes the Job. Every DB unit is replayed alone on a serialization failure
 (``retry_database_unit``); provider and filesystem effects are never inside one.
 
-``worker`` is the existing storage Adapter, not a bag of injected callbacks: its
-claim/status/source/transport hooks remain the production and test seams.
-There is deliberately no import of storage, executor, queue or heartbeat here.
+``worker`` is the storage worker behind its declared seam (``worker_seam``):
+claim and Job state, Source Volume checks, catalog units and transport. Storage
+is the production Adapter; there is deliberately no import of storage,
+executor, queue or heartbeat here, and no other name of storage is used.
 """
 from __future__ import annotations
 
@@ -50,6 +51,7 @@ from .database_retry import owned_connection
 from .s3 import checksum_mode_unsupported
 from .snapshot_cleanup import RESUME_NEEDED_SQL
 from .upload_retry import classify_upload_failure
+from .worker_seam import UploadWorker
 from .upload_snapshot import (
     MULTIPART_THRESHOLD, FileOwnership, SnapshotPayload, UploadSnapshot,
     UploadProofMismatch,
@@ -78,9 +80,9 @@ class _UploadCheckpoint:
     unconditional durable claim checks; this changes no other Job/heartbeat.
     """
 
-    def __init__(self, worker: Any, job: dict[str, Any]):
+    def __init__(self, worker: UploadWorker, job: dict[str, Any]):
         self.worker, self.job = worker, job
-        self.lost = worker._claim_lost_event_for(job["id"])
+        self.lost = worker.claim_lost_event(job["id"])
         self.next_remote = 0.0
 
     def fenced(self) -> None:
@@ -93,8 +95,7 @@ class _UploadCheckpoint:
 
     def __call__(self) -> None:
         w, job_id = self.worker, self.job["id"]
-        w.shutdown_state.checkpoint()
-        if w.job_cancelled(job_id):
+        if w.stopped_in_process(job_id):
             raise w.OperationCancelled("Upload stopped")
         if self.lost is not None and self.lost.is_set():
             raise w.JobLeaseLost("Upload claim was lost")
@@ -164,14 +165,12 @@ class UploadExecution:
     never buffers a batch of receipts or repeats a send inside a DB retry.
     """
 
-    def __init__(self, worker: Any):
+    def __init__(self, worker: UploadWorker):
         self.worker = worker
 
     def run(self, job: dict[str, Any]) -> UploadOutcome:
-        with self.worker._job_claim_context(
-            job, lost_event=self.worker._claim_lost_event_for(job["id"]),
-        ):
-            pipeline = upload_pipeline.pipeline_for(self.worker)
+        with self.worker.claim(job):
+            pipeline = upload_pipeline.pipeline_for()
             check = _UploadCheckpoint(self.worker, job)
             # process_job renewed this claim just before dispatching here, and
             # every DB unit of the run is claim-fenced: no read is owed yet.
@@ -230,15 +229,15 @@ class UploadExecution:
         except w.OperationCancelled:
             raise
         except provenance.UploadBlocked as exc:
-            w._record_upload_reconciliation_block(job, exc.reason)
+            w.record_reconciliation_block(job, exc.reason)
             raise
         except UploadProofMismatch:
-            w._record_upload_reconciliation_block(job, "proof_mismatch")
-            w._record_verification_failure("mismatch")
+            w.record_reconciliation_block(job, "proof_mismatch")
+            w.record_verification_failure("mismatch")
             raise
         except Exception:
             if run.verification_started:
-                w._record_verification_failure(run.failure_reason or "stream")
+                w.record_verification_failure(run.failure_reason or "stream")
             raise
         finally:
             # Match with Current, automatic gate, cancellation, error or any
@@ -247,7 +246,7 @@ class UploadExecution:
             self._flush_read_fingerprint(run)
 
     def _db(self, job: dict[str, Any], mutation: Any, *, shared: bool = False) -> Any:
-        result = self.worker._upload_catalog_unit(job, mutation, shared=shared)
+        result = self.worker.catalog_unit(job, mutation, shared=shared)
         check = getattr(self, "_check", None)
         if check is not None:
             check.fenced()
@@ -257,13 +256,13 @@ class UploadExecution:
         w = self.worker
         if job.get("origin") != "automatic":
             return None
-        state = w._automatic_upload_state(job)
+        state = w.automatic_upload_state(job)
         if state == w.UPLOAD_SOURCE_REMOVED:
-            if not w._close_removed_upload(job):
+            if not w.close_removed_upload(job):
                 raise w.JobLeaseLost("Upload claim was lost")
             return UploadOutcome(int(job["id"]), "cancelled")
         if state == w.UPLOAD_OBSERVATION_WITHDRAWN:
-            if not w._close_withdrawn_upload(job):
+            if not w.close_withdrawn_upload(job):
                 raise w.JobLeaseLost("Upload claim was lost")
             return UploadOutcome(int(job["id"]), "cancelled")
         if state != w.UPLOAD_READY:
@@ -307,7 +306,7 @@ class UploadExecution:
             # linked to the Job or in progress, and whether a cleanup is open.
             # Whether the catalog ever wrote the key decides if a send needs a
             # listed inventory before its PUT (#622, ADR-0038).
-            key = w._upload_key(job)
+            key = w.upload_key(job)
             observation = connection.execute(
                 f"""SELECT f.generation, f.local_presence, f.local_file_type, f.local_size,
                            f.local_mtime_ns, {_FINGERPRINT_SQL},
@@ -323,7 +322,7 @@ class UploadExecution:
             # its snapshot from the catalog fingerprint again (#703).
             bound = attempt is not None or bool(detail and detail["snapshot_id"] is not None)
             return (detail, attempt, version, vault, provenance.validated_pin(connection, job),
-                    observation, w._source_volume_problem_open(connection, job),
+                    observation, w.source_volume_problem_open(connection, job),
                     version is None and bool(observation and observation["cleanup_pending"]),
                     bound)
 
@@ -332,9 +331,9 @@ class UploadExecution:
             job, load, shared=True)
         observation = run.extra["observation"]
         run.extra["key_never_written"] = bool(observation is not None and not observation["key_written"])
-        w._upload_source_root_check(job, vault)
+        w.check_upload_source_root(job, vault)
         if problem:
-            w._resolve_source_volume_problem(job)
+            w.resolve_source_volume_problem(job)
         if detail is not None:
             run.mode, run.reconcile_only = detail["verification_mode"], bool(detail["reconcile_only"])
         bound = run.attempt.admitted if run.attempt is not None else None
@@ -373,10 +372,10 @@ class UploadExecution:
             # the attempt as a no-write; the next send is a new attempt (new
             # token) of the same snapshot (ADR-0036). A reconcile-only Job
             # never starts an upload while automatic protection is paused.
-            if run.reconcile_only and w._upload_protection_paused(job):
+            if run.reconcile_only and w.upload_protection_paused(job):
                 raise provenance.UploadBlocked("protection_paused") from None
             self._db(job, lambda catalog: _rearm(catalog, job, attempt, w.now_iso()))
-            w._clear_upload_reconciliation_problem(job)
+            w.clear_reconciliation_problem(job)
             run.attempt, run.reconcile_only = None, False
             return
         # Reconciliation established the exact result; repairing facts needs
@@ -413,7 +412,7 @@ class UploadExecution:
             catalog.link_job_version(job["id"], archive_version_id)
             # The Job enters verification in the same exclusive unit, with the
             # bytes this run sent (#597): no separate progress/status units.
-            if not w._set_job_in_transaction(
+            if not w.set_job_in_transaction(
                     connection, job["id"], "verifying", message_key="job.verifying_cloud_copy",
                     transferred_bytes=sent, fenced_unit=True):
                 raise w.JobLeaseLost("Upload claim was lost")
@@ -672,7 +671,7 @@ class UploadExecution:
                     parts=_local_parts(snapshot, observed)):
                 raise RuntimeError("Local file changed since fingerprinting")
             catalog.clear_reconciliation_block(job["file_id"])
-            if not w._set_job_in_transaction(connection, job["id"], "completed",
+            if not w.set_job_in_transaction(connection, job["id"], "completed",
                                              message_key="job.upload_verified",
                                              transferred_bytes=0, fenced_unit=True):
                 raise w.JobLeaseLost("Upload completion claim was lost")
@@ -729,7 +728,7 @@ class UploadExecution:
 
     def _send_bytes(self, run: _Run, provider: str) -> tuple[provenance.UploadAttempt, dict[str, Any]]:
         w, job, client = self.worker, run.job, run.client
-        key = w._upload_key(job)
+        key = w.upload_key(job)
         # The pin _load read; prepare compares it with the live target again.
         pinned = {**run.extra["pin"], "key": key, "provider": provider}
         if run.extra.get("key_never_written"):
@@ -753,7 +752,7 @@ class UploadExecution:
             # Same DB-only commit, before any provider send. A crash rolls back
             # both or leaves a send-started attempt that MUST reconcile.
             started = provenance.mark_send_started(catalog.connection, job, attempt, shared=True)
-            w._set_job_message_in_transaction(catalog.connection, job["id"], "job.plain_upload")
+            w.set_job_message_in_transaction(catalog.connection, job["id"], "job.plain_upload")
             return started, provenance.validated_vault(catalog.connection, job)
 
         attempt, vault = self._db(job, prepare_send, shared=True)
@@ -804,7 +803,7 @@ class UploadExecution:
             if raw is not None:
                 acknowledge(raw)  # DB-only retry of a retained late ack, no PUT.
             no_write = getattr(exc, "upload_no_write_operation", None)
-            if raw is None and no_write and w.cloud_preflight_gate.is_readiness_error(exc):
+            if raw is None and no_write and w.is_cloud_readiness_error(exc):
                 self._db(job, lambda catalog: provenance.record_no_write(
                     catalog.connection, job, attempt, no_write, w.now_iso()))
             if (raw is None and run.extra.get("catalog_snapshot")
@@ -828,7 +827,7 @@ class UploadExecution:
         """HEAD the exact VersionId; it must carry its own attempt's token."""
         w, version = self.worker, run.version
         assert version is not None
-        head = w._verification_version_head(run.client, run.job, version.target())
+        head = w.verification_version_head(run.client, run.job, version.target())
         token = (head.get("Metadata") or {}).get(provenance.TOKEN_KEY)
         if token != version.token:
             raise provenance.UploadBlocked("ambiguous_receipt")
@@ -892,7 +891,7 @@ class UploadExecution:
             version.id, **run.verification), shared=True)
         if fallback:
             w.set_job(job["id"], "verifying", message_key="job.verifying_cloud_fallback")
-        digest, size = w._stream_plaintext_for_verification(
+        digest, size = w.stream_plaintext_for_verification(
             job, target=version.target(), source_size=expected.snapshot.size,
             check_active=run.check_active,
             floor_reported=bool(run.extra.get("verifying")))
@@ -907,7 +906,7 @@ class UploadExecution:
                 run.failure_reason = "mismatch"
                 w.ensure_job_active(job["id"], "Upload claim was lost")
                 self._mismatch(run, digest)
-                w._record_upload_reconciliation_block(job, "proof_mismatch")
+                w.record_reconciliation_block(job, "proof_mismatch")
                 raise RuntimeError("Cloud copy digest does not match local file")
         except w.OperationCancelled:
             raise
@@ -996,7 +995,7 @@ class UploadExecution:
         progress = int(run.version.expected.snapshot.size)
 
         def finish(catalog: Any) -> None:
-            if not w._set_job_in_transaction(
+            if not w.set_job_in_transaction(
                     catalog.connection, job["id"], "completed",
                     message_key="job.upload_verified", transferred_bytes=progress,
                     fenced_unit=True):

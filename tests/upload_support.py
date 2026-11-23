@@ -7,6 +7,7 @@ the row ``storage.process_job`` receives from the scheduler after a claim.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 
 def queue_upload(
@@ -52,3 +53,25 @@ def claimed_job_row(connection: Any, job_id: int, claimed: dict[str, Any]) -> di
     """The worker's Job: its row joined as the scheduler reads it, with the claim."""
     return {**job_row(connection, job_id), "claim_token": claimed["claim_token"],
             "claim_expires_at": claimed["claim_expires_at"]}
+
+
+def fake_worker() -> MagicMock:
+    """The fake Adapter of the worker seam, for tests of the Upload/copy Modules alone.
+
+    It has the names of the production Adapter and no other (``spec_set``): a
+    Module that asks the worker for anything outside the seam fails here. The
+    exceptions and the automatic-gate states are the real ones; every method is
+    a mock a test gives its own return value or side effect. By default the
+    worker is idle: no stop signal and no lost claim.
+    """
+    from app import storage
+    from app.services import worker_seam
+
+    worker = MagicMock(spec_set=storage.worker_adapter)
+    for seam in (worker_seam.JobClaim, worker_seam.SourceVolume, worker_seam.AutomaticUploadGate):
+        for name in seam.__annotations__:
+            setattr(worker, name, getattr(storage.worker_adapter, name))
+    worker.claim_lost_event.return_value = None
+    worker.stopped_in_process.return_value = False
+    worker.job_cancelled.return_value = False
+    return worker

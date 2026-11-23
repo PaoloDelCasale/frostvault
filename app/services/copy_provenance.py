@@ -50,6 +50,7 @@ from .s3_copy import (
     COPY_TOKEN_KEY, S3_SINGLE_COPY_MAX_BYTES, copy_storage_class_version, multipart_source_checksum,
 )
 from .upload_provenance import UploadBlocked
+from .worker_seam import CopyWorker
 
 COPY_ACTIONS = frozenset({"rename", "storage-class"})
 _STOPPED = {"rename": "Rename stopped", "storage-class": "Storage class change stopped"}
@@ -204,7 +205,7 @@ def _goal(purpose: str, pin: dict[str, Any], current: dict[str, Any], head_class
     return current["object_key"], (storage_class or "").upper()
 
 
-def _open(w: Any, job: dict[str, Any], *, purpose: str, destination_key: str,
+def _open(w: CopyWorker, job: dict[str, Any], *, purpose: str, destination_key: str,
           storage_class: str, current: dict[str, Any], inventory: dict[str, list[str]],
           provider: str) -> None:
     def open_attempt(catalog: Any) -> None:
@@ -227,10 +228,10 @@ def _open(w: Any, job: dict[str, Any], *, purpose: str, destination_key: str,
              pin["source_root"], pin["root_identity"], provider,
              inventory["versions"], inventory["markers"]))
 
-    w._upload_catalog_unit(job, open_attempt)
+    w.catalog_unit(job, open_attempt)
 
 
-def _load(w: Any, job: dict[str, Any], bucket: str) -> Attempt:
+def _load(w: CopyWorker, job: dict[str, Any], bucket: str) -> Attempt:
     def load(catalog: Any) -> Attempt:
         row = catalog.connection.execute(
             _ATTEMPT_SQL + " WHERE c.file_id=%s AND c.settled_at IS NULL", (job["file_id"],)).fetchone()
@@ -238,20 +239,20 @@ def _load(w: Any, job: dict[str, Any], bucket: str) -> Attempt:
             raise UploadBlocked("target_superseded")
         return _attempt(dict(row), bucket)
 
-    return w._upload_catalog_unit(job, load, shared=True)
+    return w.catalog_unit(job, load, shared=True)
 
 
-def _adopt(w: Any, job: dict[str, Any], attempt_id: str) -> None:
+def _adopt(w: CopyWorker, job: dict[str, Any], attempt_id: str) -> None:
     """A later Job of the same purpose takes over an attempt (crash, expiry, takeover)."""
     def adopt(catalog: Any) -> None:
         catalog.connection.execute(
             "UPDATE copy_attempts SET job_id=%s WHERE id=%s AND job_id IS DISTINCT FROM %s",
             (job["id"], attempt_id, job["id"]))
 
-    w._upload_catalog_unit(job, adopt)
+    w.catalog_unit(job, adopt)
 
 
-def _settle(w: Any, job: dict[str, Any], attempt_id: str, *, outcome: str,
+def _settle(w: CopyWorker, job: dict[str, Any], attempt_id: str, *, outcome: str,
             operation: str | None = None) -> None:
     def settle(catalog: Any) -> None:
         catalog.connection.execute(
@@ -259,10 +260,10 @@ def _settle(w: Any, job: dict[str, Any], attempt_id: str, *, outcome: str,
                WHERE id=%s AND settled_at IS NULL""",
             (outcome, operation, attempt_id))
 
-    w._upload_catalog_unit(job, settle)
+    w.catalog_unit(job, settle)
 
 
-def _mark_send_started(w: Any, job: dict[str, Any], attempt: Attempt, composite: str | None) -> None:
+def _mark_send_started(w: CopyWorker, job: dict[str, Any], attempt: Attempt, composite: str | None) -> None:
     def start(catalog: Any) -> None:
         state = _state(catalog.connection, job)
         live = state["current"]
@@ -277,10 +278,10 @@ def _mark_send_started(w: Any, job: dict[str, Any], attempt: Attempt, composite:
         if getattr(started, "rowcount", 1) != 1:
             raise UploadBlocked("ambiguous_send")
 
-    w._upload_catalog_unit(job, start)
+    w.catalog_unit(job, start)
 
 
-def _send(w: Any, job: dict[str, Any], attempt: Attempt, client: Any, head: dict[str, Any],
+def _send(w: CopyWorker, job: dict[str, Any], attempt: Attempt, client: Any, head: dict[str, Any],
           active: Callable[..., None]) -> str | None:
     composite = None
     if attempt.size > S3_SINGLE_COPY_MAX_BYTES:
@@ -313,7 +314,7 @@ def _owns(head: dict[str, Any], attempt: Attempt) -> bool:
     return (head.get("Metadata") or {}).get(COPY_TOKEN_KEY) == attempt.token
 
 
-def reconcile(w: Any, job: dict[str, Any], attempt: Attempt, client: Any,
+def reconcile(w: CopyWorker, job: dict[str, Any], attempt: Attempt, client: Any,
               active: Callable[..., None]) -> str | None:
     """Decide a started copy from S3 only; never send it again.
 
@@ -366,7 +367,7 @@ def reconcile(w: Any, job: dict[str, Any], attempt: Attempt, client: Any,
     return None
 
 
-def _record_landed(w: Any, job: dict[str, Any], attempt: Attempt, version: str) -> None:
+def _record_landed(w: CopyWorker, job: dict[str, Any], attempt: Attempt, version: str) -> None:
     """Record the exact landed version, then make it the replacement in progress.
 
     The settlement and the version row only need the claim: they are facts
@@ -411,10 +412,10 @@ def _record_landed(w: Any, job: dict[str, Any], attempt: Attempt, version: str) 
             raise UploadBlocked("target_superseded")
         catalog._mark_path_aggregates_dirty(int(moved["vault_id"]), moved["path"])
 
-    w._upload_catalog_unit(job, replace)
+    w.catalog_unit(job, replace)
 
 
-def _local_generation(w: Any, job: dict[str, Any], state: dict[str, Any], expected: bytes,
+def _local_generation(w: CopyWorker, job: dict[str, Any], state: dict[str, Any], expected: bytes,
                       purpose: str) -> int | None:
     """The Local Copy observation the new Current may be matched to.
 
@@ -432,7 +433,7 @@ def _local_generation(w: Any, job: dict[str, Any], state: dict[str, Any], expect
     from .local_files import hash_stable_regular_file
     from .vault_paths import safe_local_path
     try:
-        w._require_upload_source_identity(job)
+        w.require_upload_source_identity(job)
         digest, info = hash_stable_regular_file(safe_local_path(job["source_root"], job["path"]))
     except (OSError, RuntimeError, ValueError):
         return None
@@ -446,10 +447,10 @@ def _local_generation(w: Any, job: dict[str, Any], state: dict[str, Any], expect
             job["file_id"], generation=generation, plaintext_sha256=digest,
             size=info.st_size, mtime_ns=info.st_mtime_ns)
 
-    return generation if w._upload_catalog_unit(job, publish) else None
+    return generation if w.catalog_unit(job, publish) else None
 
 
-def _verify_and_promote(w: Any, job: dict[str, Any], version: dict[str, Any],
+def _verify_and_promote(w: CopyWorker, job: dict[str, Any], version: dict[str, Any],
                         state: dict[str, Any], client: Any, bucket: str,
                         active: Callable[..., None]) -> str:
     """Prove the copied version against the frozen expectation, then make it Current."""
@@ -482,7 +483,7 @@ def _verify_and_promote(w: Any, job: dict[str, Any], version: dict[str, Any],
                 job["file_id"], archive_version_id=str(version["id"]), mismatch=True,
                 checked_at=w.now_iso())
 
-        w._upload_catalog_unit(job, mismatch)
+        w.catalog_unit(job, mismatch)
         raise UploadBlocked("proof_mismatch")
     generation = _local_generation(w, job, state, attempt.plaintext_sha256, attempt.purpose)
     current = state["current"] or {}
@@ -499,11 +500,11 @@ def _verify_and_promote(w: Any, job: dict[str, Any], version: dict[str, Any],
                WHERE id=%s AND verification_method IS NULL""", (str(version["id"]),))
         catalog.link_job_version(int(job["id"]), str(version["id"]))
 
-    w._upload_catalog_unit(job, promote)
+    w.catalog_unit(job, promote)
     return str(version["id"])
 
 
-def run(w: Any, job: dict[str, Any], *, purpose: str, storage_class: str | None = None,
+def run(w: CopyWorker, job: dict[str, Any], *, purpose: str, storage_class: str | None = None,
         check_source: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
         client: Any = None) -> str | None:
     """Copy the file's Current as ``purpose`` asks; return the new verified Current.
@@ -521,7 +522,7 @@ def run(w: Any, job: dict[str, Any], *, purpose: str, storage_class: str | None 
     keeper: str | None = None
     cleanup_keeper: str | None = None
     for _round in range(_MAX_ROUNDS):
-        state = w._upload_catalog_unit(job, lambda c: _state(c.connection, job), shared=True)
+        state = w.catalog_unit(job, lambda c: _state(c.connection, job), shared=True)
         if state["file"]["upload_open"]:
             raise UploadBlocked("active_operation")
         replacing = state["replacing"]

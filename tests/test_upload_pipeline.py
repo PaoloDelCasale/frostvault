@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import threading
 import unittest
@@ -19,6 +18,7 @@ from app.services.shutdown import OperationCancelled, WorkerStopping
 from app.services.upload_execution import _UploadCheckpoint
 from app.services.upload_pipeline import ACCOUNTED_CHUNK
 from app.services.upload_snapshot import prepare_upload_snapshot
+from tests.upload_support import fake_worker
 
 
 class UploadCapacityTests(unittest.TestCase):
@@ -270,19 +270,18 @@ class UploadCapacityTests(unittest.TestCase):
 
     def test_hash_wait_checkpoints_amortize_remote_checks_not_local_stop_signals(self):
         lost = threading.Event()
-        worker = SimpleNamespace(_claim_lost_event_for=lambda job: lost,
-            shutdown_state=SimpleNamespace(checkpoint=Mock()), job_cancelled=Mock(return_value=False),
-            ensure_job_active=Mock(), OperationCancelled=OperationCancelled, JobLeaseLost=OperationCancelled)
+        worker = fake_worker()
+        worker.claim_lost_event.return_value = lost
         check = _UploadCheckpoint(worker, {"id": 1})
         with patch("app.services.upload_execution.time.monotonic", side_effect=[10, 10.1, 10.9, 11]):
             for _ in range(4):
                 check()
         self.assertEqual(worker.ensure_job_active.call_count, 2)
-        worker.job_cancelled.return_value = True
+        worker.stopped_in_process.return_value = True
         with self.assertRaises(OperationCancelled):
             check()
-        worker.job_cancelled.return_value = False
+        worker.stopped_in_process.return_value = False
         lost.set()
-        with self.assertRaises(OperationCancelled):
+        with self.assertRaises(worker.JobLeaseLost):
             check()
         self.assertEqual(worker.ensure_job_active.call_count, 2)
