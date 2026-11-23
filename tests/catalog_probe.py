@@ -10,7 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.catalog import VISIBLE_SQL, ArchiveCatalog, _hex, _id
+from app.catalog import ArchiveCatalog
+from app.services.catalog_shared import digest_hex, id_text
+from app.services.file_listing import FileListing
+from app.services.protection_states import VISIBLE_SQL
 
 # Columns of one Vault File row, in the order ``_file_dict`` reads them.
 _FILE_COLUMNS_SQL = """
@@ -49,7 +52,7 @@ def _version_dict(row: Mapping[str, Any], prefix: str, version_id: Any) -> dict[
         "provider_version_id": row[f"{prefix}_provider_version_id"],
         "size": row[f"{prefix}_size"],
         "storage_class": row[f"{prefix}_storage_class"],
-        "plaintext_sha256": _hex(row[f"{prefix}_plaintext_sha256"]),
+        "plaintext_sha256": digest_hex(row[f"{prefix}_plaintext_sha256"]),
         "integrity": row[f"{prefix}_integrity"],
         "availability": row[f"{prefix}_availability"],
         "verified_at": row[f"{prefix}_verified_at"],
@@ -66,7 +69,7 @@ def _file_dict(row: Mapping[str, Any]) -> dict[str, Any]:
             "file_type": row["local_file_type"],
             "size": row["local_size"],
             "mtime_ns": row["local_mtime_ns"],
-            "plaintext_sha256": _hex(row["local_sha256"]),
+            "plaintext_sha256": digest_hex(row["local_sha256"]),
             "seen_at": row["local_seen_at"],
             "observed_at": row["local_observed_at"],
             "content_observed_at": row["local_content_observed_at"],
@@ -87,8 +90,8 @@ def _file_dict(row: Mapping[str, Any]) -> dict[str, Any]:
         "local_copy": local_copy,
         "current_version": _version_dict(row, "cur", row["current_version_id"]),
         "replacing_version": _version_dict(row, "rep", row["replacing_version_id"]),
-        "matched_version_id": _id(row["matched_version_id"]),
-        "held_version_id": _id(row["held_version_id"]),
+        "matched_version_id": id_text(row["matched_version_id"]),
+        "held_version_id": id_text(row["held_version_id"]),
         "pending_since": row["pending_since"],
         "reconciliation_block": block,
         "cloud_since": row["cloud_since"],
@@ -154,7 +157,8 @@ def list_file_rows(
         clauses.append("starts_with(f.path, %s)")
         params.append(f"{path_prefix}/")
     clauses.append(VISIBLE_SQL)
+    listing = FileListing(catalog.connection)
     rows = catalog.connection.execute(
-        catalog.file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
+        listing.file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
     ).fetchall()
-    return catalog.materialize_file_items(vault_id, rows, name_from_path=True)
+    return listing.materialize_file_items(vault_id, rows, name_from_path=True)

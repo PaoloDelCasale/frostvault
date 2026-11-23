@@ -10,11 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..api_models import JsonObjectResponse, response_model
 from ..config import settings
 from ..i18n import translate
-from ..catalog import ArchiveCatalog
 from ..database import db
 from ..errors import NotFound
 from ..services.source_layout import vault_local_access
 from ..services import audit_events as audit_event_store
+from ..services.file_listing import FileListing
 from ..services import metadata_backups as metadata_backup_service
 from ..services import recovery_kit as recovery_kit_service
 from ..services import notifications as notification_service
@@ -71,8 +71,7 @@ def list_files(
     access = vault_local_access(vault.get("source_root") or "")
     with db() as connection:
         unconfirmed, manual_upload = _protection_observation(connection, vault, access)
-        catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
-        listing = catalog.list_files_page(
+        listing = FileListing(connection, protection_unconfirmed=unconfirmed).list_files_page(
             vault["id"],
             search=q,
             directory=directory,
@@ -100,8 +99,7 @@ def file_detail(path: str, vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         access = vault_local_access(vault.get("source_root") or "")
         unconfirmed, _ = _protection_observation(connection, vault, access)
-        catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
-        item = catalog.get_file_item(vault["id"], path)
+        item = FileListing(connection, protection_unconfirmed=unconfirmed).get_file_item(vault["id"], path)
         if item is None:
             raise NotFound("api.file_not_found")
         return item
@@ -121,7 +119,7 @@ def search_all_files(
             access = vault_local_access(vault.get("source_root") or "")
             unconfirmed, _manual = _protection_observation(connection, vault, access)
             scoped.append({**vault, "unconfirmed": unconfirmed})
-        return ArchiveCatalog(connection).search_protected_vaults(
+        return FileListing(connection).search_protected_vaults(
             scoped, search=q, state=state, page=page, page_size=page_size,
         )
 
@@ -183,7 +181,7 @@ def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = Non
     with db() as connection:
         # Cheap SQL aggregates only — never materialize every Vault File row.
         unconfirmed, manual_upload = _protection_observation(connection, vault, access)
-        summary = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed).summary(vault["id"])
+        summary = FileListing(connection, protection_unconfirmed=unconfirmed).summary(vault["id"])
         from ..services.component_health import (
             load_vault_health,
             runtime_fields_from_health,

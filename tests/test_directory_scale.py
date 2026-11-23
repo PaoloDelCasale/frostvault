@@ -14,6 +14,7 @@ from app.catalog import ArchiveCatalog
 
 from app.routes.browse import list_files
 from app.services import directory_aggregates as aggregates
+from app.services.file_listing import FileListing
 from tests.listing_oracles import build_directory_items
 from app.services import metrics as metrics_service
 from app.services.vaults import VAULT_ROW_SQL
@@ -104,6 +105,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
+        self.listing = FileListing(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
@@ -193,16 +195,16 @@ class DirectoryScaleTests(FrostVaultTestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        page = catalog.list_files_page(2, page=1, page_size=50)
+        page = self.listing.list_files_page(2, page=1, page_size=50)
         self.assertEqual(page["total"], 1)
-        self.assertEqual(catalog.last_listing_rows_materialized, 1)
+        self.assertEqual(self.listing.last_listing_rows_materialized, 1)
 
     def test_root_listing_clause_is_parameterised_for_psycopg3(self) -> None:
         # Regression: the root branch embedded a literal '%' in raw SQL
         # ("fp.path NOT LIKE '%/%'"), which psycopg3 rejects as an unescaped
         # placeholder (ProgrammingError: ... got '%/'). It must be parameterised
         # like the sibling LIKE clauses. (Issue #240)
-        clauses, params = self.catalog.direct_child_file_clauses(
+        clauses, params = self.listing.direct_child_file_clauses(
             2, directory="", state=""
         )
         self.assertIn("strpos(f.path, '/') = 0", clauses)
@@ -215,10 +217,10 @@ class DirectoryScaleTests(FrostVaultTestCase):
         _bulk_local_files(self.connection, vault_id=2, paths_and_sizes=paths)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
 
-        page = self.catalog.list_files_page(2, directory="bucket", page=2, page_size=50)
+        page = self.listing.list_files_page(2, directory="bucket", page=2, page_size=50)
         self.assertEqual(page["total"], 250)
         self.assertEqual(len(page["items"]), 50)
-        self.assertEqual(self.catalog.last_listing_rows_materialized, 50)
+        self.assertEqual(self.listing.last_listing_rows_materialized, 50)
         self.assertTrue(all(item["type"] == "file" for item in page["items"]))
 
     def test_search_and_state_filter_are_server_side_paged(self) -> None:
@@ -365,10 +367,10 @@ class DirectoryScaleTests(FrostVaultTestCase):
         rebuilt = aggregates.rebuild_vault_directory_aggregates(self.connection, 2)
         self.assertEqual(rebuilt, 3)
 
-        page = self.catalog.list_files_page(2, page=1, page_size=100)
+        page = self.listing.list_files_page(2, page=1, page_size=100)
         self.assertEqual(page["total"], 4)
         self.assertEqual(len(page["items"]), 4)
-        self.assertEqual(self.catalog.last_listing_rows_materialized, 4)
+        self.assertEqual(self.listing.last_listing_rows_materialized, 4)
         names = [item["name"] for item in page["items"]]
         self.assertEqual(names[:3], ["clips", "exports", "recordings"])
         self.assertEqual(page["items"][3]["name"], "readme.txt")
@@ -403,11 +405,11 @@ class DirectoryScaleTests(FrostVaultTestCase):
             "rebuild_vault_directory_aggregates",
             side_effect=blocked_rebuild,
         ):
-            page = self.catalog.list_files_page(2)
+            page = self.listing.list_files_page(2)
         self.assertEqual(page["aggregate_status"], "loading")
         self.assertEqual(page["total"], 0)
         self.assertEqual(page["items"], [])
-        self.assertEqual(self.catalog.last_listing_rows_materialized, 0)
+        self.assertEqual(self.listing.last_listing_rows_materialized, 0)
 
         # Worker/maintenance path repairs without holding /api/files.
         result = aggregates.process_directory_aggregate_maintenance(
@@ -523,11 +525,11 @@ class DirectoryScaleTests(FrostVaultTestCase):
             "rebuild_vault_directory_aggregates",
             side_effect=blocked_rebuild,
         ):
-            page = self.catalog.list_files_page(2, page=1, page_size=100)
+            page = self.listing.list_files_page(2, page=1, page_size=100)
         duration = time.perf_counter() - started
         self.assertEqual(page["aggregate_status"], "loading")
         self.assertEqual(page["items"], [])
-        self.assertEqual(self.catalog.last_listing_rows_materialized, 0)
+        self.assertEqual(self.listing.last_listing_rows_materialized, 0)
         self.assertLess(duration, 2.0)
 
     def test_remark_in_new_transaction_has_independent_durable_identity(self) -> None:

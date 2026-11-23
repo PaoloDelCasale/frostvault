@@ -2,7 +2,7 @@
 
 ``ArchiveCatalog`` is being divided along its clusters, each in a Module of its
 own. This Module holds what more than one of them needs, so that none has to
-reach into another: the boundary conversions of timestamps and digests, the
+reach into another: the boundary conversions of timestamps, digests and ids, the
 error of a Vault File that is not there, and the revocation of pending Delayed
 Cloud Deletions that a reappearance and a rename share.
 
@@ -60,6 +60,14 @@ def sha256_digest(value: str | bytes) -> bytes:
     if len(raw) != 32:
         raise ValueError("SHA-256 must be 32 bytes")
     return raw
+
+
+def digest_hex(value: Any) -> str | None:
+    return None if value is None else bytes(value).hex()
+
+
+def id_text(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def revoke_deletion_consents(
