@@ -15,35 +15,30 @@ Seams under test (confirmed):
 from __future__ import annotations
 
 from tests.fake_bucket_s3 import fake_vault_buckets
-from tests.postgres import PostgresConnection, database_dsn
 
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
-
-from app.config import Settings
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
 from app.services.vaults import VAULT_ROW_SQL
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
+from tests.postgres import path_alias
 from tests import catalog_probe
 
-class _AdoptionFixture(unittest.TestCase):
+class _AdoptionFixture(FrostVaultTestCase):
     """Shared Source Volume layout for adoption seams."""
 
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+    owner = {"display_name": "Alice"}
 
-        self.sources_root = Path(self._tmp.name) / "sources"
+    def setUp(self) -> None:
+        super().setUp()
+        # Borrowers not migrated yet open the database by this path (#801).
+        self.database_path = path_alias(self.database, self.tmp_path)
+
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         (self.sources_root / "managed").mkdir()
         self.photos = self.sources_root / "photos"
@@ -52,21 +47,7 @@ class _AdoptionFixture(unittest.TestCase):
         self.albums.mkdir()
         (self.albums / "photo.jpg").write_bytes(b"jpeg-bytes")
 
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Alice")
-
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-        )
         self.s3 = fake_vault_buckets(self)
-        for target in (
-            "app.database.settings",
-            "app.services.vaults.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
@@ -80,7 +61,7 @@ class _AdoptionFixture(unittest.TestCase):
         self.addCleanup(mount_patcher.stop)
 
     def _vault_count(self) -> int:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM vaults").fetchone()
         return int(row["total"])
 
@@ -229,8 +210,8 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
     """Seam 5: Vault root overlap and concurrent adoption fail closed."""
 
     def _insert_vault(self, source_root: Path) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_vault(
+        with self.database.connect() as connection:
+            seed_vault(
                 connection, id=1, uuid="11111111-1111-1111-1111-111111111111",
                 name="Existing", source_root=str(source_root),
             )
@@ -254,7 +235,7 @@ class VaultAdoptionOverlapTests(_AdoptionFixture):
             self._adopt(name="Contains", relative_path="albums")
         self.assertEqual(contains.exception.reason, "overlap")
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
         with self.assertRaises(vaults_service.VaultAdoptionError) as stopping:
             self._adopt(name="Stopping", relative_path="albums/2020")
@@ -290,7 +271,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
     def _adopt_for_verified_scan(self):
         created = self._adopt()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],)).fetchone())
 
     def test_successful_adoption_scan_catalogs_existing_regular_file(self) -> None:
@@ -311,7 +292,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             result = scan_vault(dict(vault))
 
         self.assertGreaterEqual(result.get("local", 0), 1)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertIn("photo.jpg", by_path)
@@ -354,7 +335,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         scan_tree(dict(vault), "2026-11-02T00:00:00+00:00")
         (self.albums / "old.jpg").unlink()
         (self.albums / "healthy.jpg").write_bytes(b"healthy new content")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             file_id = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")["id"]
             version_id = catalog.begin_replacement(
@@ -379,7 +360,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         renames.assert_not_called()
         self.assertEqual(result["local"], 1)
         self.assertEqual(result["local_incomplete"], 1)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
             self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in str(p["message_params"]) for p in problems))
             self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
@@ -394,7 +375,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         from app.storage import _verified_local_scan
 
         vault = self._adopt_for_verified_scan()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=%s", (vault["id"],))
         vault["lifecycle"] = "reconnect_required"
         real_open = os.open
@@ -409,11 +390,11 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         with patch("app.storage.hash_stable_regular_file", side_effect=PermissionError("denied")):
             *_, complete = _verified_local_scan(vault, "2026-11-03T02:00:00+00:00")
         self.assertFalse(complete)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT lifecycle FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["lifecycle"], "reconnect_required")
         *_, complete = _verified_local_scan(vault, "2026-11-03T03:00:00+00:00")
         self.assertTrue(complete)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT lifecycle FROM vaults WHERE id=%s", (vault["id"],)).fetchone()["lifecycle"], "active")
 
     def test_incomplete_scan_still_holds_and_notifies_cloud_only_conflicts(self) -> None:
@@ -425,7 +406,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
         vault = self._adopt_for_verified_scan()
         scan_tree(dict(vault), "2026-11-02T00:00:00+00:00")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
             row = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")
@@ -457,7 +438,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertEqual(result["local_incomplete"], 1)
         self.assertEqual(result["auto_uploads"], 0)
         cloud.return_value.delete_object.assert_not_called()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT availability FROM archive_versions WHERE id=%s", (version_id,)).fetchone()["availability"], "available")
             events = {r["event"] for r in connection.execute("SELECT event FROM notifications").fetchall()}
             self.assertLessEqual({"file_unreadable", "cloud_only_conflict"}, events)
@@ -473,7 +454,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         count = scan_tree(dict(vault), "2026-11-02T00:00:00+00:00")
         self.assertGreaterEqual(count, 2)
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")

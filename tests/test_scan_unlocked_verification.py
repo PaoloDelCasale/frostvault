@@ -14,15 +14,13 @@ from __future__ import annotations
 import hashlib
 import threading
 from contextlib import ExitStack
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from watchfiles import Change
 
-from app.config import Settings
 from app.services.vaults import VAULT_ROW_SQL
-from tests.postgres import PostgresConnection
+from tests.fixtures import override_settings
 from tests.test_vault_adoption import _AdoptionFixture
 
 
@@ -35,7 +33,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
         self.storage = storage
         created = self._adopt()
         self.addCleanup(storage.runtime_status.pop, int(created["id"]), None)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.vault = dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],),
             ).fetchone())
@@ -43,7 +41,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
         self.later = datetime.now(timezone.utc) + timedelta(days=1)
 
     def _rows(self) -> dict[str, dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT id, path, generation, local_sha256 FROM files WHERE vault_id=%s",
                 (self.vault_id,),
@@ -51,7 +49,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
         return {row["path"]: dict(row) for row in rows}
 
     def _jobs(self) -> list[dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return [dict(row) for row in connection.execute(
                 """
                 SELECT j.*, f.path, f.generation, v.source_root
@@ -91,8 +89,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
 
         with ExitStack() as stack:
             for item in (
-                patch("app.storage._runtime_settings",
-                      return_value=replace(Settings(), scan_hash_concurrency=1)),
+                override_settings(scan_hash_concurrency=1),
                 patch("app.storage.LOCAL_SCAN_WRITE_BATCH_SIZE", 4),
                 patch("app.storage.hash_stable_regular_file", side_effect=hook),
                 patch("app.storage.scan_cloud", return_value=0),
@@ -172,7 +169,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
             )
         first = jobs[admitted[0]["id"]]
         self.assertTrue(storage._close_withdrawn_upload(first))
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             closed = connection.execute(
                 "SELECT status, message_key FROM jobs WHERE id=%s", (first["id"],),
             ).fetchone()
@@ -188,7 +185,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
         storage.queue_vault_auto_uploads(dict(self.vault), now=self.later)
         job = self._jobs()[0]
         self.assertIsNone(job["admitted_generation"])  # admitted outside a scan
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE jobs SET admitted_generation=%s WHERE id=%s",
                 (job["generation"], job["id"]),
@@ -207,14 +204,14 @@ class UnlockedVerificationTests(_AdoptionFixture):
         storage = self.storage
         self._scan(lambda: None)
         scan_id = "2026-11-15T10:00:00+00:00"
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE files SET local_seen_at=%s WHERE vault_id=%s AND path='photo.jpg'",
                 (storage._scan_timestamp(scan_id), self.vault_id),
             )
         storage.queue_vault_auto_uploads(dict(self.vault), now=self.later)
         before = self._rows()["photo.jpg"]["generation"]
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             storage._restore_journal_entries(
                 connection, self.vault_id, scan_id, {"photo.jpg": None},
             )

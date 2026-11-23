@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import tempfile
 import threading
 import time
 import unittest
 from contextlib import ExitStack
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,31 +26,24 @@ from app.services import notifications, worker_errors
 from app.services.catalog_events import record_catalog_revision
 from app.services.database_retry import is_retryable_transaction_error
 from app.services.problems import report_problem
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 STAMP = "2026-11-06T10:00:00+00:00"
 
 
-class DatabaseCase(unittest.TestCase):
+class DatabaseCase(FrostVaultTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "catalog"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        super().setUp()
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
-        with PostgresConnection(self.path) as connection:
-            insert_owner(connection)
+        with self.database.connect() as connection:
             for vault_id in (2, 3):
-                seed_vault(connection, vault_id=vault_id, source_root=f"/tmp/v{vault_id}",
+                seed_vault(connection, id=vault_id, source_root=f"/tmp/v{vault_id}",
                            name=f"V{vault_id}")
 
     def seed_unflushed(self, vault_id=2, count=3):
         """Committed catalog rows with durable dirty marks and NO aggregates."""
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for index in range(count):
                 catalog.observe_local_copy(
@@ -62,7 +53,7 @@ class DatabaseCase(unittest.TestCase):
 
     def row_lock_is_held(self, vault_id):
         """True when ANOTHER transaction holds the Vault row (NOWAIT probe)."""
-        with PostgresConnection(self.path) as probe:
+        with self.database.connect() as probe:
             try:
                 probe.execute(
                     "SELECT id FROM vaults WHERE id=%s FOR NO KEY UPDATE NOWAIT", (vault_id,)
@@ -72,7 +63,7 @@ class DatabaseCase(unittest.TestCase):
             return False
 
     def wait_until_waiting(self, backend_pid, timeout=10):
-        with PostgresConnection(self.path) as probe:
+        with self.database.connect() as probe:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 probe.execute("SELECT pg_stat_clear_snapshot()")
@@ -88,7 +79,7 @@ class DatabaseCase(unittest.TestCase):
 class AggregateVaultLockOrderTests(DatabaseCase):
     def test_flush_with_work_takes_the_vault_row_before_writing_aggregates(self):
         self.seed_unflushed(2)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertFalse(self.row_lock_is_held(2))
             aggregates.flush_directory_aggregates(connection, vault_id=2)
             self.assertTrue(self.row_lock_is_held(2))
@@ -100,19 +91,19 @@ class AggregateVaultLockOrderTests(DatabaseCase):
             )
 
     def test_flush_without_work_takes_no_lock(self):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             aggregates.flush_directory_aggregates(connection, vault_id=2)
             self.assertFalse(self.row_lock_is_held(2))
 
     def test_request_vault_rebuild_takes_the_vault_row_first(self):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             aggregates.request_vault_rebuild(connection, 2)
             self.assertTrue(self.row_lock_is_held(2))
 
     def test_global_flush_locks_every_vault_with_work(self):
         self.seed_unflushed(2)
         self.seed_unflushed(3)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             aggregates.flush_directory_aggregates(connection)
             self.assertTrue(self.row_lock_is_held(2))
             self.assertTrue(self.row_lock_is_held(3))
@@ -127,7 +118,7 @@ class AggregateVaultLockOrderTests(DatabaseCase):
             # Scanner order: Vault row first (``_vault_lock_touch``), then the
             # aggregates it flushes at the end of its batch.
             try:
-                with PostgresConnection(self.path) as connection:
+                with self.database.connect() as connection:
                     connection.execute("UPDATE vaults SET name=name WHERE id=2")
                     scanner_has_vault.set()
                     self.assertTrue(publisher_waiting.wait(15))
@@ -142,7 +133,7 @@ class AggregateVaultLockOrderTests(DatabaseCase):
 
         def publish():
             # Used to flush (write aggregates) BEFORE its Vault-row lock.
-            with PostgresConnection(self.path) as connection:
+            with self.database.connect() as connection:
                 pid = connection.info.backend_pid
                 watcher = threading.Thread(
                     target=lambda: (self.wait_until_waiting(pid), publisher_waiting.set())
@@ -160,7 +151,7 @@ class AggregateVaultLockOrderTests(DatabaseCase):
             thread.join(30)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertGreaterEqual(
                 connection.execute("SELECT COUNT(*) AS n FROM directory_aggregates WHERE vault_id=2").fetchone()["n"], 4,
             )
@@ -175,7 +166,7 @@ class WorkerErrorLoggingTests(DatabaseCase):
             raise RuntimeError("boom: connection refused")
         except RuntimeError as error:
             exc = error
-        with PostgresConnection(self.path) as connection, \
+        with self.database.connect() as connection, \
                 self.assertLogs("app.services.worker_errors", level="ERROR") as captured:
             worker_errors.record_worker_error(
                 connection, component="source_watcher", exc=exc, vault_id=2, password="SECRET",
@@ -189,7 +180,7 @@ class WorkerErrorLoggingTests(DatabaseCase):
         self.assertNotIn("SECRET", text, "caller detail kwargs must never be logged")
 
     def test_exception_is_logged_even_when_no_owner_exists_to_notify(self):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("DELETE FROM owner")
             with self.assertLogs("app.services.worker_errors", level="ERROR"):
                 worker_errors.record_worker_error(connection, component="startup", exc=RuntimeError("x"))
@@ -228,13 +219,13 @@ class WatcherRecoveryTests(DatabaseCase):
         self.enterContext(patch.dict(storage.runtime_status, clear=True))
 
     def open_problem(self, component="source_watcher"):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             worker_errors.record_worker_error(
                 connection, component=component, exc=RuntimeError("x"), vault_id=2,
             )
 
     def open_problem_count(self):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             return notifications.count_open_problems(connection)
 
     def test_retryable_error_classification_covers_deadlock(self):
@@ -274,10 +265,10 @@ class WatcherRecoveryTests(DatabaseCase):
         self.open_problem("source_watcher")
         self.open_problem("cloud_scan")
         self.assertEqual(self.open_problem_count(), 2)
-        with patch("app.storage.db", side_effect=lambda: PostgresConnection(self.path)):
+        with patch("app.storage.db", side_effect=self.database.connect):
             storage._resolve_worker_error("source_watcher", 2)
         self.assertEqual(self.open_problem_count(), 1)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT problem_status FROM notifications WHERE event='internal_error' ORDER BY id"
             ).fetchall()
@@ -291,7 +282,7 @@ class WatcherRecoveryTests(DatabaseCase):
         """The production loop: failure reports; the next healthy cycle closes."""
         self.open_problem("source_watcher")
         self.assertEqual(self.open_problem_count(), 1)
-        root = Path(self.tmp.name) / "root"
+        root = self.tmp_path / "root"
         root.mkdir()
 
         async def run():
@@ -308,14 +299,14 @@ class WatcherRecoveryTests(DatabaseCase):
                 return function(*args, **kwargs)
 
             with ExitStack() as stack:
-                stack.enter_context(patch("app.storage.db", side_effect=lambda: PostgresConnection(self.path)))
+                stack.enter_context(patch("app.storage.db", side_effect=self.database.connect))
                 stack.enter_context(patch("app.storage.awatch", side_effect=quiet_watch))
                 stack.enter_context(patch("app.storage.asyncio.to_thread", side_effect=direct))
                 stack.enter_context(patch("app.storage.source_layout.vault_local_access",
                                           return_value=SimpleNamespace(local_operations_allowed=True)))
-                stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(
-                    filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
-                stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+                stack.enter_context(override_settings(
+                    filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30,
+                    filesystem_watch_force_polling=False))
                 stack.enter_context(patch("app.storage.scan_vault", return_value={}))
                 task = asyncio.create_task(storage._watch_vault_filesystem(
                     {"id": 2, "source_root": str(root)}))
@@ -334,7 +325,7 @@ class WatcherRecoveryTests(DatabaseCase):
 
     def test_failing_cycle_does_not_resolve_the_problem(self):
         self.open_problem("source_watcher")
-        root = Path(self.tmp.name) / "root"
+        root = self.tmp_path / "root"
         root.mkdir()
         (root / "new").mkdir()
 
@@ -354,15 +345,15 @@ class WatcherRecoveryTests(DatabaseCase):
 
             real_sleep = asyncio.sleep
             with ExitStack() as stack:
-                stack.enter_context(patch("app.storage.db", side_effect=lambda: PostgresConnection(self.path)))
+                stack.enter_context(patch("app.storage.db", side_effect=self.database.connect))
                 stack.enter_context(patch("app.storage.awatch", side_effect=watch_with_change))
                 stack.enter_context(patch("app.storage.asyncio.to_thread", side_effect=direct))
                 stack.enter_context(patch("app.storage.apply_filesystem_changes", side_effect=failing_apply))
                 stack.enter_context(patch("app.storage.source_layout.vault_local_access",
                                           return_value=SimpleNamespace(local_operations_allowed=True)))
-                stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(
-                    filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
-                stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True)))
+                stack.enter_context(override_settings(
+                    filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30,
+                    filesystem_watch_force_polling=True))
                 stack.enter_context(patch("app.storage.scan_vault", return_value={}))
                 task = asyncio.create_task(storage._watch_vault_filesystem(
                     {"id": 2, "source_root": str(root)}))

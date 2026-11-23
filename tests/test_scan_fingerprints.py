@@ -11,11 +11,10 @@ Seams under test:
 from __future__ import annotations
 
 import threading
-from dataclasses import replace
 from unittest.mock import patch
 
 from app.config import Settings
-from tests.postgres import PostgresConnection
+from tests.fixtures import override_settings
 from tests.test_vault_adoption import _AdoptionFixture
 from app.services.vaults import VAULT_ROW_SQL
 
@@ -44,19 +43,16 @@ class ScanFingerprintTests(_AdoptionFixture):
         created = self._adopt()
         # The runtime status is process-wide; Vault ids repeat across tests.
         self.addCleanup(runtime_status.pop, int(created["id"]), None)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],),
             ).fetchone())
 
     def _concurrency(self, value: int):
-        return patch(
-            "app.storage._runtime_settings",
-            return_value=replace(Settings(), scan_hash_concurrency=value),
-        )
+        return override_settings(scan_hash_concurrency=value)
 
     def _digests(self, vault_id: int) -> dict[str, str | None]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT path, local_sha256 FROM files WHERE vault_id=%s", (vault_id,),
             ).fetchall()
@@ -204,7 +200,7 @@ class ScanFingerprintTests(_AdoptionFixture):
         # Not observed by this scan (#696): its new row is undone.
         self.assertNotIn("img03.heic", digests)
         self.assertEqual(sum(1 for value in digests.values() if value), 12)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             problems = connection.execute(
                 "SELECT event, message_params FROM notifications WHERE problem_status='open'"
             ).fetchall()
@@ -235,13 +231,13 @@ class PreviousSourceErrorTests(_AdoptionFixture):
         self.assertTrue(runtime["scanning"])
         self.assertEqual(runtime["last_error_source"], "Source scan blocked: replaced")
         self.assertEqual(runtime["last_error_source_at"], failed_at)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             overlay = runtime_fields_from_health(load_vault_health(connection, vault_id))
         self.assertEqual(overlay["last_error_source"], "Source scan blocked: replaced")
         self.assertIsNotNone(overlay["last_error_source_at"])
 
         storage._record_scan_component_health(vault_id, "source", ok=True, verified=True)
         self.assertIsNone(storage.runtime_status[vault_id]["last_error_source_at"])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             overlay = runtime_fields_from_health(load_vault_health(connection, vault_id))
         self.assertIsNone(overlay["last_error_source_at"])

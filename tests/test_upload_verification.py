@@ -8,8 +8,6 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import hashlib
@@ -18,7 +16,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
@@ -29,9 +26,7 @@ from app.storage import (
     cancel_jobs,
     process_jobs_once,
 )
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import Database, FrostVaultTestCase, create_owner, fresh_database, override_settings, seed_vault
 from tests import catalog_probe
 
 
@@ -78,19 +73,17 @@ def _seed_previous_current(connection, path: str, content: bytes, provider_versi
 
 
 def _prepare_plain_vault(
-    root: Path, *, relative_path: str, payload: bytes
-) -> tuple[Path, Path]:
+    database: Database, root: Path, *, relative_path: str, payload: bytes
+) -> Path:
+    """The Owner, Vault 2 on ``root/source`` and its one observed Local Copy."""
     source = root / "source"
     source.mkdir()
     target = source / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
-    assert migrated.returncode == 0, migrated.stderr
-    with PostgresConnection(str(database_path)) as connection:
-        insert_owner(connection)
-        seed_vault(connection, vault_id=2, source_root=str(source))
+    with database.connect() as connection:
+        create_owner(connection)
+        seed_vault(connection, id=2, source_root=str(source))
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
@@ -101,11 +94,11 @@ def _prepare_plain_vault(
             mtime_ns=target.stat().st_mtime_ns,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-    return source, database_path
+    return source
 
 
 def _run_plain_upload(
-    database_path: Path,
+    database: Database,
     *,
     relative_path: str,
     read_back_bytes: bytes | None,
@@ -132,50 +125,48 @@ def _run_plain_upload(
             on_chunk(content[offset : offset + 3])
         return len(read_back_bytes)
 
-    database_settings = SimpleNamespace(
-        database_dsn=database_dsn(str(database_path)),
-    )
-    worker_settings = SimpleNamespace(
+    worker_settings = dict(
         operation_concurrency=1,
         restore_poll_interval=900,
     )
     if read_back_bytes is not None:
         size = len(read_back_bytes)
     else:
-        with PostgresConnection(str(database_path)) as connection:
+        with database.connect() as connection:
             size = connection.execute("SELECT local_size AS size FROM files LIMIT 1").fetchone()["size"]
-    with patch("app.database.settings", database_settings):
-        queue_jobs(relative_path, "upload", 2)
-        with (
-            patch("app.storage.settings", worker_settings),
-            patch("app.storage.validate_cloud_vault"),
-            mock_sdk_upload( side_effect=fake_sdk_upload),
-            mock_sdk_read( side_effect=fake_sdk_read),
-            patch(
-                "app.storage.s3_client",
-                return_value=VersionedS3Stub(
-                    version_bytes=read_back_bytes if exact_version_bytes is None else exact_version_bytes,
-                    head_object=lambda **_: {
-                        "VersionId": "s3-version-1",
-                        "ContentLength": size,
-                        "StorageClass": "STANDARD",
-                        "ETag": '"etag"',
-                    }
-                ),
+    queue_jobs(relative_path, "upload", 2)
+    with (
+        override_settings(**worker_settings),
+        patch("app.storage.validate_cloud_vault"),
+        mock_sdk_upload( side_effect=fake_sdk_upload),
+        mock_sdk_read( side_effect=fake_sdk_read),
+        patch(
+            "app.storage.s3_client",
+            return_value=VersionedS3Stub(
+                version_bytes=read_back_bytes if exact_version_bytes is None else exact_version_bytes,
+                head_object=lambda **_: {
+                    "VersionId": "s3-version-1",
+                    "ContentLength": size,
+                    "StorageClass": "STANDARD",
+                    "ETag": '"etag"',
+                }
             ),
-        ):
-            process_jobs_once()
+        ),
+    ):
+        process_jobs_once()
     return upload_calls
 
 
 
 
-class PlainUploadVerificationTests(unittest.TestCase):
+class PlainUploadVerificationTests(FrostVaultTestCase):
+    owner = None  # _prepare_plain_vault creates it with the Vault
+
     def test_response_version_wins_current_key_race_and_unknown_copy_is_not_purged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = b"good"
-            _source, path = _prepare_plain_vault(Path(directory), relative_path="report.txt", payload=payload)
-            with PostgresConnection(str(path)) as connection:
+            _prepare_plain_vault(self.database, Path(directory), relative_path="report.txt", payload=payload)
+            with self.database.connect() as connection:
                 previous, key = _seed_previous_current(connection, "report.txt", b"old", "previous-only-copy")
             provider = VersionedS3Stub(
                 initial_versions={key: {"previous-only-copy", "concurrent-writer"}},
@@ -183,11 +174,10 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 head_object=lambda **kwargs: {"VersionId": kwargs.get("VersionId") or "concurrent-writer",
                                               "ContentLength": len(payload), "ETag": "etag"},
             )
-            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(path)))):
-                queue_jobs("report.txt", "upload", 2)
-                with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), mock_sdk_upload(return_value={"VersionId": "upload-response"}):
-                    process_jobs_once()
-            with PostgresConnection(str(path)) as connection:
+            queue_jobs("report.txt", "upload", 2)
+            with patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), mock_sdk_upload(return_value={"VersionId": "upload-response"}):
+                process_jobs_once()
+            with self.database.connect() as connection:
                 versions = _versions(connection, "report.txt")
                 job = connection.execute("SELECT status, message FROM jobs").fetchone()
             self.assertEqual({row["provider_version_id"] for row in versions}, {"previous-only-copy", "upload-response"})
@@ -201,11 +191,11 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"good"
-            _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=payload)
-            with PostgresConnection(str(path)) as connection:
+            _prepare_plain_vault(self.database, root, relative_path="report.txt", payload=payload)
+            with self.database.connect() as connection:
                 previous, key = _seed_previous_current(connection, "report.txt", b"old", "previous-only-copy")
-            _run_plain_upload(path, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
-            with PostgresConnection(str(path)) as connection:
+            _run_plain_upload(self.database, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 versions = _versions(connection, "report.txt")
                 old = next(row for row in versions if row["id"] == previous)
@@ -219,9 +209,9 @@ class PlainUploadVerificationTests(unittest.TestCase):
     def test_changed_current_key_does_not_assign_mismatch_to_good_exact_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _source, path = _prepare_plain_vault(root, relative_path="report.txt", payload=b"good")
-            _run_plain_upload(path, relative_path="report.txt", read_back_bytes=b"evil", exact_version_bytes=b"good")
-            with PostgresConnection(str(path)) as connection:
+            _prepare_plain_vault(self.database, root, relative_path="report.txt", payload=b"good")
+            _run_plain_upload(self.database, relative_path="report.txt", read_back_bytes=b"evil", exact_version_bytes=b"good")
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
                 job = connection.execute("SELECT status FROM jobs").fetchone()
             self.assertEqual(job["status"], "completed")
@@ -234,16 +224,16 @@ class PlainUploadVerificationTests(unittest.TestCase):
             root = Path(directory)
             payload = b"verified-content"
             expected_digest = _sha256_hex(payload)
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             upload_calls = _run_plain_upload(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 read_back_bytes=payload,
             )
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
                 listed = catalog_probe.list_file_rows(catalog, 2)
@@ -271,16 +261,16 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"local-bytes"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             _run_plain_upload(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 read_back_bytes=None,
             )
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
                 listed = catalog_probe.list_file_rows(catalog, 2)
@@ -304,16 +294,16 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"local-bytes"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             _run_plain_upload(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 read_back_bytes=b"different-remote-bytes",
             )
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
                 listed = catalog_probe.list_file_rows(catalog, 2)
@@ -335,11 +325,11 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"read-only-directory-content"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             _run_plain_upload(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 read_back_bytes=payload,
             )
@@ -352,8 +342,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"retry-verification-without-reupload"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             uploads: list[tuple[str, ...]] = []
             streams: list[tuple[str, ...]] = []
@@ -371,10 +361,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 kwargs["on_chunk"](payload)
                 return len(payload)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -387,36 +374,35 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     "ETag": '"etag"',
                 }
             )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=fake_upload),
-                    mock_sdk_read( side_effect=flaky_stream),
-                    patch("app.storage.s3_client", return_value=s3),
-                ):
-                    process_jobs_once()
+            queue_jobs("report.txt", "upload", 2)
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=fake_upload),
+                mock_sdk_read( side_effect=flaky_stream),
+                patch("app.storage.s3_client", return_value=s3),
+            ):
+                process_jobs_once()
 
-                    with PostgresConnection(str(database_path)) as connection:
-                        first = connection.execute(
-                            "SELECT status, run_after, archive_version_id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
-                            ("report.txt",),
-                        ).fetchone()
-                        connection.execute(
-                            "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
-                            ("report.txt",),
-                        )
-                        count = connection.execute(
-                            "SELECT COUNT(*) AS total FROM archive_versions"
-                        ).fetchone()["total"]
-                    self.assertEqual(first["status"], "retrying")
-                    self.assertIsNotNone(first["archive_version_id"])
-                    self.assertEqual(count, 1)
+                with self.database.connect() as connection:
+                    first = connection.execute(
+                        "SELECT status, run_after, archive_version_id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
+                        ("report.txt",),
+                    ).fetchone()
+                    connection.execute(
+                        "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
+                        ("report.txt",),
+                    )
+                    count = connection.execute(
+                        "SELECT COUNT(*) AS total FROM archive_versions"
+                    ).fetchone()["total"]
+                self.assertEqual(first["status"], "retrying")
+                self.assertIsNotNone(first["archive_version_id"])
+                self.assertEqual(count, 1)
 
-                    process_jobs_once()
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status, archive_version_id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -446,8 +432,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
             root = Path(directory)
             original = b"upload-snapshot"
             mutated = b"changed-after-first-attempt"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=original
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=original
             )
             uploads: list[tuple[str, ...]] = []
             streams: list[tuple[str, ...]] = []
@@ -465,10 +451,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 kwargs["on_chunk"](original)
                 return len(original)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
@@ -481,26 +464,25 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     "ETag": '"etag"',
                 }
             )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=fake_upload),
-                    mock_sdk_read( side_effect=flaky_stream),
-                    patch("app.storage.s3_client", return_value=s3),
-                ):
-                    process_jobs_once()
-                    source.joinpath("report.txt").write_bytes(mutated)
+            queue_jobs("report.txt", "upload", 2)
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=fake_upload),
+                mock_sdk_read( side_effect=flaky_stream),
+                patch("app.storage.s3_client", return_value=s3),
+            ):
+                process_jobs_once()
+                source.joinpath("report.txt").write_bytes(mutated)
 
-                    with PostgresConnection(str(database_path)) as connection:
-                        connection.execute(
-                            "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
-                            ("report.txt",),
-                        )
-                    process_jobs_once()
+                with self.database.connect() as connection:
+                    connection.execute(
+                        "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' WHERE file_id=(SELECT id FROM files WHERE path=%s)",
+                        ("report.txt",),
+                    )
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
                 job = connection.execute(
                     """
@@ -544,8 +526,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
             root = Path(directory)
             payload = b"original-bytes"
             mutated = b"mutated-after-upload"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             local_file = source / "report.txt"
             upload_calls: list[tuple[str, ...]] = []
@@ -560,7 +542,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                     local_file.write_bytes(mutated)
                     # The watcher observes the change: a newer generation,
                     # which the publication never matches (ADR-0035).
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         ArchiveCatalog(connection).observe_local_copy(
                             vault_id=2, path="report.txt", file_type="regular",
                             size=len(mutated), mtime_ns=local_file.stat().st_mtime_ns,
@@ -572,36 +554,32 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 kwargs["on_chunk"](payload)
                 return len(payload)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=mutating_sdk_upload),
-                    mock_sdk_read( side_effect=fake_stream),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            version_bytes=payload,
-                            head_object=lambda **_: {
-                                "VersionId": "s3-version-1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
+            queue_jobs("report.txt", "upload", 2)
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=mutating_sdk_upload),
+                mock_sdk_read( side_effect=fake_stream),
+                patch(
+                    "app.storage.s3_client",
+                    return_value=VersionedS3Stub(
+                        version_bytes=payload,
+                        head_object=lambda **_: {
+                            "VersionId": "s3-version-1",
+                            "ContentLength": len(payload),
+                            "StorageClass": "STANDARD",
+                            "ETag": '"etag"',
+                        }
                     ),
-                ):
-                    process_jobs_once()
+                ),
+            ):
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
@@ -629,8 +607,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"unchanged-bytes"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             local_file = source / "report.txt"
             generations: list[int] = []
@@ -640,7 +618,7 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 if command[:1] != ("upload",) or len(command) < 3:
                     return
                 info = local_file.stat()
-                with PostgresConnection(str(database_path)) as connection:
+                with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
                     before = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
                     catalog.observe_local_copies_batch(
@@ -656,36 +634,32 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 kwargs["on_chunk"](payload)
                 return len(payload)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload(side_effect=rescanning_sdk_upload),
-                    mock_sdk_read(side_effect=fake_stream),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            version_bytes=payload,
-                            head_object=lambda **_: {
-                                "VersionId": "s3-version-1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
+            queue_jobs("report.txt", "upload", 2)
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload(side_effect=rescanning_sdk_upload),
+                mock_sdk_read(side_effect=fake_stream),
+                patch(
+                    "app.storage.s3_client",
+                    return_value=VersionedS3Stub(
+                        version_bytes=payload,
+                        head_object=lambda **_: {
+                            "VersionId": "s3-version-1",
+                            "ContentLength": len(payload),
+                            "StorageClass": "STANDARD",
+                            "ETag": '"etag"',
+                        }
                     ),
-                ):
-                    process_jobs_once()
+                ),
+            ):
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -708,18 +682,23 @@ class PlainUploadVerificationTests(unittest.TestCase):
         )
         for relative_path, payload in cases:
             with self.subTest(path=relative_path):
-                with tempfile.TemporaryDirectory() as directory:
+                # One catalog per case: each seeds its own Vault 2.
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    fresh_database() as database,
+                    override_settings(database_dsn=database.dsn),
+                ):
                     root = Path(directory)
                     expected_digest = _sha256_hex(payload)
-                    _source, database_path = _prepare_plain_vault(
-                        root, relative_path=relative_path, payload=payload
+                    _prepare_plain_vault(
+                        database, root, relative_path=relative_path, payload=payload
                     )
                     _run_plain_upload(
-                        database_path,
+                        database,
                         relative_path=relative_path,
                         read_back_bytes=payload,
                     )
-                    with PostgresConnection(str(database_path)) as connection:
+                    with database.connect() as connection:
                         observed = _observed(connection, relative_path)
                         job = connection.execute(
                             "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
@@ -738,41 +717,37 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"retry-me"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
 
             def flaky_sdk_upload(*args, **kwargs) -> None:
                 raise RuntimeError("SlowDown: Please reduce your request rate")
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("report.txt", "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=flaky_sdk_upload),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            head_object=lambda **_: {
-                                "VersionId": "s3-version-1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
+            queue_jobs("report.txt", "upload", 2)
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=flaky_sdk_upload),
+                patch(
+                    "app.storage.s3_client",
+                    return_value=VersionedS3Stub(
+                        head_object=lambda **_: {
+                            "VersionId": "s3-version-1",
+                            "ContentLength": len(payload),
+                            "StorageClass": "STANDARD",
+                            "ETag": '"etag"',
+                        }
                     ),
-                ):
-                    process_jobs_once()
+                ),
+            ):
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     """
                     SELECT status, retry_count, run_after, message
@@ -792,8 +767,8 @@ class PlainUploadVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"cancel-me"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             job_id_holder: dict[str, int] = {}
 
@@ -808,40 +783,36 @@ class PlainUploadVerificationTests(unittest.TestCase):
                 cancel_jobs([job_id_holder["id"]])
                 raise OperationCancelled("Upload stopped")
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
             )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs("report.txt", "upload", 2)
-                with PostgresConnection(str(database_path)) as connection:
-                    job_id_holder["id"] = connection.execute(
-                        "SELECT id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
-                        ("report.txt",),
-                    ).fetchone()["id"]
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=cancelling_sdk_upload),
-                    mock_sdk_read( side_effect=cancelling_stream),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            head_object=lambda **_: {
-                                "VersionId": "s3-version-1",
-                                "ContentLength": len(payload),
-                                "StorageClass": "STANDARD",
-                                "ETag": '"etag"',
-                            }
-                        ),
+            queued = queue_jobs("report.txt", "upload", 2)
+            with self.database.connect() as connection:
+                job_id_holder["id"] = connection.execute(
+                    "SELECT id FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
+                    ("report.txt",),
+                ).fetchone()["id"]
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=cancelling_sdk_upload),
+                mock_sdk_read( side_effect=cancelling_stream),
+                patch(
+                    "app.storage.s3_client",
+                    return_value=VersionedS3Stub(
+                        head_object=lambda **_: {
+                            "VersionId": "s3-version-1",
+                            "ContentLength": len(payload),
+                            "StorageClass": "STANDARD",
+                            "ETag": '"etag"',
+                        }
                     ),
-                ):
-                    process_jobs_once()
+                ),
+            ):
+                process_jobs_once()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),

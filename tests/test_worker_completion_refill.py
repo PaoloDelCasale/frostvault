@@ -5,12 +5,11 @@ import asyncio
 import threading
 import unittest
 from contextlib import ExitStack
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import storage
 from tests import test_worker_loop_decoupling as worker_tests
-from tests.postgres import PostgresConnection
+from tests.fixtures import override_settings
 
 
 class WorkerCompletionRefillTests(unittest.TestCase):
@@ -29,7 +28,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
         first = self.worker._insert_job("slow.txt", "2026-07-01T00:00:00+00:00")
         second = self.worker._insert_job("fast.txt", "2026-07-01T00:00:01+00:00")
         started, release, completed, second_started = (threading.Event() for _ in range(4))
-        runtime = SimpleNamespace(
+        runtime = dict(
             operation_concurrency=1, bandwidth_limit_kibps=None,
             restore_poll_interval=0, queue_poll_interval=60,
             scan_interval=3600, audit_interval=3600,
@@ -44,7 +43,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
                 if not release.wait(10):
                     raise AssertionError("test did not release its transfer")
                 if pause:
-                    with PostgresConnection(self.worker.path) as connection:
+                    with self.worker.database.connect() as connection:
                         connection.execute("UPDATE vaults SET paused=TRUE WHERE id=10")
             else:
                 second_started.set()
@@ -73,7 +72,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(database_patch)
             stack.enter_context(handler_patch)
-            stack.enter_context(patch.object(storage, "_runtime_settings", return_value=runtime))
+            stack.enter_context(override_settings(**runtime))
             stack.enter_context(patch.object(storage, "persisted_maintenance_ages", return_value={
                 name: 0.0 for name in storage.MAINTENANCE_TASKS
             }))
@@ -95,7 +94,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
                 if pause:
                     await real_sleep(0.3)
                     self.assertFalse(second_started.is_set())
-                    with PostgresConnection(self.worker.path) as connection:
+                    with self.worker.database.connect() as connection:
                         row = connection.execute(
                             "SELECT j.status, l.token AS claim_token FROM jobs j "
                             "LEFT JOIN job_leases l ON l.job_id=j.id WHERE j.id=%s", (second,)).fetchone()

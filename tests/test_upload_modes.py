@@ -1,10 +1,6 @@
 """PostgreSQL worker acceptance for #460; disposable PR CI only."""
 import hashlib
 import io
-import tempfile
-import unittest
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from botocore.exceptions import ClientError
@@ -15,7 +11,7 @@ from app.services.operation_policies import OperationPolicy, get_policy, set_pol
 from app.services.upload_snapshot import sha256_b64
 from app.services.upload_snapshot import UploadSnapshot
 from app.storage import process_jobs_once
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import FrostVaultTestCase
 from tests.snapshot_s3_stub import VersionedS3Stub
 from tests.test_upload_verification import _observed, _prepare_plain_vault
 from tests import catalog_probe
@@ -34,15 +30,13 @@ def _job_snapshot(connection, job_id):
         owner_gid=row["owner_gid"], file_mode=row["file_mode"])
 
 
-class UploadModeTests(unittest.TestCase):
+class UploadModeTests(FrostVaultTestCase):
+    owner = None  # _prepare_plain_vault creates it with the Vault
+
     def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
+        super().setUp()
         self.payload = b"independent snapshot A"
-        self.source, self.identity = _prepare_plain_vault(Path(temp.name), relative_path="a.txt", payload=self.payload)
-        self.patch = patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(self.identity))))
-        self.patch.start()
-        self.addCleanup(self.patch.stop)
+        self.source = _prepare_plain_vault(self.database, self.tmp_path, relative_path="a.txt", payload=self.payload)
         self.puts = 0
         self.upload_response = {"VersionId": "raw-version", "ChecksumSHA256": sha256_b64(self.payload)}
         self.head_error = None
@@ -67,7 +61,7 @@ class UploadModeTests(unittest.TestCase):
         snapshot = job["_upload_snapshot"]
         self.assertEqual(snapshot.plaintext_sha256, hashlib.sha256(self.payload).hexdigest())
         # Durable Job evidence exists BEFORE any provider write.
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             before = _job_snapshot(connection, job["id"])
             sent = connection.execute(
                 "SELECT count(*) AS n FROM upload_attempts WHERE job_id=%s AND send_started_at IS NOT NULL",
@@ -86,7 +80,7 @@ class UploadModeTests(unittest.TestCase):
     def observe(self):
         """The watcher's observation of the current source bytes."""
         path = self.source / "a.txt"
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=path.stat().st_size,
                 mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06T00:00:00+00:00")
@@ -96,7 +90,7 @@ class UploadModeTests(unittest.TestCase):
             process_jobs_once()
 
     def rows(self):
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             job = connection.execute(
                 """SELECT j.*, ju.verification_mode AS upload_verification_requested
                    FROM jobs j JOIN job_uploads ju ON ju.job_id=j.id ORDER BY j.id DESC LIMIT 1""").fetchone()
@@ -111,11 +105,11 @@ class UploadModeTests(unittest.TestCase):
         return job, versions, item
 
     def set_mode(self, mode):
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             set_policy(connection, 2, OperationPolicy(upload_verification=mode))
 
     def test_inherited_default_s3_proof_verifies_without_GET_and_allows_usual_guards(self):
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             self.assertIsNone(get_policy(connection, 2).upload_verification)
             self.assertEqual(get_policy(connection, 2).effective_upload_verification(), "s3_checksum")
         self.queue(); self.run_worker()
@@ -126,7 +120,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["integrity"], "verified")
         self.assertEqual(item["local_copy"]["plaintext_sha256"], item["latest_version"]["plaintext_sha256"])
         self.assertEqual(self.s3.reads, [])
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             self.assertTrue(catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]["cleanup_eligible"])
 
     def test_requested_mode_frozen_at_admission_and_history_not_rewritten(self):
@@ -197,7 +191,7 @@ class UploadModeTests(unittest.TestCase):
         from app.services import cloud_preflight_gate
         self.proof = {'VersionId':'raw-version','ContentLength':len(self.payload),
             'ChecksumType':'FULL_OBJECT','ChecksumSHA256':sha256_b64(self.payload)}
-        cloud_preflight_gate.check(lambda:PostgresConnection(str(self.identity)),lambda:None)
+        cloud_preflight_gate.check(lambda:self.database.connect(),lambda:None)
         self.run_worker()
         self.assertEqual(self.rows()[0]['status'],'completed')
         self.assertEqual(self.puts,1)
@@ -318,7 +312,7 @@ class UploadModeTests(unittest.TestCase):
         path = self.source / "a.txt"
         path.write_bytes(self.payload)
         snapshot, _ = prepare_upload_snapshot(path, lambda: None)
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="a.txt", file_type="regular", size=len(self.payload), mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06")
         self.upload_response = {"VersionId": "raw-version", "ChecksumType": "COMPOSITE", "ChecksumSHA256": snapshot.checksum_sha256}
         self.queue(); self.run_worker()
@@ -327,7 +321,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(versions[0]["verification_method"], "s3_checksum")
         self.assertEqual(versions[0]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
         self.assertEqual(self.s3.reads, [])
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(_job_snapshot(connection, job["id"]).as_json(), snapshot.as_json())
 
     def test_wrong_checksum_type_from_HEAD_retains_version_and_blocks(self):
@@ -359,7 +353,7 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(self.puts, 1)
         self.head_error = None
         self.set_mode("read_back")  # Retry still uses original S3 mode.
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after='2020-01-01T00:00:00+00:00'")
         self.run_worker()
         self.assertEqual(self.rows()[0]["status"], "completed")
@@ -378,7 +372,7 @@ class UploadModeTests(unittest.TestCase):
         # A's digest is never published onto B's observation.
         self.assertNotEqual(item["local_copy"]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
         self.assertIsNone(item["matched_version_id"])
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             listing = catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]
         self.assertFalse(listing["cleanup_eligible"])
         self.assertNotEqual(listing["state"], "protected")
@@ -423,12 +417,12 @@ class UploadModeTests(unittest.TestCase):
         self.assertEqual(self.puts, 1)
         self.assertEqual(self.s3.deleted, [])
         self.assertEqual(self.s3.versions[key], {"prior-snapshot", "raw-version"})
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after='2020-01-01T00:00:00+00:00'")
         return key
 
     def _vault_uuid(self):
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
 
     def test_verified_cleanup_retry_does_not_reprove_published_current(self):
@@ -457,7 +451,7 @@ class UploadModeTests(unittest.TestCase):
         # A replacement with no upload attempt has no independent expected
         # proof: it is never verified against the current local bytes.
         key = f"vaults/{self._vault_uuid()}/a.txt"
-        with PostgresConnection(str(self.identity)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             file_id = catalog_probe.get_file_by_path(catalog, 2, "a.txt")["id"]
             orphan = catalog.begin_replacement(

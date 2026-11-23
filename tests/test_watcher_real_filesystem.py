@@ -27,6 +27,7 @@ from watchfiles import Change, awatch
 from app import storage
 from app.services import watch_plan
 from app.services.fs_preflight import PinnedTree, is_storable_name
+from tests.fixtures import override_settings
 
 NOT_ROOT = unittest.skipIf(
     os.geteuid() == 0,
@@ -195,8 +196,8 @@ class Harness(RealTreeCase):
         # The stand-in database holds no inbox: problems are not this harness's subject.
         self.stack.enter_context(patch("app.storage.report_problem"))
         self.stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
-        self.stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
-        self.stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+        self.stack.enter_context(override_settings(
+            filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30, filesystem_watch_force_polling=False))
         self.stack.enter_context(patch("app.storage.WATCHER_RESTART_BASE_SECONDS", 0.05))
         self.stack.enter_context(patch("app.storage.WATCHER_GAP_RESCAN_MIN_SECONDS", 0.05))
         self.stack.enter_context(patch("app.storage.WATCHER_RECHECK_SECONDS", 0.1))
@@ -647,9 +648,7 @@ class PermissionRecoveryBoundaryTests(Harness):
             self.resolve.side_effect = deny_once
         else:
             repaired.chmod(0o000)
-        self.stack.enter_context(patch(
-            "app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=polling),
-        ))
+        self.stack.enter_context(override_settings(filesystem_watch_force_polling=polling))
         vault = {"id": VAULT_ID, "source_root": str(root), "s3_bucket": "test"}
         scans = []
         walked = []
@@ -823,9 +822,7 @@ class FolderCreatedUnreadableDuringTheWatchTests(Harness):
 
     @NOT_ROOT
     async def test_polling_observer_that_stops_on_it_restarts_around_it(self):
-        self.stack.enter_context(patch(
-            "app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True),
-        ))
+        self.stack.enter_context(override_settings(filesystem_watch_force_polling=True))
         await self.run_lifecycle(self.make_root())
         # Not an internal error: the path is the problem, and a scan names it.
         self.report.assert_not_called()

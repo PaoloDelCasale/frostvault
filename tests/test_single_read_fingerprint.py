@@ -19,12 +19,11 @@ from itertools import islice
 import tempfile
 import time
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.config import Settings
+from tests.fixtures import override_settings
 from app.services import source_devices, throughput
 from app.services import upload_provenance as provenance
 from app.services.source_devices import DeviceSlots, RotationalProbe, UploadFingerprints
@@ -378,8 +377,7 @@ class RotationalDefaultTests(unittest.TestCase):
         self.probe = RotationalProbe(sys_root=str(self.root / "sys"), mdstat=str(self.mdstat))
         source_devices.reset_for_tests(sys_root=str(self.root / "sys"), mdstat=str(self.mdstat))
         self.addCleanup(source_devices.reset_for_tests)
-        self.settings = self.enterContext(patch(
-            "app.config.settings", replace(Settings(), source_device_read_concurrency=None)))
+        self.settings = self.enterContext(override_settings(source_device_read_concurrency=None))
 
     def test_disk_types(self) -> None:
         cases = {
@@ -413,7 +411,7 @@ class RotationalDefaultTests(unittest.TestCase):
         self.assertEqual((slots.limit("location:disk1"), slots.limit("location:cache")), (1, 3))
 
     def test_the_setting_applies_to_every_device(self) -> None:
-        with patch("app.config.settings", replace(Settings(), source_device_read_concurrency=2)):
+        with override_settings(source_device_read_concurrency=2):
             for device in (_dev(8, 1), _dev(259, 1), "location:disk1", "location:cache", "unknown"):
                 with self.subTest(device=device):
                     self.assertEqual(source_devices.configured_limit(device), 2)

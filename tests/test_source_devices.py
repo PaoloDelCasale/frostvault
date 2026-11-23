@@ -19,12 +19,13 @@ import tempfile
 import threading
 import time
 import unittest
-from dataclasses import replace
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.config import Settings
+from tests.fixtures import override_settings
 from app.services import source_devices
 from app.services.source_devices import (
     DeviceResolver, DeviceSlots, HotFiles, ServerPriority, interleave_by_device,
@@ -218,7 +219,7 @@ class DeviceSlotTests(unittest.TestCase):
         with patch.dict(os.environ, {"SOURCE_DEVICE_READ_CONCURRENCY": ""}):
             self.assertIsNone(Settings().source_device_read_concurrency)
         self.assertEqual(Settings().server_priority_iowait_percent, 0)
-        with patch("app.config.settings", replace(Settings(), source_device_read_concurrency=5)):
+        with override_settings(source_device_read_concurrency=5):
             self.assertEqual(source_devices.configured_limit(), 5)
 
 
@@ -339,15 +340,19 @@ class ScanReadsPerDeviceTests(unittest.TestCase):
         source_devices.reset_for_tests(limit=1)
         self.addCleanup(source_devices.reset_for_tests)
 
+    @contextmanager
+    def _scan_settings(self, hashing, concurrency):
+        with (
+            override_settings(scan_hash_concurrency=concurrency),
+            patch("app.storage.hash_stable_regular_file", hashing),
+        ):
+            yield
+
     def _iterate(self, hashing, concurrency=8):
         import app.storage as storage
         return storage._iter_local_fingerprints(
             {"id": 1}, self.root, self.rows,
-        ), patch.multiple(
-            "app.storage",
-            _runtime_settings=lambda: replace(Settings(), scan_hash_concurrency=concurrency),
-            hash_stable_regular_file=hashing,
-        ), patch.object(source_devices, "device_of",
+        ), self._scan_settings(hashing, concurrency), patch.object(source_devices, "device_of",
                         side_effect=lambda path: Path(path).name[0])
 
     def test_one_read_per_device_and_hot_files(self) -> None:

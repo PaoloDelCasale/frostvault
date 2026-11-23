@@ -5,14 +5,11 @@ No mocking of the preflight or transfers. AWS CI buckets are pre-provisioned.
 """
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import hashlib
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
@@ -27,6 +24,7 @@ from tests.s3_integration_support import (
     ensure_versioned_bucket, prepare_plain_vault, require_s3_env,
 )
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, override_settings
 
 
 def _snapshot_mtime_ns(connection, version_id):
@@ -43,8 +41,9 @@ def _snapshot_mtime_ns(connection, version_id):
 
 
 @unittest.skipUnless(os.getenv("TEST_S3_ENDPOINT"), "Set TEST_S3_ENDPOINT for S3 integrity proofs")
-class PlainS3IntegrityIntegrationTests(unittest.TestCase):
+class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
     def setUp(self):
+        super().setUp()
         self.env = require_s3_env()
         self.bucket = os.getenv("TEST_S3_BUCKET", "archive-ci")
         self.endpoint = os.environ["TEST_S3_ENDPOINT"]
@@ -63,30 +62,29 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         self.assertTrue(report.ok, "Test namespace cleanup failed")
 
     def _vault(self, root, relative_path, payload):
-        source, database_path, self.prefix = prepare_plain_vault(
-            root, relative_path=relative_path, payload=payload, bucket=self.bucket,
+        source, self.prefix = prepare_plain_vault(
+            self.database, root, relative_path=relative_path, payload=payload, bucket=self.bucket,
         )
-        return source, database_path
+        return source
 
     def _roundtrip(self, relative_path, payload, *, move=False, multipart_move=False, rename=False):
         digest = hashlib.sha256(payload).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, database_path = self._vault(root, relative_path, payload)
+            source = self._vault(root, relative_path, payload)
             local = source / relative_path
             original_mtime_ns = 1_597_614_120_123_456_789
             os.utime(local, ns=(original_mtime_ns, original_mtime_ns))
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute("UPDATE files SET local_mtime_ns=%s", (original_mtime_ns,))
-            database_settings = SimpleNamespace(database_dsn=database_dsn(str(database_path)))
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 aws_region=self.env["AWS_DEFAULT_REGION"],
                 operation_concurrency=1, restore_poll_interval=900,
             )
-            with patch("app.database.settings", database_settings), patch("app.storage.settings", worker_settings):
+            with override_settings(**worker_settings):
                 queue_jobs(relative_path, "upload", 2)
                 process_jobs_once()
-                with PostgresConnection(str(database_path)) as connection:
+                with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
                     observed = catalog_probe.get_file_by_path(catalog, 2, relative_path)
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='upload'").fetchone()
@@ -106,7 +104,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                     renamed.parent.mkdir(parents=True, exist_ok=True)
                     local.rename(renamed)
                     local = renamed
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         catalog = ArchiveCatalog(connection)
                         timestamp = "2026-11-11T12:00:00+00:00"
                         catalog.mark_local_copy_missing(observed["id"], observed_at=timestamp)
@@ -115,10 +113,10 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                         fingerprint(catalog, 2, relative_path, digest)
                         catalog.confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
                             changed_at=timestamp, vault_id=2)
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         self.assertEqual(len(queue_rename_job(connection, 2, relative_path)), 1)
                     process_jobs_once()
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         job = connection.execute("SELECT status,message FROM jobs WHERE action='rename'").fetchone()
                         self.assertEqual(job["status"], "completed", job["message"])
                         renamed_version = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, relative_path)["current_version"]
@@ -127,7 +125,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                         self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
                 if move:
                     from contextlib import ExitStack
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         connection.execute("UPDATE vaults SET storage_plan=%s::jsonb WHERE id=2",
                             (profile_to_json(guided_profile('economical')),))
                         scheduled = vault_moves.schedule(connection,vault_id=2,target='STANDARD_IA',
@@ -141,7 +139,7 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                                 stack.enter_context(patch(name,8*1024*1024))
                             stack.enter_context(patch('app.services.s3_copy.S3_MULTIPART_COPY_PART_BYTES',5*1024*1024))
                         process_jobs_once()
-                    with PostgresConnection(str(database_path)) as connection:
+                    with self.database.connect() as connection:
                         moved=connection.execute('SELECT status,message,archive_version_id FROM jobs WHERE id=%s',
                                                  (scheduled['job_ids'][0],)).fetchone()
                         self.assertEqual(moved['status'],'completed',moved['message'])
@@ -154,18 +152,18 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
                         listed=s3_client().list_object_versions(Bucket=self.bucket,Prefix=version['object_key'])
                         self.assertEqual(len(listed.get('Versions',[])),1)
                         self.assertNotEqual(listed['Versions'][0]['VersionId'],version['provider_version_id'])
-                with PostgresConnection(str(database_path)) as connection:
+                with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
                     local.unlink()
                     catalog.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
                 queue_jobs(relative_path, "recover", 2)
                 process_jobs_once()
-                with PostgresConnection(str(database_path)) as connection:
+                with self.database.connect() as connection:
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='recover'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
                 self.assertEqual(hashlib.sha256(local.read_bytes()).hexdigest(), digest)
                 self.assertEqual(local.stat().st_mtime_ns, original_mtime_ns)
-                with PostgresConnection(str(database_path)) as connection:
+                with self.database.connect() as connection:
                     recovered = connection.execute("SELECT local_mtime_ns,local_recovered_at FROM files WHERE id=%s", (observed["id"],)).fetchone()
                     self.assertEqual(recovered["local_mtime_ns"], original_mtime_ns)
                     self.assertIsNotNone(recovered["local_recovered_at"])
@@ -179,40 +177,39 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         from app.services import upload_provenance
         with tempfile.TemporaryDirectory() as directory:
             payload = b"real compatible-provider raw receipt gap"
-            source, database_path = self._vault(Path(directory), "receipt/gap.bin", payload)
-            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
-                queue_jobs("receipt/gap.bin", "upload", 2)
-                from app import storage
-                real_send = storage.upload_s3_file
+            self._vault(Path(directory), "receipt/gap.bin", payload)
+            queue_jobs("receipt/gap.bin", "upload", 2)
+            from app import storage
+            real_send = storage.upload_s3_file
 
-                def send_then_fail(*args, **kwargs):
-                    # The real SDK PUT lands and its raw receipt is journaled
-                    # (on_acknowledged); the worker then fails before publishing.
-                    real_send(*args, **kwargs)
-                    raise RuntimeError("injected post-response failure")
+            def send_then_fail(*args, **kwargs):
+                # The real SDK PUT lands and its raw receipt is journaled
+                # (on_acknowledged); the worker then fails before publishing.
+                real_send(*args, **kwargs)
+                raise RuntimeError("injected post-response failure")
 
-                with patch.object(storage, "upload_s3_file", side_effect=send_then_fail):
-                    process_jobs_once()
-                with PostgresConnection(str(database_path)) as connection:
-                    original = connection.execute("SELECT * FROM jobs").fetchone()
-                    self.assertEqual(original["status"],"failed")
-                    self.assertIsNone(original["archive_version_id"])
-                    intent = upload_provenance.load_for_job(connection, original["id"])
-                    receipt = upload_provenance.receipt(connection,intent.id)
-                    vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-                    resumed = upload_remediation.schedule_resume(connection,vault=vault,path="receipt/gap.bin",user_id=1,timestamp="2026-11-06T00:00:00+00:00")
-                before = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
-                self.assertEqual([v["VersionId"] for v in before["Versions"]],[receipt["VersionId"]])
+            with patch.object(storage, "upload_s3_file", side_effect=send_then_fail):
                 process_jobs_once()
-                with PostgresConnection(str(database_path)) as connection:
-                    final = connection.execute("SELECT status,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
-                    self.assertEqual(final["status"],"completed")
-                    keeper = connection.execute("SELECT * FROM archive_versions WHERE id=%s", (final["archive_version_id"],)).fetchone()
-                    self.assertEqual(keeper["provider_version_id"],receipt["VersionId"])
-                    self.assertEqual(bytes(keeper["plaintext_sha256"]),hashlib.sha256(payload).digest())
-                    self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (original["id"],)).fetchone()["status"],"failed")
-                after = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
-                self.assertEqual([v["VersionId"] for v in after["Versions"]],[receipt["VersionId"]],"Recovery issued a second provider write")
+            with self.database.connect() as connection:
+                original = connection.execute("SELECT * FROM jobs").fetchone()
+                self.assertEqual(original["status"],"failed")
+                self.assertIsNone(original["archive_version_id"])
+                intent = upload_provenance.load_for_job(connection, original["id"])
+                receipt = upload_provenance.receipt(connection,intent.id)
+                vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+                resumed = upload_remediation.schedule_resume(connection,vault=vault,path="receipt/gap.bin",user_id=1,timestamp="2026-11-06T00:00:00+00:00")
+            before = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
+            self.assertEqual([v["VersionId"] for v in before["Versions"]],[receipt["VersionId"]])
+            process_jobs_once()
+            with self.database.connect() as connection:
+                final = connection.execute("SELECT status,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
+                self.assertEqual(final["status"],"completed")
+                keeper = connection.execute("SELECT * FROM archive_versions WHERE id=%s", (final["archive_version_id"],)).fetchone()
+                self.assertEqual(keeper["provider_version_id"],receipt["VersionId"])
+                self.assertEqual(bytes(keeper["plaintext_sha256"]),hashlib.sha256(payload).digest())
+                self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (original["id"],)).fetchone()["status"],"failed")
+            after = s3_client().list_object_versions(Bucket=self.bucket,Prefix=f"{self.prefix}/receipt/gap.bin")
+            self.assertEqual([v["VersionId"] for v in after["Versions"]],[receipt["VersionId"]],"Recovery issued a second provider write")
 
     def test_interrupted_multipart_is_aborted_by_its_journaled_upload_id_and_the_upload_completes(self):
         # #491: a crashed multipart upload whose abort never reached S3 blocks the proof of
@@ -222,34 +219,33 @@ class PlainS3IntegrityIntegrationTests(unittest.TestCase):
         from app.services.s3_upload import _UploadClient
         relative_path, payload = "multipart/crashed.bin", b"c" * (9 * 1024 * 1024)
         with tempfile.TemporaryDirectory() as directory:
-            source, database_path = self._vault(Path(directory), relative_path, payload)
+            self._vault(Path(directory), relative_path, payload)
             key = f"{self.prefix}/{relative_path}"
-            with patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(str(database_path)))):
-                queue_jobs(relative_path, "upload", 2)
-                lost = ClientError({"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}}, "AbortMultipartUpload")
-                with patch.object(_UploadClient, "upload_part", side_effect=RuntimeError("injected crash after CreateMultipartUpload")), \
-                        patch.object(_UploadClient, "abort_multipart_upload", side_effect=lost):
-                    process_jobs_once()
-                client = s3_client()
-                left = [u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key]
-                self.assertEqual(len(left), 1, "the crash must leave the incomplete multipart upload behind")
-                with PostgresConnection(str(database_path)) as connection:
-                    original = connection.execute("SELECT * FROM jobs").fetchone()
-                    self.assertEqual(original["status"], "failed")
-                    intent = upload_provenance.load_for_job(connection, original["id"])
-                    journal = connection.execute("SELECT upload_id,closed_at FROM upload_multiparts WHERE attempt_id=%s", (intent.id,)).fetchall()
-                    self.assertEqual([(r["upload_id"], r["closed_at"]) for r in journal], [(left[0]["UploadId"], None)])
-                    vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
-                    resumed = upload_remediation.schedule_resume(connection, vault=vault, path=relative_path, user_id=1, timestamp="2026-11-07T00:00:00+00:00")
+            queue_jobs(relative_path, "upload", 2)
+            lost = ClientError({"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}}, "AbortMultipartUpload")
+            with patch.object(_UploadClient, "upload_part", side_effect=RuntimeError("injected crash after CreateMultipartUpload")), \
+                    patch.object(_UploadClient, "abort_multipart_upload", side_effect=lost):
                 process_jobs_once()
-                with PostgresConnection(str(database_path)) as connection:
-                    final = connection.execute("SELECT status,message,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
-                    self.assertEqual(final["status"], "completed", final["message"])
-                    closed = [r["closed_at"] is not None for r in connection.execute("SELECT closed_at FROM upload_multiparts WHERE upload_id=%s", (left[0]["UploadId"],)).fetchall()]
-                    self.assertEqual(closed, [True])
-                listed = client.list_object_versions(Bucket=self.bucket, Prefix=key)
-                self.assertEqual(len(listed.get("Versions", [])), 1)
-                self.assertEqual([u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key], [])
+            client = s3_client()
+            left = [u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key]
+            self.assertEqual(len(left), 1, "the crash must leave the incomplete multipart upload behind")
+            with self.database.connect() as connection:
+                original = connection.execute("SELECT * FROM jobs").fetchone()
+                self.assertEqual(original["status"], "failed")
+                intent = upload_provenance.load_for_job(connection, original["id"])
+                journal = connection.execute("SELECT upload_id,closed_at FROM upload_multiparts WHERE attempt_id=%s", (intent.id,)).fetchall()
+                self.assertEqual([(r["upload_id"], r["closed_at"]) for r in journal], [(left[0]["UploadId"], None)])
+                vault = connection.execute("SELECT * FROM vaults WHERE id=2").fetchone()
+                resumed = upload_remediation.schedule_resume(connection, vault=vault, path=relative_path, user_id=1, timestamp="2026-11-07T00:00:00+00:00")
+            process_jobs_once()
+            with self.database.connect() as connection:
+                final = connection.execute("SELECT status,message,archive_version_id FROM jobs WHERE id=%s", (resumed["job_id"],)).fetchone()
+                self.assertEqual(final["status"], "completed", final["message"])
+                closed = [r["closed_at"] is not None for r in connection.execute("SELECT closed_at FROM upload_multiparts WHERE upload_id=%s", (left[0]["UploadId"],)).fetchall()]
+                self.assertEqual(closed, [True])
+            listed = client.list_object_versions(Bucket=self.bucket, Prefix=key)
+            self.assertEqual(len(listed.get("Versions", [])), 1)
+            self.assertEqual([u for u in client.list_multipart_uploads(Bucket=self.bucket, Prefix=key).get("Uploads", []) if u["Key"] == key], [])
 
     def test_rename_preserves_timestamp_in_s3_catalog_and_recovery(self):
         self._roundtrip("photos/original.jpg", b"original photo", rename=True)

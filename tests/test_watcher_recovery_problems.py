@@ -6,40 +6,28 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.services import notifications, source_layout, vault_relocation, watch_plan
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 
-class RecoveryProblemTests(unittest.TestCase):
+class RecoveryProblemTests(FrostVaultTestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        base = Path(self.temp.name)
+        super().setUp()
+        base = self.tmp_path
         self.root = base / "sources" / "managed" / "vault"
         self.root.mkdir(parents=True)
         source_layout.override_sources_root(base / "sources")
         self.addCleanup(source_layout.reset_sources_root_override)
-        self.path = base / "catalog"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            insert_vault(connection, id=9, name="Files", source_root=str(self.root))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=9, name="Files", source_root=str(self.root))
         self.vault = {"id": 9, "source_root": str(self.root)}
-        patcher = patch("app.database.settings", replace(settings, database_dsn=database_dsn(str(self.path))))
-        patcher.start()
-        self.addCleanup(patcher.stop)
         storage.runtime_status.pop(9, None)
         watch_plan.forget(9)
         self.addCleanup(watch_plan.forget, 9)
@@ -47,14 +35,14 @@ class RecoveryProblemTests(unittest.TestCase):
         self.addCleanup(storage._workers_known_ok.clear)
 
     def problems(self, event=None):
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT event, problem_status, message_params FROM notifications ORDER BY id"
             ).fetchall()
         return [row for row in rows if event is None or row["event"] == event]
 
     def open_problem_count(self):
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return notifications.count_open_problems(connection)
 
     def test_non_utf8_name_is_reported_safely_and_everything_else_is_catalogued(self):
@@ -70,7 +58,7 @@ class RecoveryProblemTests(unittest.TestCase):
 
         self.assertEqual(storage.scan_tree(self.vault, storage.now_iso()), 2)
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             paths = {row["path"] for row in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
         self.assertEqual(paths, {"ok.txt", "sub/nested.txt"})
         problems = self.problems("file_name_unsupported")
@@ -148,7 +136,7 @@ class RecoveryProblemTests(unittest.TestCase):
 
     def test_a_worker_ok_before_any_failure_closes_a_problem_left_by_a_previous_run(self):
         from app.services import worker_errors
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             worker_errors.record_worker_error(
                 connection, component="auto_upload_queue", exc=RuntimeError("x"), vault_id=9,
             )
@@ -159,7 +147,7 @@ class RecoveryProblemTests(unittest.TestCase):
     # --- review of PR #504 ------------------------------------------------
 
     def copies(self):
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return {
                 row["path"]: row["local_presence"]
                 for row in connection.execute(
@@ -191,7 +179,7 @@ class RecoveryProblemTests(unittest.TestCase):
         # The Vault is not confirmed while that holds, so cloud deletion and
         # local release stay closed (CloudDeletion refuses unconfirmed Vaults).
         # scan_vault reloads the row: enrol the root as a real Vault has it.
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE vaults SET root_identity=%s, root_identity_version=%s WHERE id=9",
                 (vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION),
@@ -202,7 +190,7 @@ class RecoveryProblemTests(unittest.TestCase):
         ):
             result = storage.scan_vault(self.vault)
         self.assertEqual(result.get("local_incomplete"), 1)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             health = load_vault_health(connection, 9)
         self.assertTrue(health["source"]["last_error"])
         self.assertTrue(observation_is_unconfirmed(health))
@@ -227,7 +215,7 @@ class RecoveryProblemTests(unittest.TestCase):
         )
         watch_plan.record_full_scan(9, gaps)
         watch_plan.record_registration(9, gaps)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE vaults SET root_identity=%s, root_identity_version=%s WHERE id=9",
                 (vault_relocation.root_identity(str(self.root)), vault_relocation.ROOT_IDENTITY_VERSION),
@@ -242,7 +230,7 @@ class RecoveryProblemTests(unittest.TestCase):
             result = storage.scan_vault(self.vault)
             self.assertNotIn("local_incomplete", result, "the walk itself is complete")
             self.assertEqual(self.copies(), {"repaired/already-here.txt": "present"})
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 health = load_vault_health(connection, 9)
             self.assertEqual(health["source"]["last_error"], "Source watcher registration pending")
 
@@ -250,7 +238,7 @@ class RecoveryProblemTests(unittest.TestCase):
             (repaired / "before-barrier.txt").write_text("also catch up")
             watch_plan.record_registration(9, watch_plan.UnobservedPaths())
             storage.scan_vault(self.vault)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             health = load_vault_health(connection, 9)
         self.assertIsNone(health["source"]["last_error"])
         self.assertEqual(self.copies(), {
@@ -260,10 +248,10 @@ class RecoveryProblemTests(unittest.TestCase):
     def test_each_unreadable_path_closes_by_itself(self):
         from app.services.problems import report_problem, resolve_stale_path_problems
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for path in ("kept/x", "gone/y", "below/hidden/z", "below"):
                 report_problem(connection, event="file_unreadable", vault_id=9, path=path)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             # "kept/x" is still unreadable and "below" could not be entered:
             # what lies under it is unknown, not repaired.
             resolve_stale_path_problems(
@@ -279,8 +267,8 @@ class RecoveryProblemTests(unittest.TestCase):
     def test_a_corrected_s3_setup_scans_the_vaults_whose_cloud_check_failed(self):
         from app.services.component_health import record_component_health
 
-        with PostgresConnection(str(self.path)) as connection:
-            insert_vault(connection, id=10, name="Other", source_root=str(self.root.parent / "other"))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=10, name="Other", source_root=str(self.root.parent / "other"))
             record_component_health(connection, vault_id=9, component="cloud", ok=False, error="Cloud scan: denied")
             record_component_health(connection, vault_id=10, component="cloud", ok=True)
             connection.execute(
@@ -299,7 +287,7 @@ class RecoveryProblemTests(unittest.TestCase):
     def test_a_gate_that_was_never_blocked_scans_nothing(self):
         from app.services.component_health import record_component_health
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             record_component_health(connection, vault_id=9, component="cloud", ok=False, error="Cloud scan: denied")
         with (
             patch("app.storage.validate_cloud_vault"),

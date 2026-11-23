@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 for _flag, _value in (
@@ -29,16 +24,15 @@ from app.storage import (
     process_jobs_once,
     shutdown_background_executors,
 )
-from tests.catalog_support import seed_vault
-from tests.postgres import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 
-class WorkerLoopDecouplingTests(unittest.TestCase):
+class WorkerLoopDecouplingTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        super().setUp()
         self.addCleanup(shutdown_background_executors)
-        self.path = Path(self.tmp.name) / "loop.db"
         # Transfer concurrency is isolated from the independently tested gate.
         self.enterContext(patch('app.storage.validate_cloud_vault'))
         self.enterContext(patch('app.storage.cloud_preflight_gate.dispatch_ready',return_value=True))
@@ -48,10 +42,8 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
         self.enterContext(patch('app.storage.cloud_preflight_gate.snapshot',
                                 return_value={'status': 'ready'}))
         self.enterContext(patch('app.storage.sweep_source_volume_problems', return_value=0))
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=10, source_root="/source/alpha", name="alpha")
+        with self.database.connect() as connection:
+            seed_vault(connection, id=10, source_root="/source/alpha", name="alpha")
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=10,
@@ -71,7 +63,7 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
             )
 
     def _insert_job(self, path: str, requested_at: str) -> int:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return int(
                 connection.execute(
                     """
@@ -87,18 +79,15 @@ class WorkerLoopDecouplingTests(unittest.TestCase):
             )
 
     def _worker_patches(self, process_job):
-        runtime = SimpleNamespace(
+        runtime = dict(
             operation_concurrency=2,
             bandwidth_limit_kibps=None,
             restore_poll_interval=0,
             queue_poll_interval=2,
         )
         return (
-            patch("app.storage._runtime_settings", return_value=runtime),
-            patch(
-                "app.storage.db",
-                side_effect=lambda: PostgresConnection(str(self.path)),
-            ),
+            override_settings(**runtime),
+            patch("app.storage.db", side_effect=self.database.connect),
             patch("app.storage.process_job", side_effect=process_job),
         )
 
