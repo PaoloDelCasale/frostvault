@@ -26,17 +26,12 @@ from .directory_aggregates import invalidate_for_archive_version_ids
 from .job_queue import TERMINAL_JOB_STATUSES
 from .minimum_storage import observed_since_sql
 from .retention_lock import adopt_orphans, report_delete_markers, retained_versions
+from .vault_paths import vault_object_prefix
 
 _OBSERVED_SINCE = observed_since_sql(
     old_class="av.storage_class", new_class="obs.storage_class",
     old_since="av.storage_class_since", observed_at="obs.checked_at",
     created_at="av.created_at", size="av.size", plan="v.storage_plan")
-
-
-def _object_prefix(vault: dict[str, Any]) -> str:
-    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
-    from .vault_paths import object_prefix
-    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 def _now_iso() -> str:
@@ -48,7 +43,7 @@ def _list_cloud_versions(
     vault: dict[str, Any],
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], set[tuple[str, str]]]:
     paginator = client.get_paginator("list_object_versions")
-    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": _object_prefix(vault)}
+    kwargs: dict[str, Any] = {"Bucket": vault["s3_bucket"], "Prefix": vault_object_prefix(vault)}
     versions: dict[tuple[str, str], dict[str, Any]] = {}
     markers: set[tuple[str, str]] = set()
     for page in paginator.paginate(**kwargs):
@@ -169,7 +164,7 @@ def audit_vault_catalog(
         seen |= retained_versions(connection, int(vault["id"]))
         seen |= adopt_orphans(
             connection, vault_id=int(vault["id"]), days=vault["s3_retention_lock_days"],
-            prefix=_object_prefix(vault), versions=cloud_versions.values(),
+            prefix=vault_object_prefix(vault), versions=cloud_versions.values(),
             marker_keys={key for key, _ in cloud_markers})
         report_delete_markers(connection, vault, cloud_markers)
     for key in cloud_versions:

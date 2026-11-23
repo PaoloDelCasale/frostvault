@@ -36,7 +36,7 @@ from app import storage
 from app.services import protection_stop, retention_lock, vault_deletion
 from app.services import notifications as inbox
 from app.services import bucket_metrics
-from app.services.vault_buckets import TAG_VAULT
+from app.services.vault_paths import TAG_VAULT
 from app.services.vaults import VAULT_ROW_SQL
 from tests import test_cloud_purge, test_duplicate_cleanup
 from tests import test_upload_worker as worker

@@ -57,7 +57,7 @@ from ..i18n import DEFAULT_LOCALE, translate
 from . import retention_lock, source_identity, source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
-from .vault_paths import object_prefix
+from .vault_paths import vault_object_prefix
 from .vaults import VAULT_ROW_SQL
 from .component_health import load_vault_health
 from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
@@ -189,11 +189,6 @@ def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
     if row is None:
         raise VaultNotFound("api.vault_not_found")
     return row
-
-
-def _vault_prefix(vault: dict[str, Any]) -> str:
-    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
-    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
@@ -385,7 +380,7 @@ def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str
     """Every selected file is Cloud-only with exactly one consentable version."""
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
-    prefix = _vault_prefix(vault)
+    prefix = vault_object_prefix(vault)
     for row in files:
         problem = _row_problem(row, prefix, own_group)
         if problem:
@@ -641,7 +636,7 @@ def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
             raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
         where, params = _selection_sql(connection, vault, selection)
         rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
-                                  [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
+                                  [vault_object_prefix(vault), int(vault["id"]), *params]).fetchall()
         eligible = [r for r in rows if r["reason"] == "eligible"]
         skipped = {r["reason"]: int(r["n"]) for r in rows if r["reason"] != "eligible"}
         # Local absence is proven for the eligible files only; an entry the
@@ -768,7 +763,7 @@ def cloud_duplicates(connection: Any,
         raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
     where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
-                              [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
+                              [vault_object_prefix(vault), int(vault["id"]), *params]).fetchall()
     eligible = [r for r in rows if r["reason"] == "eligible"]
     duplicates = _duplicate_ids(connection, vault, [str(r["file_id"]) for r in eligible])
     chosen = [r for r in eligible if str(r["file_id"]) in duplicates]
@@ -809,7 +804,7 @@ def cloud_only_files(connection: Any, vault: dict[str, Any], *,
     where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     scope, scope_params = _in_folders_sql(list(folders or []))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=f"{where} AND {scope}"),
-                              [_vault_prefix(vault), int(vault["id"]), *params,
+                              [vault_object_prefix(vault), int(vault["id"]), *params,
                                *scope_params]).fetchall()
     eligible = [r for r in rows if r["reason"] == "eligible"]
     # Always called, even with nothing left to check: an unreadable root must
@@ -1059,7 +1054,7 @@ def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
         raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
-    prefix = _vault_prefix(vault)
+    prefix = vault_object_prefix(vault)
     invalid: dict[str, str] = {}
     for row in active:
         file_id = str(row["file_id"])
