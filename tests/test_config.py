@@ -73,7 +73,10 @@ class BreakGlassConfigValidationTests(unittest.TestCase):
         settings = _base_settings(break_glass_allowed_cidrs="10.0.0.0/24, nonsense")
         with self.assertRaises(RuntimeError) as error:
             self._validate(settings)
-        self.assertIn("BREAK_GLASS_ALLOWED_CIDRS", str(error.exception))
+        self.assertEqual(
+            str(error.exception),
+            "BREAK_GLASS_ALLOWED_CIDRS contains an invalid network: nonsense",
+        )
 
     def test_valid_cidr_list_is_accepted(self) -> None:
         settings = _base_settings(
@@ -123,7 +126,10 @@ class ProductionHardeningConfigTests(unittest.TestCase):
         settings = _base_settings(trusted_proxies="10.0.0.0/8, nonsense")
         with self.assertRaises(RuntimeError) as error:
             self._validate(settings)
-        self.assertIn("TRUSTED_PROXIES", str(error.exception))
+        self.assertEqual(
+            str(error.exception),
+            "TRUSTED_PROXIES contains an invalid network: nonsense",
+        )
 
     def test_development_defaults_need_no_hardening_env(self) -> None:
         # Without a secure cookie the app may run locally with no proxy in front.
