@@ -87,3 +87,5 @@ export {
 } from "./query";
 
 export type * from "./types";
+export { useNotificationPaging } from "./useNotificationPaging";
+export type { NotificationFailure } from "./useNotificationPaging";
