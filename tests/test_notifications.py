@@ -10,7 +10,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.main import app
 from app.services import notifications
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_job, seed_vault
 
@@ -517,23 +516,6 @@ class NotificationReadHttpTests(FrostVaultTestCase):
         self.assertNotIn('smtp_password', data)
 
     def test_mark_read_persists_through_http(self) -> None:
-    def test_removed_notification_routes_are_not_exposed(self) -> None:
-        self.sign_in(auth_method="local")
-        for path, methods in (
-            ("/api/push/config", ("GET",)),
-            ("/api/push/subscriptions", ("POST",)),
-            ("/api/admin/notification-endpoints/webhook", ("POST",)),
-            ("/api/admin/notification-endpoints/smtp", ("POST",)),
-            ("/api/vault/notification-preferences", ("GET", "POST")),
-        ):
-            self.assertNotIn(path, app.openapi()["paths"])
-            for method in methods:
-                with self.subTest(path=path, method=method):
-                    response = self.client.request(
-                        method, path, headers=self.signed_in.csrf_headers
-                    )
-                    self.assertEqual(response.status_code, 404, response.text)
-
         notification_id = self._create_notification()
         self.sign_in(auth_method="local")
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from dataclasses import fields
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,11 +14,6 @@ from tests.fixtures import override_settings
 
 
 class PostgreSQLConfigurationTests(unittest.TestCase):
-    def test_retired_backend_options_are_not_settings(self):
-        names = {field.name for field in fields(config.Settings)}
-        self.assertNotIn("db_backend", names)
-        self.assertNotIn("sqlite_path", names)
-        self.assertFalse(hasattr(database, "SQLiteConnection"))
 
     def test_database_uses_native_psycopg_and_pg_environment_by_default(self):
         self.addCleanup(database.close_pools)

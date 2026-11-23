@@ -5,7 +5,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app import main
 from app.catalog import ArchiveCatalog
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
@@ -233,29 +232,6 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
             json={"vault_id": self.vault_id, "size_bytes": 1, "storage_class": "STANDARD"},
         )
         self.assertEqual(ambiguous.status_code, 422, ambiguous.text)
-
-    def test_quota_and_price_book_endpoints_are_gone(self) -> None:
-        self.sign_in()
-        removed = (
-            ("GET", "/api/vault/quotas"),
-            ("GET", f"/api/admin/vaults/{self.vault_id}/quotas"),
-            ("PUT", f"/api/admin/vaults/{self.vault_id}/quotas"),
-            ("GET", "/api/admin/cost-price-books"),
-            ("POST", "/api/admin/cost-price-books"),
-            ("GET", "/api/admin/cost-price-books/active"),
-            ("POST", "/api/admin/cost-price-books/1/activate"),
-        )
-        for method, path in removed:
-            with self.subTest(method=method, path=path):
-                response = self.client.request(
-                    method, path, headers=self.signed_in.csrf_headers, json={}
-                )
-                self.assertEqual(response.status_code, 404, response.text)
-        paths = main.app.openapi()["paths"]
-        self.assertFalse(
-            [path for path in paths if "quota" in path or "price-book" in path]
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

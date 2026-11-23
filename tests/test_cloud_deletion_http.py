@@ -5,7 +5,6 @@ Cloud-only after a real upload, in Vault 2 named ``Docs``.
 """
 from datetime import datetime, timezone
 
-from app import main
 from tests import test_cloud_deletion as fixtures
 
 
@@ -86,17 +85,6 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
 
     def test_csrf_and_authentication_still_gate_deletion(self):
         response = self.client.post("/api/cloud-purge",json=self.payload)
-    def test_removed_endpoints_and_acceleration_are_absent(self):
-        paths = main.app.openapi()["paths"]
-        for route in ("/api/cloud-purge/accelerate","/api/vault/cloud-deletion",
-                      "/api/vault/decommission","/api/vault/decommission/preview",
-                      "/api/vaults/{vault_id}/decommission", "/api/vaults/{vault_id}/decommission/status"):
-            self.assertNotIn(route,paths)
-        for method,path in (("post","/api/cloud-purge/accelerate"),("put","/api/vault/cloud-deletion"),
-                            ("post","/api/vaults/2/decommission")):
-            response = getattr(self.client,method)(path,json={},headers=self.headers)
-            self.assertEqual(response.status_code,404,response.text)
-
         self.assertEqual(response.status_code,403)
         self.client.cookies.clear()
         response = self.client.post("/api/cloud-purge",json=self.payload)

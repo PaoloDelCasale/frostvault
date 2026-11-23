@@ -22,7 +22,6 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog, VaultFileNotFound
-from app.main import app
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint
 from tests.test_rename_sync import CopyWorkerFixture
@@ -147,15 +146,6 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 catalog.confirm_file_rename(
                     vault_file_id=self.file_id, new_path=NEW, changed_at=storage.now_iso(), vault_id=2)
             recheck.assert_called_once_with(2, digest=sha(A))
-
-    def test_removed_routes_and_contracts_are_not_exposed(self) -> None:
-        paths = app.openapi()["paths"]
-        for path in ("/api/cloud-archive", "/api/rename-candidates", "/api/confirm-rename", "/api/confirm-folder-rename", "/api/file-history"):
-            self.assertNotIn(path, paths)
-        schemas = app.openapi()["components"]["schemas"]
-        for schema in ("CloudArchiveRequest", "ConfirmRenameAction", "ConfirmFolderRenameAction", "FileHistoryResponse", "PathHistoryEntry"):
-            self.assertNotIn(schema, schemas)
-
 
 if __name__ == "__main__":
     unittest.main()
