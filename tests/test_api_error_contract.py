@@ -637,11 +637,13 @@ class JobsAddress(VaultAddressCase):
                     self.assertEqual(self.events(vault_id), [("hello", {"vault_id": vault_id, "revision": 0})])
             self.assertEqual(self.session_vault(), pinned)
 
-    def test_the_job_history_of_an_existing_file_fails_as_before_the_move(self) -> None:
-        # Not fixed here: the query names ``file_id``, a column ``job_rows``
-        # does not have, so the history of a file that exists is a 500.
-        with self.assertRaises(psycopg.errors.UndefinedColumn):
-            self.client.get("/api/vaults/1/files/jobs?path=a.txt")
+    def test_the_job_history_of_an_existing_file_lists_its_jobs(self) -> None:
+        # Was a 500: the query named ``file_id``, a column ``job_rows`` lacked.
+        history = self.client.get("/api/vaults/1/files/jobs?path=a.txt")
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual([(item["id"], item["path"]) for item in history.json()["items"]],
+                         [(self.job_id, "a.txt")])
+        self.assertIsNone(history.json()["next_before_id"])
 
     def test_the_session_vault_is_still_written_by_me_alone(self) -> None:
         for suffix in ("jobs", "catalog/revision", "catalog/events?subscribe=false"):
@@ -709,11 +711,15 @@ class JobsAddress(VaultAddressCase):
         with self.database.connect() as connection:
             connection.execute("UPDATE sessions SET vault_id=1")
         from app import storage
-        for query in ("", "?vault_id=99"):
-            with patch.object(storage, "queue_vault_auto_uploads", return_value=1) as queue:
-                response = self.client.post(f"/api/upload/retry-failed{query}")
-            self.assertEqual((response.status_code, response.json()), (202, {"item_count": 3}), query)
+        with patch.object(storage, "queue_vault_auto_uploads", return_value=1) as queue:
+            response = self.client.post("/api/upload/retry-failed")
+            self.assertEqual((response.status_code, response.json()), (202, {"item_count": 3}))
             self.assertEqual([call.args[0]["id"] for call in queue.call_args_list], [1, 2, 3])
+            # A client still naming one Vault the old way is refused, not widened to all.
+            for vault_id in (1, 99):
+                self.check("POST", f"/api/upload/retry-failed?vault_id={vault_id}", X,
+                           422, problem("api.invalid_operation"))
+            self.assertEqual(queue.call_count, 3)
 
 
 class PolicyErrors(ApiErrorCase):

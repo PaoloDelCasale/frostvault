@@ -449,8 +449,12 @@ def _retry_failed_uploads(vault_id: int | None) -> dict[str, Any]:
 
 
 @router.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))
-def retry_failed_uploads(_: dict[str, Any] = Depends(current_user)):
+def retry_failed_uploads(request: Request, _: dict[str, Any] = Depends(current_user)):
     """Every Vault of the installation, never the Session's choice."""
+    if "vault_id" in request.query_params:
+        # The address that took a Vault here is gone: a client still sending
+        # one asked for a single Vault and must not get all of them retried.
+        raise Invalid("api.invalid_operation")
     return _retry_failed_uploads(None)
 
 
