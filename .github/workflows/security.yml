@@ -298,12 +298,17 @@ jobs:
           path: .
           format: spdx-json
           artifact-name: python-sbom.spdx.json
+      # The image runs `apt-get upgrade`: a cached layer hides Debian security
+      # fixes published after it was built, and the scan then fails on packages
+      # a fresh build already has. The key carries the day, with no fallback
+      # to an older cache, so the first build of each day is a full one.
+      - name: Day of the build cache
+        id: cache-day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/.buildx-cache
-          key: docker-${{ runner.os }}-${{ hashFiles('Dockerfile', 'requirements.txt', 'frontend/package-lock.json', 'docker/entrypoint.sh') }}
-          restore-keys: |
-            docker-${{ runner.os }}-
+          key: docker-${{ runner.os }}-${{ steps.cache-day.outputs.day }}-${{ hashFiles('Dockerfile', 'requirements.txt', 'frontend/package-lock.json', 'docker/entrypoint.sh') }}
       - name: Build runtime image
         run: |
           set -euo pipefail
