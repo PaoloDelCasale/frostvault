@@ -36,7 +36,7 @@ function setup({ paused = false, scanning = true, stopped = null as string | nul
   };
   configureApiClient({ fetch: createVaultAccessFetch({
     "GET /api/general/vaults": () => jsonResponse({ items: [] }),
-    "GET /api/stats": () => jsonResponse({ states: { pending: 1 }, protection_state: "pending", storage: {}, runtime: {
+    "GET /api/vaults/3/stats": () => jsonResponse({ states: { pending: 1 }, protection_state: "pending", storage: {}, runtime: {
       scanning, scan_phase: scanning ? "verification" : null,
       verify_files_total: 137717, verify_files_done: 16055,
       verify_bytes_total: 519.5 * 1024 ** 3, verify_bytes_done: 18.9 * 1024 ** 3,

@@ -123,14 +123,6 @@ describe("Vault-wide Move now in the storage plan section", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("refuses a stale page after the selected Vault changed in another tab", async () => {
-    renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 2, targets: [estimate] }),
-    }) });
-    expect(await screen.findByRole("alert", { hidden: true })).toHaveTextContent("The selected Vault changed");
-    expect(screen.queryByRole("button", { name: "Move now in background", hidden: true })).not.toBeInTheDocument();
-  });
-
   it("has complete English and Italian copy and no per-file move option", () => {
     for (const locale of ["it", "en"] as const) {
       const messages = loadCatalog(locale);

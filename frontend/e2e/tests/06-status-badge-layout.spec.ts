@@ -20,7 +20,7 @@ for (const width of [375, 390, 1400]) {
       else if (pathname === "/api/me") json = { id: 1, display_name: "Owner", csrf_token: "test-csrf", auth_method: "local", locale: "it", locales: ["en", "it"], vault };
       else if (pathname === "/api/vaults") json = { items: [vault] };
       else if (pathname === "/api/general") json = { vaults: [], open_problem_count: 0, month: "2026-11", monthly_estimate: 0, previous_month_delta: null, currency: "EUR" };
-      else if (pathname === "/api/files") json = { items: [
+      else if (pathname === "/api/vaults/1/files") json = { items: [
         { type: "file", name: "unconfirmed.txt", path: "unconfirmed.txt", state: "unconfirmed", last_known_state: "protected", last_known_at: lastKnownAt },
         { type: "file", name: "changed.txt", path: "changed.txt", state: "pending", previous_snapshot_protected: true },
         { type: "file", name: "protected.txt", path: "protected.txt", state: "protected" },

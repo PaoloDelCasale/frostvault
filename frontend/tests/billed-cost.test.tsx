@@ -148,7 +148,7 @@ describe("Billed Cost on the Overview", () => {
     configureApiClient({ fetch: createVaultAccessFetch({
       "GET /api/billing-export": () => { billingAnswered = true; return jsonResponse(body); },
       "GET /api/general/vaults": () => jsonResponse({ items: [] }),
-      "GET /api/stats": () => jsonResponse({ states: { protected: 1 }, storage: {}, runtime: {} }),
+      "GET /api/vaults/1/stats": () => jsonResponse({ states: { protected: 1 }, storage: {}, runtime: {} }),
     }, { locale: "en" }) });
     renderWithQueryClient(<I18nProvider>
       <OverviewPage vaults={[{ id: 1, uuid: "u1", name: "Foto" } as never]} overview={overview} /></I18nProvider>);

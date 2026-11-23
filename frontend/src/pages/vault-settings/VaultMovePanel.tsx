@@ -27,17 +27,13 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
   useEffect(() => {
     const next = loaded.data;
     if (!next) return;
-    if (next.vault_id !== vaultId) {
-      setError(translateRef.current("move.vault_changed"));
-      return;
-    }
     // An answer that is not a preview is reported like a read that failed.
     try {
       setPreviewError("");
       setPreview(next);
       setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
     } catch (cause) { setPreviewError(errorMessage(cause, translateRef.current)); }
-  }, [loaded.data, vaultId]);
+  }, [loaded.data]);
   useEffect(() => { if (loaded.error) setPreviewError(errorMessage(loaded.error, translateRef.current)); }, [loaded.error]);
   const estimate = preview?.targets.find((item) => item.target_class === target);
   async function move() {
@@ -55,13 +51,8 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     }
     try {
       const next = await vaultApi(vaultId).move();
-      if (next.vault_id !== vaultId) {
-        setPreview(null);
-        setError(t("move.vault_changed"));
-      } else {
-        setPreviewError("");
-        setPreview(next);
-      }
+      setPreviewError("");
+      setPreview(next);
     } catch (cause) {
       // The Jobs are queued: only the refreshed preview is unavailable.
       setPreview(null);

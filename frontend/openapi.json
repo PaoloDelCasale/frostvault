@@ -1377,12 +1377,22 @@
         }
       }
     },
-    "/api/files": {
+    "/api/vaults/{vault_id}/files": {
       "get": {
         "summary": "List Files",
-        "description": "List Vault Files for the authenticated Owner's selected Vault.",
-        "operationId": "list_files_api_files_get",
+        "description": "List the Vault Files of the Vault in the path.",
+        "operationId": "list_files_api_vaults__vault_id__files_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "q",
             "in": "query",
@@ -1435,23 +1445,6 @@
               "default": 100,
               "title": "Page Size"
             }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
-            }
           }
         ],
         "responses": {
@@ -1478,11 +1471,21 @@
         }
       }
     },
-    "/api/files/detail": {
+    "/api/vaults/{vault_id}/files/detail": {
       "get": {
         "summary": "File Detail",
-        "operationId": "file_detail_api_files_detail_get",
+        "operationId": "file_detail_api_vaults__vault_id__files_detail_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "path",
             "in": "query",
@@ -1490,23 +1493,6 @@
             "schema": {
               "type": "string",
               "title": "Path"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -1685,25 +1671,18 @@
         }
       }
     },
-    "/api/stats": {
+    "/api/vaults/{vault_id}/stats": {
       "get": {
         "summary": "Stats",
-        "operationId": "stats_api_stats_get",
+        "operationId": "stats_api_vaults__vault_id__stats_get",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }

@@ -82,7 +82,7 @@ class FrontendSpaHttpTests(FrostVaultTestCase):
         self.assertNotIn("spa-shell", response.text)
 
     def test_catalog_is_network_only_with_ordinary_session_authentication(self) -> None:
-        denied = self.client.get("/api/files")
+        denied = self.client.get(f"/api/vaults/{self.vault_id}/files")
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(denied.headers["cache-control"], "no-store")
         self.sign_in()
@@ -90,7 +90,7 @@ class FrontendSpaHttpTests(FrostVaultTestCase):
         self.assertNotIn("offline_cache_generation", me.json())
         self.assertNotIn("transition_version", me.json())
         self.assertEqual(me.headers["cache-control"], "no-store")
-        listing = self.client.get("/api/files", headers={
+        listing = self.client.get(f"/api/vaults/{self.vault_id}/files", headers={
             "X-FrostVault-Offline-Cache-Authorization": "obsolete-client-value",
         })
         self.assertEqual(listing.status_code, 200, listing.text)

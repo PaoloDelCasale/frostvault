@@ -12,10 +12,10 @@ function setup(items: unknown[] = [file], search = "") {
   const calls: string[] = [];
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
-    if (url.startsWith("/api/files/detail")) return jsonResponse(file);
+    if (/^\/api\/vaults\/\d+\/files\/detail\?/.test(url)) return jsonResponse(file);
     if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [] });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
-    if (url.startsWith("/api/stats")) return jsonResponse({ states: { protected: 1180, cloud_only: 3, pending: 2 }, protection_state: "pending", storage: {}, active_jobs: 0, runtime: {}, source_volume: {}, delete_enabled: true });
+    if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: { protected: 1180, cloud_only: 3, pending: 2 }, protection_state: "pending", storage: {}, active_jobs: 0, runtime: {}, source_volume: {}, delete_enabled: true });
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
   }) });
   renderWithQueryClient(<FileBrowser vaultId={1} vaultName="First" t={(key) => key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
@@ -26,7 +26,7 @@ const select = (name: RegExp) => screen.getAllByRole("checkbox", { name })[0];
 describe("essential file browser", () => {
   it("pins browsing to the Vault and shows name, state, size and modified only", async () => {
     const calls = setup(); await screen.findAllByText("photo.jpg");
-    expect(calls.find((url) => url.startsWith("/api/files?"))).toContain("vault_id=1");
+    expect(calls.some((url) => url.startsWith("/api/vaults/1/files?"))).toBe(true);
     const table = screen.getByTestId("file-list-table");
     expect(within(table).getAllByRole("columnheader")).toHaveLength(6);
     expect(table).not.toHaveTextContent("essential.ready");
@@ -51,13 +51,13 @@ describe("essential file browser", () => {
     const chips = screen.getByTestId("state-filter");
     expect(await within(chips).findByRole("button", { name: "files.chip_all 1,185" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.setup().click(within(chips).getByRole("button", { name: "files.chip_cloud_only 3" }));
-    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files?") && url.includes("state=cloud_only"))).toBe(true));
+    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/vaults/1/files?") && url.includes("state=cloud_only"))).toBe(true));
     expect(window.location.search).toContain("state=cloud_only");
   });
   it("searches this Vault by default and every Vault on request", async () => {
     const calls = setup([file], "?q=photo");
     await screen.findAllByText("2026/photo.jpg");
-    expect(calls.find((url) => url.startsWith("/api/files?q=photo"))).toContain("vault_id=1");
+    expect(calls.some((url) => url.startsWith("/api/vaults/1/files?q=photo"))).toBe(true);
     expect(calls.some((url) => url.startsWith("/api/files/search"))).toBe(false);
     await userEvent.setup().click(within(screen.getByTestId("search-scope")).getByRole("button", { name: "files.scope_all" }));
     await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files/search?q=photo"))).toBe(true));
@@ -70,7 +70,7 @@ describe("essential file browser", () => {
     const user = userEvent.setup();
     await user.click(select(/essential.select Second/));
     await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "essential.details" }));
-    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/files/detail?") && url.endsWith("vault_id=2"))).toBe(true));
+    await waitFor(() => expect(calls.some((url) => url.startsWith("/api/vaults/2/files/detail?"))).toBe(true));
     expect(calls.some((url) => url.includes("/select"))).toBe(false);
   });
   it.each([
@@ -116,7 +116,7 @@ describe("essential file browser", () => {
     const calls = setup([], "?vault_id=1&directory=2026&file=2026%2Fphoto.jpg");
     expect(await screen.findByRole("dialog")).toHaveTextContent("First / 2026/photo.jpg");
     expect(document.querySelector('[data-highlighted="true"]')).not.toBeNull();
-    expect(calls.some((url) => url.startsWith("/api/files/detail?path=2026%2Fphoto.jpg&vault_id=1"))).toBe(true);
+    expect(calls.some((url) => url === "/api/vaults/1/files/detail?path=2026%2Fphoto.jpg")).toBe(true);
   });
   it("shows the selection bar only with a selection, and clears it when a filter changes", async () => {
     setup(); await screen.findAllByText("photo.jpg"); const user = userEvent.setup();
@@ -145,7 +145,7 @@ describe("essential file browser", () => {
         return body.path === "2026/f3.jpg" ? jsonResponse({ detail: "Archive Version not verified" }, 409) : jsonResponse({ ok: true });
       }
       if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
-      if (url.startsWith("/api/stats")) return jsonResponse({ states: {}, storage: {}, runtime: {}, source_volume: {} });
+      if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: {}, storage: {}, runtime: {}, source_volume: {} });
       return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
     }) });
     window.history.replaceState({}, "", "/");

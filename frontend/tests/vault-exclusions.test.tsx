@@ -22,7 +22,7 @@ function setup(search: string, routes: { items?: unknown[]; disk?: unknown; prev
     if (url.startsWith("/api/vaults/3/operation-policy")) return jsonResponse(policy);
     if (url.startsWith("/api/vaults/3/exclusions/inclusion-preview")) return jsonResponse(routes.preview);
     if (url.startsWith("/api/vaults/3/exclusions/")) return jsonResponse(policy);
-    if (url.startsWith("/api/stats")) return jsonResponse({ states: {}, protection_state: "protected", storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
+    if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: {}, protection_state: "protected", storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
     const items = routes.items ?? [];
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });

@@ -66,10 +66,10 @@ export function vaultApi(vaultId: number) {
   /** These routes read a JSON body even when it carries nothing. */
   const sendEmpty = <T>(url: string) => apiRequest<T>(url, { method: "POST", body: "{}" });
   return {
-    stats: () => get<StatsResponse>(scoped("/api/stats")),
+    stats: () => get<StatsResponse>(owned("stats")),
 
-    files: (params: URLSearchParams) => get<FilesResponse>(scoped(`/api/files?${params}`)),
-    details: (path: string) => get<ArchiveListItem>(scoped(`/api/files/detail?path=${encodeURIComponent(path)}`)),
+    files: (params: URLSearchParams) => get<FilesResponse>(owned(`files?${params}`)),
+    details: (path: string) => get<ArchiveListItem>(owned(`files/detail?path=${encodeURIComponent(path)}`)),
     versions: (path: string) => get<FileVersionsResponse>(scoped(`/api/files/versions?path=${encodeURIComponent(path)}`)),
     fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(scoped(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
     replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", scoped("/api/files/cloud-only-conflict/replace"), { path }),

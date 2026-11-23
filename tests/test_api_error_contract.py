@@ -316,9 +316,10 @@ class VaultManagementErrors(ApiErrorCase):
 
 class BrowseErrors(ApiErrorCase):
     def test_files_jobs_and_notifications(self) -> None:
-        self.check("GET", "/api/files/detail?path=missing.txt", X,
+        self.check("GET", "/api/vaults/1/files/detail?path=missing.txt", X,
                    404, problem("api.file_not_found"))
-        self.check("GET", "/api/files/detail?path=../outside", X, 422, problem("api.invalid_path"))
+        self.check("GET", "/api/vaults/1/files/detail?path=../outside", X,
+                   422, problem("api.invalid_path"))
         self.check("GET", "/api/files/jobs?path=missing.txt", X,
                    404, problem("api.file_not_found"))
         self.check("GET", "/api/jobs/99999", X, 404, problem("api.job_not_found"))
@@ -369,7 +370,35 @@ class StoragePlanErrors(ApiErrorCase):
                    409, problem("api.vault_move.not_ready"))
 
 
-class VaultSettingsAddress(ApiErrorCase):
+class VaultAddressCase(ApiErrorCase):
+    """Operations that take their Vault from the path (ADR-0056): the shared checks."""
+
+    def session_vault(self) -> Any:
+        with self.database.connect() as connection:
+            return connection.execute("SELECT vault_id FROM sessions").fetchone()["vault_id"]
+
+    def only_an_operational_vault_is_accepted(self, operations: Any) -> None:
+        absent = problem("api.protected_vault_not_found")
+        for method, suffix, body in operations:
+            # A Tombstone, a Vault still being created, an unknown id.
+            for vault_id in (2, 3, 99):
+                self.check(method, f"/api/vaults/{vault_id}/{suffix}", body, 404, absent)
+            with self.subTest(method=method, suffix=suffix, vault_id=0):
+                response = self.client.request(method, f"/api/vaults/0/{suffix}", json=body)
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertIsNone(self.session_vault())
+
+    def each_address_is_matched_by_its_own_route(self, operations: Any) -> None:
+        from starlette.routing import Match
+        routes = self.client.app.router.routes
+        for method, suffix, _body in operations:
+            path = f"/api/vaults/1/{suffix.partition('?')[0]}"
+            scope = {"type": "http", "method": method, "path": path}
+            first = next(route for route in routes if route.matches(scope)[0] is Match.FULL)
+            self.assertEqual(first.path, f"/api/vaults/{{vault_id}}/{suffix.partition('?')[0]}")
+
+
+class VaultSettingsAddress(VaultAddressCase):
     """The 13 Vault settings operations take their Vault from the path (ADR-0056)."""
 
     OPERATIONS = (
@@ -389,20 +418,15 @@ class VaultSettingsAddress(ApiErrorCase):
         ("PUT", "lifecycle", {"guided_profile": "standard_only"}),
     )
 
-    def session_vault(self) -> Any:
-        with self.database.connect() as connection:
-            return connection.execute("SELECT vault_id FROM sessions").fetchone()["vault_id"]
+    @staticmethod
+    def files_on_disk(connection: Any) -> None:
+        """The seeded Vault Files have a Local Copy, so the file list shows them."""
+        connection.execute(
+            "UPDATE files SET local_presence='present', local_file_type='regular', local_size=1,"
+            " local_mtime_ns=1, local_seen_at=now(), local_observed_at=now()")
 
     def test_only_an_operational_vault_in_the_path_is_accepted(self) -> None:
-        absent = problem("api.protected_vault_not_found")
-        for method, suffix, body in self.OPERATIONS:
-            # A Tombstone, a Vault still being created, an unknown id.
-            for vault_id in (2, 3, 99):
-                self.check(method, f"/api/vaults/{vault_id}/{suffix}", body, 404, absent)
-            with self.subTest(method=method, suffix=suffix, vault_id=0):
-                response = self.client.request(method, f"/api/vaults/0/{suffix}", json=body)
-                self.assertEqual(response.status_code, 422, response.text)
-        self.assertIsNone(self.session_vault())
+        self.only_an_operational_vault_is_accepted(self.OPERATIONS)
 
     def test_the_session_vault_is_neither_an_address_nor_written(self) -> None:
         with self.database.connect() as connection:
@@ -430,13 +454,98 @@ class VaultSettingsAddress(ApiErrorCase):
                 self.assertIn(response.status_code, (404, 405), response.text)
 
     def test_each_new_address_is_matched_by_its_own_route(self) -> None:
-        from starlette.routing import Match
-        routes = self.client.app.router.routes
-        for method, suffix, _body in self.OPERATIONS:
-            path = f"/api/vaults/1/{suffix.partition('?')[0]}"
-            scope = {"type": "http", "method": method, "path": path}
-            first = next(route for route in routes if route.matches(scope)[0] is Match.FULL)
-            self.assertEqual(first.path, f"/api/vaults/{{vault_id}}/{suffix.partition('?')[0]}")
+        self.each_address_is_matched_by_its_own_route(self.OPERATIONS)
+
+
+class BrowseAddress(VaultAddressCase):
+    """The file list, a file's detail and the statistics take their Vault from the path (ADR-0056)."""
+
+    OPERATIONS = (
+        ("GET", "files", X),
+        ("GET", "files/detail?path=a.txt", X),
+        ("GET", "stats", X),
+    )
+
+    @staticmethod
+    def files_on_disk(connection: Any) -> None:
+        """The seeded Vault Files have a Local Copy, so the file list shows them."""
+        connection.execute(
+            "UPDATE files SET local_presence='present', local_file_type='regular', local_size=1,"
+            " local_mtime_ns=1, local_seen_at=now(), local_observed_at=now()")
+
+    def test_only_an_operational_vault_in_the_path_is_accepted(self) -> None:
+        self.only_an_operational_vault_is_accepted(self.OPERATIONS)
+
+    def test_the_session_vault_is_neither_an_address_nor_written(self) -> None:
+        with self.database.connect() as connection:
+            seed_vault(connection, id=4, name="Second", source_root="/sources/managed/second")
+            seed_job(connection, vault_id=4, path="b.txt")
+            self.files_on_disk(connection)
+        for pinned in (None, 4):
+            with self.database.connect() as connection:
+                connection.execute("UPDATE sessions SET vault_id=%s", (pinned,))
+            for vault_id, path, other in ((1, "a.txt", "b.txt"), (4, "b.txt", "a.txt")):
+                with self.subTest(pinned=pinned, vault_id=vault_id):
+                    listing = self.client.get(f"/api/vaults/{vault_id}/files")
+                    self.assertEqual(listing.status_code, 200, listing.text)
+                    self.assertEqual([item["path"] for item in listing.json()["items"]], [path])
+                    detail = self.client.get(f"/api/vaults/{vault_id}/files/detail?path={path}")
+                    self.assertEqual((detail.status_code, detail.json()["path"]), (200, path))
+                    self.check("GET", f"/api/vaults/{vault_id}/files/detail?path={other}", X,
+                               404, problem("api.file_not_found"))
+                    stats = self.client.get(f"/api/vaults/{vault_id}/stats")
+                    self.assertEqual(stats.status_code, 200, stats.text)
+                    self.assertEqual(sum(stats.json()["states"].values()), 1)
+            self.assertEqual(self.session_vault(), pinned)
+
+    def test_the_session_vault_is_still_written_by_me_alone(self) -> None:
+        # What the interface opens on never came from these routes: ``/api/me``
+        # names the first operational Vault and writes it into the Session.
+        with self.database.connect() as connection:
+            self.files_on_disk(connection)
+        for _method, suffix, _body in self.OPERATIONS:
+            self.assertEqual(self.client.get(f"/api/vaults/1/{suffix}").status_code, 200)
+        self.assertIsNone(self.session_vault())
+        self.assertEqual(self.client.get("/api/me").json()["vault"]["id"], 1)
+        self.assertEqual(self.session_vault(), 1)
+
+    def test_without_an_operational_vault_the_answer_is_the_path_one(self) -> None:
+        # The Session fallback is gone with its 403 ``api.no_vault``.
+        with self.database.connect() as connection:
+            connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
+        for method, suffix, body in self.OPERATIONS:
+            self.check(method, f"/api/vaults/1/{suffix}", body,
+                       404, problem("api.protected_vault_not_found"))
+        self.assertIsNone(self.session_vault())
+
+    def test_the_old_addresses_are_gone_without_an_alias(self) -> None:
+        paths = self.client.app.openapi()["paths"]
+        for old in ("/api/files", "/api/files/detail", "/api/stats"):
+            self.assertNotIn(old, paths)
+        for _method, suffix, _body in self.OPERATIONS:
+            for query in ("", "vault_id=1"):
+                with self.subTest(suffix=suffix, query=query):
+                    separator = "&" if "?" in suffix else "?"
+                    response = self.client.get(f"/api/{suffix}{separator if query else ''}{query}")
+                    self.assertEqual((response.status_code, response.json()),
+                                     (404, {"detail": "Not Found"}))
+        self.assertIsNone(self.session_vault())
+
+    def test_the_vault_is_not_a_query_parameter_any_more(self) -> None:
+        paths = self.client.app.openapi()["paths"]
+        for _method, suffix, _body in self.OPERATIONS:
+            parameters = paths[f"/api/vaults/{{vault_id}}/{suffix.partition('?')[0]}"]["get"]["parameters"]
+            self.assertEqual([(item["name"], item["in"]) for item in parameters
+                              if item["name"] == "vault_id"], [("vault_id", "path")])
+        # A leftover ``?vault_id=`` is ignored: the path is the whole address.
+        with self.database.connect() as connection:
+            self.files_on_disk(connection)
+        listing = self.client.get("/api/vaults/1/files?vault_id=99")
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual([item["path"] for item in listing.json()["items"]], ["a.txt"])
+
+    def test_each_new_address_is_matched_by_its_own_route(self) -> None:
+        self.each_address_is_matched_by_its_own_route(self.OPERATIONS)
 
 
 class PolicyErrors(ApiErrorCase):
@@ -575,7 +684,7 @@ class ItalianErrors(ApiErrorCase):
         self.client.cookies.set("frostvault_locale", "it")
         self.check("GET", "/api/vaults/99/vault-deletion", X,
                    404, problem("api.vault_deletion.not_found", locale="it"))
-        self.check("GET", "/api/files/detail?path=../outside", X,
+        self.check("GET", "/api/vaults/1/files/detail?path=../outside", X,
                    422, problem("api.invalid_path", locale="it"))
         self.check("GET", "/api/vaults/99/bucket", X,
                    404, problem("api.vault_not_found", locale="it"))

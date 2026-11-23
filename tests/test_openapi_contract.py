@@ -122,8 +122,11 @@ class OpenApiResponseContractTests(unittest.TestCase):
 
     def test_files_and_me_have_no_offline_cache_protocol(self) -> None:
         schema = app.openapi()
-        operation = schema["paths"]["/api/files"]["get"]
-        self.assertTrue(all(parameter["in"] == "query" for parameter in operation["parameters"]))
+        operation = schema["paths"]["/api/vaults/{vault_id}/files"]["get"]
+        self.assertEqual(
+            [parameter["name"] for parameter in operation["parameters"] if parameter["in"] != "query"],
+            ["vault_id"],
+        )
         self.assertNotIn("409", operation["responses"])
         self.assertNotIn("headers", operation["responses"]["200"])
         self.assertNotIn("offline_cache_generation", schema["components"]["schemas"]["MeResponse"]["properties"])

@@ -277,7 +277,7 @@ class PreflightQueueTests(FrostVaultTestCase):
         failed_at = time.monotonic()
 
         def states(vault_id):
-            response = self.client.get(f'/api/stats?vault_id={vault_id}')
+            response = self.client.get(f'/api/vaults/{vault_id}/stats')
             self.assertEqual(response.status_code, 200, response.text)
             return response.json()['states']
 
