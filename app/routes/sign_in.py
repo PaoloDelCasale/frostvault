@@ -12,20 +12,19 @@ from ..api_models import JsonObjectResponse, response_model
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
-from ..backoff import (
-    OWNER_ACCOUNT_KEY,
-    BackoffError,
-    guard as backoff_guard,
-    reauth_account_key,
-    reauth_ip_key,
-    record_failure,
-    record_success,
-)
-from ..breakglass import is_break_glass_allowed
 from ..database import db
+from ..emergency_password import (
+    REAUTHENTICATION,
+    SIGN_IN,
+    Accepted,
+    BreakGlassDenied,
+    Outcome,
+    Rejected,
+    Throttled,
+    verify_emergency_password,
+)
 from ..oidc import IdentityRejected, OidcError, begin_login, bind_owner_identity, complete_login
 from ..oidc_network import oidc_host_addresses
-from ..security import DUMMY_PASSWORD_HASH, verify_password
 from ..sessions import (
     SessionTransitionError,
     create_session,
@@ -78,7 +77,36 @@ def login_page():
 @router.post("/api/login", response_model=JsonObjectResponse)
 def login(action: LoginRequest, request: Request, response: Response):
     client_ip = _client_ip(request)
-    if not is_break_glass_allowed(client_ip):
+    raw_token: str | None = None
+    csrf_token: str | None = None
+
+    def start_session(connection: Any, outcome: Outcome) -> None:
+        nonlocal raw_token, csrf_token
+        if isinstance(outcome, Rejected):
+            audit_log(
+                "break_glass_failed",
+                connection=connection,
+                actor="emergency",
+                ip=client_ip,
+            )
+        elif isinstance(outcome, Accepted):
+            raw_token = create_session(
+                connection,
+                auth_method="local",
+                ip=client_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
+            csrf_token = csrf_token_for(connection, raw_token)
+
+    # The throttle counters are committed before the outcome comes back, so
+    # the errors raised below never roll a recorded failure back.
+    outcome = verify_emergency_password(
+        action.password,
+        client_ip=client_ip,
+        throttle=SIGN_IN,
+        in_transaction=start_session,
+    )
+    if isinstance(outcome, BreakGlassDenied):
         with db() as connection:
             audit_log(
                 "break_glass_denied",
@@ -87,49 +115,8 @@ def login(action: LoginRequest, request: Request, response: Response):
                 ip=client_ip,
             )
         raise HTTPException(403, "The emergency password is not accepted from this network")
-    # Persist throttle counters by letting the transaction commit first, then map
-    # the outcome to a response: raising inside the `with` block would roll the
-    # recorded failure back.
-    retry_after: int | None = None
-    raw_token: str | None = None
-    csrf_token: str | None = None
-    with db() as connection:
-        try:
-            backoff_guard(connection, scope="ip", key=client_ip)
-            backoff_guard(connection, scope="account", key=OWNER_ACCOUNT_KEY)
-        except BackoffError as blocked:
-            retry_after = blocked.retry_after
-        else:
-            owner = connection.execute(
-                "SELECT password_hash FROM owner WHERE id=1"
-            ).fetchone()
-            eligible = bool(owner and owner["password_hash"])
-            password_hash = (
-                owner["password_hash"] if eligible else DUMMY_PASSWORD_HASH
-            )
-            password_valid = verify_password(password_hash, action.password)
-            # Always reject the dummy path, even if its hash ever matches the
-            # submitted password (or verification is replaced in a test).
-            if not eligible or not password_valid:
-                record_failure(connection, scope="ip", key=client_ip)
-                record_failure(connection, scope="account", key=OWNER_ACCOUNT_KEY)
-                audit_log(
-                    "break_glass_failed",
-                    connection=connection,
-                    actor="emergency",
-                    ip=client_ip,
-                )
-            else:
-                record_success(connection, scope="ip", key=client_ip)
-                record_success(connection, scope="account", key=OWNER_ACCOUNT_KEY)
-                raw_token = create_session(
-                    connection,
-                    auth_method="local",
-                    ip=client_ip,
-                    user_agent=request.headers.get("user-agent"),
-                )
-                csrf_token = csrf_token_for(connection, raw_token)
-    if retry_after is not None:
+    if isinstance(outcome, Throttled):
+        retry_after = outcome.retry_after
         with db() as connection:
             audit_log(
                 "auth_backoff_blocked",
@@ -178,87 +165,58 @@ def reauth(
     cannot reset sign-in or OIDC-related throttling state.
     """
     client_ip = _client_ip(request)
-    if not is_break_glass_allowed(client_ip):
-        raise HTTPException(403, "Password reauthentication is not allowed here")
 
-    backoff_keys = (
-        ("ip", reauth_ip_key(client_ip or "unknown")),
-        ("account", reauth_account_key()),
-    )
-    retry_after: int | None = None
-    password_valid = False
-
-    # Like Local Sign-in, every counter and audit event must commit before an
-    # HTTP error is raised. Otherwise a rejected request rolls back the very
-    # state intended to throttle it.
-    with db() as connection:
-        delays: list[int] = []
-        for scope, key in backoff_keys:
-            try:
-                backoff_guard(connection, scope=scope, key=key)
-            except BackoffError as blocked:
-                delays.append(blocked.retry_after)
-        retry_after = max(delays) if delays else None
-
-        if retry_after is None:
-            row = connection.execute(
-                "SELECT password_hash FROM owner WHERE id=1"
-            ).fetchone()
-            password_valid = bool(
-                row
-                and row["password_hash"]
-                and verify_password(row["password_hash"], action.password)
+    def record(connection: Any, outcome: Outcome) -> None:
+        if isinstance(outcome, Accepted):
+            mark_reauthenticated(connection, request.state.session["id"])
+            audit_log(
+                "reauth_succeeded",
+                connection=connection,
+                actor="emergency",
+                outcome="success",
+                flow="reauth",
+                ip=client_ip,
             )
-            if not password_valid:
-                for scope, key in backoff_keys:
-                    record_failure(connection, scope=scope, key=key)
-                # The attempt that reaches the threshold is itself throttled;
-                # choose the longest active dimension for an accurate retry.
-                delays = []
-                for scope, key in backoff_keys:
-                    try:
-                        backoff_guard(connection, scope=scope, key=key)
-                    except BackoffError as blocked:
-                        delays.append(blocked.retry_after)
-                retry_after = max(delays) if delays else None
-                audit_log(
-                    "reauth_failed",
-                    connection=connection,
-                    actor="emergency",
-                    outcome="failure",
-                    flow="reauth",
-                    ip=client_ip,
-                )
-            else:
-                for scope, key in backoff_keys:
-                    record_success(connection, scope=scope, key=key)
-                mark_reauthenticated(connection, request.state.session["id"])
-                audit_log(
-                    "reauth_succeeded",
-                    connection=connection,
-                    actor="emergency",
-                    outcome="success",
-                    flow="reauth",
-                    ip=client_ip,
-                )
-
-        if retry_after is not None:
+        elif isinstance(outcome, Rejected) or (
+            isinstance(outcome, Throttled) and outcome.password_rejected
+        ):
+            audit_log(
+                "reauth_failed",
+                connection=connection,
+                actor="emergency",
+                outcome="failure",
+                flow="reauth",
+                ip=client_ip,
+            )
+        if isinstance(outcome, Throttled):
             audit_log(
                 "auth_backoff_blocked",
                 connection=connection,
                 actor="emergency",
                 flow="reauth",
                 ip=client_ip,
-                retry_after=retry_after,
+                retry_after=outcome.retry_after,
             )
 
-    if retry_after is not None:
+    # Like signing in, every counter and audit event is committed before an
+    # HTTP error is raised. Otherwise a rejected request rolls back the very
+    # state intended to throttle it.
+    outcome = verify_emergency_password(
+        action.password,
+        client_ip=client_ip,
+        throttle=REAUTHENTICATION,
+        in_transaction=record,
+    )
+    if isinstance(outcome, BreakGlassDenied):
+        raise HTTPException(403, "Password reauthentication is not allowed here")
+    if isinstance(outcome, Throttled):
+        retry_after = outcome.retry_after
         raise HTTPException(
             429,
             "Too many attempts; try again later",
             headers={"Retry-After": str(retry_after)},
         )
-    if not password_valid:
+    if not isinstance(outcome, Accepted):
         raise HTTPException(401, "Incorrect password")
     return {"message": "Reauthenticated"}
 

@@ -6,14 +6,28 @@ from typing import List
 IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
+class InvalidNetwork(ValueError):
+    """An entry of a CIDR list that is not a network; ``entry`` is its text."""
+
+    def __init__(self, entry: str) -> None:
+        super().__init__(f"invalid network: {entry}")
+        self.entry = entry
+
+
 def parse_networks(raw: str) -> List[IpNetwork]:
-    """Parse a comma-separated CIDR list, raising ValueError on any bad entry."""
+    """Parse a comma-separated CIDR list: the only CIDR parser of the application.
+
+    Raises :class:`InvalidNetwork` (a ``ValueError``) on the first bad entry.
+    """
     networks: List[IpNetwork] = []
     for part in raw.split(","):
         candidate = part.strip()
         if not candidate:
             continue
-        networks.append(ipaddress.ip_network(candidate, strict=False))
+        try:
+            networks.append(ipaddress.ip_network(candidate, strict=False))
+        except ValueError:
+            raise InvalidNetwork(candidate) from None
     return networks
 
 

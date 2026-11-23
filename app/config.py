@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .proxy import InvalidNetwork, parse_networks
 
 _DEFAULT_FRONTEND_DIST = str(
     Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -214,6 +215,13 @@ class Settings:
 settings = Settings()
 
 
+def _require_networks(name: str, raw: str) -> None:
+    try:
+        parse_networks(raw)
+    except InvalidNetwork as error:
+        raise RuntimeError(f"{name} contains an invalid network: {error.entry}")
+
+
 def validate_settings() -> None:
     if settings.upload_verification not in {"s3_checksum", "read_back"}:
         raise RuntimeError("UPLOAD_VERIFICATION must be s3_checksum or read_back")
@@ -224,16 +232,7 @@ def validate_settings() -> None:
         conninfo_to_dict(settings.database_dsn)
     except Exception:
         raise RuntimeError("DATABASE_URL must be a PostgreSQL connection string") from None
-    for entry in settings.trusted_proxies.split(","):
-        candidate = entry.strip()
-        if not candidate:
-            continue
-        try:
-            ipaddress.ip_network(candidate, strict=False)
-        except ValueError:
-            raise RuntimeError(
-                "TRUSTED_PROXIES contains an invalid network: " f"{candidate}"
-            )
+    _require_networks("TRUSTED_PROXIES", settings.trusted_proxies)
     if settings.cookie_secure:
         # A secure cookie means the app sits behind a reverse proxy on the public
         # internet, so host and forwarded hardening must be configured explicitly.
@@ -260,17 +259,7 @@ def validate_settings() -> None:
                 "OIDC is enabled but missing required settings: "
                 + ", ".join(missing)
             )
-    for entry in settings.break_glass_allowed_cidrs.split(","):
-        candidate = entry.strip()
-        if not candidate:
-            continue
-        try:
-            ipaddress.ip_network(candidate, strict=False)
-        except ValueError:
-            raise RuntimeError(
-                "BREAK_GLASS_ALLOWED_CIDRS contains an invalid network: "
-                f"{candidate}"
-            )
+    _require_networks("BREAK_GLASS_ALLOWED_CIDRS", settings.break_glass_allowed_cidrs)
     if not settings.bootstrap_admin_username and not settings.bootstrap_admin_password:
         # Valid after first startup: the owner keeps its stored credentials.
         return

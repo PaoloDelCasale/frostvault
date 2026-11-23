@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import unittest
 
-from app.proxy import resolve_client_ip
+from app.proxy import InvalidNetwork, parse_networks, resolve_client_ip
 
 
 def _nets(*cidrs: str) -> list:
@@ -43,6 +43,22 @@ class ClientIpTests(unittest.TestCase):
         )
 
         self.assertEqual(resolved, "203.0.113.9")
+
+
+class ParseNetworksTests(unittest.TestCase):
+    def test_a_comma_separated_list_is_parsed_ignoring_blanks(self) -> None:
+        self.assertEqual(
+            parse_networks(" 10.0.0.0/8, ,192.168.1.7/24,2001:db8::/32,203.0.113.9 "),
+            _nets("10.0.0.0/8", "192.168.1.0/24", "2001:db8::/32", "203.0.113.9/32"),
+        )
+        self.assertEqual(parse_networks(""), [])
+
+    def test_the_first_invalid_entry_is_named(self) -> None:
+        with self.assertRaises(InvalidNetwork) as error:
+            parse_networks("10.0.0.0/8, nonsense, also-bad")
+        self.assertEqual(error.exception.entry, "nonsense")
+        # Callers that fail closed catch it as the ValueError it always was.
+        self.assertIsInstance(error.exception, ValueError)
 
 
 if __name__ == "__main__":
