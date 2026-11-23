@@ -29,19 +29,7 @@ from tests.test_upload_worker import A, B, sha
 ORIGINAL_MTIME_NS = 1_700_000_000_123_456_789
 
 
-class RecoveryWorkerTests(unittest.TestCase):
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
+class RecoveryWorkerTests(fixtures.UploadWorkerCase):
 
     # -- helpers -------------------------------------------------------------
 

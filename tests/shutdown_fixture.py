@@ -10,7 +10,6 @@ from pathlib import Path
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import boto3
@@ -24,6 +23,7 @@ from app.services.catalog_event_stream import StreamTickSnapshot
 from app.services.s3_upload import upload_file
 from app.services.shutdown import shutdown_state
 from app.services.upload_snapshot import prepare_upload_snapshot
+from tests.fixtures import override_settings
 
 
 async def idle_producer():
@@ -51,7 +51,7 @@ async def lifespan(app):
                      "filesystem_watch_loop"):
             patches.enter_context(patch(f"app.main.{name}", idle_producer))
         patches.enter_context(patch("app.services.throughput.sampler_loop", lambda _db: idle_producer()))
-        patches.enter_context(patch("app.main.settings", SimpleNamespace(filesystem_watch_enabled=True)))
+        patches.enter_context(override_settings(filesystem_watch_enabled=True))
         patches.enter_context(patch("app.services.catalog_event_stream.stream_tick_snapshot", return_value=StreamTickSnapshot(
             ok=True, session_vault_id=1,
             signal={"vault_id": 1, "revision": 0, "domains": [], "has_gap": False},
@@ -100,7 +100,6 @@ async def lifespan(app):
                         time.sleep(0.2)
                         return put(**kwargs)
                     patches.enter_context(patch.object(client, "put_object", delayed_put))
-                    patches.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace()))
                     patches.enter_context(patch("app.storage._load_claimed_job_status", return_value={"status": "queued"}))
                     terminal = patches.enter_context(patch("app.storage.set_job", side_effect=AssertionError("shutdown must not mark Job cancelled/failed")))
                     def upload(job):

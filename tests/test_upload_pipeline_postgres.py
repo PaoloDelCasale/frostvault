@@ -26,13 +26,12 @@ from app.services.vault_pause import set_paused
 from app.services.vault_relocation import enroll_vault_root_identity
 from tests import test_upload_provenance_worker as worker_tests
 from tests.fixtures import seed_vault
-from tests.postgres import PostgresConnection
 from tests.upload_support import claimed_job_row
 
 
 class UploadPipelinePostgresTests(unittest.TestCase):
     def setUp(self):
-        self.worker = worker_tests.UploadProvenanceWorkerTests(methodName="runTest")
+        self.worker = worker_tests.UploadProvenanceWorkerCase(methodName="runTest")
         self.addCleanup(self.worker.doCleanups)
         self.worker.setUp()
         self.pipeline = pipeline._Pipeline(4, pipeline._Limits(network_count=1))
@@ -45,13 +44,13 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             return self.worker.queue()
         source = self.worker.source / path
         source.write_bytes(worker_tests.A)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path,
                 file_type="regular", size=source.stat().st_size, mtime_ns=source.stat().st_mtime_ns,
                 observed_at=storage.now_iso())
         queued = queue_jobs(path, "upload", 2)
         self.assertEqual(queued["item_count"], 1)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             return connection.execute("SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
                                       "WHERE f.path=%s ORDER BY j.id DESC", (path,)).fetchone()["id"]
 
@@ -60,17 +59,17 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         source.mkdir()
         file = source / "other.txt"
         file.write_bytes(worker_tests.A)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             seed_vault(connection, id=3, name="Other", source_root=str(source), bucket="bucket")
             enroll_vault_root_identity(connection, 3, str(source))
             ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
                 size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())
         queue_jobs("other.txt", "upload", 3)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             return connection.execute("SELECT id FROM jobs WHERE vault_id=3").fetchone()["id"]
 
     def claim(self, job_id):
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
                 claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
                 claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
@@ -101,12 +100,12 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 and self.worker.row(job_id)["message_key"] == "job.hashing_local_file")
 
     def lease(self, job_id):
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             row = connection.execute("SELECT token FROM job_leases WHERE job_id=%s", (job_id,)).fetchone()
         return row["token"] if row else None
 
     def assert_no_send_fact(self, job_id):
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertIsNone(provenance.load_for_job(connection, job_id))
         self.assertIsNone(self.worker.row(job_id)["archive_version_id"])
 
@@ -142,11 +141,11 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 self.assert_no_send_fact(second)
                 self.assertEqual(self.worker.provider.puts, 0)
                 self.assertNotEqual(self.worker.row(first)["status"], "completed")
-                with PostgresConnection(self.worker.db_path) as connection:
+                with self.worker.database.connect() as connection:
                     set_paused(connection, vault_id=2, paused=True)
                 self.assertIsNone(self.claim(unclaimed), "Pause holds NEW claims, not leased stages")
                 self.assertIsNone(self.lease(unclaimed))
-                with PostgresConnection(self.worker.db_path) as connection:
+                with self.worker.database.connect() as connection:
                     self.assertEqual(connection.execute("SELECT count(*) n FROM job_leases").fetchone()["n"], 2)
             finally:
                 release.set()
@@ -197,7 +196,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                         if stop == "cancel":
                             self.assertTrue(storage.set_job(second, "cancelled"))
                         elif stop == "lease":
-                            with PostgresConnection(self.worker.db_path) as connection:
+                            with self.worker.database.connect() as connection:
                                 connection.execute("UPDATE job_leases SET token=gen_random_uuid() WHERE job_id=%s", (second,))
                         else:
                             storage.shutdown_state.request()
@@ -212,7 +211,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 # report.txt was already completed in earlier subtests; queue a
                 # different content generation, with the old keeper retained.
                 self.worker.file.write_bytes(self.worker.file.read_bytes() + b"next")
-                with PostgresConnection(self.worker.db_path) as connection:
+                with self.worker.database.connect() as connection:
                     ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular",
                         size=self.worker.file.stat().st_size, mtime_ns=self.worker.file.stat().st_mtime_ns,
                         observed_at=storage.now_iso())
@@ -242,7 +241,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 try:
                     allow_ack.set()
                     self.assertTrue(acknowledged.wait(10), "Journal cannot queue behind catalog capacity")
-                    with PostgresConnection(self.worker.db_path) as connection:
+                    with self.worker.database.connect() as connection:
                         intent = provenance.load_for_job(connection, job)
                         self.assertIsNotNone(provenance.receipt(connection, intent.id))
                     self.assertIsNone(self.worker.row(job)["archive_version_id"])
@@ -260,7 +259,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         first, other = self.queue("report.txt"), self.queue_other_vault()
         with patch.object(provenance, "append_receipt", side_effect=psycopg.OperationalError("journal unavailable")):
             self.worker.run_job(first)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             intent = provenance.load_for_job(connection, first)
             self.assertTrue(intent.send_started)
             self.assertIsNone(provenance.receipt(connection, intent.id))
@@ -272,7 +271,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.row(other)["retry_count"], 0)
         self.assertEqual(self.worker.provider.puts, 2)
         # Reachability is not evidence that the first provider send never landed.
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             after = provenance.load_for_job(connection, first)
             for field in ("token", "target", "snapshot", "send_started", "settled", "landed_version_id"):
                 self.assertEqual(getattr(after, field), getattr(intent, field), field)
@@ -291,7 +290,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.puts, 1)
         self.assertTrue(self.pipeline.uncertain_journals())
         from app.services import upload_remediation
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             connection.execute("UPDATE jobs SET retry_count=7 WHERE id=%s", (second,))
         # Inject a real journal write outage while the rest of the catalog can
         # still park Jobs. More waits than the transfer budget must not fail it.
@@ -308,15 +307,15 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 self.assertIsNotNone(held["run_after"])
                 self.assertIsNone(self.lease(held["id"]))
                 self.assert_no_send_fact(second)
-                with PostgresConnection(self.worker.db_path) as connection:
+                with self.worker.database.connect() as connection:
                     connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (second,))
             upload_remediation.observe(storage.db)
-            with PostgresConnection(self.worker.db_path) as connection:
+            with self.worker.database.connect() as connection:
                 self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_journal_unavailable'").fetchone()["problem_status"], "open")
                 self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed' AND job_id=%s", (second,)).fetchone()["n"], 0)
         self.assertEqual(self.worker.provider.puts, 1)
         self.assert_empty()
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id IN (%s,%s)", (first, second))
         # Reconciliation bypasses send admission: it locates the first write by
         # its token, journals it and completes without another PUT.
@@ -328,7 +327,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.puts, 2)
         self.assertEqual(self.worker.row(second)["retry_count"], 7)
         upload_remediation.observe(storage.db)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT problem_status FROM notifications WHERE event='upload_journal_unavailable'").fetchone()["problem_status"], "resolved")
         self.assert_empty()
 
@@ -342,7 +341,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             self.assert_no_send_fact(other)
             self.assertEqual(self.worker.provider.puts, 1)
             self.assertTrue(self.pipeline.uncertain_journals())
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             before = provenance.load_for_job(connection, first)
             self.assertIsNone(provenance.receipt(connection, before.id))
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (other,))
@@ -356,7 +355,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker.assert_keeper(other)
         self.assertEqual(self.worker.row(first)["status"], "cancelled")
         self.assertIsNone(self.worker.row(first)["archive_version_id"])
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             after = provenance.load_for_job(connection, first)
             receipt = provenance.receipt(connection, before.id)
             self.assertIsNone(receipt, "A reachability probe does not invent a lost receipt")
@@ -382,14 +381,14 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with patch.object(storage, "upload_s3_file", side_effect=changed_return), \
                 patch.object(provenance, "append_receipt", side_effect=fail_changed):
             self.worker.run_job(first)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             intent = provenance.load_for_job(connection, first)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
         self.worker.run_job(second)
         self.worker.assert_keeper(second)
         self.assertEqual(self.worker.provider.puts, 2)
         self.assertEqual(self.pipeline.uncertain_journals(), ())
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertTrue(provenance.load_for_job(connection, first).send_started)
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (first,))
         self.worker.run_job(first)
@@ -408,7 +407,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker.assert_keeper(second)
         self.assertEqual(self.worker.provider.puts, 2)
         self.assertEqual(self.pipeline.uncertain_journals(), ())
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertTrue(provenance.load_for_job(connection, first).send_started)
         # The malformed response is a terminal per-file failure, so resume via
         # the real reconciliation admission rather than claiming a failed Job.
@@ -477,7 +476,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                         self.worker.provider.hook = lambda *args, **kwargs: None
                 self.assertNotEqual(self.worker.row(failed)["status"], "completed")
                 self.assert_empty()
-                with PostgresConnection(self.worker.db_path) as connection:
+                with self.worker.database.connect() as connection:
                     intent = provenance.load_for_job(connection, failed)
                     self.assertIsNotNone(provenance.receipt(connection, intent.id))
                     version = connection.execute("SELECT integrity FROM archive_versions WHERE provider_version_id=%s "
@@ -532,7 +531,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                     work = pool.submit(self.worker.run_job, job)
                     self.wait_for(lambda: self.worker.row(job)["message_key"] == "job.hashing_local_file")
                     hashing.assert_not_called()
-                    with PostgresConnection(self.worker.db_path) as connection:
+                    with self.worker.database.connect() as connection:
                         connection.execute("UPDATE job_leases SET token=gen_random_uuid() WHERE job_id=%s", (job,))
                     work.result(timeout=10)
                     hashing.assert_not_called()
@@ -566,7 +565,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             finally:
                 response_ready.set()
             work.result(timeout=15)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
         self.assertEqual(self.worker.row(job)["status"], "cancelled")
@@ -585,7 +584,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with self.assertRaises(Interrupted):
             self.worker.run_job(job)
         self.assert_empty()
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
             self.assertTrue(intent.send_started)
@@ -601,7 +600,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
 
     def test_deferred_commit_abort_returns_permit_before_replaying_only_database_work(self):
         job = self.queue("report.txt")
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             connection.execute("CREATE SEQUENCE pipeline_commit_attempt")
             connection.execute("""CREATE FUNCTION pipeline_abort_commit() RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN IF nextval('pipeline_commit_attempt')=1 THEN
@@ -612,7 +611,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker.run_job(job)
         self.worker.assert_keeper(job)
         self.assertEqual(self.worker.provider.puts, 1)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT count(*) n FROM archive_versions").fetchone()["n"], 1)
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_receipts").fetchone()["n"], 1)
             self.assertGreaterEqual(connection.execute("SELECT last_value FROM pipeline_commit_attempt").fetchone()["last_value"], 2)

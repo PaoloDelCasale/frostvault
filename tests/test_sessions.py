@@ -16,8 +16,7 @@ from app.sessions import (
     session_actor,
     set_session_vault,
 )
-from tests.fixtures import FrostVaultTestCase, create_owner, seed_vault
-from tests.owner_fixtures import bump_session_version
+from tests.fixtures import FrostVaultTestCase, bump_session_version, create_owner, seed_vault
 
 
 def _past() -> datetime:

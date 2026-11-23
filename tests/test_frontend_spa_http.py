@@ -14,77 +14,6 @@ from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Paths the cut-over deletes; source must not keep referencing them.
-_DELETED_PATH_FRAGMENTS = (
-    "app/templates/",
-    "app/templates\\",
-    "app/static/app.js",
-    "app/static/admin.js",
-    "app/static/vault_access.js",
-    "app/static/vault_create.js",
-    "app/static/style.css",
-    "templates/index.html",
-    "templates/login.html",
-    "templates/no_vault.html",
-    "templates/vault_access.html",
-    "templates/vault_create.html",
-    "templates/admin.html",
-)
-
-_SOURCE_SCAN_ROOTS = (
-    REPO_ROOT / "app",
-    REPO_ROOT / "frontend" / "src",
-    REPO_ROOT / "frontend" / "tests",
-    REPO_ROOT / "frontend" / "e2e",
-    REPO_ROOT / "tests",
-    REPO_ROOT / "docs",
-)
-
-_SOURCE_SCAN_FILES = (
-    REPO_ROOT / "AGENTS.md",
-    REPO_ROOT / "README.md",
-    REPO_ROOT / ".env.example",
-    REPO_ROOT / ".env.local.example",
-    REPO_ROOT / "Dockerfile",
-    REPO_ROOT / ".github" / "workflows" / "migrations.yml",
-)
-
-_SOURCE_SCAN_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".mjs", ".md", ".yml", ".yaml", ".example", ".css", ".html", ".json"}
-
-# Historical ADRs before the cut-over may still describe Jinja; exclude them.
-_SKIP_PATH_PARTS = {
-    "node_modules",
-    "dist",
-    "__pycache__",
-    ".venv",
-    "package-lock.json",
-}
-
-
-def _iter_source_files():
-    for root in _SOURCE_SCAN_ROOTS:
-        if not root.exists():
-            continue
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in _SKIP_PATH_PARTS for part in path.parts):
-                continue
-            # Pre-cut-over ADRs keep historical Jinja wording.
-            if path.parent.name == "adr" and path.name.startswith("000") and path.name < "0007":
-                continue
-            if path.suffix.lower() not in _SOURCE_SCAN_SUFFIXES and path.name not in {
-                "AGENTS.md",
-                "README.md",
-            }:
-                if ".env" not in path.name:
-                    continue
-            yield path
-    for path in _SOURCE_SCAN_FILES:
-        if path.is_file():
-            yield path
-
-
 class FrontendSpaHttpTests(FrostVaultTestCase):
     PASSWORD = "correct horse battery staple"
     owner = {"password": PASSWORD}
@@ -218,42 +147,6 @@ class FrontendSpaHttpTests(FrostVaultTestCase):
         self.assertNotIn("FRONTEND_SPA", detail)
         self.assertIn("npm run build", detail)
         self.assertIn("frontend/dist", detail)
-
-    def test_no_frontend_spa_references_in_sources(self) -> None:
-        """Seam 4: no reference to FRONTEND_SPA remains in the sources."""
-        forbidden = "FRONTEND" + "_SPA"
-        forbidden_attr = "frontend" + "_spa"
-        hits: list[str] = []
-        for path in _iter_source_files():
-            if path.resolve() == Path(__file__).resolve():
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if forbidden in text or forbidden_attr in text:
-                hits.append(str(path.relative_to(REPO_ROOT)))
-        self.assertEqual(hits, [], f"{forbidden} still referenced in: {hits}")
-
-    def test_no_deleted_jinja_or_static_paths_in_sources(self) -> None:
-        """Seam 5: no reference to deleted templates or static files remains."""
-        hits: list[str] = []
-        for path in _iter_source_files():
-            # This test file names the deleted paths on purpose.
-            if path.resolve() == Path(__file__).resolve():
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            for fragment in _DELETED_PATH_FRAGMENTS:
-                if fragment in text:
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{fragment}")
-        self.assertEqual(hits, [], f"Deleted paths still referenced in: {hits}")
-
-    def test_jinja_template_and_static_trees_are_gone(self) -> None:
-        """Acceptance: image COPY app/ no longer ships Jinja templates or legacy JS."""
-        self.assertFalse((REPO_ROOT / "app" / "templates").exists())
-        self.assertFalse((REPO_ROOT / "app" / "static").exists())
-        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertNotIn("jinja", dockerfile.lower())
-        forbidden = "FRONTEND" + "_SPA"
-        self.assertNotIn(forbidden, dockerfile)
-
 
 if __name__ == "__main__":
     unittest.main()

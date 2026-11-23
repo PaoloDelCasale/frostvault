@@ -14,13 +14,7 @@ from tests import test_upload_provenance_worker as fixtures
 
 
 
-class UploadMultipartAbortTests(unittest.TestCase):
-    setUp = fixtures.UploadProvenanceWorkerTests.setUp
-    queue = fixtures.UploadProvenanceWorkerTests.queue
-    run_job = fixtures.UploadProvenanceWorkerTests.run_job
-    row = fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = fixtures.UploadProvenanceWorkerTests.assert_keeper
-    http_client = fixtures.UploadProvenanceWorkerTests.http_client
+class UploadMultipartAbortTests(fixtures.UploadProvenanceWorkerCase):
     db = recovery.UploadAmbiguousSendRecoveryTests.db
     stable_content = recovery.UploadAmbiguousSendRecoveryTests.stable_content
     fail_before_provider_request = recovery.UploadAmbiguousSendRecoveryTests.fail_before_provider_request
@@ -28,7 +22,6 @@ class UploadMultipartAbortTests(unittest.TestCase):
     intent = recovery.UploadAmbiguousSendRecoveryTests.intent
     denied = recovery.UploadAmbiguousSendRecoveryTests.denied
     bucket_probe = recovery.UploadAmbiguousSendRecoveryTests.bucket_probe
-    observe_content = fixtures.UploadProvenanceWorkerTests.observe_content
 
     def interrupted_multipart(self, *, journaled=True, foreign=False):
         """An ambiguous send whose sender left an incomplete multipart upload behind."""

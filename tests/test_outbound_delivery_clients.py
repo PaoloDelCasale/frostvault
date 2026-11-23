@@ -9,8 +9,7 @@ from unittest.mock import MagicMock, patch
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
 from tests import service_probes
-from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
-from tests.owner_fixtures import insert_job
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_job, seed_vault
 
 
 class _SmtpRecorder(threading.Thread):
@@ -92,7 +91,7 @@ class OutboundDeliveryClientTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, id=2)
-            self.job_id = insert_job(connection, vault_id=2, status="uploading")
+            self.job_id = seed_job(connection, vault_id=2, status="uploading")
 
     def test_smtp_adapter_delivers_to_env_recipient_not_login_address(self) -> None:
         smtp = _SmtpRecorder()
@@ -121,7 +120,7 @@ class OutboundDeliveryClientTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             # A terminal Job never runs again: each outcome ends its own Job.
             jobs = {"completed": self.job_id,
-                    "failed": insert_job(connection, vault_id=2, path="b.txt", status="uploading")}
+                    "failed": seed_job(connection, vault_id=2, path="b.txt", status="uploading")}
         for status, job_id in jobs.items():
             with self.subTest(status=status), patch(
                 "app.storage.db", side_effect=lambda: self.database.connect()

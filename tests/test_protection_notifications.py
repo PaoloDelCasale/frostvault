@@ -11,9 +11,8 @@ from app.config import settings
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.source_layout import VaultLocalAccess
-from tests.owner_fixtures import insert_job
+from tests.fixtures import FrostVaultTestCase, seed_job, seed_vault
 from tests import catalog_probe
-from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 def monitor_vault(connection, vault, *, now):
@@ -121,7 +120,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             self.vault_id = seed_vault(connection)["id"]
-            self.job_id = insert_job(connection, vault_id=self.vault_id)
+            self.job_id = seed_job(connection, vault_id=self.vault_id)
 
     def connect(self):
         return self.database.connect()
@@ -137,7 +136,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             ):
                 with self.subTest(action=action, status=status, origin=origin):
                     # A Job keeps its action and origin for life: one Job per case.
-                    job_id = insert_job(c, vault_id=self.vault_id, path=f'{action}-{status}-{origin}.txt',
+                    job_id = seed_job(c, vault_id=self.vault_id, path=f'{action}-{status}-{origin}.txt',
                                         action=action, status=status, origin=origin)
                     count = inbox.enqueue_job_terminal_notification(c, job_id=job_id)
                     self.assertEqual(count, int(event is not None))
@@ -171,10 +170,10 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
 
     def test_retry_status_alone_does_not_resolve_historical_failure(self):
         with self.connect() as c:
-            failed = insert_job(c, vault_id=self.vault_id, status='failed')
+            failed = seed_job(c, vault_id=self.vault_id, status='failed')
             inbox.enqueue_job_terminal_notification(c,job_id=failed)
             # A terminal Job never runs again: the retry is another Job.
-            insert_job(c, vault_id=self.vault_id, status='retrying')
+            seed_job(c, vault_id=self.vault_id, status='retrying')
             # #459 requires demonstrable exact completion+cleanup linkage,
             # not merely queueing another attempt.
             self.assertEqual(inbox.count_open_problems(c),1)
@@ -524,7 +523,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
     def test_monitor_fault_does_not_suppress_durable_email_and_next_success_resolves_it(self):
         from app import storage
         with self.connect() as c:
-            failed = insert_job(c, vault_id=self.vault_id, status='failed')
+            failed = seed_job(c, vault_id=self.vault_id, status='failed')
             inbox.enqueue_job_terminal_notification(c,job_id=failed)
         smtp = unittest.mock.Mock()
         with patch('app.storage.db',side_effect=self.connect), patch.object(inbox,'production_smtp_client',return_value=smtp), patch.object(monitor,'maintain_notifications',side_effect=RuntimeError('SECRET monitor context')):

@@ -16,7 +16,6 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import cloud_deletion
 from tests import test_cloud_deletion as fixtures
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 PHOTO = b"photo-bytes-723"
 ORIGINAL = b"only-in-the-cloud-723"
@@ -238,14 +237,12 @@ class ListingSelectionTests(SelectionFixture):
 
 class SelectionHttpTests(SelectionFixture):
 
+    owner = {}
+
     def setUp(self):
         super().setUp()
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        with self.db() as connection:
-            create_owner(connection)
-        self.headers = sign_in(
-            self.client, self.database,
+        self.client = self.http_client()
+        self.headers = self.sign_in(
             reauthenticated_until=datetime.now(timezone.utc).isoformat()).csrf_headers
 
     def test_preview_then_confirm_and_a_stale_fingerprint_is_409(self) -> None:

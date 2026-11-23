@@ -313,7 +313,7 @@ def pipeline_for(worker: Any) -> _Pipeline:
     with _registry_lock:
         dsn = database.settings.database_dsn
         if dsn not in _registry:
-            _registry[dsn] = _Pipeline(worker._runtime_settings().operation_concurrency)
+            _registry[dsn] = _Pipeline(database.settings.operation_concurrency)
         return _registry[dsn]
 
 

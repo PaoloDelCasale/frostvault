@@ -18,7 +18,6 @@ from app.catalog import ArchiveCatalog
 from app.services import duplicate_cleanup, mirror_cleanup
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import set_vault_plan
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 from tests.test_duplicate_cleanup import DuplicateCleanupFixture
 
 BACKUP = b"ab_20261101.tar.zst bytes"
@@ -361,13 +360,12 @@ class ReauthRuleTests(unittest.TestCase):
 
 class HttpTests(MirrorCleanupFixture):
 
+    owner = {}
+
     def setUp(self):
         super().setUp()
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        with self.db() as connection:
-            create_owner(connection)
-        self.headers = sign_in(self.client, self.database).csrf_headers
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.url = "/api/vaults/2/mirror-cleanup"
 
     def reauth(self, at: datetime | None = None) -> None:

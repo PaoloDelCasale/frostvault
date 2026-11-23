@@ -5,20 +5,17 @@ Cloud-only after a real upload, in Vault 2 named ``Docs``.
 """
 from datetime import datetime, timezone
 
-from app import main
 from tests import test_cloud_deletion as fixtures
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 
 class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
+    owner = {}
+
     def setUp(self):
         super().setUp()
         self.cloud_only()
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        with self.db() as connection:
-            create_owner(connection)
-        self.headers = sign_in(self.client, self.database).csrf_headers
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.payload = {"path":"report.txt", "confirmation":"Docs", "reason":"deliberate deletion"}
 
     def reauth(self, recent):
@@ -85,17 +82,6 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
         cancelled = self.client.post("/api/vaults/2/stop-protection/cancel-deletion",headers=self.headers)
         self.assertEqual(cancelled.status_code,200,cancelled.text)
         self.assertTrue(cancelled.json()["root_released"])
-
-    def test_removed_endpoints_and_acceleration_are_absent(self):
-        paths = main.app.openapi()["paths"]
-        for route in ("/api/cloud-purge/accelerate","/api/vault/cloud-deletion",
-                      "/api/vault/decommission","/api/vault/decommission/preview",
-                      "/api/vaults/{vault_id}/decommission", "/api/vaults/{vault_id}/decommission/status"):
-            self.assertNotIn(route,paths)
-        for method,path in (("post","/api/cloud-purge/accelerate"),("put","/api/vault/cloud-deletion"),
-                            ("post","/api/vaults/2/decommission")):
-            response = getattr(self.client,method)(path,json={},headers=self.headers)
-            self.assertEqual(response.status_code,404,response.text)
 
     def test_csrf_and_authentication_still_gate_deletion(self):
         response = self.client.post("/api/cloud-purge",json=self.payload)

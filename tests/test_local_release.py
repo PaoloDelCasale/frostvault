@@ -197,7 +197,9 @@ class PathScopedLocalReleaseTests(unittest.TestCase):
             self.assertFalse(local_release_is_confirmed(connection, 1))
 
 
-class LocalReleaseWorkerTests(unittest.TestCase):
+class LocalReleaseWorkerCase(unittest.TestCase):
+    """One releasable file with a mocked catalog, database and provider."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -233,6 +235,8 @@ class LocalReleaseWorkerTests(unittest.TestCase):
         self.stack.enter_context(patch("app.storage.get_policy", return_value=OperationPolicy(local_release_after_days=90)))
         self.stack.enter_context(patch("app.storage.s3_client", return_value=SimpleNamespace(head_object=self.head)))
 
+
+class LocalReleaseWorkerTests(LocalReleaseWorkerCase):
     def test_explicit_manual_release_works_with_automation_off_including_cold_classes(self):
         for storage_class in ("STANDARD", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"):
             with self.subTest(storage_class=storage_class), patch("app.storage.get_policy", return_value=OperationPolicy()):

@@ -7,18 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.catalog import ArchiveCatalog
-from tests import catalog_probe, fixtures
-
-
-def seed_vault(
-    connection: Any,
-    *,
-    vault_id: int = 2,
-    source_root: str = "/source",
-    name: str = "Docs",
-) -> int:
-    """Alias of ``tests.fixtures.seed_vault`` with an explicit id (#801)."""
-    return fixtures.seed_vault(connection, id=vault_id, name=name, source_root=source_root)["id"]
+from tests import catalog_probe
 
 
 def queue_rename_job(connection: Any, vault_id: int, path: str) -> list[int]:

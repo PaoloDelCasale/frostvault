@@ -35,7 +35,7 @@ from watchfiles import Change
 # The native observer runs in a child process with its own GIL (ADR-0053).
 from .services.watch_process import awatch
 
-from .config import is_placeholder, settings, settings_snapshot
+from .config import is_placeholder, settings
 from .catalog import ArchiveCatalog
 from .database import db
 from .services import audit_failures, source_layout
@@ -138,10 +138,6 @@ from .services.operation_policies import (
     auto_upload_path_is_included,
     file_is_stable,
 )
-
-
-def _runtime_settings():
-    return settings_snapshot(settings)
 
 
 # Short-lived journals compensate committed observation batches if a pinned root
@@ -461,7 +457,7 @@ def now_iso() -> str:
 
 def s3_download_transfer_config() -> TransferConfig:
     """TransferManager config for plain-vault Archive Version downloads."""
-    runtime = _runtime_settings()
+    runtime = settings
     threshold_mib = int(runtime.s3_download_multipart_threshold_mib or 8)
     chunk_mib = int(runtime.s3_download_multipart_chunksize_mib or 8)
     concurrency = int(runtime.s3_download_max_concurrency or 10)
@@ -489,7 +485,7 @@ class _ThrottledByteProgress:
         # The first report waits one interval too: a small transfer then costs
         # no progress write at all before its final value.
         self._last_report = time.monotonic()
-        interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
+        interval_ms = int(settings.job_progress_min_interval_ms or 500)
         self._min_interval = max(0.05, interval_ms / 1000.0)
 
     def add(self, amount: int) -> None:
@@ -2049,7 +2045,7 @@ def _iter_local_fingerprints(
     ``SOURCE_DEVICE_READ_CONCURRENCY`` of this scan per device (#713), so a
     busy disk does not starve the others.
     """
-    concurrency = max(1, int(_runtime_settings().scan_hash_concurrency))
+    concurrency = max(1, int(settings.scan_hash_concurrency))
 
     def outcome(row: dict[str, Any], kind: str, update: dict[str, Any] | None):
         if on_result is not None:
@@ -4180,7 +4176,7 @@ def job_progress_callback(
     # counters must never reset the already-reported upload progress to zero.
     floor = max(0, int(minimum_bytes))
     total_bytes = max(total_bytes, floor)
-    interval_ms = int(_runtime_settings().job_progress_min_interval_ms or 500)
+    interval_ms = int(settings.job_progress_min_interval_ms or 500)
     min_interval = max(0.05, interval_ms / 1000.0)
     # ``floor_reported``: the caller already recorded ``floor`` durably, so
     # reporting it again would be one more transaction with no new progress.
@@ -4262,7 +4258,7 @@ def upload_s3_file(job: dict[str, Any], *, source: Path, key: str) -> dict[str, 
         _upload_source_root_check(job, vault)
     check_active = job.get("_upload_check_active") or (lambda: ensure_job_active(job["id"], "Upload stopped"))
     reporter = _ThrottledByteProgress(job)
-    limit = _runtime_settings().bandwidth_limit_kibps
+    limit = settings.bandwidth_limit_kibps
     from .services.upload_provenance import provider_identity, UploadBlocked
     read_client, write_client = s3_client(), s3_client(non_idempotent=True)
     identity = provider_identity(read_client)
@@ -4926,8 +4922,8 @@ def _request_copy_restore(job: dict[str, Any], exc: Any) -> None:
     if job["status"] != "restoring" and state == "not_requested":
         estimate = estimate_restore(
             size_bytes=int(current["size"] or 0), storage_class=exc.storage_class,
-            tier=str(job.get("restore_tier") or _runtime_settings().restore_tier or "Bulk"),
-            days=int(job.get("restore_days") or _runtime_settings().restore_days or 3))
+            tier=str(job.get("restore_tier") or settings.restore_tier or "Bulk"),
+            days=int(job.get("restore_days") or settings.restore_days or 3))
         ensure_job_active(job["id"], "Storage class change stopped")
         s3_client().restore_object(
             Bucket=job["s3_bucket"], Key=current["object_key"],
@@ -5176,8 +5172,8 @@ def process_recover(job: dict[str, Any]) -> None:
     restore_state, restore_expiry = restore_header_state(head.get("Restore"))
     needs_restore = storage_class_requires_restore(head_class)
     if needs_restore and restore_state != "available":
-        tier = target.get("restore_tier") or _runtime_settings().restore_tier or "Bulk"
-        days = int(target.get("restore_days") or _runtime_settings().restore_days or 3)
+        tier = target.get("restore_tier") or settings.restore_tier or "Bulk"
+        days = int(target.get("restore_days") or settings.restore_days or 3)
         estimate = estimate_restore(
             size_bytes=size_bytes,
             storage_class=str(head_class),
@@ -5754,7 +5750,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
     """Process one queue item after the scheduler has acquired its lease."""
     try:
         shutdown_state.checkpoint()
-        runtime = _runtime_settings()
+        runtime = settings
         current = _load_claimed_job_status(job)
         if current is None:
             return False
@@ -6414,7 +6410,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
         )
     except Exception:
         pass
-    runtime = _runtime_settings()
+    runtime = settings
     concurrency = int(runtime.operation_concurrency)
     # Busy workers still observe one head per Vault: otherwise an idle Vault's
     # starvation clock would not start until a long transfer finally freed a slot.
@@ -6644,7 +6640,7 @@ def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
     """
     timestamp = now_iso()
     with db() as connection:
-        runtime = _runtime_settings()
+        runtime = settings
         return ArchiveCatalog(connection).claimable_queue_depth(
             now=timestamp,
             restore_due_before=_restore_due_before(runtime),
@@ -7461,7 +7457,7 @@ async def _run_vault_filesystem_watch(vault: dict[str, Any]) -> None:
         applying = False
         started_at = loop.time()
         try:
-            runtime = await asyncio.to_thread(_runtime_settings)
+            runtime = settings
 
             def new_observer():
                 nonlocal registered_gaps, registered_debt
@@ -7966,7 +7962,7 @@ def _deliver_notifications_once() -> None:
 def _run_scheduled_metadata_backup_once() -> None:
     """Create a scheduled encrypted metadata backup when configured."""
     try:
-        runtime = _runtime_settings()
+        runtime = settings
         if runtime.metadata_backup_interval_seconds <= 0:
             return
         # S3 round trips (System Bucket creation/verification) before a pooled
@@ -8016,7 +8012,7 @@ def ensure_system_bucket_once() -> None:
     scheduled backups off, a manual backup creates it.
     """
     try:
-        if (_runtime_settings().metadata_backup_interval_seconds <= 0
+        if (settings.metadata_backup_interval_seconds <= 0
                 or not metadata_backup_service.off_host_backup_configured()
                 or system_bucket_service.configured_bucket() is not None):
             return
@@ -8100,7 +8096,7 @@ def submit_first_scan(vault_id: int) -> None:
 
 def _verify_latest_metadata_backup_once() -> None:
     """Periodically restore-verify the newest succeeded backup run's bound artifact."""
-    runtime = _runtime_settings()
+    runtime = settings
     if runtime.metadata_backup_verify_interval_seconds <= 0:
         return
     backup_dir = Path(settings.metadata_backup_dir)
@@ -8393,7 +8389,6 @@ async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Even
             health_service.mark_worker_heartbeat()
             metrics_service.set_gauge("worker_up", 1)
             try:
-                runtime = await asyncio.to_thread(_runtime_settings)
                 # Reconcile Source Volume identity even when filesystem watchers are
                 # disabled, before workers or scheduled scans can touch local data.
                 await asyncio.to_thread(source_layout.verify_mounts_once)

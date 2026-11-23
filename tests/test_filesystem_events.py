@@ -21,8 +21,7 @@ from tests import test_local_release
 from tests.fixtures import override_settings
 
 
-class ReleaseWatcherRaceTests(unittest.TestCase):
-    setUp = test_local_release.LocalReleaseWorkerTests.setUp
+class ReleaseWatcherRaceTests(test_local_release.LocalReleaseWorkerCase):
 
     # Deliberately drive the production observer inside the hash, rather than
     # relying on file size, sleeps or the kernel's scheduling of a large hash.
@@ -406,8 +405,7 @@ class SubtreeContainmentTests(unittest.TestCase):
         self.check_swap(during_walk=True, nested=True)
 
 
-class ReleaseRepairVaultIdentityTests(unittest.TestCase):
-    setUp = test_local_release.LocalReleaseWorkerTests.setUp
+class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase):
 
     def test_repair_uses_vault_id_not_unrelated_same_number_job_id(self):
         self.job.update(id=100, vault_id=2)

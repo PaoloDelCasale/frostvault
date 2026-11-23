@@ -6,8 +6,8 @@ Everything a test needs before its first assertion lives here, once:
   ``empty_database()`` has no schema; ``alembic_upgrade_head()`` really runs
   Alembic on a database that already exists.
 - ``override_settings(...)``: the only place that overrides ``Settings``.
-- ``create_owner()``, ``seed_vault()``: the Owner row and a Vault with its
-  Vault Target.
+- ``create_owner()``, ``seed_vault()``, ``seed_job()``: the Owner row, a Vault
+  with its Vault Target, a Job on a Vault File.
 - ``sign_in()``: the Owner's Session on an HTTP test client.
 - ``FrostVaultTestCase``: fresh database, Owner and Settings in one setUp.
 
@@ -105,7 +105,7 @@ def _drop_remaining() -> None:
 atexit.register(_drop_remaining)
 
 
-def _run_alembic_upgrade_head(dsn: str) -> subprocess.CompletedProcess[str]:
+def _alembic_upgrade(dsn: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = dsn
     return subprocess.run(
@@ -120,7 +120,7 @@ def _migrated_template() -> str:
     global _TEMPLATE
     if _TEMPLATE is None:
         name = _create("template")
-        result = _run_alembic_upgrade_head(_dsn(name))
+        result = _alembic_upgrade(_dsn(name))
         if result.returncode:
             _drop(name)
             raise AssertionError("alembic upgrade head failed on the template: " + result.stderr)
@@ -198,7 +198,7 @@ def empty_database() -> Database:
 
 def alembic_upgrade_head(database: Database) -> subprocess.CompletedProcess[str]:
     """Really run ``alembic upgrade head`` on ``database`` (a subprocess)."""
-    return _run_alembic_upgrade_head(database.dsn)
+    return _alembic_upgrade(database.dsn)
 
 
 # -- Settings -------------------------------------------------------------------
@@ -290,6 +290,36 @@ def seed_vault(
     return _insert(connection, "vaults", {
         "name": name, "source_root": source_root, "target_id": found["id"], **columns,
     })
+
+
+def seed_job(
+    connection: Any,
+    *,
+    vault_id: int,
+    path: str = "a.txt",
+    action: str = "upload",
+    status: str = "completed",
+    origin: str = "manual",
+) -> int:
+    """Create a Vault File at ``path`` (once) and one Job on it; return its id."""
+    file = connection.execute(
+        "SELECT id FROM files WHERE vault_id=%s AND path=%s", (vault_id, path)
+    ).fetchone() or connection.execute(
+        "INSERT INTO files(vault_id, path, path_since) VALUES (%s, %s, now()) RETURNING id",
+        (vault_id, path),
+    ).fetchone()
+    return connection.execute(
+        """
+        INSERT INTO jobs(vault_id, file_id, action, status, origin)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """,
+        (vault_id, file["id"], action, status, origin),
+    ).fetchone()["id"]
+
+
+def bump_session_version(connection: Any) -> None:
+    """Bump the Owner's session version: every Session made before it is stale."""
+    connection.execute("UPDATE owner SET session_version = session_version + 1 WHERE id = 1")
 
 
 def _insert(connection: Any, table: str, values: dict[str, Any]) -> dict[str, Any]:

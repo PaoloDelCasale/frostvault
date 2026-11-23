@@ -23,13 +23,7 @@ from tests import test_auto_upload_watcher as watcher_fixtures
 from tests.upload_provenance_provider import VersionedProvider
 
 
-class WatcherRenameTests(unittest.TestCase):
-    setUp = watcher_fixtures.WatcherAutomaticUploadTests.setUp
-    db = watcher_fixtures.WatcherAutomaticUploadTests.db
-    advance = watcher_fixtures.WatcherAutomaticUploadTests.advance
-    write = watcher_fixtures.WatcherAutomaticUploadTests.write
-    queue = watcher_fixtures.WatcherAutomaticUploadTests.queue
-    jobs = watcher_fixtures.WatcherAutomaticUploadTests.jobs
+class WatcherRenameTests(watcher_fixtures.WatcherCase):
 
     def run_jobs(self, provider: VersionedProvider) -> int:
         processed = 0

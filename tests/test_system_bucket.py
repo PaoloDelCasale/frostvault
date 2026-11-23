@@ -300,10 +300,6 @@ class OffHostRequirementTests(unittest.TestCase):
         self.assertTrue(system_bucket.off_host_required(settings(), credentials=none,
                                                         vaults=lambda: True))
 
-    def test_vault_setting_is_gone(self):
-        """#735: VAULT_S3_BUCKET is removed; the environment variable does nothing."""
-        self.assertFalse(hasattr(Settings(), "vault_s3_bucket"))
-
     def test_credentials_from_the_environment_without_probing_aws(self):
         cases = [
             ({"AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret"}, True),

@@ -34,19 +34,8 @@ from tests.test_upload_worker import A, B
 PAST = (datetime.now(timezone.utc) - timedelta(days=8)).replace(microsecond=0).isoformat()
 
 
-class CloudPurgeTests(unittest.TestCase):
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
+class CloudPurgeCase(fixtures.UploadWorkerCase):
+    """The upload worker Vault, with the helpers that drive a Cloud Deletion."""
 
     # -- helpers -------------------------------------------------------------
 
@@ -148,6 +137,17 @@ class CloudPurgeTests(unittest.TestCase):
         self.assertEqual(self.file_row()["current_version_id"], current["id"])
         self.assertEqual(self.rows("SELECT id FROM cleanup_batches"), [])
 
+    def stop(self, disposition: str) -> dict:
+        with self.db() as connection:
+            return protection_stop.stop_protection(
+                connection, vault_id=2, actor="owner", cloud_disposition=disposition,
+                confirmation="Docs", reason="folder retired")
+
+    def lifecycle(self) -> str:
+        return self.rows("SELECT lifecycle FROM vaults WHERE id=2")[0]["lifecycle"]
+
+
+class CloudPurgeTests(CloudPurgeCase):
     # -- consent -------------------------------------------------------------
 
     def test_consent_pins_the_exact_current_and_waits_seven_days(self) -> None:
@@ -393,15 +393,6 @@ class CloudPurgeTests(unittest.TestCase):
                 connection, state, vault, None, automatic=False), "pending_deletion")
 
     # -- Stop Protection -----------------------------------------------------
-
-    def stop(self, disposition: str) -> dict:
-        with self.db() as connection:
-            return protection_stop.stop_protection(
-                connection, vault_id=2, actor="owner", cloud_disposition=disposition,
-                confirmation="Docs", reason="folder retired")
-
-    def lifecycle(self) -> str:
-        return self.rows("SELECT lifecycle FROM vaults WHERE id=2")[0]["lifecycle"]
 
     def test_stop_and_keep_releases_the_root_and_keeps_the_cloud(self) -> None:
         current = self.cloud_only()

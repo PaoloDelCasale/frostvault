@@ -20,25 +20,18 @@ from tests.test_job_queue_fairness import QueueFixture
 from tests import test_upload_provenance_worker as provenance_fixtures
 from tests.fixtures import seed_vault
 from app.services import upload_provenance as provenance
-from tests.postgres import PostgresConnection
-import unittest
 
 
-class BulkAdmissionProvenanceTests(unittest.TestCase):
-    setUp = provenance_fixtures.UploadProvenanceWorkerTests.setUp
-    queue = provenance_fixtures.UploadProvenanceWorkerTests.queue
-    run_job = provenance_fixtures.UploadProvenanceWorkerTests.run_job
-    row = provenance_fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = provenance_fixtures.UploadProvenanceWorkerTests.assert_keeper
+class BulkAdmissionProvenanceTests(provenance_fixtures.UploadProvenanceWorkerCase):
 
     def upload(self, job_id):
-        with PostgresConnection(self.db_path) as c:
+        with self.database.connect() as c:
             return c.execute("SELECT * FROM job_uploads WHERE job_id=%s", (job_id,)).fetchone()
 
     def admit(self):
-        with PostgresConnection(self.db_path) as c:
+        with self.database.connect() as c:
             request = bulk.create(c, vault_id=2, path="", user_id=1)
-        with PostgresConnection(self.db_path) as c:
+        with self.database.connect() as c:
             bulk.advance(c, vault_id=2, group_id=request["group_id"])
             return c.execute("SELECT * FROM jobs WHERE group_id=%s", (request["group_id"],)).fetchone()
 
@@ -51,7 +44,7 @@ class BulkAdmissionProvenanceTests(unittest.TestCase):
         self.run_job(original)
         self.assertEqual(self.provider.puts, 1)
         original_mode = self.upload(original)["verification_mode"]
-        with PostgresConnection(self.db_path) as c:
+        with self.database.connect() as c:
             set_policy(c, 2, OperationPolicy(upload_verification="read_back" if original_mode == "s3_checksum" else "s3_checksum"))
         self.provider.hook = lambda *args, **kwargs: None
         resumed = self.admit()
@@ -77,7 +70,7 @@ class BulkAdmissionProvenanceTests(unittest.TestCase):
         self.assertTrue(self.upload(resumed["id"])["reconcile_only"])
         self.run_job(resumed["id"])
         self.assertEqual(self.row(resumed["id"])["status"], "failed")
-        with PostgresConnection(self.db_path) as c:
+        with self.database.connect() as c:
             self.assertEqual(provenance.describe(c, vault_id=2, path="report.txt")["reason"], "ambiguous_send")
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
 

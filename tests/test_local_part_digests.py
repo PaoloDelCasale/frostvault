@@ -31,7 +31,6 @@ from app.services.upload_snapshot import (
 )
 from tests import test_stale_upload_snapshot as stale
 from tests import test_upload_provenance_worker as worker_fixtures
-from tests.postgres import PostgresConnection
 from tests.test_scan_fingerprints import _quiet_scan_patches
 from tests.test_vault_adoption import _AdoptionFixture
 
@@ -270,7 +269,7 @@ class _ScanFixture:
         from app.storage import runtime_status
         created = self._adopt()
         self.addCleanup(runtime_status.pop, int(created["id"]), None)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],)).fetchone())
 
@@ -283,7 +282,7 @@ class _ScanFixture:
             return scan_vault(dict(vault))
 
     def _rows(self, vault_id: int) -> dict[str, dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT id, path, generation, local_size, local_mtime_ns, local_sha256, "
                 "local_part_size, local_part_sha256 FROM files WHERE vault_id=%s",
@@ -317,7 +316,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
 
         def reset() -> dict:
             row = self._rows(vault_id)["movie.mkv"]
-            with PostgresConnection(str(self.database_path)) as connection:
+            with self.database.connect() as connection:
                 self.assertTrue(ArchiveCatalog(connection).publish_local_fingerprint(
                     str(row["id"]), generation=row["generation"],
                     plaintext_sha256=hashlib.sha256(BIG_A).digest(), size=row["local_size"],
@@ -331,14 +330,14 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
             return row["local_part_size"], row["local_part_sha256"]
 
         row = reset()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # The same digest without parts: the same bytes, the parts stay.
             ArchiveCatalog(connection).publish_local_fingerprint(
                 str(row["id"]), generation=row["generation"],
                 plaintext_sha256=hashlib.sha256(BIG_A).digest(), size=row["local_size"],
                 mtime_ns=row["local_mtime_ns"])
         self.assertIsNotNone(parts()[1])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # Another digest without parts: they described other bytes.
             ArchiveCatalog(connection).publish_local_fingerprint(
                 str(row["id"]), generation=row["generation"],
@@ -347,7 +346,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         self.assertEqual(parts(), (None, None))
 
         row = reset()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # A new size or mtime forgets the digest and its parts.
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=vault_id, path="movie.mkv", file_type="regular",
@@ -355,7 +354,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         self.assertEqual(parts(), (None, None))
 
         row = reset()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # A content event with the same stat forgets them too.
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=vault_id, path="movie.mkv", file_type="regular",
@@ -364,7 +363,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         self.assertEqual(parts(), (None, None))
 
         row = reset()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # Any other writer of the digest: the trigger drops stale parts.
             connection.execute("UPDATE files SET local_sha256=%s WHERE id=%s",
                                (hashlib.sha256(BIG_B).digest(), row["id"]))
@@ -377,7 +376,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         row = self._rows(int(vault["id"]))["movie.mkv"]
         stale = dict(generation=row["generation"], size=row["local_size"],
                      mtime_ns=row["local_mtime_ns"])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             self.assertFalse(catalog.retire_local_fingerprint(
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_B).digest(), **stale))
@@ -385,7 +384,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_A).digest(),
                 **{**stale, "generation": row["generation"] + 1}))
         self.assertIsNotNone(self._rows(int(vault["id"]))["movie.mkv"]["local_part_sha256"])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertTrue(ArchiveCatalog(connection).retire_local_fingerprint(
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_A).digest(), **stale))
         retired = self._rows(int(vault["id"]))["movie.mkv"]
@@ -410,25 +409,20 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
                                      (rows["movie.mkv"]["id"],)),
         }
         for name, (statement, params) in cases.items():
-            with self.subTest(case=name), PostgresConnection(str(self.database_path)) as connection:
+            with self.subTest(case=name), self.database.connect() as connection:
                 with self.assertRaises(psycopg.errors.CheckViolation):
                     connection.execute(statement, params)
 
 
-class CatalogPartSnapshotWorkerTests(unittest.TestCase):
+class CatalogPartSnapshotWorkerTests(worker_fixtures.UploadProvenanceWorkerCase):
     """Real admission/claim/process_job with the persistent versioned provider."""
 
-    base_setup = worker_fixtures.UploadProvenanceWorkerTests.setUp
-    queue = worker_fixtures.UploadProvenanceWorkerTests.queue
-    row = worker_fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = worker_fixtures.UploadProvenanceWorkerTests.assert_keeper
-    observe_content = worker_fixtures.UploadProvenanceWorkerTests.observe_content
     run_job = stale.StaleUploadSnapshotTests.run_job
     intents = stale.StaleUploadSnapshotTests.intents
     bound = stale.StaleUploadSnapshotTests.bound
 
     def setUp(self) -> None:
-        self.base_setup()
+        super().setUp()
         self.reads = 0
         real = prepare_upload_snapshot
 
@@ -454,7 +448,7 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
         from app.catalog import ArchiveCatalog
         parts = PartDigests()
         digest, info = hash_stable_regular_file(self.file, parts=parts)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             generation = connection.execute(
                 "SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
             self.assertTrue(ArchiveCatalog(connection).publish_local_fingerprint(
@@ -462,7 +456,7 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
                 mtime_ns=info.st_mtime_ns, parts=parts.record(info.st_size) if with_parts else None))
 
     def fingerprint(self) -> dict:
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT local_sha256, local_part_size, local_part_sha256 FROM files WHERE id=%s",
                 (self.file_id,)).fetchone()
@@ -517,7 +511,7 @@ class CatalogPartSnapshotWorkerTests(unittest.TestCase):
         self.assertIn(row["status"], {"retrying", "failed"}, row["message"])
         self.assertEqual((self.reads, self.provider.puts), (1, 0))
         self.assert_fingerprint(BIG_A)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             generation = connection.execute(
                 "SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
         self.assertTrue(source_devices.upload_fingerprints().claim({

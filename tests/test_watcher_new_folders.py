@@ -21,11 +21,7 @@ from app.services.operation_policies import OperationPolicy
 from tests import test_auto_upload_watcher as fixtures
 
 
-class NewFolderTests(unittest.TestCase):
-    setUp = fixtures.WatcherAutomaticUploadTests.setUp
-    db = fixtures.WatcherAutomaticUploadTests.db
-    advance = fixtures.WatcherAutomaticUploadTests.advance
-    write = fixtures.WatcherAutomaticUploadTests.write
+class NewFolderTests(fixtures.WatcherCase):
 
     def watch(self, *events: tuple[Change, str]) -> int:
         return storage.apply_filesystem_changes(
@@ -138,12 +134,9 @@ class NewFolderTests(unittest.TestCase):
         self.assertNotIn(f"library/Paolo/2026/2026-11-15/{name}", self.catalogued())
 
 
-class WatcherDiscoveryTests(unittest.TestCase):
+class WatcherDiscoveryTests(fixtures.WatcherCase):
     """The watcher hands a folder found this way to a successor observer."""
 
-    setUp = fixtures.WatcherAutomaticUploadTests.setUp
-    db = fixtures.WatcherAutomaticUploadTests.db
-    write = fixtures.WatcherAutomaticUploadTests.write
 
     def test_unknown_folders_under_a_modified_folder_become_added_directories(self):
         self.write("library/known/old.heic", b"old")

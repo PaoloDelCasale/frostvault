@@ -31,8 +31,8 @@ class EssentialAdministrationTests(unittest.TestCase):
             patch("app.main.db", side_effect=AssertionError("no DB resolution")),
             patch("app.storage.db", side_effect=AssertionError("no DB resolution")),
         ):
-            self.assertIs(main._runtime_settings(), configured)
-            self.assertIs(storage._runtime_settings(), configured)
+            self.assertIs(main.settings, configured)
+            self.assertIs(storage.settings, configured)
             snapshot = build_config_snapshot(configured)
             self.assertEqual(snapshot["scan_interval"], 1234)
             self.assertEqual(snapshot["restore_tier"], "Standard")

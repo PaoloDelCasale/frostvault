@@ -19,7 +19,6 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import cloud_deletion, duplicate_cleanup, history_retention
 from app.services.cloud_deletion import load_vault_health, observation_is_unconfirmed
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 from tests.test_cloud_deletion_safety import simulated_mount
 from tests.test_cloud_deletion_selection import SelectionFixture
 
@@ -567,13 +566,12 @@ class MinimumStorageTests(DuplicateCleanupFixture):
 
 class HttpTests(DuplicateCleanupFixture):
 
+    owner = {}
+
     def setUp(self):
         super().setUp()
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        with self.db() as connection:
-            create_owner(connection)
-        self.headers = sign_in(self.client, self.database).csrf_headers
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.url = "/api/vaults/2/duplicate-cleanup"
 
     def reauth(self, at: datetime | None = None) -> None:

@@ -19,23 +19,17 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import psycopg
 from botocore.exceptions import ClientError
-from fastapi.testclient import TestClient
 
-from app import main, storage
-from app.config import settings
+from app import storage
 from app.services import cloud_deletion, protection_stop, vault_deletion
 from app.services import notifications as inbox
 from app.services.vaults import list_vault_inventory
-from app.sessions import create_session, csrf_token_for
 from tests import test_upload_worker as fixtures
-from tests.owner_fixtures import insert_owner
-from tests.postgres import database_dsn
 from tests.test_upload_worker import A
 from tests.upload_provenance_provider import VersionedProvider
 
@@ -75,20 +69,11 @@ class PagedProvider(VersionedProvider):
         return response
 
 
-class VaultDeletionFixture(unittest.TestCase):
-    setUp_upload = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    rows = fixtures.UploadWorkerTests.rows
+class VaultDeletionFixture(fixtures.UploadWorkerCase):
 
     def setUp(self) -> None:
         with patch("tests.test_upload_worker.VersionedProvider", PagedProvider):
-            self.setUp_upload()
+            super().setUp()
         self.provider.modified = {}
         self.prefix = f"vaults/{self.uuid}/"
         # The Vault's own upload, then content the catalog never knew.
@@ -383,19 +368,13 @@ class VaultDeletionTests(VaultDeletionFixture):
 
 
 class VaultDeletionHttpTests(VaultDeletionFixture):
+    owner = {}
+
     def setUp(self) -> None:
         super().setUp()
-        configured = replace(settings, database_dsn=database_dsn(self.db_path), cookie_secure=False)
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
-            self.enterContext(patch(target, configured))
         self.enterContext(patch("app.main.s3_client", return_value=self.provider))
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
-        with self.db() as connection:
-            insert_owner(connection)
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.headers = {"X-CSRF-Token": csrf}
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.payload = {"confirmation": "Docs", "reason": "test vault no longer needed"}
 
     def reauth(self, recent: bool) -> None:

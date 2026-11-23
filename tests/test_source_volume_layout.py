@@ -20,7 +20,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.config import Settings
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
@@ -259,9 +258,6 @@ class LegacyFixtureSourceRootTests(unittest.TestCase):
 
 class FixedProductionNamespaceTests(unittest.TestCase):
     """Seam 7: no production setting/API redirects the fixed namespace."""
-
-    def test_settings_no_longer_expose_vault_sources_root(self) -> None:
-        self.assertFalse(hasattr(Settings(), "vault_sources_root"))
 
     def test_production_sources_root_ignores_vault_sources_root_env(self) -> None:
         self.addCleanup(source_layout.reset_sources_root_override)

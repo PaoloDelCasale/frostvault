@@ -16,8 +16,7 @@ for _flag, _value in (
 
 from app.services import notifications as notification_service
 from app.storage import set_job
-from tests.fixtures import FrostVaultTestCase, seed_vault
-from tests.owner_fixtures import insert_job
+from tests.fixtures import FrostVaultTestCase, seed_job, seed_vault
 
 
 # Ending a Job queues its outcome in ``job_terminal_notifications`` (#589): a
@@ -36,7 +35,7 @@ class TerminalNotificationRecoveryTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, id=2)
-            self.job_id = insert_job(connection, vault_id=2, status="uploading")
+            self.job_id = seed_job(connection, vault_id=2, status="uploading")
         self.enterContext(patch(
             "app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"))
 

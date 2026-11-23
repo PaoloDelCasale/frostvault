@@ -5,7 +5,6 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -13,10 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import main, storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.services import recovery_approval, vault_pause
-from app.sessions import create_session, csrf_token_for
-from tests.postgres import database_dsn
 from tests.test_job_queue_fairness import QueueFixture
 
 
@@ -255,25 +251,19 @@ class VaultPauseTests(QueueFixture):
             self.assertEqual(len(claim_group(c)), 1)
 
     def test_api_requires_owner_session_and_csrf_and_exposes_persistent_status(self):
-        configured = replace(settings, database_dsn=database_dsn(self.database), cookie_secure=False)
-        with patch("app.main.settings", configured), patch("app.sessions.settings", configured):
-            client = TestClient(main.app)
-            self.addCleanup(client.close)
-            for action in ("pause", "resume"):
-                self.assertIn(client.post(f"/api/vaults/2/{action}").status_code, (401, 403))
-            with self.db() as c:
-                token = create_session(c, auth_method="oidc")
-                csrf = csrf_token_for(c, token)
-                c.execute("UPDATE sessions SET reauth_at='2000-01-01T00:00:00+00:00'")
-            client.cookies.set(configured.session_cookie_name, token)
-            for action, expected in (("pause", True), ("resume", False)):
-                self.assertEqual(client.post(f"/api/vaults/2/{action}").status_code, 403)
-                response = client.post(f"/api/vaults/2/{action}", headers={"X-CSRF-Token": csrf})
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(response.json()["paused"], expected)
-                self.assertEqual(next(v for v in client.get("/api/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
-                self.assertEqual(next(v for v in client.get("/api/general/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
-            self.assertEqual(client.post("/api/vaults/999/pause", headers={"X-CSRF-Token": csrf}).status_code, 404)
-            with self.db() as c:
-                c.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
-            self.assertEqual(client.post("/api/vaults/2/pause", headers={"X-CSRF-Token": csrf}).status_code, 409)
+        client = TestClient(main.app)
+        self.addCleanup(client.close)
+        for action in ("pause", "resume"):
+            self.assertIn(client.post(f"/api/vaults/2/{action}").status_code, (401, 403))
+        csrf = self.sign_in(client, reauthenticated_until="2000-01-01T00:00:00+00:00").csrf_token
+        for action, expected in (("pause", True), ("resume", False)):
+            self.assertEqual(client.post(f"/api/vaults/2/{action}").status_code, 403)
+            response = client.post(f"/api/vaults/2/{action}", headers={"X-CSRF-Token": csrf})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["paused"], expected)
+            self.assertEqual(next(v for v in client.get("/api/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
+            self.assertEqual(next(v for v in client.get("/api/general/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
+        self.assertEqual(client.post("/api/vaults/999/pause", headers={"X-CSRF-Token": csrf}).status_code, 404)
+        with self.db() as c:
+            c.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
+        self.assertEqual(client.post("/api/vaults/2/pause", headers={"X-CSRF-Token": csrf}).status_code, 409)

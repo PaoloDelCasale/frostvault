@@ -44,32 +44,9 @@ from tests import test_cloud_purge as purge
 from tests.test_upload_worker import A
 
 
-class CloudDeletionFixture(unittest.TestCase):
+class CloudDeletionFixture(purge.CloudPurgeCase):
     """The ``test_cloud_purge`` helpers, without its tests."""
 
-    setUp = purge.CloudPurgeTests.setUp
-    db = purge.CloudPurgeTests.db
-    observe = purge.CloudPurgeTests.observe
-    write = purge.CloudPurgeTests.write
-    queue = purge.CloudPurgeTests.queue
-    claim = purge.CloudPurgeTests.claim
-    run_job = purge.CloudPurgeTests.run_job
-    job = purge.CloudPurgeTests.job
-    file_row = purge.CloudPurgeTests.file_row
-    rows = purge.CloudPurgeTests.rows
-    version = purge.CloudPurgeTests.version
-    assert_current = purge.CloudPurgeTests.assert_current
-    cloud_only = purge.CloudPurgeTests.cloud_only
-    second_cloud_only = purge.CloudPurgeTests.second_cloud_only
-    schedule = purge.CloudPurgeTests.schedule
-    claim_group = purge.CloudPurgeTests.claim_group
-    run_purge = purge.CloudPurgeTests.run_purge
-    expire_group = purge.CloudPurgeTests.expire_group
-    statuses = purge.CloudPurgeTests.statuses
-    assert_deleted = purge.CloudPurgeTests.assert_deleted
-    assert_untouched = purge.CloudPurgeTests.assert_untouched
-    stop = purge.CloudPurgeTests.stop
-    lifecycle = purge.CloudPurgeTests.lifecycle
 
     def count(self, sql: str, *params) -> int:
         return self.rows(f"SELECT count(*) AS n FROM ({sql}) q", *params)[0]["n"]
