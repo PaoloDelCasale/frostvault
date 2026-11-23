@@ -6,13 +6,12 @@ from unittest.mock import patch
 
 from app.services import upload_provenance as provenance
 from tests import test_upload_provenance_worker as worker_tests
-from tests.postgres import PostgresConnection
 
 
 class UploadNamespaceWorkerTests(unittest.TestCase):
     def setUp(self):
         # Reuse the real admission/PG/provider fixture, not its test methods.
-        self.worker = worker_tests.UploadProvenanceWorkerTests(methodName="runTest")
+        self.worker = worker_tests.UploadProvenanceWorkerCase(methodName="runTest")
         self.addCleanup(self.worker.doCleanups)
         self.worker.setUp()
 
@@ -41,7 +40,7 @@ class UploadNamespaceWorkerTests(unittest.TestCase):
         # wrote; one listing of the exact key proves the keeper alone.
         self.assertEqual(listings, [("bucket", self.worker.key)])
         self.assertEqual(self.worker.provider.puts, 1)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertIsNone(connection.execute("SELECT 1 FROM cleanup_batches").fetchone())
             attempt = connection.execute("SELECT * FROM upload_attempts").fetchone()
             self.assertEqual((attempt["outcome"], attempt["landed_version_id"]),
@@ -63,7 +62,7 @@ class UploadNamespaceWorkerTests(unittest.TestCase):
         self.assertEqual(listings, [("bucket", self.worker.key)] * 8)
         self.assertEqual(self.worker.provider.puts, 1)
         self.assertEqual(len(self.worker.provider.deleted), 1)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertIsNone(connection.execute("SELECT 1 FROM cleanup_batches").fetchone())
 
     def test_historical_pin_is_not_rebased_when_an_unsent_job_retries(self):
@@ -72,7 +71,7 @@ class UploadNamespaceWorkerTests(unittest.TestCase):
         with patch.object(provenance, "mark_send_started", side_effect=RuntimeError("pre-send unavailable")):
             self.worker.run_job(job)
         self.assertEqual(self.worker.provider.puts, 0)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             # Prepare and send-started commit in one unit: nothing was pinned.
             self.assertIsNone(connection.execute(
                 "SELECT 1 FROM upload_attempts WHERE job_id=%s", (job,)).fetchone())
@@ -83,7 +82,7 @@ class UploadNamespaceWorkerTests(unittest.TestCase):
         self.assertEqual(self.worker.provider.puts, 1)
         self.assertEqual(self.worker.provider.deleted, [])
         self.assertIn((self.worker.key, "external-after-pin"), self.worker.provider.objects)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             (attempt,) = connection.execute(
                 "SELECT * FROM upload_attempts WHERE job_id=%s", (job,)).fetchall()
             # The retry pins the namespace it observed; an object no landed
@@ -120,13 +119,13 @@ class UploadNamespaceWorkerTests(unittest.TestCase):
             if stage == "list":
                 observed += 1
                 if observed == 2:
-                    with PostgresConnection(self.worker.db_path) as connection:
+                    with self.worker.database.connect() as connection:
                         connection.execute("UPDATE job_leases SET token=gen_random_uuid() WHERE job_id=%s", (job,))
 
         self.worker.provider.hook = takeover
         self.worker.run_job(job)
         self.assertEqual(self.worker.provider.puts, 0)
-        with PostgresConnection(self.worker.db_path) as connection:
+        with self.worker.database.connect() as connection:
             self.assertIsNone(connection.execute(
                 "SELECT 1 FROM upload_attempts WHERE job_id=%s", (job,),
             ).fetchone())

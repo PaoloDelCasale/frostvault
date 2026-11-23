@@ -7,18 +7,16 @@ from datetime import datetime, timezone
 
 from app import main
 from tests import test_cloud_deletion as fixtures
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 
 class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
+    owner = {}
+
     def setUp(self):
         super().setUp()
         self.cloud_only()
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        with self.db() as connection:
-            create_owner(connection)
-        self.headers = sign_in(self.client, self.database).csrf_headers
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.payload = {"path":"report.txt", "confirmation":"Docs", "reason":"deliberate deletion"}
 
     def reauth(self, recent):
@@ -86,6 +84,8 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
         self.assertEqual(cancelled.status_code,200,cancelled.text)
         self.assertTrue(cancelled.json()["root_released"])
 
+    def test_csrf_and_authentication_still_gate_deletion(self):
+        response = self.client.post("/api/cloud-purge",json=self.payload)
     def test_removed_endpoints_and_acceleration_are_absent(self):
         paths = main.app.openapi()["paths"]
         for route in ("/api/cloud-purge/accelerate","/api/vault/cloud-deletion",
@@ -97,8 +97,6 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
             response = getattr(self.client,method)(path,json={},headers=self.headers)
             self.assertEqual(response.status_code,404,response.text)
 
-    def test_csrf_and_authentication_still_gate_deletion(self):
-        response = self.client.post("/api/cloud-purge",json=self.payload)
         self.assertEqual(response.status_code,403)
         self.client.cookies.clear()
         response = self.client.post("/api/cloud-purge",json=self.payload)

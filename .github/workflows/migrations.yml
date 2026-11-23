@@ -349,10 +349,13 @@ jobs:
             '["CMD","python","-m","app.readiness_probe"]'
           # Run the focused HTTP/Host/failure tests using the packaged module,
           # numeric runtime user and read-only image, without DB/S3 access.
+          # The image has no tests package: the test and the fixture module it
+          # imports (tests.fixtures, for override_settings) are mounted.
           docker run --rm --read-only --cap-drop=ALL \
             --security-opt no-new-privileges:true --user 99:100 \
             -e PYTHONPATH=/app \
             -v "$PWD/tests/test_readiness_probe.py:/tmp/test_readiness_probe.py:ro" \
+            -v "$PWD/tests/fixtures.py:/tmp/tests/fixtures.py:ro" \
             --entrypoint python "$IMAGE" /tmp/test_readiness_probe.py \
             ProbeHostTests ProbeHTTPTests ProbeFailureTests -v
       - name: Exercise PostgreSQL metadata backup path

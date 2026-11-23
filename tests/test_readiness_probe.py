@@ -16,7 +16,6 @@ import subprocess
 import sys
 import threading
 import unittest
-from dataclasses import replace
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -26,7 +25,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app import main, readiness_probe
-from app.config import settings
+from tests.fixtures import override_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -149,9 +148,7 @@ class ProbeHTTPTests(unittest.TestCase):
             (" , Vault.Example, second.example ", "Vault.Example"),
             ("*.example, vault.example", "vault.example"),
         ):
-            with self.subTest(allowed_hosts=allowed_hosts), patch(
-                "app.main.settings", replace(settings, allowed_hosts=allowed_hosts or "")
-            ):
+            with self.subTest(allowed_hosts=allowed_hosts), override_settings(allowed_hosts=allowed_hosts or ""):
                 self.assertEqual(self._run_probe(allowed_hosts), (0, ""))
                 path, headers = self.requests[-1]
                 self.assertEqual(path, "/ready")
@@ -164,16 +161,14 @@ class ProbeHTTPTests(unittest.TestCase):
             "check_database", "worker_is_healthy", "check_config",
             "source_layout.sources_layout_is_ready",
         ):
-            with self.subTest(dependency=dependency), patch(
-                "app.main.settings", replace(settings, allowed_hosts="vault.example")
-            ), patch(f"app.services.health.{dependency}", return_value=False):
+            with self.subTest(dependency=dependency), override_settings(allowed_hosts="vault.example"), patch(f"app.services.health.{dependency}", return_value=False):
                 self.assertEqual(self.client.get("/health", headers={"Host": "vault.example"}).status_code, 200)
                 self.assertEqual(self._run_probe(), (1, "Readiness probe failed: HTTP 503\n"))
                 self.assertEqual(self.requests[-1][0], "/ready")
         self.assertEqual(len(self.requests), 4)  # No fallback or retries.
 
     def test_disallowed_hosts_remain_rejected_locally_and_externally(self) -> None:
-        with patch("app.main.settings", replace(settings, allowed_hosts="vault.example")):
+        with override_settings(allowed_hosts="vault.example"):
             for peer in ("127.0.0.1", "203.0.113.42"):
                 # No context-manager lifespan: never initialize a database.
                 client = TestClient(main.app, client=(peer, 50000))
@@ -192,7 +187,7 @@ class ProbeHTTPTests(unittest.TestCase):
                     client.close()
 
     def test_probe_with_disallowed_host_fails(self) -> None:
-        with patch("app.main.settings", replace(settings, allowed_hosts="different.example")):
+        with override_settings(allowed_hosts="different.example"):
             self.assertEqual(self._run_probe(), (1, "Readiness probe failed: HTTP 400\n"))
         self.assertEqual(len(self.requests), 1)
 

@@ -13,22 +13,17 @@ from app.catalog import ArchiveCatalog
 from app.services import upload_provenance as provenance
 from tests import service_probes
 from tests import test_upload_provenance_worker as base
-from tests.postgres import PostgresConnection
 from tests.upload_support import claimed_job_row
 
 A, B = base.A, base.B
 CHANGED = "Local file changed since fingerprinting"
 
 
-class StaleUploadSnapshotTests(unittest.TestCase):
-    setUp = base.UploadProvenanceWorkerTests.setUp
-    queue = base.UploadProvenanceWorkerTests.queue
-    row = base.UploadProvenanceWorkerTests.row
-    assert_keeper = base.UploadProvenanceWorkerTests.assert_keeper
+class StaleUploadSnapshotTests(base.UploadProvenanceWorkerCase):
 
     def run_job(self, job_id):
         # The retry delay is the Vault stability window: make the Job due now.
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (job_id,))
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id, claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
@@ -40,7 +35,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
 
     def intents(self):
         """Every upload attempt with its snapshot (the former intents)."""
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 """SELECT a.*, a.send_started_at IS NOT NULL AS send_started,
                           a.settled_at IS NOT NULL AS settled, s.closed_at AS snapshot_closed_at,
@@ -50,7 +45,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
 
     def bound(self, job_id):
         """The snapshot the Job is bound to, or None once it forgot it."""
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 """SELECT s.*, encode(s.plaintext_sha256, 'hex') AS sha256 FROM job_uploads ju
                    JOIN upload_snapshots s ON s.id=ju.snapshot_id WHERE ju.job_id=%s""",
@@ -89,7 +84,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         self.assertEqual(len(closed), 1)
         self.assertEqual((closed[0]["send_started"], closed[0]["settled"], closed[0]["landed_version_id"]), (True, True, None))
         self.assertIsNotNone(closed[0]["snapshot_closed_at"])
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertTrue(service_probes.proven_absent(connection, closed[0]["id"]))
             self.assertIsNone(provenance.load_for_job(connection, job))
             self.assertIsNone(provenance.outstanding(connection, self.file_id))
@@ -117,7 +112,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         # failing against A until UPLOAD_RETRY_MAX_ATTEMPTS (job.source_changed_stalled).
         job = self.queue()
         base.prepare_unsent(self, job)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             # One retry left: a single stale comparison would fail the Job.
             connection.execute("UPDATE jobs SET retry_count=%s WHERE id=%s", (storage.UPLOAD_RETRY_MAX_ATTEMPTS - 1, job))
         def changed_before_send(*args, **kwargs):
@@ -133,7 +128,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         self.assertIsNotNone(intent["snapshot_closed_at"])
         self.assertEqual(intent["snapshot_sha256"], hashlib.sha256(A).hexdigest(),
                          "snapshot A stays immutable once closed")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertIsNone(provenance.load_for_job(connection, job))
         self.run_job(job)
         version = self.assert_keeper(job)
@@ -158,7 +153,7 @@ class StaleUploadSnapshotTests(unittest.TestCase):
         self.assertEqual((self.provider.puts, self.provider.aborted), (0, []))
         (intent,) = self.intents()
         self.assertEqual((intent["send_started"], intent["settled"]), (True, False))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "ambiguous_send")
             self.assertEqual(provenance.load_for_job(connection, job).id, str(intent["id"]))
 

@@ -38,7 +38,6 @@ import unittest
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
@@ -48,7 +47,7 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import cloud_preflight_gate
 from tests import test_upload_worker as worker_fixture
-from tests.postgres import PostgresConnection
+from tests.fixtures import override_settings
 
 MAX_TRANSACTIONS = 14
 MAX_STATEMENTS = 110
@@ -133,16 +132,7 @@ def counted():
         yield cost
 
 
-class SmallUploadCostTests(unittest.TestCase):
-    setUp = worker_fixture.UploadWorkerTests.setUp
-    db = worker_fixture.UploadWorkerTests.db
-    observe = worker_fixture.UploadWorkerTests.observe
-    rows = worker_fixture.UploadWorkerTests.rows
-    job = worker_fixture.UploadWorkerTests.job
-    file_row = worker_fixture.UploadWorkerTests.file_row
-    version = worker_fixture.UploadWorkerTests.version
-    assert_current = worker_fixture.UploadWorkerTests.assert_current
-    claim = worker_fixture.UploadWorkerTests.claim
+class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
 
     # -- one measured upload --------------------------------------------------
 
@@ -483,7 +473,7 @@ class SmallUploadCostTests(unittest.TestCase):
     def assert_indexed(self, cost: Cost) -> None:
         """Every statement on a history table can be served by an index."""
         unindexed = {}
-        with PostgresConnection(self.db_path) as connection:
+        with self.db() as connection:
             # With sequential scans priced out, one remains only where no index
             # can serve the statement: independent of table size and statistics.
             connection.execute("SET enable_seqscan=off")
@@ -533,12 +523,7 @@ def _whole_relation_reads(plan, found, open_work=frozenset(), grown=None):
         _whole_relation_reads(child, found, open_work, grown)
 
 
-class ClaimCheckpointTests(unittest.TestCase):
-    setUp = worker_fixture.UploadWorkerTests.setUp
-    db = worker_fixture.UploadWorkerTests.db
-    observe = worker_fixture.UploadWorkerTests.observe
-    queue = worker_fixture.UploadWorkerTests.queue
-    claim = worker_fixture.UploadWorkerTests.claim
+class ClaimCheckpointTests(worker_fixture.UploadWorkerCase):
 
     def test_checkpoints_inside_the_renew_window_read_without_writing(self):
         job = self.claim(self.queue())
@@ -585,7 +570,7 @@ class BacklogObservationTests(unittest.TestCase):
     """The backlog gauges read the whole queue: a deep queue is sampled."""
 
     def cycles(self, depth, count=6):
-        runtime = SimpleNamespace(
+        runtime = dict(
             operation_concurrency=4, queue_poll_interval=2, scan_interval=10**9,
             audit_interval=10**9, metadata_backup_interval_seconds=0,
             metadata_backup_verify_interval_seconds=0)
@@ -608,7 +593,7 @@ class BacklogObservationTests(unittest.TestCase):
                 ):
                     stack.enter_context(patch.object(owner, name))
                 stack.enter_context(patch.object(storage, "persisted_maintenance_ages", return_value={}))
-                stack.enter_context(patch.object(storage, "_runtime_settings", return_value=runtime))
+                stack.enter_context(override_settings(**runtime))
                 stack.enter_context(patch.object(storage, "observe_stuck_lease_jobs", return_value=(0, 0.0)))
                 stack.enter_context(patch.object(storage, "observe_failed_job_backlog", return_value=(0, 0.0)))
                 stack.enter_context(patch.object(storage, "_refill_until_deadline", refill))

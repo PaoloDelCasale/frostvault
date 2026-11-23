@@ -12,8 +12,7 @@ from unittest.mock import patch
 
 from app.main import app
 from app.services import notifications
-from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
-from tests.owner_fixtures import insert_job
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_job, seed_vault
 
 
 class _FailingSmtp:
@@ -30,7 +29,7 @@ class NotificationDeliveryTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             self.vault_id = seed_vault(connection)["id"]
-            self.job_id = insert_job(connection, vault_id=self.vault_id)
+            self.job_id = seed_job(connection, vault_id=self.vault_id)
 
     def test_enqueue_creates_retrievable_in_app_notification(self) -> None:
         with self.database.connect() as connection:
@@ -57,7 +56,7 @@ class NotificationDeliveryTests(FrostVaultTestCase):
                     ("recover", "completed", "recovery_completed"), ("recover", "failed", "recovery_failed"),
                 ):
                     # A Job keeps its action for life: one Job per outcome.
-                    job_id = insert_job(
+                    job_id = seed_job(
                         connection, vault_id=self.vault_id, action=action, status=status,
                     )
                     self.assertEqual(
@@ -83,7 +82,7 @@ class NotificationDeliveryTests(FrostVaultTestCase):
         with override_settings(smtp_host=""):
             with self.database.connect() as connection:
                 # A terminal Job is final: the failure is a Job of its own.
-                job_id = insert_job(connection, vault_id=self.vault_id, path="b.txt", status="failed")
+                job_id = seed_job(connection, vault_id=self.vault_id, path="b.txt", status="failed")
                 self.assertEqual(notifications.enqueue_job_terminal_notification(
                     connection, job_id=job_id
                 ), 1)
@@ -123,7 +122,7 @@ class NotificationDeliveryTests(FrostVaultTestCase):
             smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
         ):
             with self.database.connect() as connection:
-                job_id = insert_job(
+                job_id = seed_job(
                     connection, vault_id=self.vault_id, action="recover", status="failed",
                 )
                 first = notifications.enqueue_job_terminal_notification(
@@ -517,6 +516,7 @@ class NotificationReadHttpTests(FrostVaultTestCase):
         self.assertEqual(data['items'][0]['problem_status'], 'open')
         self.assertNotIn('smtp_password', data)
 
+    def test_mark_read_persists_through_http(self) -> None:
     def test_removed_notification_routes_are_not_exposed(self) -> None:
         self.sign_in(auth_method="local")
         for path, methods in (
@@ -534,7 +534,6 @@ class NotificationReadHttpTests(FrostVaultTestCase):
                     )
                     self.assertEqual(response.status_code, 404, response.text)
 
-    def test_mark_read_persists_through_http(self) -> None:
         notification_id = self._create_notification()
         self.sign_in(auth_method="local")
 

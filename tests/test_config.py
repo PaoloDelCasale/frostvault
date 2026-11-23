@@ -4,11 +4,10 @@ import os
 import subprocess
 import sys
 import unittest
-from dataclasses import replace
-from unittest.mock import patch
+from dataclasses import fields, replace
 
-from app import config
 from app.config import Settings, validate_settings
+from tests.fixtures import override_settings
 
 
 def _base_settings(**overrides: object) -> Settings:
@@ -20,9 +19,14 @@ def _base_settings(**overrides: object) -> Settings:
     return replace(base, **overrides)
 
 
+def _installed(settings: Settings):
+    """Every field of ``settings`` as the application's Settings, for the block."""
+    return override_settings(**{field.name: getattr(settings, field.name) for field in fields(Settings)})
+
+
 class OidcConfigValidationTests(unittest.TestCase):
     def _validate(self, settings: Settings) -> None:
-        with patch.object(config, "settings", settings):
+        with _installed(settings):
             validate_settings()
 
     def test_enabled_oidc_without_client_secret_is_rejected(self) -> None:
@@ -62,7 +66,7 @@ class OidcConfigValidationTests(unittest.TestCase):
 
 class BreakGlassConfigValidationTests(unittest.TestCase):
     def _validate(self, settings: Settings) -> None:
-        with patch.object(config, "settings", settings):
+        with _installed(settings):
             validate_settings()
 
     def test_invalid_cidr_entry_is_rejected(self) -> None:
@@ -84,7 +88,7 @@ class BreakGlassConfigValidationTests(unittest.TestCase):
 
 class ProductionHardeningConfigTests(unittest.TestCase):
     def _validate(self, settings: Settings) -> None:
-        with patch.object(config, "settings", settings):
+        with _installed(settings):
             validate_settings()
 
     def test_secure_cookie_requires_allowed_hosts(self) -> None:

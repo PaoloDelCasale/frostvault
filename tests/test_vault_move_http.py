@@ -4,21 +4,19 @@ import unittest
 
 from app import main
 from tests import test_vault_moves as fixture
-from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 
 class VaultMoveHttpTests(fixture.CopyWorkerFixture):
+    owner = {}
+
     def setUp(self):
         super().setUp()
         with self.db() as connection:
             connection.execute("UPDATE vaults SET storage_plan=%s::jsonb WHERE id=2",
                                (json.dumps(fixture.PLAN),))
         self.current = self.protected()
-        with self.db() as connection:
-            create_owner(connection)
-        self.enterContext(override_settings(cookie_secure=False))
-        self.client = http_client()
-        self.headers = sign_in(self.client, self.database).csrf_headers
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         self.payload = {'vault_id': 2, 'target_class': 'DEEP_ARCHIVE', 'acknowledge_costs': True}
 
     def storage_class_jobs(self) -> int:

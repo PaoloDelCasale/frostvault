@@ -26,7 +26,6 @@ from unittest.mock import patch
 
 from app.services.fs_preflight import PinnedTree, inspect_entry
 from app.services.vaults import VAULT_ROW_SQL
-from tests.postgres import PostgresConnection
 from tests.test_scan_fingerprints import _quiet_scan_patches
 from tests.test_vault_adoption import _AdoptionFixture
 
@@ -132,7 +131,7 @@ class TraversalScanTests(_AdoptionFixture):
         from app.storage import runtime_status
         created = self._adopt()
         self.addCleanup(runtime_status.pop, int(created["id"]), None)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],),
             ).fetchone())
@@ -175,14 +174,14 @@ class TraversalScanTests(_AdoptionFixture):
         return probe_opens, patch("app.services.fs_preflight.os.open", side_effect=denying)
 
     def _digests(self, vault_id: int) -> dict[str, str | None]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT path, local_sha256 FROM files WHERE vault_id=%s", (vault_id,),
             ).fetchall()
         return {row["path"]: row["local_sha256"] for row in rows}
 
     def _problems(self) -> list[dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT event, message_params FROM notifications WHERE problem_status='open'"
             ).fetchall()
@@ -302,7 +301,7 @@ class TraversalScanTests(_AdoptionFixture):
         vault = self._vault()
         vault_id = int(vault["id"])
         real_inspect = storage.inspect_entry
-        holder = PostgresConnection(str(self.database_path))
+        holder = self.database.connect()
         self.addCleanup(holder.close)
         held = threading.Event()
 

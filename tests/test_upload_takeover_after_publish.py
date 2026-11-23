@@ -19,23 +19,16 @@ from app.services import notifications, snapshot_cleanup
 from app.services import upload_provenance as provenance
 from app.services.upload_execution import UploadExecution
 from tests import test_upload_provenance_worker as fixtures
-from tests.postgres import PostgresConnection
 
 
 class _WorkerStopped(BaseException):
     """The process stops between two steps: nothing of the run handles it."""
 
 
-class UploadTakeoverAfterPublishTests(unittest.TestCase):
-    setUp = fixtures.UploadProvenanceWorkerTests.setUp
-    queue = fixtures.UploadProvenanceWorkerTests.queue
-    run_job = fixtures.UploadProvenanceWorkerTests.run_job
-    row = fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = fixtures.UploadProvenanceWorkerTests.assert_keeper
-    http_client = fixtures.UploadProvenanceWorkerTests.http_client
+class UploadTakeoverAfterPublishTests(fixtures.UploadProvenanceWorkerCase):
 
     def db(self):
-        return PostgresConnection(self.db_path)
+        return self.database.connect()
 
     def listings(self) -> list[str]:
         seen: list[str] = []

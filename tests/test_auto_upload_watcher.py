@@ -19,17 +19,17 @@ from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint, protect
-from tests.fixtures import FrostVaultTestCase, create_owner, fresh_database, override_settings, seed_vault
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 
 
 class WatcherCase(FrostVaultTestCase):
     """One watched Vault on a simulated clock, with its helpers and no tests."""
 
+    settings_overrides = {"operation_concurrency": 1, "restore_poll_interval": 900}
+
     def setUp(self):
-        # Written with the fixture functions instead of ``super().setUp()``: modules not yet on
-        # ``FrostVaultTestCase`` still borrow this method into plain ``TestCase`` classes (#801).
-        self.database = self.enterContext(fresh_database())
+        super().setUp()
         self.base = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.root = self.base / "source"
         self.root.mkdir()
@@ -37,7 +37,6 @@ class WatcherCase(FrostVaultTestCase):
         self.clock = self.start
         self.access = SimpleNamespace(local_operations_allowed=True, volume_alias=None, volume_health="healthy")
         with self.db() as connection:
-            create_owner(connection)
             seed_vault(
                 connection, id=2, name="Photos", source_root=str(self.root), bucket="test-bucket",
                 root_identity=vault_relocation.root_identity(str(self.root)),
@@ -51,8 +50,6 @@ class WatcherCase(FrostVaultTestCase):
             def now(cls, tz=None):
                 return outer.clock.astimezone(tz) if tz else outer.clock.replace(tzinfo=None)
 
-        self.settings = self.enterContext(override_settings(
-            database_dsn=self.database.dsn, operation_concurrency=1, restore_poll_interval=900))
         for patcher in (
             # Scan generations are process-local. Do not leak a simulated
             # future generation into unrelated direct cloud-scan fixtures.

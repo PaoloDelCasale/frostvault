@@ -13,20 +13,16 @@ import threading
 import unittest
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
 from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict
 
 from app import database, schema_guard
 from app.database import HEAD_SCHEMA_REVISION, DatabaseSchemaError, initialize_database
 from app.schema_guard import SchemaState, inspect_schema, prepare_schema, require_current_schema
-from tests.postgres import PostgresConnection, _server_dsn, database_dsn, database_state, run_alembic
-
-# Kept for the many modules that import the fixture from here.
-__all__ = ["run_alembic"]
+from tests import fixtures
+from tests.fixtures import alembic_upgrade_head, empty_database, fresh_database, override_settings
 
 BASELINE_TABLES = {
     "alembic_version", "owner", "vault_targets", "vaults", "files",
@@ -53,8 +49,8 @@ HEAD_TABLES = BASELINE_TABLES | {"vault_deletions", "system_bucket", "vault_buck
                                  "retained_versions"}
 
 
-def _tables(path: Path) -> set[str]:
-    with PostgresConnection(str(path)) as connection:
+def _tables(database_: fixtures.Database) -> set[str]:
+    with database_.connect() as connection:
         rows = connection.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
         ).fetchall()
@@ -77,46 +73,40 @@ def _migrate_to(dsn: str, revision: str) -> None:
         engine.dispose()
 
 
-def _revision(path: Path) -> list[str]:
-    with PostgresConnection(str(path)) as connection:
+def _revision(database_: fixtures.Database) -> list[str]:
+    with database_.connect() as connection:
         return [row["version_num"] for row in
                 connection.execute("SELECT version_num FROM alembic_version").fetchall()]
 
 
-def _make_read_only(path: Path) -> None:
-    name = conninfo_to_dict(database_dsn(path))["dbname"]
-    with psycopg.connect(_server_dsn(), autocommit=True) as connection:
+def _make_read_only(database_: fixtures.Database) -> None:
+    with psycopg.connect(fixtures._server_dsn(), autocommit=True) as connection:
         connection.execute(
             sql.SQL("ALTER DATABASE {} SET default_transaction_read_only = on").format(
-                sql.Identifier(name)
+                sql.Identifier(database_.name)
             )
         )
 
 
 class _GuardFixture(unittest.TestCase):
     def setUp(self) -> None:
-        self.settings = SimpleNamespace(
-            database_dsn="",
+        self.settings = self.enterContext(override_settings(
             operation_concurrency=1,
             bootstrap_admin_username="Owner",
             bootstrap_admin_password="correct horse battery staple",
             bootstrap_admin_display_name="The Owner",
-        )
-        patcher = patch.object(database, "settings", self.settings)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        ))
         self.addCleanup(database.close_pools)
-        self.fresh_database()
+        self.use_empty_database()
 
-    def fresh_database(self) -> None:
+    def use_empty_database(self) -> None:
         """Point the app at a new, empty fixture database."""
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.path = Path(directory.name) / "guard.db"
-        self.dsn = self.settings.database_dsn = database_dsn(self.path)
+        self.database = self.enterContext(empty_database())
+        self.dsn = self.database.dsn
+        self.enterContext(override_settings(database_dsn=self.dsn))
 
     def execute(self, *statements: str) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for statement in statements:
                 connection.execute(statement)
 
@@ -129,21 +119,21 @@ class _GuardFixture(unittest.TestCase):
         )
 
     def assert_refused_without_writes(self, action, *fragments: str) -> None:
-        _make_read_only(self.path)
-        before = database_state(self.path)
+        _make_read_only(self.database)
+        before = self.database.rows()
         with self.assertRaises(DatabaseSchemaError) as raised:
             action()
         for fragment in fragments:
             self.assertIn(fragment, str(raised.exception))
-        self.assertEqual(database_state(self.path), before)
+        self.assertEqual(self.database.rows(), before)
 
 
 class StartupGuardTests(_GuardFixture):
     def test_empty_database_is_initialized_at_the_baseline_with_one_owner(self) -> None:
         initialize_database()
 
-        self.assertEqual(_tables(self.path), HEAD_TABLES)
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_tables(self.database), HEAD_TABLES)
+        with self.database.connect() as connection:
             revisions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
             owner = connection.execute("SELECT * FROM owner").fetchall()
         self.assertEqual(revisions, [{"version_num": HEAD_SCHEMA_REVISION}])
@@ -155,13 +145,13 @@ class StartupGuardTests(_GuardFixture):
     def test_database_at_head_starts_without_any_write(self) -> None:
         initialize_database()
         database.close_pools()
-        _make_read_only(self.path)
-        before = database_state(self.path)
+        _make_read_only(self.database)
+        before = self.database.rows()
 
         initialize_database()
 
-        self.assertEqual(database_state(self.path), before)
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(self.database.rows(), before)
+        with self.database.connect() as connection:
             self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
 
     def test_old_revision_is_refused_before_any_write(self) -> None:
@@ -169,7 +159,7 @@ class StartupGuardTests(_GuardFixture):
         self.assert_refused_without_writes(
             initialize_database, "0072_upload_lineage_indexes", HEAD_SCHEMA_REVISION,
         )
-        self.assertNotIn("owner", _tables(self.path))
+        self.assertNotIn("owner", _tables(self.database))
 
     def test_catalog_of_the_frozen_baseline_is_upgraded_at_start(self) -> None:
         _migrate_to(self.dsn, "0001_baseline")
@@ -177,8 +167,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')"
         )
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
             columns = {row["column_name"] for row in connection.execute(
                 "SELECT column_name FROM information_schema.columns "
@@ -190,7 +180,7 @@ class StartupGuardTests(_GuardFixture):
 
     def _assert_local_part_digests(self) -> None:
         """#703: nullable part digests on files, cleared by a digest change."""
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             columns = {row["column_name"]: row for row in connection.execute(
                 "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
                 "WHERE table_name = 'files' AND column_name LIKE 'local_part_%'"
@@ -214,9 +204,9 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')"
         )
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
         self._assert_local_part_digests()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertIs(inspect_schema(connection), SchemaState.CURRENT)
             owner = connection.execute("SELECT display_name FROM owner").fetchone()
         self.assertEqual(owner["display_name"], "Kept")
@@ -236,8 +226,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO cloud_purge_requests(group_id, reason) "
             "VALUES ('00000000-0000-0000-0000-000000000001', 'manual')")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             vault = connection.execute(
                 """SELECT duplicate_cleanup_enabled, duplicate_cleanup_grace_days,
                           duplicate_cleanup_cap_files, duplicate_cleanup_cap_bytes,
@@ -281,8 +271,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO jobs(vault_id, file_id, group_id, action, status, origin, total_bytes, finished_at) "
             f"VALUES (1, '{file_id}', '{group}', 'cloud-purge', 'completed', 'automatic', 10, now())")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             vault = connection.execute(
                 """SELECT duplicate_cleanup_enabled, duplicate_cleanup_deleted_count,
                           duplicate_cleanup_deleted_bytes, duplicate_cleanup_last_deleted_at
@@ -314,8 +304,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO metadata_backup_runs(created_at, reason, backend, status, s3_key) "
             "VALUES (now(), 'scheduled', 'postgresql', 'succeeded', 'system/backups/a.bak.enc')")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM system_bucket").fetchone()["n"], 0)
             run = connection.execute("SELECT s3_key, s3_bucket FROM metadata_backup_runs").fetchone()
             self.assertEqual(dict(run), {"s3_key": "system/backups/a.bak.enc", "s3_bucket": None})
@@ -340,8 +330,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO archive_versions(file_id, object_key, provider_version_id, size, storage_class, created_at) "
             f"VALUES ('{file_id}', 'vaults/x/a.jpg', 'v1', 10, 'DEEP_ARCHIVE', now() - interval '200 days')")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             version = connection.execute(
                 "SELECT storage_class, storage_class_since FROM archive_versions").fetchone()
             vault = connection.execute(
@@ -367,8 +357,8 @@ class StartupGuardTests(_GuardFixture):
             "INSERT INTO vault_targets(id, provider, bucket, region) VALUES (1, 's3', 'shared', 'eu-south-1')",
             "INSERT INTO vaults(id, target_id, name, source_root) VALUES (1, 1, 'Docs', '/sources/docs')")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             target = connection.execute(
                 "SELECT bucket, key_layout, retention_lock_days FROM vault_targets").fetchone()
             vault = connection.execute(
@@ -389,8 +379,8 @@ class StartupGuardTests(_GuardFixture):
             "VALUES (1, 's3', 'frostvault-docs-ab12cd34', 'eu-south-1', 'bucket_root')",
             "INSERT INTO vaults(id, target_id, name, source_root) VALUES (1, 1, 'Docs', '/sources/docs')")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             counts = connection.execute(
                 "SELECT (SELECT COUNT(*) FROM vault_bucket_metric_days) AS days, "
                 "(SELECT COUNT(*) FROM vault_bucket_metric_reads) AS reads").fetchone()
@@ -409,8 +399,8 @@ class StartupGuardTests(_GuardFixture):
             f"INSERT INTO job_groups(id, vault_id, path, created_at) VALUES ('{group}', 1, '', now())",
             f"INSERT INTO cloud_purge_requests(group_id, reason, automatic) VALUES ('{group}', 'auto', true)")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             vault = connection.execute(
                 """SELECT duplicate_cleanup_enabled, mirror_cleanup_enabled, mirror_cleanup_grace_days,
                           mirror_cleanup_cap_files, mirror_cleanup_cap_bytes, mirror_cleanup_folders,
@@ -456,8 +446,8 @@ class StartupGuardTests(_GuardFixture):
             "(2, 2, 'Docs', '/sources/docs', 'linux-stat-dir-v1', 'v1-docs', NULL), "
             "(3, 3, 'New', '/sources/new', NULL, NULL, NULL)")
         self.assertIs(prepare_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT id, root_identity, retired_root_identities FROM vaults ORDER BY id").fetchall()
             columns = {row["column_name"] for row in connection.execute(
@@ -489,17 +479,17 @@ class StartupGuardTests(_GuardFixture):
         with patch.object(schema_guard, "_alembic_upgrade", upgrade_then_fail):
             with self.assertRaisesRegex(RuntimeError, "simulated crash"):
                 prepare_schema(self.dsn)
-        self.assertEqual(_revision(self.path), ["0001_baseline"])
+        self.assertEqual(_revision(self.database), ["0001_baseline"])
 
     def test_upgrade_schema_upgrades_but_never_initializes(self) -> None:
         from app.schema_guard import upgrade_schema
 
         self.assert_refused_without_writes(lambda: upgrade_schema(self.dsn), "empty")
-        self.assertEqual(_tables(self.path), set())
-        self.fresh_database()
+        self.assertEqual(_tables(self.database), set())
+        self.use_empty_database()
         _migrate_to(self.dsn, "0001_baseline")
         self.assertIs(upgrade_schema(self.dsn), SchemaState.OUTDATED)
-        self.assertEqual(_revision(self.path), [HEAD_SCHEMA_REVISION])
+        self.assertEqual(_revision(self.database), [HEAD_SCHEMA_REVISION])
         self.assertIs(upgrade_schema(self.dsn), SchemaState.CURRENT)
 
     def test_outdated_catalog_is_refused_by_restore_registration(self) -> None:
@@ -508,7 +498,7 @@ class StartupGuardTests(_GuardFixture):
         _migrate_to(self.dsn, "0001_baseline")
 
         def restore() -> None:
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
 
         self.assert_refused_without_writes(restore, "earlier revision", "upgrade_schema")
@@ -524,12 +514,12 @@ class StartupGuardTests(_GuardFixture):
         }
         for kind, statement in objects.items():
             with self.subTest(kind=kind):
-                self.fresh_database()
+                self.use_empty_database()
                 self.execute(statement)
                 self.assert_refused_without_writes(
                     initialize_database, "not empty", "no alembic_version",
                 )
-                with PostgresConnection(str(self.path)) as connection:
+                with self.database.connect() as connection:
                     self.assertIsNone(connection.execute(
                         "SELECT to_regclass('alembic_version') AS present"
                     ).fetchone()["present"])
@@ -543,7 +533,7 @@ class StartupGuardTests(_GuardFixture):
         }
         for case, revisions in cases.items():
             with self.subTest(case=case):
-                self.fresh_database()
+                self.use_empty_database()
                 self.execute(
                     "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)",
                     *(f"INSERT INTO alembic_version VALUES ('{r}')" for r in revisions),
@@ -569,7 +559,7 @@ class StartupGuardTests(_GuardFixture):
 
         outcomes = sorted(r.value if isinstance(r, SchemaState) else repr(r) for r in results)
         self.assertEqual(outcomes, ["current", "current", "empty"])
-        self.assertEqual(_tables(self.path), HEAD_TABLES)
+        self.assertEqual(_tables(self.database), HEAD_TABLES)
 
     def test_failed_initialization_leaves_the_database_empty(self) -> None:
         upgrade = schema_guard._alembic_upgrade
@@ -581,14 +571,14 @@ class StartupGuardTests(_GuardFixture):
         with patch.object(schema_guard, "_alembic_upgrade", upgrade_then_fail):
             with self.assertRaisesRegex(RuntimeError, "simulated crash"):
                 prepare_schema(self.dsn)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertIs(inspect_schema(connection), SchemaState.EMPTY)
 
     def test_changed_emergency_password_revokes_sessions(self) -> None:
         initialize_database()
-        self.settings.bootstrap_admin_password = "another long emergency password"
+        self.enterContext(override_settings(bootstrap_admin_password="another long emergency password"))
         initialize_database()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             owner = connection.execute("SELECT session_version FROM owner").fetchone()
         self.assertEqual(owner["session_version"], 2)
 
@@ -600,7 +590,7 @@ class RestoreGuardTests(_GuardFixture):
         self.seed_old_catalog()
 
         def restore() -> None:
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
 
         self.assert_refused_without_writes(
@@ -611,15 +601,15 @@ class RestoreGuardTests(_GuardFixture):
         from app.services.recovery_kit import record_metadata_restore
 
         def restore() -> None:
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
 
         self.assert_refused_without_writes(restore, "empty")
-        self.assertEqual(_tables(self.path), set())
+        self.assertEqual(_tables(self.database), set())
 
     def test_metadata_restore_accepts_a_catalog_at_head(self) -> None:
-        self.assertEqual(run_alembic(self.path).returncode, 0)
-        with PostgresConnection(str(self.path)) as connection:
+        self.assertEqual(alembic_upgrade_head(self.database).returncode, 0)
+        with self.database.connect() as connection:
             require_current_schema(connection)
 
     def test_backup_verification_refuses_a_dump_of_another_schema(self) -> None:
@@ -637,9 +627,7 @@ class RestoreGuardTests(_GuardFixture):
         _migrate_to(self.dsn, "0001_baseline")
         self.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Kept', 'x')")
         dump = metadata_backups._dump_postgres_bytes(self.dsn)
-        with tempfile.TemporaryDirectory() as work, patch.object(
-            metadata_backups, "settings", SimpleNamespace(database_dsn=self.dsn),
-        ):
+        with tempfile.TemporaryDirectory() as work:
             result = metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
         self.assertEqual(result["schema_revision"], "0001_baseline")
         self.assertEqual(result["owner_count"], 1)
@@ -649,9 +637,7 @@ class RestoreGuardTests(_GuardFixture):
 
         initialize_database()
         dump = metadata_backups._dump_postgres_bytes(self.dsn)
-        with tempfile.TemporaryDirectory() as work, patch.object(
-            metadata_backups, "settings", SimpleNamespace(database_dsn=self.dsn),
-        ):
+        with tempfile.TemporaryDirectory() as work:
             result = metadata_backups._verify_postgres_dump_isolated(dump, Path(work))
         self.assertEqual(result["schema_revision"], HEAD_SCHEMA_REVISION)
         self.assertEqual(result["owner_count"], 1)
@@ -695,12 +681,8 @@ class BaselineSchemaTests(unittest.TestCase):
     """The core tables and the invariants their constraints enforce."""
 
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.path = Path(directory.name) / "baseline.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.path))
+        self.database = self.enterContext(fresh_database())
+        self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
         self.connection.autocommit = True
 

@@ -24,8 +24,7 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import upload_provenance as provenance
 from app.services.vault_relocation import enroll_vault_root_identity
-from tests import postgres as path_aliases
-from tests.fixtures import FrostVaultTestCase, fresh_database, override_settings, seed_vault
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 
 A = b"immutable content A"
@@ -76,19 +75,13 @@ class UploadWorkerCase(FrostVaultTestCase):
     owner = None
 
     def setUp(self) -> None:
-        # Written with the fixture functions instead of ``super().setUp()``:
-        # modules not yet on ``FrostVaultTestCase`` still borrow this method
-        # (and the helpers below) into plain ``TestCase`` classes (#801).
-        self.database = self.enterContext(fresh_database())
-        self.settings = self.enterContext(override_settings(database_dsn=self.database.dsn))
+        super().setUp()
+        # Its own directory, not ``tmp_path``: a test may call setUp again.
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.source = self.root / "source"
         self.source.mkdir()
         self.file = self.source / "report.txt"
         self.file.write_bytes(A)
-        # For the borrowers that still reach the database through the
-        # path-keyed aliases; it goes away with ``tests.postgres``.
-        self.db_path = path_aliases.adopt(self.root / "catalog", self.database)
         self.provider = VersionedProvider()
         self.heads = 0
         with self.db() as connection:

@@ -17,26 +17,18 @@ from app.services import notifications, upload_provenance as provenance
 from app.services import upload_remediation as remediation
 from app.services.vault_relocation import VaultRelocationError
 from tests import test_upload_provenance_worker as fixtures
-from tests.postgres import PostgresConnection
 from tests.upload_support import job_row
 
 
 
-class UploadAmbiguousSendRecoveryTests(unittest.TestCase):
-    setUp = fixtures.UploadProvenanceWorkerTests.setUp
-    queue = fixtures.UploadProvenanceWorkerTests.queue
-    run_job = fixtures.UploadProvenanceWorkerTests.run_job
-    row = fixtures.UploadProvenanceWorkerTests.row
-    assert_keeper = fixtures.UploadProvenanceWorkerTests.assert_keeper
-    http_client = fixtures.UploadProvenanceWorkerTests.http_client
-    observe_content = fixtures.UploadProvenanceWorkerTests.observe_content
+class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
 
     @property
     def KEY(self):
         return self.key
 
     def db(self):
-        return PostgresConnection(self.db_path)
+        return self.database.connect()
 
     def stable_content(self):
         # Content stability is exercised elsewhere; here the file is old enough.

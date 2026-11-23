@@ -4,10 +4,7 @@ from __future__ import annotations
 import os
 import select
 import signal
-import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
@@ -15,7 +12,7 @@ from psycopg_pool import PoolTimeout
 
 from app import config, database
 from app.services.database_retry import owned_connection
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import empty_database, override_settings
 
 
 class _Connection:
@@ -60,9 +57,9 @@ class PooledConnectionTests(unittest.TestCase):
         self.reset = self.enterContext(patch.object(database, "_reset_session"))
 
     def test_pool_size_follows_operation_concurrency(self):
-        with patch.object(database, "settings", SimpleNamespace(database_dsn="", operation_concurrency=16)):
+        with override_settings(database_dsn="", operation_concurrency=16):
             self.assertEqual(database.pool_max_size(), 2 * 16 + database.POOL_HEADROOM)
-        with patch.object(database, "settings", SimpleNamespace(database_dsn="")):
+        with override_settings(database_dsn=""):
             self.assertEqual(
                 database.pool_max_size(),
                 2 * config.settings.operation_concurrency + database.POOL_HEADROOM,
@@ -110,7 +107,7 @@ class PooledConnectionTests(unittest.TestCase):
         }
         for name, pool in pools.items():
             with self.subTest(name), \
-                    patch.object(database, "settings", SimpleNamespace(database_dsn="")), \
+                    override_settings(database_dsn=""), \
                     patch.object(database, "_pool_for", return_value=pool), \
                     patch.object(database.psycopg, "connect") as connect:
                 self.assertIs(database.db(), connect.return_value)
@@ -119,7 +116,7 @@ class PooledConnectionTests(unittest.TestCase):
 
     def test_a_free_pooled_connection_is_used(self):
         pool = _Pool(size=1, available=1)
-        with patch.object(database, "settings", SimpleNamespace(database_dsn="")), \
+        with override_settings(database_dsn=""), \
                 patch.object(database, "_pool_for", return_value=pool), \
                 patch.object(database.psycopg, "connect") as connect:
             lease = database.db()
@@ -129,13 +126,11 @@ class PooledConnectionTests(unittest.TestCase):
 
 class PooledDatabaseTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "pool"
-        self.dsn = database_dsn(self.path)
+        self.database = self.enterContext(empty_database())
+        self.dsn = self.database.dsn
         self.addCleanup(database.close_pools)
-        self.enterContext(patch.object(database, "settings", SimpleNamespace(database_dsn=self.dsn)))
-        with PostgresConnection(self.path) as connection:
+        self.enterContext(override_settings(database_dsn=self.dsn))
+        with self.database.connect() as connection:
             connection.execute("CREATE TABLE notes(id int PRIMARY KEY)")
 
     def test_the_next_checkout_reuses_the_session_with_a_fresh_state(self):
@@ -207,7 +202,7 @@ class PooledDatabaseTests(unittest.TestCase):
                 for _ in range(8):
                     connection.execute("INSERT INTO notes VALUES (%s) ON CONFLICT DO NOTHING", (value,))
         self.assertEqual(len(pids), 1)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM notes").fetchone()["n"], 3)
 
     def test_an_error_rolls_back_and_an_unclosed_transaction_is_discarded(self):
@@ -220,7 +215,7 @@ class PooledDatabaseTests(unittest.TestCase):
         lease.close()
         with database.db() as connection:
             connection.execute("INSERT INTO notes VALUES (3)")
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute("SELECT id FROM notes ORDER BY id").fetchall()
         self.assertEqual([row["id"] for row in rows], [3])
 
@@ -228,12 +223,13 @@ class PooledDatabaseTests(unittest.TestCase):
         with database.db() as connection:
             connection.execute("SELECT 1")
         previous = database._pool_for(self.dsn)
-        other = Path(self.tmp.name) / "other"
-        with patch.object(database, "settings", SimpleNamespace(database_dsn=database_dsn(other))):
+        other = self.enterContext(empty_database())
+        with override_settings(database_dsn=other.dsn):
             with database.db() as connection:
                 self.assertEqual(connection.execute("SELECT current_database() AS name").fetchone()["name"],
-                                 psycopg.conninfo.conninfo_to_dict(database_dsn(other))["dbname"])
-        self.assertTrue(previous.closed)
+                                 other.name)
+            # Asserted before the override ends: leaving it closes every pool.
+            self.assertTrue(previous.closed)
 
     @unittest.skipUnless(hasattr(os, "fork"), "fork is unavailable on this platform")
     def test_forked_child_uses_its_own_pool_and_leaves_parent_session_usable(self):
@@ -269,7 +265,7 @@ class PooledDatabaseTests(unittest.TestCase):
         with database.db() as connection:
             pid = connection.info.backend_pid
         database.close_pools()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             alive = connection.execute("SELECT COUNT(*) AS n FROM pg_stat_activity WHERE pid=%s", (pid,)).fetchone()["n"]
         self.assertEqual(alive, 0)
 

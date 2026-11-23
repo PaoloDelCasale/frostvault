@@ -23,10 +23,7 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
-import unittest
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -39,8 +36,7 @@ from app.services.vault_relocation import enroll_vault_root_identity
 from app.services.vaults import VAULT_ROW_SQL
 from app.services.upload_snapshot import UploadSnapshot
 from tests.catalog_support import queue_rename_job
-from tests.fixtures import create_owner, fresh_database, override_settings, seed_vault
-from tests.postgres import path_alias
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 from tests.upload_support import claimed_job_row, job_row
 
@@ -69,30 +65,25 @@ def prepare_unsent(case, job_id):
             before={"versions": [], "markers": []}, timestamp=storage.now_iso())
 
 
-class UploadProvenanceWorkerTests(unittest.TestCase):
-    # Classes that are not subclasses borrow this setUp and these methods, so
-    # they use the fixture functions rather than FrostVaultTestCase.
+class UploadProvenanceWorkerCase(FrostVaultTestCase):
+    """One Vault (id 2) with ``report.txt`` on the versioned provider, queued
+    through real admission: the base of the upload provenance tests."""
+
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        super().setUp()
+        self.root = self.tmp_path
         self.source = self.root / "source"
         self.source.mkdir()
         self.file = self.source / "report.txt"
         self.file.write_bytes(A)
-        self.database = self.enterContext(fresh_database())
-        # Borrowers not migrated yet open the database by this path (#801).
-        self.db_path = path_alias(self.database, self.root)
         self.provider = VersionedProvider()
         with self.database.connect() as connection:
             self.assertTrue(connection.execute("SHOW server_version_num").fetchone()["server_version_num"].startswith("16"))
-            create_owner(connection)
             seed_vault(connection, id=2, source_root=str(self.source))
             enroll_vault_root_identity(connection, 2, str(self.source))
             self.file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(A), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
             self.uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
         self.key = f"vaults/{self.uuid}/report.txt"
-        self.enterContext(override_settings(database_dsn=self.database.dsn))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
@@ -147,6 +138,23 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertIn((version["object_key"], version["provider_version_id"]), self.provider.objects)
         return version
 
+    def seed_keeper(self):
+        """A verified Current of A landed by an earlier upload Job of this file."""
+        job = self.queue()
+        self.run_job(job)
+        keeper = self.assert_keeper(job)
+        self.provider.puts = 0
+        return str(keeper["id"]), keeper["provider_version_id"]
+
+    def observe_content(self, payload, *, mtime_ns=None):
+        self.file.write_bytes(payload)
+        if mtime_ns is not None:
+            os.utime(self.file, ns=(mtime_ns, mtime_ns))
+        with self.database.connect() as connection:
+            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+
+
+class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
     def test_upload_rename_free_and_recover_preserves_archived_timestamp(self):
         original = 1_597_614_120_123_456_789
         os.utime(self.file, ns=(original, original))
@@ -410,21 +418,6 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assert_keeper(job_id)
         self.assertEqual(self.provider.puts,1)
         self.assertEqual(self.row(original)["status"],"failed","No generic history resolution")
-
-    def seed_keeper(self):
-        """A verified Current of A landed by an earlier upload Job of this file."""
-        job = self.queue()
-        self.run_job(job)
-        keeper = self.assert_keeper(job)
-        self.provider.puts = 0
-        return str(keeper["id"]), keeper["provider_version_id"]
-
-    def observe_content(self, payload, *, mtime_ns=None):
-        self.file.write_bytes(payload)
-        if mtime_ns is not None:
-            os.utime(self.file, ns=(mtime_ns, mtime_ns))
-        with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
 
     def test_linked_resume_cannot_ignore_contradictory_receipt_after_publication_crash(self):
         keeper, keeper_version = self.seed_keeper()

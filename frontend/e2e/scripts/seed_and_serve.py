@@ -39,24 +39,17 @@ def _ensure_runtime() -> dict[str, Path]:
     )
     (source_primary / "note.txt").write_text("a local note\n", encoding="utf-8")
     (source_secondary / "hello.txt").write_text("secondary\n", encoding="utf-8")
-    db_path = RUNTIME / "frostvault-e2e.db"
-    # This path is an opaque identity for a uniquely named disposable database.
     return {
-        "db": db_path,
         "source_primary": source_primary,
         "source_secondary": source_secondary,
     }
 
 
-def _migrate(db_path: Path) -> None:
+def _migrate() -> None:
+    """A fresh migrated database of the test server, dropped when this exits."""
     sys.path.insert(0, str(REPO_ROOT))
-    from tests.postgres import run_alembic, database_dsn
-    result = run_alembic(db_path)
-    os.environ["DATABASE_URL"] = database_dsn(db_path)
-    if result.returncode != 0:
-        sys.stderr.write(result.stdout)
-        sys.stderr.write(result.stderr)
-        raise SystemExit(f"alembic upgrade failed: {result.returncode}")
+    from tests.fixtures import fresh_database
+    os.environ["DATABASE_URL"] = fresh_database().dsn
 
 
 def _seed(paths: dict[str, Path]) -> dict:
@@ -318,7 +311,7 @@ def _legacy_worker_fixture(application):
 def main() -> None:
     paths = _ensure_runtime()
     _apply_env(paths)
-    _migrate(paths["db"])
+    _migrate()
     _seed(paths)
     # Re-import settings after env is set: uvicorn loads app.main which reads
     # settings at import. Clear cached modules if we already imported them.

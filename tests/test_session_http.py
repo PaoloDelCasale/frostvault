@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tests.fixtures import FrostVaultTestCase
-from tests.owner_fixtures import bump_session_version
+from tests.fixtures import FrostVaultTestCase, bump_session_version
 
 
 class SessionHttpTests(FrostVaultTestCase):

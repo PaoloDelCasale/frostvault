@@ -22,8 +22,6 @@ from tests import catalog_event_probe
 A = worker.A
 B = b"second content of the report\n" * 64
 
-_HELPERS = ("setUp", "db", "observe", "write", "queue", "claim", "run_job", "due", "abandon",
-            "job", "file_row", "rows", "version")
 WINDOWS = retention.Windows(jobs=timedelta(days=30), notifications=timedelta(days=30),
                             audit=timedelta(days=90))
 
@@ -32,8 +30,7 @@ def later(days: int) -> datetime:
     return datetime.now(timezone.utc) + timedelta(days=days)
 
 
-class HistoryRetentionTests(unittest.TestCase):
-    locals().update({name: getattr(worker.UploadWorkerTests, name) for name in _HELPERS})
+class HistoryRetentionTests(worker.UploadWorkerCase):
     fail_original = remediation_tests.UploadRemediationTests.fail_original
 
     def collect(self, days: int, **kwargs) -> dict[str, int]:

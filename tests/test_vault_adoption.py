@@ -25,7 +25,6 @@ from app.services import source_layout
 from app.services import vaults as vaults_service
 from app.services.vaults import VAULT_ROW_SQL
 from tests.fixtures import FrostVaultTestCase, seed_vault
-from tests.postgres import path_alias
 from tests import catalog_probe
 
 class _AdoptionFixture(FrostVaultTestCase):
@@ -35,9 +34,6 @@ class _AdoptionFixture(FrostVaultTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        # Borrowers not migrated yet open the database by this path (#801).
-        self.database_path = path_alias(self.database, self.tmp_path)
-
         self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         (self.sources_root / "managed").mkdir()

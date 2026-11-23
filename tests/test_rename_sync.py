@@ -36,19 +36,7 @@ class _Crash(storage.WorkerStopping):
     """The worker process dies at a chosen provider stage."""
 
 
-class CopyWorkerFixture(unittest.TestCase):
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
+class CopyWorkerFixture(fixtures.UploadWorkerCase):
 
     def protected(self, payload: bytes = A) -> dict:
         self.write(payload, mtime_ns=ORIGINAL_MTIME_NS)

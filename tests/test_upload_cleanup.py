@@ -20,21 +20,7 @@ from tests.test_upload_worker import A, B, _FlakyCommit, sha
 C = b"third content C"
 
 
-class UploadCleanupTests(unittest.TestCase):
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    due = fixtures.UploadWorkerTests.due
-    abandon = fixtures.UploadWorkerTests.abandon
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
+class UploadCleanupTests(fixtures.UploadWorkerCase):
 
     # -- helpers -------------------------------------------------------------
 
