@@ -14,6 +14,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog, ReplacementInProgress, StaleReplacement
+from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -560,11 +561,12 @@ class ExplicitStateTests(_Fixture):
             "_observe", "observe_replaced_local_copy", "publish_local_fingerprint",
             "begin_replacement", "promote_replacement", "abandon_replacement",
             "mark_unseen_archive_versions_missing",
-            "list_rename_candidates", "confirm_file_rename", "rename_file",
         )
+        renames = ("list_rename_candidates", "confirm_file_rename", "rename_file")
         import app.catalog as catalog_module
 
         sources = [inspect.getsource(getattr(ArchiveCatalog, name)) for name in methods]
+        sources.extend(inspect.getsource(getattr(FileRenames, name)) for name in renames)
         sources.append(inspect.getsource(catalog_module._only_cloud_copy_sql))
         sources.extend(inspect.getsource(probe) for probe in (
             catalog_probe.get_file, catalog_probe.get_file_by_path))

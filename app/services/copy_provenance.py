@@ -42,6 +42,7 @@ from typing import Any, Callable
 
 from . import upload_provenance as provenance
 from .database_retry import owned_connection, retry_database_unit
+from .directory_aggregates import mark_path_dirty
 from .s3 import (
     full_object_sha256_checksum, head_object_with_checksum, restore_header_state, sha256_version,
     storage_class_requires_restore,
@@ -410,7 +411,7 @@ def _record_landed(w: CopyWorker, job: dict[str, Any], attempt: Attempt, version
                RETURNING f.vault_id, f.path""", (job["file_id"], attempt.id)).fetchone()
         if moved is None:
             raise UploadBlocked("target_superseded")
-        catalog._mark_path_aggregates_dirty(int(moved["vault_id"]), moved["path"])
+        mark_path_dirty(connection, int(moved["vault_id"]), moved["path"])
 
     w.catalog_unit(job, replace)
 

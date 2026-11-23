@@ -202,7 +202,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         # ("fp.path NOT LIKE '%/%'"), which psycopg3 rejects as an unescaped
         # placeholder (ProgrammingError: ... got '%/'). It must be parameterised
         # like the sibling LIKE clauses. (Issue #240)
-        clauses, params = self.catalog._direct_child_file_clauses(
+        clauses, params = self.catalog.direct_child_file_clauses(
             2, directory="", state=""
         )
         self.assertIn("strpos(f.path, '/') = 0", clauses)

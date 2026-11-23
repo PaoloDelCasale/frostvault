@@ -17,6 +17,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -530,11 +531,11 @@ class RenameConfirmationRaceTests(_CatalogFixture):
         self.assertTrue(scanner_reserved.wait(timeout=10))
 
         reservation_attempted = threading.Event()
-        original_reservation = ArchiveCatalog._reserve_rename_confirmation
+        original_reservation = FileRenames._reserve_rename_confirmation
 
-        def note_reservation(catalog: ArchiveCatalog, vault_id: int) -> None:
+        def note_reservation(renames: FileRenames, vault_id: int) -> None:
             reservation_attempted.set()
-            original_reservation(catalog, vault_id)
+            original_reservation(renames, vault_id)
 
         confirmation_outcome: list[str] = []
 
@@ -555,7 +556,7 @@ class RenameConfirmationRaceTests(_CatalogFixture):
         confirmer = threading.Thread(target=confirm_while_scanner_holds_write_lock)
         try:
             with patch.object(
-                ArchiveCatalog,
+                FileRenames,
                 "_reserve_rename_confirmation",
                 autospec=True,
                 side_effect=note_reservation,

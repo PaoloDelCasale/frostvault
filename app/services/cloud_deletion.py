@@ -17,7 +17,7 @@ deletion is not proven is revoked, never left to authorize a later run.
 Protection labels are not deletion authority: source identity, actual local
 absence, the exact Current, catalog state and concurrent work are checked
 independently. A reappearance revokes the whole pending selection
-(``ArchiveCatalog._revoke_deletion_consents``).
+(``catalog_shared.revoke_deletion_consents``).
 
 An automatic request (Automatic Duplicate Cleanup, #726, ADR-0048) covers
 only Cloud Duplicates. Its members are revoked one by one: at execution, a
@@ -58,6 +58,7 @@ from . import retention_lock, source_identity, source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
 from .vault_paths import object_prefix
+from .vaults import VAULT_ROW_SQL
 from .component_health import load_vault_health
 from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
@@ -183,11 +184,7 @@ def _aware(value: Any) -> datetime:
 
 def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
-        """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
-                  t.key_layout AS s3_key_layout,
-                  t.retention_lock_days AS s3_retention_lock_days FROM vaults v
-           JOIN vault_targets t ON t.id = v.target_id
-           WHERE v.id=%s FOR UPDATE OF v""", (vault_id,)
+        f"{VAULT_ROW_SQL} WHERE v.id=%s FOR UPDATE OF v", (vault_id,)
     ).fetchone()
     if row is None:
         raise VaultNotFound("api.vault_not_found")
@@ -476,10 +473,10 @@ def _listing_sql(connection: Any, vault: dict[str, Any],
     vault_id = int(vault["id"])
     catalog = ArchiveCatalog(connection, protection_unconfirmed=_unconfirmed(connection, vault))
     if listing.q:
-        clauses, params = catalog._direct_child_file_clauses(
+        clauses, params = catalog.direct_child_file_clauses(
             vault_id, directory="", state=listing.state, search=listing.q)
         return "(" + " AND ".join(clauses) + ")", params
-    clauses, params = catalog._direct_child_file_clauses(
+    clauses, params = catalog.direct_child_file_clauses(
         vault_id, directory=listing.directory, state=listing.state)
     prefix = f"{listing.directory}/" if listing.directory else ""
     start = len(prefix) + 1
@@ -489,9 +486,9 @@ def _listing_sql(connection: Any, vault: dict[str, Any],
     if listing.state:
         if catalog.protection_unconfirmed or catalog.unconfirmed.by_path:
             blocked, blocked_params = catalog.unconfirmed.sql("f.path")
-            state = masked_state_sql(blocked, catalog._state_sql(vault_id))
+            state = masked_state_sql(blocked, catalog.protection_state_sql(vault_id))
         else:
-            blocked_params, state = [], catalog._state_sql(vault_id)
+            blocked_params, state = [], catalog.protection_state_sql(vault_id)
         folder = f"""({folder} AND split_part(substr(f.path, %s), '/', 1) IN (
             SELECT split_part(substr(f.path, %s), '/', 1) FROM files f {CURRENT_JOIN_SQL}
             WHERE f.vault_id = %s AND {nested} AND {VISIBLE_SQL} AND ({state}) = %s))"""
