@@ -4593,7 +4593,10 @@ class _WorkerAdapter:
         return _claim_lost_event_for(job_id)
 
     def stopped_in_process(self, job_id: int) -> bool:
-        shutdown_state.checkpoint()
+        # Runs for every chunk an Upload reads: ``shutdown_state.checkpoint()``
+        # written out, so the seam adds no call to that loop.
+        if shutdown_state.requested:
+            raise WorkerStopping("Process shutdown requested")
         return job_cancelled(job_id)
 
     def job_cancelled(self, job_id: int) -> bool:

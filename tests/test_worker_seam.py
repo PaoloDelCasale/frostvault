@@ -79,8 +79,12 @@ class WorkerAdapterTests(unittest.TestCase):
             self.assertTrue(adapter.stopped_in_process(7))
             self.assertFalse(adapter.stopped_in_process(8))
             storage.shutdown_state.request()
-            with self.assertRaises(WorkerStopping):
+            with self.assertRaises(WorkerStopping) as stopped:
                 adapter.stopped_in_process(8)
+            # The same stop as the shutdown checkpoint it stands for.
+            with self.assertRaises(WorkerStopping) as checkpoint:
+                storage.shutdown_state.checkpoint()
+            self.assertEqual(str(stopped.exception), str(checkpoint.exception))
 
     def test_the_adapter_is_one_stateless_object(self) -> None:
         self.assertEqual(type(storage.worker_adapter).__slots__, ())

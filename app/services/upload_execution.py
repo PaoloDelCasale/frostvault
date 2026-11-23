@@ -84,6 +84,10 @@ class _UploadCheckpoint:
         self.worker, self.job = worker, job
         self.lost = worker.claim_lost_event(job["id"])
         self.next_remote = 0.0
+        # Looked up once per Job, not per turn (this runs for every chunk read):
+        # the Adapter still resolves the storage functions at each call.
+        self._job_id = job["id"]
+        self._stopped = worker.stopped_in_process
 
     def fenced(self) -> None:
         """A claim-fenced DB unit just committed: it read the lease durably.
@@ -94,14 +98,13 @@ class _UploadCheckpoint:
         self.next_remote = time.monotonic() + 1.0
 
     def __call__(self) -> None:
-        w, job_id = self.worker, self.job["id"]
-        if w.stopped_in_process(job_id):
-            raise w.OperationCancelled("Upload stopped")
+        if self._stopped(self._job_id):
+            raise self.worker.OperationCancelled("Upload stopped")
         if self.lost is not None and self.lost.is_set():
-            raise w.JobLeaseLost("Upload claim was lost")
+            raise self.worker.JobLeaseLost("Upload claim was lost")
         now = time.monotonic()
         if now >= self.next_remote:
-            w.ensure_job_active(job_id, "Upload claim was lost")
+            self.worker.ensure_job_active(self._job_id, "Upload claim was lost")
             self.next_remote = now + 1.0
 
 
