@@ -18,7 +18,7 @@ from unittest.mock import patch
 from watchfiles import Change
 
 from app import storage
-from app.services import watch_plan
+from app.services import filesystem_watcher, watch_plan
 from tests.fixtures import override_settings
 
 ALLOWED = SimpleNamespace(local_operations_allowed=True)
@@ -361,6 +361,90 @@ class WatcherCycleCostTests(WatcherCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.assertEqual((self.hops, self.opened, self.calls), (0, [], []))
+
+
+class FakeHost:
+    """A worker that records what the watcher asks of it."""
+
+    stable_seconds = 60.0
+    gap_rescan_min_seconds = 300.0
+    recheck_seconds = 60.0
+    batch_max_failures = 3
+    vanished_max_retries = 5
+    vanished_restart_seconds = 0.5
+
+    def __init__(self, batches):
+        self.batches = batches
+        self.asked: list[tuple] = []
+        self.applied = asyncio.Event()
+        self.loop = asyncio.get_running_loop()
+
+    def restart_delay(self, streak):
+        return 5.0
+
+    def observe(self, *paths, **options):
+        self.asked.append(("observe", paths, options["recursive"]))
+
+        async def generate():
+            for batch in self.batches:
+                yield batch
+            await asyncio.Event().wait()
+
+        return generate()
+
+    def vault_inactive(self, vault_id):
+        return False
+
+    def unknown_directories(self, vault_id, root, changes, handed_off):
+        return set()
+
+    def apply_changes(self, vault, changes, *, wait):
+        self.asked.append(("apply_changes", vault["id"], set(changes), wait))
+        # Called on a worker thread.
+        self.loop.call_soon_threadsafe(self.applied.set)
+        return len(changes)
+
+    async def reconcile(self, vault):
+        self.asked.append(("reconcile", vault["id"]))
+        return filesystem_watcher.ScanOutcome()
+
+    def resolve_error(self, vault_id):
+        self.asked.append(("resolve_error", vault_id))
+
+
+class WatcherAloneTests(unittest.IsolatedAsyncioTestCase):
+    """The watcher through its Interface, with no storage behind it."""
+
+    def test_the_storage_adapter_gives_every_member_of_the_interface(self):
+        members = set(filesystem_watcher.WatcherHost.__annotations__) | {
+            name for name, value in vars(filesystem_watcher.WatcherHost).items()
+            if callable(value) and not name.startswith("_")
+        }
+        self.assertGreaterEqual(len(members), 18)
+        self.assertEqual({name for name in members if not hasattr(storage.watcher_host, name)}, set())
+
+    async def test_a_batch_reaches_the_host_after_the_first_healthy_cycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            changed = str(root / "photo.jpg")
+            Path(changed).write_bytes(b"x")
+            host = FakeHost([set(), {(Change.modified, changed)}])
+            self.addCleanup(watch_plan.forget, 9521)
+            with (patch.object(filesystem_watcher.source_layout, "vault_local_access", return_value=ALLOWED),
+                  override_settings(filesystem_watch_force_polling=False)):
+                task = asyncio.create_task(
+                    filesystem_watcher.watch_vault(host, {"id": 9521, "source_root": str(root)}))
+                try:
+                    await asyncio.wait_for(host.applied.wait(), 5)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(host.asked, [
+            ("observe", (root,), True),
+            ("resolve_error", 9521),
+            ("reconcile", 9521),
+            ("apply_changes", 9521, {(Change.modified, changed)}, False),
+        ])
 
 
 if __name__ == "__main__":
