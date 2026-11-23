@@ -1,9 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
-import { createVaultAccessFetch, defaultPolicy, jsonResponse, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultPolicy, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 type Call = { url: string; method: string; body: unknown };
 const library = { type: "directory", name: "library", path: "library", state_counts: { protected: 2 }, total_size: 10 };
@@ -25,7 +27,7 @@ function setup(search: string, routes: { items?: unknown[]; disk?: unknown; prev
     const items = routes.items ?? [];
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={3} vaultName="Immich" t={(key, params) => params ? `${key} ${JSON.stringify(params)}` : key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
+  renderWithQueryClient(<FileBrowser vaultId={3} vaultName="Immich" t={(key, params) => params ? `${key} ${JSON.stringify(params)}` : key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
   return calls;
 }
 afterEach(() => { resetApiClientForTests(); window.history.replaceState({}, "", "/"); });

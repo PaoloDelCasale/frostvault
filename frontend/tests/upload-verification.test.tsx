@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
 import { VerificationEvidence } from "@/pages/archive/VerificationEvidence";
-import { createVaultAccessFetch, defaultPolicy, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultPolicy, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 afterEach(resetApiClientForTests);
 

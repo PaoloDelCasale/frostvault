@@ -2,7 +2,8 @@ import { cleanup, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resetApiClientForTests } from "@/api";
-import { createVaultAccessFetch, defaultCloudUsage, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultCloudUsage, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); document.documentElement.lang = ""; });
 

@@ -2,13 +2,15 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type ApiFetch } from "@/api";
+import { configureApiClient, resetApiClientForTests, type ApiFetch } from "@/api";
 import { Badge } from "@/components/Badge";
 import { ProblemCount } from "@/components/ProblemCount";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { ShellNavItems } from "@/layout/ShellNavItems";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
-import { createVaultAccessFetch, defaultLifecycle, defaultPolicy, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultLifecycle, defaultPolicy, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 
@@ -90,7 +92,7 @@ describe("Overview «Protected files» tile", () => {
       return jsonResponse({}, 404);
     }) });
     const vaults = Object.keys(stats).map((id) => ({ id: Number(id), uuid: `v${id}`, name: `Vault ${id}` }));
-    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><OverviewPage vaults={vaults} /></I18nProvider></ApiQueryProvider>);
+    renderWithQueryClient(<I18nProvider><OverviewPage vaults={vaults} /></I18nProvider>);
   }
 
   it.each([

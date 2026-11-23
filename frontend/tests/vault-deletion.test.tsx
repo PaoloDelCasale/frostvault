@@ -1,15 +1,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultDeletionDialog } from "@/components/VaultDeletionDialog";
 import { problemLink } from "@/lib/problemLink";
 import { formatDateTime } from "@/pages/archive/format";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 const PREFIX = "vaults/2f1c7e36-0000-4000-8000-000000000001/";
@@ -46,12 +48,12 @@ function setup({ status = idle as unknown, previewReply = { body: preview } as R
       : method === "POST" ? { status: 202, body: pending }
       : status === 404 ? { status: 404, body: { detail: "Vault not found" } }
       : { body: status };
-    return new Response(JSON.stringify(reply.body), { status: reply.status ?? 200, headers: { "Content-Type": "application/json" } });
+    return jsonResponse(reply.body, reply.status ?? 200);
   }) });
   const onOpenChange = vi.fn();
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>
+  renderWithQueryClient(<I18nProvider>
     <VaultDeletionDialog open onOpenChange={onOpenChange} onCompleted={onCompleted} vaultId={2} vaultName="Photos" />
-  </I18nProvider></ApiQueryProvider>);
+  </I18nProvider>);
   return { calls, onOpenChange, onCompleted };
 }
 

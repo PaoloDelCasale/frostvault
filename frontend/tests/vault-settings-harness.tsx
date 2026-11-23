@@ -8,13 +8,14 @@ import { vi, type Mock } from "vitest";
 import {
   ApiQueryProvider,
   configureApiClient,
-  createAppQueryClient,
   resetApiClientForTests,
   type ApiFetch,
 } from "@/api";
 import { ToastRegion } from "@/components/Toast";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
+import { jsonResponse } from "./support/http";
+import { createTestQueryClient } from "./support/queryClient";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -24,13 +25,6 @@ const localesDir = path.resolve(
 export function loadCatalog(locale: "en" | "it" = "en"): Record<string, string> {
   const raw = readFileSync(path.join(localesDir, `${locale}.json`), "utf8");
   return JSON.parse(raw) as Record<string, string>;
-}
-
-export function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 export const defaultPolicy = {
@@ -227,7 +221,7 @@ export function renderVaultAccess(
     ? (options.fetchImpl as Mock<ApiFetch>)
     : createVaultAccessFetch();
   configureApiClient({ fetch: fetchMock });
-  const client = createAppQueryClient();
+  const client = createTestQueryClient();
 
   const result = render(
     <ApiQueryProvider client={client}>

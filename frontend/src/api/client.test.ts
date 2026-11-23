@@ -8,13 +8,7 @@ import {
   filenameFromContentDisposition,
   resetApiClientForTests,
 } from "./client";
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+import { jsonResponse } from "../../tests/support/http";
 
 describe("apiRequest CSRF", () => {
   const fetchMock = vi.fn();

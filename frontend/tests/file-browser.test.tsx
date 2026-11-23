@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const file = { type: "file", name: "photo.jpg", path: "2026/photo.jpg", state: "cloud_only", recover_eligible: true, cloud_exists: true, local_exists: false, storage_class: "DEEP_ARCHIVE", cloud_size: 100 };
 function setup(items: unknown[] = [file], search = "") {
@@ -17,7 +18,7 @@ function setup(items: unknown[] = [file], search = "") {
     if (url.startsWith("/api/stats")) return jsonResponse({ states: { protected: 1180, cloud_only: 3, pending: 2 }, protection_state: "pending", storage: {}, active_jobs: 0, runtime: {}, source_volume: {}, delete_enabled: true });
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={1} vaultName="First" t={(key) => key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
+  renderWithQueryClient(<FileBrowser vaultId={1} vaultName="First" t={(key) => key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
   return calls;
 }
 afterEach(() => { resetApiClientForTests(); window.history.replaceState({}, "", "/"); });
@@ -148,7 +149,7 @@ describe("essential file browser", () => {
       return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
     }) });
     window.history.replaceState({}, "", "/");
-    render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={1} vaultName="First" t={(key, params) => params ? `${key} ${JSON.stringify(params)}` : key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
+    renderWithQueryClient(<FileBrowser vaultId={1} vaultName="First" t={(key, params) => params ? `${key} ${JSON.stringify(params)}` : key} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
     await screen.findAllByText("f0.jpg"); const user = userEvent.setup();
     await user.click(screen.getByRole("checkbox", { name: "files.select_page" }));
     await user.click(within(screen.getByTestId("selection-bar")).getByRole("button", { name: "essential.free_now" }));

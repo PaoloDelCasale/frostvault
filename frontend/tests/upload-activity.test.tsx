@@ -1,13 +1,15 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import type { UploadActivityResponse, UploadActivitySummary, UploadThroughput } from "@/api/types";
 import { UploadActivity } from "@/components/UploadActivity";
 import { formatBytes } from "@/pages/archive/format";
 import { expectedFinishShort, expectedFinishText, stoppedShort, stoppedText } from "@/lib/throughput";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
 import { translate } from "@/i18n/translate";
+import { jsonResponse } from "./support/http";
+import { createTestQueryClient, renderWithQueryClient } from "./support/queryClient";
 
 const empty = (): UploadActivitySummary => ({
   stability_wait: { files: 0, bytes: 0, transferred_bytes: 0 },
@@ -37,8 +39,8 @@ function show(activity: UploadActivitySummary, vaultId?: number, extra: UploadAc
   };
   const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(data));
   configureApiClient({ fetch });
-  const client = createAppQueryClient();
-  render(<ApiQueryProvider client={client}><UploadActivity t={t} vaultId={vaultId} /></ApiQueryProvider>);
+  const client = createTestQueryClient();
+  renderWithQueryClient(<UploadActivity t={t} vaultId={vaultId} />, { client });
   return { data, fetch, client };
 }
 /** The indicator only exists while work is observed; its panel holds the detail. */

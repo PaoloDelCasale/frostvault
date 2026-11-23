@@ -16,13 +16,7 @@ import {
   markAllNotificationsRead,
 } from "./endpoints";
 import { estimateGeneralStorageCost, requestScan } from "../../tests/support/endpointProbes";
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+import { jsonResponse } from "../../tests/support/http";
 
 describe("foundation endpoint helpers", () => {
   const fetchMock = vi.fn();

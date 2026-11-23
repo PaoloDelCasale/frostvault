@@ -6,9 +6,9 @@ import { resetApiClientForTests } from "@/api";
 import {
   createVaultAccessFetch,
   defaultPolicy,
-  jsonResponse,
   renderVaultAccess,
 } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 describe("VaultSettingsPanel — per-Vault local release", () => {
   beforeEach(() => resetApiClientForTests());

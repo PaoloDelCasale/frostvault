@@ -1,16 +1,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type GeneralVault } from "@/api";
+import { configureApiClient, resetApiClientForTests, type GeneralVault } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { ReconnectVaultDialog } from "@/pages/general/ReconnectVaultDialog";
+import { jsonResponse as json } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 const uuid = "11111111-1111-1111-1111-111111111111";
-function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } }); }
 function vault(sourceRoot: string): GeneralVault {
   return { id: 7, uuid, name: "Photos", lifecycle: "reconnect_required", source_root: sourceRoot, s3_prefix: `vaults/${uuid}/` };
 }
@@ -36,11 +37,9 @@ function setup(target: GeneralVault) {
     throw new Error(`Unexpected request ${url}`);
   });
   configureApiClient({ fetch: fetchMock, csrfToken: "csrf" });
-  render(
-    <ApiQueryProvider client={createAppQueryClient()}><I18nProvider>
-      <ReconnectVaultDialog vault={target} open onOpenChange={() => {}} onNotice={() => {}} onCompleted={async () => {}} />
-    </I18nProvider></ApiQueryProvider>,
-  );
+  renderWithQueryClient(<I18nProvider>
+    <ReconnectVaultDialog vault={target} open onOpenChange={() => {}} onNotice={() => {}} onCompleted={async () => {}} />
+  </I18nProvider>);
   return bodies;
 }
 afterEach(() => { resetApiClientForTests(); vi.restoreAllMocks(); });

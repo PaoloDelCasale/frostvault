@@ -1,17 +1,18 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { RecoveryKitSection } from "@/pages/general/RecoveryKitSection";
+import { jsonResponse as json } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
-function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } }); }
 function renderSection() {
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><RecoveryKitSection /></I18nProvider></ApiQueryProvider>);
+  renderWithQueryClient(<I18nProvider><RecoveryKitSection /></I18nProvider>);
 }
 afterEach(() => { resetApiClientForTests(); vi.restoreAllMocks(); });
 

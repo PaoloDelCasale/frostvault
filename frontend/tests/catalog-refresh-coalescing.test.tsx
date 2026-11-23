@@ -1,11 +1,12 @@
 import { act, cleanup, render } from "@testing-library/react";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useCatalogEvents } from "@/api/useCatalogEvents";
 import type { CatalogEventSourceFactory } from "@/api/catalogEvents";
+import { createTestQueryClient } from "./support/queryClient";
 
 function setup() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient({ defaultOptions: { queries: { retry: false } } });
   const listeners = new Map<string, (event: MessageEvent<string>) => void>();
   const close = vi.fn();
   const createSource: CatalogEventSourceFactory = () => ({ close, onerror: null, addEventListener: (type, listener) => { listeners.set(type, listener); } });

@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiQueryProvider,
-  createAppQueryClient,
   resetApiClientForTests,
 } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
@@ -18,6 +17,7 @@ import type { ShellCapabilities, ShellNavHandlers } from "@/layout/types";
 import { LoginPage } from "@/pages/login/LoginPage";
 import { VaultCreatePage } from "@/pages/vault-create";
 import { ThemeProvider } from "@/theme";
+import { createTestQueryClient } from "./support/queryClient";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,7 +54,7 @@ function renderWithProviders(
     t: (key, params) => translate(catalog, key, params),
     setLocale: async () => undefined,
   };
-  const client = createAppQueryClient({
+  const client = createTestQueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return {

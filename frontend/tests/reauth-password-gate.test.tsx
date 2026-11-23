@@ -15,13 +15,7 @@ import {
 } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { ReauthPasswordGate } from "@/pages/archive/ReauthPasswordGate";
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+import { jsonResponse } from "./support/http";
 
 function renderGate() {
   const messages: Record<string, string> = {

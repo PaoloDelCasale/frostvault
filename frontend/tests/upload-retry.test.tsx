@@ -1,12 +1,14 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, createAppQueryClient, configureApiClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
 import type { BulkUploadAdmissionResponse } from "@/api/types";
 import { translate } from "@/i18n/translate";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 describe("explicit failed upload retry", () => {
   afterEach(() => { resetApiClientForTests(); vi.unstubAllGlobals(); });
@@ -19,7 +21,7 @@ describe("explicit failed upload retry", () => {
       if (url.includes("/api/upload/admissions/") && admission) return jsonResponse(admission);
       return failure ? jsonResponse({ detail: "Protection is suspended" }, 409) : jsonResponse({ item_count: 3, ...(admission ? { admission } : {}) });
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><UploadRetryActions vaultId={vaultId} /></I18nProvider></ApiQueryProvider>);
+    renderWithQueryClient(<I18nProvider><UploadRetryActions vaultId={vaultId} /></I18nProvider>);
     return calls;
   }
   it("offers global retry without a Session-selected Vault or a whole-Vault action", async () => {

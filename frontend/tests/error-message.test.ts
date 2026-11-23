@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, ReauthenticationRedirectError, apiRequest, configureApiClient, resetApiClientForTests } from "@/api";
 import { translate } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 const it_ = loadCatalog("it");
 const en = loadCatalog("en");

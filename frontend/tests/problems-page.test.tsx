@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { ProblemsPage } from "@/pages/general/ProblemsPage";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const locales = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales");
 const en = JSON.parse(readFileSync(path.join(locales, "en.json"), "utf8")) as Record<string, string>;
@@ -23,9 +24,10 @@ function renderPage(problems: () => Response) {
     if (url.startsWith("/api/problems")) return problems();
     throw new Error(`Unexpected request ${url}`);
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <I18nProvider><ProblemsPage vaults={[{ id: 2, name: "Photos" }]} /></I18nProvider>
-  </ApiQueryProvider>);
+  renderWithQueryClient(
+    <I18nProvider><ProblemsPage vaults={[{ id: 2, name: "Photos" }]} /></I18nProvider>,
+    { config: { defaultOptions: { queries: { retry: false } } } },
+  );
 }
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 

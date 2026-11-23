@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { ActiveOperations } from "@/components/ActiveOperations";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 afterEach(resetApiClientForTests);
 describe("active Owner work without a routine notification feed", () => {
   it("preserves high-impact approval and cancellation in immutable Vault scope, excluding routine uploads", async () => {
@@ -16,7 +17,7 @@ describe("active Owner work without a routine notification feed", () => {
       ] });
       return jsonResponse({});
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} /></ApiQueryProvider>);
+    renderWithQueryClient(<ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} />);
     const user = userEvent.setup(); await user.click(await screen.findByRole("button", { name: "ui.approve_restore" }));
     expect(screen.getByText(/essential.approval_cost/)).toHaveTextContent('{"cost":"€20.00","hours":48}');
     await waitFor(() => expect(calls).toContain("/api/recover/approve?vault_id=2"));
@@ -32,7 +33,7 @@ describe("active Owner work without a routine notification feed", () => {
       const older = url.includes("groups_before_id=100");
       return jsonResponse({ groups: [{ id: older ? "older" : "newer", action: "recover", path: older ? "old-folder" : "new-folder", status: "pending_approval", item_count: 30001, completed_count: 0, percent: 0 }], next_groups_before_id: older ? null : 100 });
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /></ApiQueryProvider>);
+    renderWithQueryClient(<ActiveOperations vaultId={2} t={(key) => key} />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "ui.next" }));
     await screen.findByText("action.recover · old-folder");
@@ -49,7 +50,7 @@ describe("active Owner work without a routine notification feed", () => {
       const move = url.includes("action=storage-class");
       return jsonResponse({ groups: [{ id: move ? "move" : "restore", action: move ? "storage-class" : "recover", path: move ? "move-folder" : "restore-folder", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /><ActiveOperations vaultId={2} moves t={(key) => key} /></ApiQueryProvider>);
+    renderWithQueryClient(<><ActiveOperations vaultId={2} t={(key) => key} /><ActiveOperations vaultId={2} moves t={(key) => key} /></>);
     await screen.findByText("move.title · move-folder");
     await screen.findByText("action.recover · restore-folder");
     expect(calls).toContain("/api/jobs?action=storage-class&active_only=true&vault_id=2");
@@ -63,7 +64,7 @@ describe("active Owner work without a routine notification feed", () => {
       ] });
       return jsonResponse({});
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} /></ApiQueryProvider>);
+    renderWithQueryClient(<ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} />);
     const line = await screen.findByText(/^operation\.restoring/);
     expect(line).toHaveTextContent(/recovery\.requested_at\{"time":".+"\} · recovery\.tier\.Standard · recovery\.ready_by\{"time":".+"\}/);
     expect(line).not.toHaveTextContent("%");
@@ -86,7 +87,7 @@ describe("active Owner work without a routine notification feed", () => {
       if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [{ id: "queued", action: "recover", path: "cold/c1.bin", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
       return jsonResponse({});
     }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><ActiveOperations vaultId={2} t={(key) => key} /></ApiQueryProvider>);
+    renderWithQueryClient(<ActiveOperations vaultId={2} t={(key) => key} />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "ui.cancel" }));
     await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();

@@ -2,7 +2,8 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resetApiClientForTests } from "@/api";
-import { createVaultAccessFetch, jsonResponse, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 afterEach(resetApiClientForTests);
 

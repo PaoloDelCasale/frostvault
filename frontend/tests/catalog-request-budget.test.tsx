@@ -1,9 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { createTestQueryClient, renderWithQueryClient } from "./support/queryClient";
 
 // Exercise App's subscription AND the actual mounted FileBrowser/NotificationCenter
 // observers, not just a spy on invalidateQueries (which misses polling fan-out).
@@ -28,11 +30,11 @@ describe("catalog event request budget", () => {
       if (url.startsWith("/api/notifications")) return jsonResponse({ items: [], unread_count: 0 });
       return jsonResponse({ groups: [] });
     }) });
-    const client = createAppQueryClient();
+    const client = createTestQueryClient();
     // Install fake time BEFORE observers schedule polling, otherwise only the
     // event throttle (not existing intervals) would be measured.
     vi.useFakeTimers();
-    render(<ApiQueryProvider client={client}><I18nProvider><App /></I18nProvider></ApiQueryProvider>);
+    renderWithQueryClient(<I18nProvider><App /></I18nProvider>, { client });
     for (let tick = 0; tick < 5; tick++) await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     expect(screen.getByTestId("file-list-empty")).toBeInTheDocument();
     expect(listeners.has("catalog")).toBe(true);

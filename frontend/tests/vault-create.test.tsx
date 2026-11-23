@@ -1,13 +1,15 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultCreatePage } from "@/pages/vault-create";
+import { jsonResponse as json } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const locales = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales");
 const en = JSON.parse(readFileSync(path.join(locales, "en.json"), "utf8")) as Record<string, string>;
@@ -17,7 +19,6 @@ const bucket = (state: "ready" | "failed", error: string | null = null) => ({
   stage: state === "failed" ? "reserved" : null, attempts: state === "failed" ? 1 : 0,
   last_attempt_at: null, error, retention_lock_days: null,
 });
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("plaintext Vault creation", () => {
   const fetchMock = vi.fn();
@@ -32,9 +33,10 @@ describe("plaintext Vault creation", () => {
   afterEach(() => { cleanup(); resetApiClientForTests(); });
 
   function renderPage() {
-    return render(<ApiQueryProvider client={createAppQueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>
-    </ApiQueryProvider>);
+    return renderWithQueryClient(
+      <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>,
+      { config: { defaultOptions: { queries: { retry: false } } } },
+    );
   }
   function requests({ adopt = false, fail = false, messages = en, volumesFail = false, bucketFails = false, retryReady = false } = {}) {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
@@ -210,9 +212,10 @@ describe("a Vault whose bucket is not active yet (#735)", () => {
   }
   async function create() {
     const user = userEvent.setup(vi.isFakeTimers() ? { advanceTimers: vi.advanceTimersByTime } : {});
-    render(<ApiQueryProvider client={createAppQueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>
-    </ApiQueryProvider>);
+    renderWithQueryClient(
+      <I18nProvider><VaultCreatePage displayName="Ada" onNavigate={navigate} /></I18nProvider>,
+      { config: { defaultOptions: { queries: { retry: false } } } },
+    );
     await user.type(await screen.findByRole("textbox", { name: en["ui.vault_create.name"] }), "Photos");
     await user.click(screen.getByRole("button", { name: en["ui.vault_create.submit"] }));
     return user;

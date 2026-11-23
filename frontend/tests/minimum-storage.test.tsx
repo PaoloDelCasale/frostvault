@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resetApiClientForTests } from "@/api";
-import { createVaultAccessFetch, defaultMinimumStorage, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultMinimumStorage, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); document.documentElement.lang = ""; });
 

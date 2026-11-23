@@ -1,11 +1,13 @@
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import type { UploadActivitySummary, UploadThroughput } from "@/api/types";
 import { translate } from "@/i18n/translate";
 import { VaultHeader } from "@/layout/VaultHeader";
 import { expectedFinishText, stoppedText } from "@/lib/throughput";
-import { createVaultAccessFetch, jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { createVaultAccessFetch, loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(resetApiClientForTests);
 const messages = loadCatalog();
@@ -42,9 +44,9 @@ function setup({ paused = false, scanning = true, stopped = null as string | nul
     } }),
     "GET /api/upload-activity": () => jsonResponse({ observed_at: "2026-11-17T16:33:00Z", global: vault, vaults: [vault] }),
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}>
+  renderWithQueryClient(
     <VaultHeader vaultId={3} vaultName="Immich" active="files" t={t} />
-  </ApiQueryProvider>);
+  );
   return finish;
 }
 
