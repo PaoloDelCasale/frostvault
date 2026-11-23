@@ -15,13 +15,11 @@ import asyncio
 import threading
 import time
 from contextlib import ExitStack
-from dataclasses import replace
 from unittest.mock import patch
 
-from app.config import Settings
 from app.services.shutdown import shutdown_state
 from app.services.vaults import VAULT_ROW_SQL
-from tests.postgres import PostgresConnection
+from tests.fixtures import override_settings
 from tests.test_scan_fingerprints import _quiet_scan_patches
 from tests.test_vault_adoption import _AdoptionFixture
 
@@ -38,26 +36,23 @@ class ScanShutdownTests(_AdoptionFixture):
         from app.storage import runtime_status
         created = self._adopt()
         self.addCleanup(runtime_status.pop, int(created["id"]), None)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(
                 f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],),
             ).fetchone())
 
     def _concurrency(self, value: int):
-        return patch(
-            "app.storage._runtime_settings",
-            return_value=replace(Settings(), scan_hash_concurrency=value),
-        )
+        return override_settings(scan_hash_concurrency=value)
 
     def _digests(self, vault_id: int) -> dict[str, str | None]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT path, local_sha256 FROM files WHERE vault_id=%s", (vault_id,),
             ).fetchall()
         return {row["path"]: row["local_sha256"] for row in rows}
 
     def _source_errors(self, vault_id: int) -> list:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT component, last_error FROM vault_component_health"
                 " WHERE vault_id=%s AND last_error IS NOT NULL",

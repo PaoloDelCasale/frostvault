@@ -80,3 +80,15 @@ def run_alembic(identity: Path) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(["alembic", "upgrade", "head"], 1, "", str(error))
         _DATABASES[key] = (database, Path(key).parent)
         return subprocess.CompletedProcess(["alembic", "upgrade", "head"], 0, "", "")
+
+
+def path_alias(database: fixtures.Database, directory: Path) -> Path:
+    """A path under ``directory`` that stands for ``database`` in this module.
+
+    A migrated fixture class keeps its path attribute with this while files
+    that borrow its setUp still open the database by path (#801).
+    """
+    path = Path(directory) / database.name
+    with _LOCK:
+        _DATABASES[_key(path)] = (database, Path(_key(path)).parent)
+    return path
