@@ -87,10 +87,8 @@ def _api_message(request: Request, key: str, **params: Any) -> dict[str, Any]:
 
 
 def _trusted_proxies() -> list[Any]:
-    try:
-        return parse_networks(settings.trusted_proxies)
-    except ValueError:
-        return []
+    # ``validate_settings`` refuses an invalid list before the first request.
+    return parse_networks(settings.trusted_proxies)
 
 
 def _client_ip(request: Request) -> str | None:

@@ -252,7 +252,7 @@ class BreakGlassHttpTests(FrostVaultTestCase):
             ).fetchone()["password_hash"]
 
         client = self._client(LOOPBACK)
-        with patch("app.routes.sign_in.verify_password", return_value=False) as verify:
+        with patch("app.emergency_password.verify_password", return_value=False) as verify:
             response = client.post(
                 "/api/login",
                 json={"username": "admin", "password": "wrong-password"},
@@ -275,7 +275,7 @@ class BreakGlassHttpTests(FrostVaultTestCase):
                 client = self._client(LOOPBACK)
                 # Returning True here proves that the dummy verification result
                 # is never enough to authenticate an ineligible account.
-                with patch("app.routes.sign_in.verify_password", return_value=True) as verify:
+                with patch("app.emergency_password.verify_password", return_value=True) as verify:
                     response = client.post(
                         "/api/login",
                         json={"username": "admin", "password": ADMIN_PASSWORD},
