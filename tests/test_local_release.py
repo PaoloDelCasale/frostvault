@@ -104,9 +104,9 @@ class LocalReleasePolicyTests(unittest.TestCase):
         }
         with (patch("app.services.operation_policies.get_policy", return_value=OperationPolicy(local_release_after_days=90)),
               patch("app.services.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=False)),
-              patch("app.catalog.ArchiveCatalog") as catalog):
+              patch("app.services.job_admission.JobAdmission") as admission):
             self.assertEqual(queue_auto_local_cleanups(connection, vault_id=1), 0)
-            catalog.assert_not_called()
+            admission.assert_not_called()
             self.assertEqual(connection.execute.call_count, 1)  # Only the Vault health gate.
 
     def test_cleanup_preflight_uses_shared_installation_gate(self):

@@ -123,6 +123,7 @@ from .services.shutdown import (
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
 from .services import job_queue
+from .services.job_admission import JobAdmission
 from .services.job_queue import (
     TERMINAL_JOB_STATUSES, JobLeaseLost, JobQueue, job_cancelled, job_priority,
     select_fair_jobs,
@@ -2778,7 +2779,7 @@ def _apply_auto_renames(
     for path in confirmed_paths:
         # A rename the Owner made on disk: system work, never an Owner
         # operation in priority, audit or Activity (#629).
-        job_ids, _total, eligible = catalog.queue_jobs(
+        job_ids, _total, eligible = JobAdmission(connection).queue_jobs(
             vault_id=vault["id"],
             path=path,
             action="rename",
@@ -2919,7 +2920,7 @@ def _identify_new_local_copies(
                 renamed.append(candidate["new_path"])
         summary["confirmed"] = len(renamed)
         for path in renamed:
-            job_ids, _total, _eligible = catalog.queue_jobs(
+            job_ids, _total, _eligible = JobAdmission(connection).queue_jobs(
                 vault_id=vault_id,
                 path=path,
                 action="rename",

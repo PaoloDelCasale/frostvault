@@ -9,6 +9,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.routes.browse import list_files, stats
 from app.services import directory_aggregates as aggregates
 from app.services.protection_states import (
@@ -486,7 +487,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.assertTrue(set_job(job, 'failed'))
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
-        self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
+        JobAdmission(self.catalog.connection).queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
 

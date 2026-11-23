@@ -16,6 +16,7 @@ from watchfiles import Change
 from app import storage
 from app.services import job_queue
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
 from app.services.vaults import VAULT_ROW_SQL
@@ -194,7 +195,7 @@ class WatcherAutomaticUploadTests(WatcherCase):
         with self.db() as connection:
             set_policy(connection, 2, OperationPolicy(auto_upload=False))
             catalog = ArchiveCatalog(connection)
-            manual, _, _ = catalog.queue_jobs(
+            manual, _, _ = JobAdmission(catalog.connection).queue_jobs(
                 vault_id=2, path="manual.jpg", action="upload",
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )

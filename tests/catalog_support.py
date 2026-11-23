@@ -6,13 +6,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from tests import catalog_probe
 
 
 def queue_rename_job(connection: Any, vault_id: int, path: str) -> list[int]:
     """Queue the copy to the renamed file's key, as the scan does after confirming a rename."""
-    job_ids, _total, _eligible = ArchiveCatalog(connection).queue_jobs(
+    job_ids, _total, _eligible = JobAdmission(connection).queue_jobs(
         vault_id=vault_id, path=path, action="rename", requested_at=datetime.now(timezone.utc).isoformat(),
         group_id=uuid.uuid4().hex, is_directory=False, origin="automatic",
     )

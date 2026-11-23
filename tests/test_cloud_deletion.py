@@ -37,6 +37,7 @@ import psycopg
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import cloud_deletion, protection_stop
 from app.services.recovery_kit import record_metadata_restore
 
@@ -133,7 +134,7 @@ class CloudDeletionTests(CloudDeletionFixture):
             results = list(pool.map(request, range(2)))
         self.assertEqual(sum(r is not None for r in results), 1)
         with self.db() as connection:
-            queued, _, _ = ArchiveCatalog(connection).queue_jobs(
+            queued, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path="report.txt", action="recover", requested_at=purge.PAST,
                 group_id="00000000-0000-0000-0000-0000000000c1", is_directory=False)
         self.assertEqual(queued, [])
@@ -176,7 +177,7 @@ class CloudDeletionTests(CloudDeletionFixture):
         status = self.stop("delete")
         self.assertEqual(self.lifecycle(), "stopping")
         with self.db() as connection, self.assertRaises(LookupError):
-            ArchiveCatalog(connection).queue_jobs(
+            JobAdmission(connection).queue_jobs(
                 vault_id=2, path="report.txt", action="upload", requested_at=storage.now_iso(),
                 group_id="00000000-0000-0000-0000-0000000000c2", is_directory=False)
         with self.db() as connection:
