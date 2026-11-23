@@ -23,6 +23,7 @@ from ..config import Settings, is_placeholder, settings
 from ..errors import DomainError
 from ..i18n import DEFAULT_LOCALE, translate
 from . import system_bucket
+from .notifications import enqueue_notification
 
 
 S3_BACKUP_PREFIX = "system/backups/"
@@ -911,8 +912,6 @@ def verification_overview(
 def notify_owner_of_backup_failure(
     connection: Any, *, reason: str, error_message: str
 ) -> None:
-    from .notifications import enqueue_notification
-
     enqueue_notification(
         connection,
         event="metadata_backup_failed",

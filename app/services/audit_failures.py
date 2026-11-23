@@ -13,13 +13,22 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..i18n import translate
 from . import cloud_preflight_gate
-from .notifications import set_problem
+from .notifications import ProblemFamily, set_problem
 
 EVENT = "catalog_audit_failed"
 CLOUD_REQUEST_KEY = "audit.failure.cloud_request"
 UNEXPECTED_KEY = "audit.failure.unexpected"
 RETRY_MIN_SECONDS = 5 * 60
 RETRY_MAX_SECONDS = 60 * 60
+# A failed audit closes with the next successful audit of its Vault (#620), or
+# when the Vault is no longer active and so no longer audited.
+PROBLEM_FAMILY = ProblemFamily(frozenset({EVENT}), """
+    n.event='catalog_audit_failed' AND NOT EXISTS (
+        SELECT 1 FROM vault_component_health h JOIN vaults v ON v.id=h.vault_id
+        WHERE h.vault_id=n.vault_id AND h.component='audit'
+          AND h.last_error IS NOT NULL AND v.lifecycle='active'
+    )
+""")
 
 
 def retry_seconds(failures: int) -> int:

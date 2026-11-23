@@ -6,7 +6,6 @@ is outside replayable DB units; publication retries retain the probe outcome.
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -14,41 +13,13 @@ from botocore.exceptions import ClientError
 from ..i18n import translate
 from . import notifications
 from .s3 import ACCESS_DENIED_CODES, CREDENTIAL_CODES, error_code
-from .s3_preflight import BUCKET_NOT_FOUND_KEY
+from .s3_preflight import remediation_match
 from .database_retry import exception_chain, owned_connection, retry_database_unit
 
 LOCK_ID = 461062
 MAX_REPROBE_SECONDS = 60
 _ready_pid: int | None = None
 AUTH_REMEDIATION = "S3 access was refused. Check AWS credentials and required bucket permissions; Jobs remain queued"
-
-
-# Readiness failures whose stored remediation is the English text of a catalog
-# key. The state row keeps that text; readers localize it per viewer. The text
-# names the bucket ({bucket}): the stored English text gives it back.
-LOCALIZED_REMEDIATION_KEYS = (BUCKET_NOT_FOUND_KEY,)
-_PARAMETER = re.compile(r"\{(bucket)\}")
-_BUCKET_VALUE = r"[A-Za-z0-9._-]+"
-
-
-def _english_pattern(key: str) -> re.Pattern[str]:
-    template = translate(key, locale="en")
-    parts = _PARAMETER.split(template)
-    # Even positions are literal text, odd ones the parameter names.
-    return re.compile("".join(
-        re.escape(part) if index % 2 == 0 else f"(?P<{part}>{_BUCKET_VALUE})"
-        for index, part in enumerate(parts)))
-
-
-def remediation_match(remediation: str | None) -> tuple[str, dict[str, str]] | None:
-    """Catalog key and parameters whose English text is this stored remediation."""
-    if not remediation:
-        return None
-    for key in LOCALIZED_REMEDIATION_KEYS:
-        match = _english_pattern(key).fullmatch(remediation)
-        if match:
-            return key, match.groupdict()
-    return None
 
 
 def remediation_key(remediation: str | None) -> str | None:

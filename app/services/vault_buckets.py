@@ -49,6 +49,7 @@ from ..errors import DomainError, VaultNotFound
 from . import bucket_provisioning as buckets
 from . import s3
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
+from .notifications import ProblemFamily, set_problem
 from .s3_lifecycle_rules import vault_bucket_lifecycle_rules
 
 KEY_LAYOUT = "bucket_root"
@@ -59,6 +60,13 @@ _RESERVED_SLUG = "system"
 _RESERVED_SLUG_PREFIX = "vault-"
 _NAME_ATTEMPTS = 3
 PROBLEM_EVENT = "vault_bucket_failed"
+# A Vault Bucket not created yet (#735) closes once its Vault left
+# provisioning (activation closes it; this is the net).
+PROBLEM_FAMILY = ProblemFamily(frozenset({PROBLEM_EVENT}), """
+    n.event='vault_bucket_failed' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.lifecycle='provisioning'
+    )
+""")
 # While a Vault Bucket is not ready the background loop retries this often.
 RETRY_SECONDS = 15 * 60
 # AWS recommends waiting 15 minutes after enabling versioning before writing
@@ -397,8 +405,6 @@ def _set_stage(database: Callable[[], Any], row: dict[str, Any], stage: str) -> 
 
 def _record_failure(database: Callable[[], Any], row: dict[str, Any],
                     message: str) -> dict[str, Any]:
-    from .notifications import set_problem
-
     with database() as connection:
         connection.execute(
             """UPDATE vault_bucket_provisioning
@@ -416,8 +422,6 @@ def _record_failure(database: Callable[[], Any], row: dict[str, Any],
 
 def _verified(database: Callable[[], Any], row: dict[str, Any]) -> dict[str, Any]:
     """Record the passing verification; the Vault waits for versioning to settle."""
-    from .notifications import set_problem
-
     with database() as connection:
         connection.execute(
             """UPDATE vault_bucket_provisioning p
@@ -443,7 +447,6 @@ def _activate_when_due(database: Callable[[], Any], row: dict[str, Any]) -> dict
 
 def _activate(database: Callable[[], Any], row: dict[str, Any]) -> dict[str, Any]:
     from .audit_events import record_audit_event
-    from .notifications import set_problem
 
     with database() as connection:
         changed = connection.execute(

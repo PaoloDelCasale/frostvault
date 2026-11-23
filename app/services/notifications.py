@@ -11,7 +11,8 @@ import json
 import logging
 import smtplib
 import ssl
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any, Protocol
@@ -21,6 +22,7 @@ from psycopg.types.json import Jsonb
 from ..config import settings
 from ..i18n import (_localized_digits, format_bytes, format_datetime, format_money, has_message,
                     parse_message_params, translate)
+from .s3_preflight import remediation_match
 
 
 # Upload failures beyond GROUP_THRESHOLD per Vault inside GROUP_WINDOW_SECONDS fold
@@ -69,8 +71,6 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
         # stored English text names it too.
         bucket = localized.get("bucket")
         if not bucket:
-            from .cloud_preflight_gate import remediation_match
-
             match = remediation_match(str(localized.get("remediation") or ""))
             bucket = match[1].get("bucket") if match else None
         localized["remediation"] = (
@@ -370,7 +370,7 @@ def enqueue_job_terminal_notification(connection: Any, *, job_id: int) -> int:
     if not recovery and not (job["action"] == "upload" and job["status"] == "failed"):
         return 0
     event = ("recovery_completed" if job["status"] == "completed" else "recovery_failed") if recovery else "job_failed"
-    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as RESOLUTION_SQL
+    RESOLUTION_SQL = _installed_domain().closed_upload_failure_sql
     already_closed = event == "job_failed" and connection.execute(
         f"SELECT 1 FROM jobs original WHERE original.id=%s AND {RESOLUTION_SQL}", (job_id,),
     ).fetchone() is not None
@@ -430,7 +430,7 @@ def _fold_into_failure_group(connection: Any, job: Mapping[str, Any]) -> bool:
     stays idempotent).
     """
     vault_id = int(job["vault_id"])
-    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL
+    CLOSED_UPLOAD_FAILURE_SQL = _installed_domain().closed_upload_failure_sql
     own = connection.execute(
         "SELECT 1 FROM notifications WHERE dedupe_key=%s",
         (f"job:{int(job['id'])}:job_failed",),
@@ -597,6 +597,7 @@ def enqueue_job_terminal_notification_best_effort(
     Returns the enqueue count on success, or ``None`` when the savepoint
     rolled back so a later reconciliation can retry.
     """
+    forget_unit_dirty_marks = _installed_domain().forget_unit_dirty_marks
     savepoint = "job_terminal_notification"
     try:
         connection.execute(f"SAVEPOINT {savepoint}")
@@ -609,7 +610,6 @@ def enqueue_job_terminal_notification_best_effort(
     try:
         enqueued = enqueue_job_terminal_notification(connection, job_id=job_id)
     except Exception as exc:
-        from .directory_aggregates import forget_unit_dirty_marks
         forget_unit_dirty_marks(connection)
         try:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -730,100 +730,58 @@ def set_problem(
     return _row_notification(connection.execute("SELECT * FROM notifications WHERE id=%s", (item["id"],)).fetchone())
 
 
-# Each family of problems closes from the state of its own domain. A family is
-# reconciled only while one of its problems is open, so reading the inbox costs
-# one indexed probe when nothing is open.
-_JOB_FAILED_RESOLUTION = """
-    n.event='job_failed' AND EXISTS (
-        SELECT 1 FROM jobs original WHERE original.id=n.job_id AND {resolution}
-    )
-"""
-_JOB_FAILED_GROUP_RESOLUTION = """
-    n.event='job_failed_group' AND NOT EXISTS (
-        SELECT 1 FROM jobs original
-        WHERE original.vault_id=n.vault_id AND original.action='upload'
-          AND original.status='failed'
-          AND original.updated_at >= (n.message_params->>'since')::timestamptz
-          AND original.updated_at <= COALESCE((n.message_params->>'last')::timestamptz, 'infinity')
-          AND NOT EXISTS (SELECT 1 FROM notifications own
-                          WHERE own.job_id=original.id AND own.event='job_failed')
-          AND NOT {resolution}
-    )
-"""
-# A missing-version problem closes once a listing locates that exact version
-# again (or the version is gone through an authorized cleanup); a Cloud-only
-# Conflict closes once its file no longer holds that version (#593).
-_INCIDENT_RESOLUTION = """
-    (n.event='archive_version_missing' AND starts_with(n.dedupe_key, 'missing:')
-     AND NOT EXISTS (
-        SELECT 1 FROM archive_versions av
-        WHERE av.id::text=substr(n.dedupe_key, 9) AND av.availability='missing'
-    ))
-    OR (n.event='cloud_only_conflict' AND starts_with(n.dedupe_key, 'conflict:')
-     AND NOT EXISTS (
-        SELECT 1 FROM files f
-        WHERE 'conflict:' || f.id::text || ':' || f.held_version_id::text = n.dedupe_key
-          AND f.local_presence='present'
-    ))
-"""
-_FILE_UNREADABLE_RESOLUTION = """
-    n.event='file_unreadable' AND (
-        EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
-                AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
-        OR EXISTS (SELECT 1 FROM files f
-                   WHERE f.vault_id=n.vault_id AND f.path=(n.message_params->>'path')
-                     AND f.local_observed_at>n.created_at)
-    )
-"""
+@dataclass(frozen=True)
+class ProblemFamily:
+    """Problems that close from the state of one domain (#804).
 
-# A failed audit closes with the next successful audit of its Vault (#620), or
-# when the Vault is no longer active and so no longer audited.
-_CATALOG_AUDIT_FAILED_RESOLUTION = """
-    n.event='catalog_audit_failed' AND NOT EXISTS (
-        SELECT 1 FROM vault_component_health h JOIN vaults v ON v.id=h.vault_id
-        WHERE h.vault_id=n.vault_id AND h.component='audit'
-          AND h.last_error IS NOT NULL AND v.lifecycle='active'
-    )
-"""
-
-# A reconciliation Problem names one blocked file (#628): it closes when no
-# file under its key is blocked any more, whichever successful Job cleared the
-# block (publication, an unchanged match, a proof of absence) and even when the
-# Job that cleared it stopped before it could close the Problem itself.
-_UPLOAD_RECONCILIATION_RESOLUTION = """
-    n.event='upload_reconciliation' AND starts_with(n.dedupe_key, 'upload_reconciliation:')
-    AND NOT EXISTS (
-        SELECT 1 FROM files f
-        WHERE f.reconciliation_block IS NOT NULL
-          AND 'upload_reconciliation:' || f.id::text = n.dedupe_key
-    )
-"""
+    The module that opens them declares it: ``events`` are theirs, and
+    ``resolution`` is the SQL predicate over ``notifications n`` that is true
+    once the domain no longer has the problem.
+    """
+    events: frozenset[str]
+    resolution: str
 
 
-# A capped Automatic Duplicate Cleanup (#726) closes with the next run under
-# the cap (``duplicate_cleanup.run_vault``) or once the cleanup is off.
-_DUPLICATE_CLEANUP_RESOLUTION = """
-    n.event='duplicate_cleanup_capped' AND NOT EXISTS (
-        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.duplicate_cleanup_enabled
-    )
-"""
+@dataclass(frozen=True)
+class ProblemDomain:
+    """What the inbox needs from the modules whose Problems it keeps (#804).
+
+    ``families`` are reconciled in this order. ``closed_upload_failure_sql``
+    is the closure proof of a failed upload (alias ``original``), needed when
+    its notice is created. ``forget_unit_dirty_marks`` is called after a
+    rollback to the savepoint of a best-effort notice.
+    """
+    families: tuple[ProblemFamily, ...]
+    closed_upload_failure_sql: str
+    forget_unit_dirty_marks: Callable[[Any], None]
 
 
-# A capped Mirror Cleanup (#771) closes the same way, once its cleanup is off.
-_MIRROR_CLEANUP_RESOLUTION = """
-    n.event='mirror_cleanup_capped' AND NOT EXISTS (
-        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.mirror_cleanup_enabled
-    )
-"""
+_problem_domain: ProblemDomain | None = None
 
 
-# A Vault Bucket not created yet (#735) closes once its Vault left
-# provisioning (``vault_buckets`` closes it on activation; this is the net).
-_VAULT_BUCKET_RESOLUTION = """
-    n.event='vault_bucket_failed' AND NOT EXISTS (
-        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.lifecycle='provisioning'
-    )
-"""
+def install_problem_domain(domain: ProblemDomain) -> None:
+    """Give the inbox its Problem families: ``problem_families.install``.
+
+    The inbox imports none of the modules that open Problems. Nothing is
+    registered as a side effect of importing them either, so the result never
+    depends on which module happened to be loaded first.
+    """
+    seen: set[str] = set()
+    for family in domain.families:
+        if not family.events or not family.resolution.strip():
+            raise ValueError("A Problem family needs its events and its resolution")
+        if family.events & seen:
+            raise ValueError(f"Problem events declared twice: {sorted(family.events & seen)}")
+        seen |= family.events
+    global _problem_domain
+    _problem_domain = domain
+
+
+def _installed_domain() -> ProblemDomain:
+    if _problem_domain is None:
+        raise RuntimeError(
+            "Problem families are not installed: call app.services.problem_families.install()")
+    return _problem_domain
 
 
 # Problems of a stopped Vault that still need the Owner: a failed Vault
@@ -860,19 +818,11 @@ def _vault_stopped(connection: Any, vault_id: int) -> bool:
     return bool(row) and row["lifecycle"] in {"stopping", "tombstone"}
 
 
-def _problem_resolutions() -> dict[frozenset[str], str]:
-    from .upload_failure_problems import CLOSED_UPLOAD_FAILURE_SQL as resolution
-    return {
-        frozenset({"job_failed"}): _JOB_FAILED_RESOLUTION.format(resolution=resolution),
-        frozenset({"job_failed_group"}): _JOB_FAILED_GROUP_RESOLUTION.format(resolution=resolution),
-        frozenset({"archive_version_missing", "cloud_only_conflict"}): _INCIDENT_RESOLUTION,
-        frozenset({"file_unreadable"}): _FILE_UNREADABLE_RESOLUTION,
-        frozenset({"catalog_audit_failed"}): _CATALOG_AUDIT_FAILED_RESOLUTION,
-        frozenset({"upload_reconciliation"}): _UPLOAD_RECONCILIATION_RESOLUTION,
-        frozenset({"duplicate_cleanup_capped"}): _DUPLICATE_CLEANUP_RESOLUTION,
-        frozenset({"mirror_cleanup_capped"}): _MIRROR_CLEANUP_RESOLUTION,
-        frozenset({"vault_bucket_failed"}): _VAULT_BUCKET_RESOLUTION,
-    }
+def _problem_resolutions() -> Sequence[ProblemFamily]:
+    """Each family closes from the state of its own domain. A family is
+    reconciled only while one of its problems is open, so reading the inbox
+    costs one indexed probe when nothing is open."""
+    return _installed_domain().families
 
 
 def reconcile_problem_states(connection: Any) -> None:
@@ -892,8 +842,8 @@ def reconcile_problem_states(connection: Any) -> None:
     if not open_events:
         return
     predicates = [
-        predicate for events, predicate in _problem_resolutions().items()
-        if events & open_events
+        family.resolution for family in _problem_resolutions()
+        if family.events & open_events
     ]
     predicates.append(STOPPED_VAULT_RESOLUTION)
     stamp = _now()

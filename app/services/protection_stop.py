@@ -18,6 +18,7 @@ from ..database import db
 from ..errors import Conflict, NotFound
 from . import cloud_deletion, source_directories
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES
+from .notifications import reconcile_problem_states
 from .audit_events import record_audit_event
 from .bulk_upload_admission import has_pending
 
@@ -145,7 +146,6 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
                        vault_id=vault_id, outcome="requested", cloud_disposition=cloud_disposition,
                        group_id=group_id, reason=reason.strip(), local_data="retained")
     # Monitoring ends with the stop: its Problems close now (#715).
-    from .notifications import reconcile_problem_states
     reconcile_problem_states(connection)
     reconcile_one(connection, vault_id)
     return status(connection, vault_id)

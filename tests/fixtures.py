@@ -217,6 +217,8 @@ def override_settings(**changes: Any) -> Iterator[config.Settings]:
     state (Source Device slots, metrics, runtime status) keeps its own reset.
     """
     from app import config
+    from app.services import problem_families
+    problem_families.install()  # as app.main does; the inbox refuses to reconcile without
     unknown = sorted(set(changes) - {field.name for field in fields(config.Settings)})
     if unknown:
         raise TypeError("not a Settings field: " + ", ".join(unknown))

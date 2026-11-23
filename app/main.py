@@ -28,6 +28,7 @@ from .services.source_layout import (
     validate_nested_mounts_after_identity,
 )
 from .services import vault_relocation as vault_relocation_service
+from .services import problem_families
 from .services import protection_stop as protection_stop_service
 from .services import throughput as throughput_service
 from .services.shutdown import shutdown_state
@@ -50,6 +51,9 @@ from .storage import (
 )
 from .routes import browse, jobs, ops, policy, register_routes, sign_in, storage_plan, vaults
 from .routes.deps import _read_session_cookie, _request_locale
+
+# The inbox learns here how each family of Problems closes (#804).
+problem_families.install()
 
 
 @asynccontextmanager

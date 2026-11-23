@@ -5,12 +5,14 @@ without patching internals.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
 
 from ..config import is_placeholder
+from ..i18n import translate
 from .s3 import CREDENTIAL_CODES, error_code
 
 CheckStatus = Literal["pass", "fail", "warn"]
@@ -74,6 +76,34 @@ _FORBIDDEN_CODES = frozenset({"403", "Forbidden", "AccessDenied"})
 # Likewise a missing bucket answers HeadBucket with a bare 404.
 _NOT_FOUND_CODES = frozenset({"404", "NoSuchBucket", "NotFound"})
 BUCKET_NOT_FOUND_KEY = "cloud_preflight.bucket_not_found"
+
+
+# Readiness failures whose stored remediation is the English text of a catalog
+# key. The state row keeps that text; readers localize it per viewer. The text
+# names the bucket ({bucket}): the stored English text gives it back.
+LOCALIZED_REMEDIATION_KEYS = (BUCKET_NOT_FOUND_KEY,)
+_PARAMETER = re.compile(r"\{(bucket)\}")
+_BUCKET_VALUE = r"[A-Za-z0-9._-]+"
+
+
+def _english_pattern(key: str) -> re.Pattern[str]:
+    template = translate(key, locale="en")
+    parts = _PARAMETER.split(template)
+    # Even positions are literal text, odd ones the parameter names.
+    return re.compile("".join(
+        re.escape(part) if index % 2 == 0 else f"(?P<{part}>{_BUCKET_VALUE})"
+        for index, part in enumerate(parts)))
+
+
+def remediation_match(remediation: str | None) -> tuple[str, dict[str, str]] | None:
+    """Catalog key and parameters whose English text is this stored remediation."""
+    if not remediation:
+        return None
+    for key in LOCALIZED_REMEDIATION_KEYS:
+        match = _english_pattern(key).fullmatch(remediation)
+        if match:
+            return key, match.groupdict()
+    return None
 
 
 def _credential_failure(code: str) -> PreflightCheck:
