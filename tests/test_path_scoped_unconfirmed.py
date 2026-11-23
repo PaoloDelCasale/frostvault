@@ -7,15 +7,11 @@ read one shared rule. Disposable PostgreSQL 16 only.
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.i18n import DEFAULT_LOCALE, translate
 from app.services import directory_aggregates as aggregates
 from app.services.component_health import record_component_health
@@ -25,10 +21,8 @@ from app.services.operation_policies import (
 )
 from app.services.problems import report_problem
 from app.services.source_layout import VaultLocalAccess
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 ONLINE = VaultLocalAccess(True, True, "source", "ok")
 FILES = ("a.txt", "other/d.txt", "priv/b.txt", "priv/secret/c.txt")
@@ -48,15 +42,11 @@ class UnconfirmedScopeRuleTests(unittest.TestCase):
         self.assertEqual(UnconfirmedScope(None).sql("f.path"), ("TRUE", []))
 
 
-class PathScopedDisplayedStateTests(unittest.TestCase):
+class PathScopedDisplayedStateTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = Path(tmp.name) / "catalog.db"
-        self.assertEqual(run_alembic(self.path).returncode, 0)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            seed_vault(connection, source_root="/source")
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, source_root="/source", id=2)
             catalog = ArchiveCatalog(connection)
             for index, name in enumerate(FILES):
                 payload = name.encode()
@@ -74,7 +64,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         return unconfirmed_scope(connection, 2, lifecycle="active", local_operations_allowed=True)
 
     def test_only_the_blocked_path_its_contents_and_ancestors_are_unconfirmed(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             scope = self.scope(connection)
             self.assertEqual(scope.paths, ("priv/secret",))
             catalog = ArchiveCatalog(connection, protection_unconfirmed=scope)
@@ -125,7 +115,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         self.assertEqual(searched_unconfirmed, ["priv/secret/c.txt"])
 
     def test_global_causes_keep_the_whole_vault_unconfirmed(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             record_component_health(connection, vault_id=2, component="cloud", ok=False,
                                     error="listing failed")
             scope = self.scope(connection)
@@ -153,7 +143,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         aggregates.rebuild_vault_directory_aggregates(connection, 2)
 
     def test_excluded_keeps_its_state_in_a_blocked_path(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.add_excluded(connection)
             catalog = ArchiveCatalog(connection, protection_unconfirmed=self.scope(connection))
             summary = catalog.summary(2)
@@ -171,7 +161,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         self.assertEqual(unconfirmed, ["priv/secret/c.txt"])
 
     def test_excluded_keeps_its_state_in_a_whole_unconfirmed_vault(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.add_excluded(connection)
             record_component_health(connection, vault_id=2, component="cloud", ok=False,
                                     error="listing failed")
@@ -193,12 +183,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
     def test_stats_say_how_many_paths_are_unreadable(self) -> None:
         from app.main import stats
 
-        cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
-        with (
-            patch("app.database.settings", cfg),
-            patch("app.main.settings", cfg),
-            patch("app.main.vault_local_access", return_value=ONLINE),
-        ):
+        with patch("app.main.vault_local_access", return_value=ONLINE):
             payload = stats({"id": 2, "source_root": "/source"})
         self.assertEqual(payload["states"], {"protected": 3, "unconfirmed": 1})
         self.assertEqual(payload["runtime"]["unreadable_paths"], 1)
@@ -211,7 +196,7 @@ class PathScopedDisplayedStateTests(unittest.TestCase):
         from app.services import protection_notifications as monitor
 
         with (
-            PostgresConnection(str(self.path)) as connection,
+            self.database.connect() as connection,
             patch("app.services.source_layout.vault_local_access", return_value=ONLINE),
             patch("app.services.metadata_backups._last_verification_attempt_at", None),
         ):

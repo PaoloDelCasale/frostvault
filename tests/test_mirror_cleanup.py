@@ -10,21 +10,15 @@ execution a member back on the server or changed is skipped alone.
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import main, storage
+from app import storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.services import duplicate_cleanup, mirror_cleanup
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import set_vault_plan
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_owner
-from tests.postgres import database_dsn
+from tests.fixtures import create_owner, http_client, override_settings, sign_in
 from tests.test_duplicate_cleanup import DuplicateCleanupFixture
 
 BACKUP = b"ab_20261101.tar.zst bytes"
@@ -369,18 +363,11 @@ class HttpTests(MirrorCleanupFixture):
 
     def setUp(self):
         super().setUp()
-        configured = replace(settings, database_dsn=database_dsn(self.db_path), cookie_secure=False)
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
+        self.enterContext(override_settings(cookie_secure=False))
+        self.client = http_client()
         with self.db() as connection:
-            insert_owner(connection)
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.headers = {"X-CSRF-Token": csrf}
+            create_owner(connection)
+        self.headers = sign_in(self.client, self.database).csrf_headers
         self.url = "/api/vaults/2/mirror-cleanup"
 
     def reauth(self, at: datetime | None = None) -> None:

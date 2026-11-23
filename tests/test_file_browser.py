@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -16,9 +10,8 @@ from app.main import (
     list_files,
     normalize_directory,
 )
+from tests.fixtures import fresh_database, override_settings, seed_vault
 from tests.listing_oracles import build_directory_items, build_job_groups
-from tests.catalog_support import seed_vault
-from tests.test_database import run_alembic
 
 
 class FileBrowserTests(unittest.TestCase):
@@ -225,12 +218,9 @@ class FileBrowserTests(unittest.TestCase):
             normalize_directory("../segreti")
 
     def test_file_browser_reads_the_versioned_catalog(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
-                seed_vault(connection, vault_id=2, name="Docs")
+        with fresh_database() as database:
+            with database.connect() as connection:
+                seed_vault(connection, id=2, name="Docs", source_root="/source")
                 catalog = ArchiveCatalog(connection)
                 file_id = catalog.observe_local_copy(
                     vault_id=2,
@@ -248,10 +238,7 @@ class FileBrowserTests(unittest.TestCase):
                     storage_class="STANDARD",
                     created_at="2026-07-21T10:00:00+00:00",
                 )
-            test_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", test_settings):
+            with override_settings(database_dsn=database.dsn):
                 result = list_files(
                     directory="reports",
                     page=1,

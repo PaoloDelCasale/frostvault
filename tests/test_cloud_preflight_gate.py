@@ -52,7 +52,7 @@ class CloudPreflightPolicyTests(unittest.TestCase):
         job = {'id': 99002, 'action': 'upload', 'status': 'queued', 'retry_count': 7}
         error = ClientError({'Error': {'Code': 'InvalidAccessKeyId', 'Message': 'not for display'},
                              'ResponseMetadata': {'HTTPStatusCode': 403}}, 'HeadObject')
-        with patch.object(storage, '_runtime_settings'), patch.object(storage, '_load_claimed_job_status', return_value={'status': 'queued'}), patch.object(
+        with patch.object(storage, '_load_claimed_job_status', return_value={'status': 'queued'}), patch.object(
             storage, 'process_upload', side_effect=error
         ), patch.object(storage, 'set_job', return_value=True) as update, patch.object(
             storage, 'schedule_upload_retry'
@@ -93,7 +93,7 @@ class CloudPreflightPolicyTests(unittest.TestCase):
                                 ("rename", "process_rename"), ("free-space", "process_free_space"),
                                 ("storage-class", "process_storage_class")):
             job = {"id": 99001, "action": action, "status": "queued", "retry_count": 7}
-            with self.subTest(action=action), patch.object(storage, "_runtime_settings"), patch.object(
+            with self.subTest(action=action), patch.object(
                 storage, "_load_claimed_job_status", return_value={"status": "queued"}
             ), patch.object(storage, handler, side_effect=gate.CloudPreflightBlocked("IAM")), patch.object(
                 storage, "set_job", return_value=True
@@ -141,7 +141,7 @@ class ProbeInProgressTests(unittest.TestCase):
 
     def test_probe_in_progress_still_keeps_jobs_queued(self):
         job = {"id": 99003, "action": "upload", "status": "queued", "retry_count": 2}
-        with patch.object(storage, "_runtime_settings"), patch.object(
+        with patch.object(
             storage, "_load_claimed_job_status", return_value={"status": "queued"}
         ), patch.object(storage, "process_upload", side_effect=gate.CloudPreflightBusy(gate.PROBE_IN_PROGRESS)), \
                 patch.object(storage, "set_job", return_value=True) as update, \

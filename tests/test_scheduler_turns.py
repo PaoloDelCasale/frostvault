@@ -8,8 +8,7 @@ import uuid
 
 from app.catalog import ArchiveCatalog
 from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
-from tests.postgres import PostgresConnection
-from tests.test_job_scheduler import _SchedulerDbMixin
+from tests.test_job_scheduler import SchedulerCase
 
 
 class VaultTurnSelectionTests(unittest.TestCase):
@@ -52,14 +51,14 @@ class VaultTurnSelectionTests(unittest.TestCase):
         self.assertEqual(effective_priority(job, datetime.now(timezone.utc)), job_priority(job))
 
 
-class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
+class DurableVaultTurnTests(SchedulerCase):
     start = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 
     def stamp(self, seconds=0):
         return (self.start + timedelta(seconds=seconds)).isoformat()
 
     def observe(self, seconds=0, excluded=()):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             jobs = catalog.list_claimable_jobs(now=self.stamp(seconds), restore_due_before=self.stamp(seconds),
                                                limit=1, per_vault_limit=1, exclude_job_ids=excluded)
@@ -70,14 +69,14 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             return jobs
 
     def claim(self, job_id, seconds=0, generation=None):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             return ArchiveCatalog(connection).claim_job(
                 job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(seconds),
                 claim_expires_at=self.stamp(seconds + 300), now=self.stamp(seconds),
                 restore_due_before=self.stamp(seconds), scheduler_generation=generation)
 
     def state(self, vault_id=20):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             return connection.execute('SELECT * FROM scheduler_vault_turns WHERE vault_id=%s',
                                       (vault_id,)).fetchone()
 
@@ -91,7 +90,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         for second in range(0, 901, 60):
             # Keep replenishing a real manual queue while giving it service.
             if second:
-                with PostgresConnection(self.path) as connection:
+                with self.database.connect() as connection:
                     connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (manual,))
                 manual = self._insert_upload_job(vault_id=10, path='a.txt')
             self.assertIsNotNone(self.claim(manual, second))
@@ -110,7 +109,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(self.state()['wait_seconds'], 0)
         self.observe(1000)
         self.assertIsNone(self.state()['eligible_since'])  # active service
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (auto,))
         jobs = self.observe(1100)
         self.assertEqual(jobs[0]['scheduler_wait_seconds'], 0)
@@ -121,7 +120,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.auto_job()
         self.observe()
         self.observe(600)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute('UPDATE vaults SET paused=TRUE WHERE id=20')
             connection.execute('UPDATE vaults SET paused=FALSE WHERE id=20')
         self.observe(4000)
@@ -133,7 +132,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         auto = self.auto_job()
         self.observe()
         self.observe(600)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='retrying', run_after=%s WHERE id=%s",
                                (self.stamp(4000), auto))
         self.assertEqual(self.observe(3000), [])
@@ -160,7 +159,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         before = self.state()
         self.assertIsNone(self.claim(auto, 1800, generation=999))
         self.assertEqual(self.state(), before)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute('UPDATE vaults SET paused=TRUE WHERE id=20')
         before = self.state()
         self.assertIsNone(self.claim(auto, 1800, generation=0))
@@ -182,7 +181,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.assertEqual(sum(r is not None for r in results), 1)
         self.assertEqual(self.state()['generation'], 1)
         self.assertEqual(self.state()['wait_seconds'], 0)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute('SELECT count(*) AS n FROM job_leases')
                              .fetchone()['n'], 1)
 
@@ -194,7 +193,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         test = self
 
         def claim_after_writer():
-            with PostgresConnection(test.path) as connection:
+            with test.database.connect() as connection:
                 class ObserveLock:
                     def execute(self, sql, params=()):
                         if 'SELECT generation FROM scheduler_vault_turns' in sql:
@@ -206,7 +205,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
                     restore_due_before=test.stamp(700))
 
         with ThreadPoolExecutor(max_workers=1) as pool:
-            with PostgresConnection(self.path) as writer:
+            with self.database.connect() as writer:
                 writer.execute("SET LOCAL lock_timeout='2s'")
                 writer.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (first,))
                 future = pool.submit(claim_after_writer)
@@ -221,7 +220,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
     def test_contended_purge_member_cannot_split_a_group_or_consume_a_turn(self):
         # Action and origin are immutable: insert the purge group as such.
         group = str(uuid.uuid4())
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("INSERT INTO job_groups(id, vault_id, created_at) VALUES (%s, 20, %s)",
                                (group, self.stamp()))
             connection.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'r')",
@@ -236,13 +235,13 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         before = self.state()
 
         def claim_group():
-            with PostgresConnection(self.path) as connection:
+            with self.database.connect() as connection:
                 return ArchiveCatalog(connection).claim_purge_group(
                     lead_job_id=ids[0], claim_token=str(uuid.uuid4()), claimed_at=self.stamp(900),
                     claim_expires_at=self.stamp(1200), now=self.stamp(900),
                     message='deleting', message_key='job.cloud_purge_deleting')
 
-        with PostgresConnection(self.path) as blocker:
+        with self.database.connect() as blocker:
             blocker.execute('SELECT id FROM jobs WHERE id=%s FOR UPDATE', (ids[1],))
             self.assertEqual(claim_group(), [])
         self.assertEqual(self.state(), before)
@@ -274,7 +273,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertIsNotNone(self.claim(picked['id'], second))
             order.append(picked['vault_id'])
             # Actual idle boundary, not the old test's accumulating active map.
-            with PostgresConnection(self.path) as connection:
+            with self.database.connect() as connection:
                 connection.execute("UPDATE jobs SET status='completed' WHERE id=%s", (picked['id'],))
         self.assertEqual(order, [10, 20, 10, 20])
         self.assertEqual(sum(map(len, ids.values())), 4)
@@ -284,7 +283,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.observe()
         self.observe(1800)
         before = self.state()
-        with PostgresConnection(self.path) as blocker:
+        with self.database.connect() as blocker:
             blocker.execute('SELECT * FROM scheduler_vault_turns WHERE vault_id=20 FOR UPDATE')
             self.assertIsNone(self.claim(auto, 1800, generation=0))
         self.assertEqual(self.state(), before)
@@ -294,7 +293,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self.observe()
         self.observe(1800)
         before = self.state()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             result = ArchiveCatalog(connection).claim_job(
                 job_id=auto, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(1800),
                 claim_expires_at=self.stamp(2100), now=self.stamp(1800),
@@ -302,7 +301,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
             self.assertIsNotNone(result)
             connection.rollback()
         self.assertEqual(self.state(), before)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertIsNone(connection.execute('SELECT token FROM job_leases WHERE job_id=%s', (auto,))
                               .fetchone())
 
@@ -311,7 +310,7 @@ class DurableVaultTurnTests(_SchedulerDbMixin, unittest.TestCase):
         self._insert_upload_job(vault_id=10, path='b.txt')
         auto = self.auto_job()
         self.assertIsNotNone(self.claim(manual))
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             rows = ArchiveCatalog(connection).list_claimable_jobs(
                 now=self.stamp(), restore_due_before=self.stamp(),
                 limit=1, per_vault_limit=1, unserved_only=True)
@@ -393,14 +392,14 @@ class CrossVaultUploadTierTests(unittest.TestCase):
         self.assertEqual([j['id'] for j in select_fair_jobs([auto, manual], limit=2)], [2, 1])
 
 
-class CrossVaultUploadTierDbTests(_SchedulerDbMixin, unittest.TestCase):
+class CrossVaultUploadTierDbTests(SchedulerCase):
     """The catalog windows and lease counts give Vault 20 its share (#618)."""
 
     stamp = '2026-11-13T19:00:00+00:00'
 
     def add_jobs(self, vault_id, count, origin):
         ids = []
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for index in range(count):
                 file_id = catalog.observe_local_copy(
@@ -417,7 +416,7 @@ class CrossVaultUploadTierDbTests(_SchedulerDbMixin, unittest.TestCase):
     def test_freed_slots_go_to_the_automatic_vault_while_a_manual_backlog_runs(self):
         manual = self.add_jobs(10, 40, 'manual')
         automatic = self.add_jobs(20, 20, 'automatic')
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for job_id in manual[:16]:
                 self.assertIsNotNone(catalog.claim_job(
@@ -426,7 +425,7 @@ class CrossVaultUploadTierDbTests(_SchedulerDbMixin, unittest.TestCase):
                     restore_due_before=self.stamp))
             # Eight of Vault 10's Jobs finish: eight slots open.
             connection.execute("UPDATE jobs SET status='completed' WHERE id = ANY(%s)", (manual[:8],))
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             rows = catalog.list_claimable_jobs(now=self.stamp, restore_due_before=self.stamp,
                                                limit=160, per_vault_limit=16)
@@ -443,7 +442,7 @@ class CrossVaultUploadTierDbTests(_SchedulerDbMixin, unittest.TestCase):
                  for action in ('upload', 'recover', 'free-space', 'rename', 'cloud-purge', 'storage-class')
                  for origin in ('manual', 'automatic')]
         values = ', '.join(['(%s, %s)'] * len(pairs))
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 f"SELECT j.action, j.origin, {ArchiveCatalog._SCHEDULING_TIER_SQL} AS base, "
                 f"{ArchiveCatalog._CROSS_VAULT_TIER_SQL} AS cross_vault "

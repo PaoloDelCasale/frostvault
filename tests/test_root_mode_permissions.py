@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import errno
 import os
-import stat
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -28,6 +27,7 @@ from app.runtime_privileges import (
 from app.services import write_access
 from app.services.notifications import _localized_params
 from app.services.problems import report_problem
+from tests.fixtures import override_settings
 
 STATUS = "Name:\tpython\nCapEff:\t{eff}\nCapBnd:\t{eff}\nNoNewPrivs:\t1\n"
 CHOWN_KILL = (1 << 0) | (1 << 5)
@@ -116,7 +116,7 @@ class LocalJobFailureMessageTests(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(storage.shutdown_state, "checkpoint"))
-            stack.enter_context(patch.object(storage, "_runtime_settings", return_value=SimpleNamespace(restore_poll_interval=0)))
+            stack.enter_context(override_settings(restore_poll_interval=0))
             stack.enter_context(patch.object(storage, "_load_claimed_job_status", return_value={"status": "queued"}))
             stack.enter_context(patch.object(storage, "_claim_is_lost", return_value=False))
             stack.enter_context(patch.object(storage, "record_automatic_cleanup_outcome"))

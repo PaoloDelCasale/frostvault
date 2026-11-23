@@ -6,27 +6,22 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import re
-import tempfile
 import threading
 import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import directory_aggregates as aggregates
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
 from tests.stress_profile import stress_file_count
 from tests.upload_support import claimed_job_row, job_row, queue_upload
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 PAYLOAD = b"nested concurrent upload content"
 STAMP = "2026-07-21T10:00:00+00:00"
@@ -115,33 +110,27 @@ class SharedSQLRecorder:
         return self.connection.execute(query, *args, **kwargs)
 
 
-class AggregateDeadlockTests(unittest.TestCase):
+class AggregateDeadlockTests(FrostVaultTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        super().setUp()
+        self.root = self.tmp_path
         self.source = self.root / "source"
         self.source.mkdir()
-        self.path = self.root / "catalog"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
         self.provider = Provider()
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SHOW server_version_num").fetchone()["server_version_num"][:2], "16")
-            insert_owner(connection)
-            seed_vault(connection, vault_id=2, source_root=str(self.source))
+            seed_vault(connection, id=2, source_root=str(self.source))
             from app.services.vault_relocation import enroll_vault_root_identity
             enroll_vault_root_identity(connection, 2, str(self.source))
-        self.enterContext(patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.path))))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
 
     def seed(self, count=1, prefix="0"):
         jobs = []
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for index in range(count):
                 path = f"{prefix}/{index % 8:04d}/{index % 19:04d}/leaf/{index}.bin"
@@ -155,7 +144,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         return jobs
 
     def run_job(self, job_id):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             token = uuid.uuid4().hex
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
@@ -167,7 +156,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         return storage.process_job(job)
 
     def assert_completed(self, count, *, cancelled_count=0):
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             states = connection.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
             failed = connection.execute("SELECT id,status,message FROM jobs WHERE status<>'completed' ORDER BY id LIMIT 16").fetchall()
             expected = {"completed": count}
@@ -210,7 +199,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             raise RuntimeError('simultaneous provider failure')
 
         def upkeep():
-            with PostgresConnection(self.path) as connection:
+            with self.database.connect() as connection:
                 protection_notifications.maintain_notifications(connection,now=datetime.now(timezone.utc))
 
         with patch.object(storage,'process_upload',side_effect=fail), patch.object(
@@ -221,7 +210,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             for future in workers:
                 self.assertTrue(future.result(timeout=30))
             maintenance.result(timeout=30)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT count(*) n FROM jobs WHERE status='failed' AND NOT EXISTS (SELECT 1 FROM job_terminal_notifications o WHERE o.job_id=jobs.id)").fetchone()['n'],16)
             # A burst beyond GROUP_THRESHOLD folds into one per-Vault group (#499).
             singles = connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n']
@@ -253,7 +242,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             with self.subTest(sqlstate=code), patch.object(notifications,'enqueue_job_terminal_notification',side_effect=aborted):
                 self.assertTrue(storage.set_job(jobs[0],'failed','provider refused'))
                 self.assertEqual(len(calls),2)
-            with PostgresConnection(self.path) as connection:
+            with self.database.connect() as connection:
                 self.assertEqual(connection.execute("SELECT count(*) n FROM notifications WHERE event='job_failed'").fetchone()['n'],attempt)
 
     def test_16_workers_256_nested_uploads_with_concurrent_maintenance(self):
@@ -287,7 +276,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         aggregates.process_directory_aggregate_maintenance(vault_id=2)
         self.assertTrue(maintenance_passes)
         self.assert_completed(count)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM directory_aggregate_dirty").fetchone()["n"], 0)
             actual = connection.execute("SELECT * FROM directory_aggregates ORDER BY path").fetchall()
             root = next(row for row in actual if row["path"] == "0")
@@ -309,7 +298,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
         job_id = self.seed()[0]
         token = uuid.uuid4().hex
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertIsNotNone(ArchiveCatalog(connection).claim_job(
                 job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
                 claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
@@ -324,7 +313,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         # A concurrent derived-row writer owns NO KEY UPDATE on the Vault.
         # An ordinary claimed intermediate step must not wait on that lock,
         # whereas terminal/admission-relevant and unclaimed writes still do.
-        with PostgresConnection(self.path) as blocker, \
+        with self.database.connect() as blocker, \
                 patch.object(storage, "db", side_effect=bounded_db), \
                 patch.object(storage, "_claim_token_for", return_value=token) as claim:
             blocker.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
@@ -352,7 +341,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             blocker.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
             with self.assertRaises(psycopg.errors.LockNotAvailable):
                 storage.set_job(job_id, "uploading")
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (job_id,)).fetchone()["status"], "verifying")
 
     def test_551_shared_units_record_complete_callees_without_vault_upgrades(self):
@@ -381,7 +370,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             # require_target, send-started and the read-back evidence.
             self.assertTrue(self.run_job(jobs[0]))
             # The other Upload Verification Mode.
-            with PostgresConnection(self.path) as c:
+            with self.database.connect() as c:
                 c.execute("UPDATE job_uploads SET verification_mode='s3_checksum' WHERE job_id=%s", (jobs[1],))
             self.assertTrue(self.run_job(jobs[1]))
 
@@ -397,7 +386,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
             with patch.object(storage, "upload_file", side_effect=land_then_die):
                 self.assertTrue(self.run_job(jobs[2]))
-            with PostgresConnection(self.path) as c:
+            with self.database.connect() as c:
                 self.assertEqual(c.execute("SELECT status FROM jobs WHERE id=%s", (jobs[2],)).fetchone()["status"], "failed")
                 file_id = c.execute("SELECT file_id FROM jobs WHERE id=%s", (jobs[2],)).fetchone()["file_id"]
                 resumed = queue_upload(c, file_id, total_bytes=len(PAYLOAD), requested_at=STAMP)
@@ -408,7 +397,7 @@ class AggregateDeadlockTests(unittest.TestCase):
             # prepare's refresh of an unsent attempt for a new namespace
             # observation settles the older one, not only its INSERT branch.
             unsent = self.seed(prefix="unsent")[0]
-            with PostgresConnection(self.path) as c:
+            with self.database.connect() as c:
                 claimed = ArchiveCatalog(c).claim_job(
                     job_id=unsent, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
                     claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
@@ -447,7 +436,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_551_shared_catalog_units_overlap_on_one_vault(self):
         jobs = self.seed(2)
-        with PostgresConnection(self.path) as c:
+        with self.database.connect() as c:
             rows = []
             for job_id in jobs:
                 claimed = ArchiveCatalog(c).claim_job(job_id=job_id,
@@ -475,10 +464,10 @@ class AggregateDeadlockTests(unittest.TestCase):
         import psycopg
         from app.services import job_admission, upload_provenance as provenance
         job_id = self.seed()[0]
-        with PostgresConnection(self.path) as c:
+        with self.database.connect() as c:
             job = job_row(c, job_id)
         key = storage._upload_key(job)
-        with PostgresConnection(self.path) as holder:
+        with self.database.connect() as holder:
             provenance.target(holder, job, key=key, provider="fake", shared=True)
             writers = [
                 lambda c: provenance.target(c, job, key=key, provider="fake"),
@@ -488,17 +477,17 @@ class AggregateDeadlockTests(unittest.TestCase):
                   for column in ("lifecycle", "source_root", "root_identity", "paused")],
             ]
             for writer in writers:
-                with self.subTest(writer=writer), PostgresConnection(self.path) as c:
+                with self.subTest(writer=writer), self.database.connect() as c:
                     c.execute("SET LOCAL lock_timeout='200ms'")
                     with self.assertRaises(psycopg.errors.LockNotAvailable):
                         writer(c)
                     c.rollback()
             # The exclusive default is intentional, including final publication.
-            with PostgresConnection(self.path) as c:
+            with self.database.connect() as c:
                 c.execute("SET LOCAL lock_timeout='200ms'")
                 with patch.object(storage, "db", return_value=c), self.assertRaises(psycopg.errors.LockNotAvailable):
                     storage._upload_catalog_unit(job, lambda cat: None)
-        with PostgresConnection(self.path) as c:
+        with self.database.connect() as c:
             job_admission.lock_vault(c, 2)  # available again after shared commit
 
     def test_551_pause_and_cancel_pending_keep_a_leased_upload_and_its_receipt(self):
@@ -508,7 +497,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         sending, release = threading.Event(), threading.Event()
         original = self.provider.upload
         def held_send(*args, **kwargs):
-            with PostgresConnection(self.path) as c:
+            with self.database.connect() as c:
                 intent = provenance.load_for_job(c, running)
                 self.assertTrue(intent.send_started)
             sending.set()
@@ -518,13 +507,13 @@ class AggregateDeadlockTests(unittest.TestCase):
             work = pool.submit(self.run_job, running)
             try:
                 self.assertTrue(sending.wait(15))
-                with PostgresConnection(self.path) as c:
+                with self.database.connect() as c:
                     claim = c.execute("SELECT token FROM job_leases WHERE job_id=%s", (running,)).fetchone()["token"]
                     vault_pause.set_paused(c, vault_id=2, paused=True)
                     self.assertEqual(c.execute("SELECT token FROM job_leases WHERE job_id=%s", (running,)).fetchone()["token"], claim)
                 result = cancel_pending_uploads(PendingUploadCancelAction(path=""), OWNER_REQUEST, user={"id": 1}, vault={"id": 2})
                 self.assertEqual(result["cancelled_count"], 1)
-                with PostgresConnection(self.path) as c:
+                with self.database.connect() as c:
                     self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
                     self.assertEqual(c.execute("SELECT status FROM jobs WHERE id=%s", (pending,)).fetchone()["status"], "cancelled")
                     self.assertIsNone(ArchiveCatalog(c).claim_job(job_id=pending, claim_token=uuid.uuid4().hex,
@@ -534,7 +523,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 release.set()
             self.assertTrue(work.result(timeout=30))
         self.assert_completed(1, cancelled_count=1)
-        with PostgresConnection(self.path) as c:
+        with self.database.connect() as c:
             intent = provenance.load_for_job(c, running)
             self.assertEqual(provenance.receipt(c, intent.id)["VersionId"], self.provider.puts[0][1])
             self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
@@ -561,7 +550,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                     with patch.object(owner, name, fail_once):
                         self.assertTrue(self.run_job(job_id))
                     self.assertGreaterEqual(len(attempts), 2)
-                    with PostgresConnection(self.path) as c:
+                    with self.database.connect() as c:
                         row = c.execute("""SELECT j.status,b.snapshot_id AS job_snapshot,a.snapshot_id,
                             a.send_started_at,a.outcome,av.provider_version_id,av.integrity,
                             s.plaintext_sha256
@@ -588,7 +577,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         for code in ("40P01", "40001"):
             with self.subTest(sqlstate=code):
                 job_id = self.seed(prefix=f"commit-{code}")[0]
-                with PostgresConnection(self.path) as c:
+                with self.database.connect() as c:
                     c.execute(f"CREATE SEQUENCE shared_commit_{code}")
                     c.execute(f"""CREATE FUNCTION shared_commit_{code}() RETURNS trigger LANGUAGE plpgsql AS $$
                         BEGIN IF NEW.send_started_at IS NOT NULL AND nextval('shared_commit_{code}')=1 THEN
@@ -598,7 +587,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                 sends = []
                 original = self.provider.upload
                 def checked_send(*args, **kwargs):
-                    with PostgresConnection(self.path) as c:
+                    with self.database.connect() as c:
                         intent = provenance.load_for_job(c, job_id)
                         self.assertTrue(intent.send_started, "send-started must COMMIT before provider I/O")
                         self.assertEqual(kwargs["metadata"][provenance.TOKEN_KEY], intent.token)
@@ -609,7 +598,7 @@ class AggregateDeadlockTests(unittest.TestCase):
                     self.assertTrue(self.run_job(job_id))
                 self.assertEqual(len(sends), 1)
                 self.assert_completed(len(self.provider.puts))
-                with PostgresConnection(self.path) as c:
+                with self.database.connect() as c:
                     c.execute("DROP TRIGGER shared_send_commit ON upload_attempts")
 
     # #535: a burst of small files on 16 workers. Both bounds are deliberately
@@ -627,9 +616,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         import psycopg
         from app import database
         # Size the pool as production does for OPERATION_CONCURRENCY=16.
-        dsn = database_dsn(self.path)
-        self.enterContext(patch("app.database.settings",
-                                SimpleNamespace(database_dsn=dsn, operation_concurrency=16)))
+        self.enterContext(override_settings(operation_concurrency=16))
         database.close_pools()
         self.addCleanup(database.close_pools)
         count = stress_file_count(self.THROUGHPUT_FILES)
@@ -637,7 +624,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         pending = self.seed(prefix="cancel-pending")[0]
         # The harness claims through its own long-lived connections, opened
         # before counting starts, so every counted connection is FrostVault's.
-        claimers = [PostgresConnection(self.path) for _ in range(16)]
+        claimers = [self.database.connect() for _ in range(16)]
         for claimer in claimers:
             self.addCleanup(claimer.close)
         opened = []
@@ -682,13 +669,13 @@ class AggregateDeadlockTests(unittest.TestCase):
             try:
                 for paused in (True, False):
                     began = time.monotonic()
-                    with PostgresConnection(self.path) as c:
+                    with self.database.connect() as c:
                         c.execute("SET LOCAL lock_timeout='10s'")
                         vault_pause.set_paused(c, vault_id=2, paused=paused)
                     control_times.append(time.monotonic() - began)
                     self.assertLess(control_times[-1], 10, "Pause/resume writer starved behind shared upload steps")
                     if paused:
-                        with PostgresConnection(self.path) as c:
+                        with self.database.connect() as c:
                             self.assertIsNone(ArchiveCatalog(c).claim_job(
                                 job_id=pending, claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
                                 claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
@@ -749,7 +736,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertTrue(maintenance_passes)
         self.assertEqual(len(control_times), 3)
         rate = count / elapsed
-        stats = database._pool_for(dsn).get_stats()
+        stats = database._pool_for(self.database.dsn).get_stats()
         print(f"#535 throughput: {count} small files / 16 workers / "
               f"{elapsed:.1f} s / {rate:.1f} files/s / {len(opened)} new PostgreSQL connections "
               f"/ {stats.get('requests_num', 0)} pooled checkouts / pause,cancel,resume {control_times}")
@@ -775,13 +762,13 @@ class AggregateDeadlockTests(unittest.TestCase):
                 self.assertTrue(self.run_job(jobs[0]))
                 self.assertEqual(len(attempts), 2)
                 self.assert_completed(len(self.provider.puts))
-                with PostgresConnection(self.path) as connection:
+                with self.database.connect() as connection:
                     self.assertIsNone(connection.execute("SELECT id FROM archive_versions WHERE id=%s", (attempts[0],)).fetchone())
                 print(f"#458 forced {code}: process_job completed, two DB attempts, one provider PUT")
 
     def test_real_postgresql_deadlock_victim_retries_through_process_job(self):
         jobs = self.seed()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("CREATE TABLE deadlock_gate(id integer PRIMARY KEY, value integer NOT NULL)")
             connection.execute("INSERT INTO deadlock_gate VALUES (1,0),(2,0)")
         original = ArchiveCatalog.link_job_version
@@ -801,7 +788,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
             def contender():
                 try:
-                    with PostgresConnection(self.path) as other:
+                    with self.database.connect() as other:
                         other.execute("UPDATE deadlock_gate SET value=value+1 WHERE id=1")
                         held.set()
                         deadline = time.monotonic() + 10
@@ -879,7 +866,7 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_commit_time_abort_replays_whole_linkage_transaction(self):
         jobs = self.seed()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             # Sequence increments survive rollback, so exactly the first COMMIT
             # fails, after the mutation callback has returned successfully.
             connection.execute("CREATE SEQUENCE forced_commit_attempt")
@@ -907,7 +894,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertTrue(connections)
         self.assertTrue(all(connection.closed for connection in connections), "COMMIT abort leaked an owned handle")
         self.assert_completed(1)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertGreaterEqual(connection.execute("SELECT last_value FROM forced_commit_attempt").fetchone()["last_value"], 2)
 
     def test_verification_and_post_delete_catalog_abort_replay_only_db(self):
@@ -916,21 +903,21 @@ class AggregateDeadlockTests(unittest.TestCase):
         # earlier Job: the new upload replaces it, and the exact cleanup
         # deletes the superseded version (only a landed write is deletable).
         first = self.seed()[0]
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             job = job_row(connection, first)
         path, key = job["path"], storage._upload_key(job)
         local = self.source / path
         local.write_bytes(b"old")
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
                 size=3, mtime_ns=local.stat().st_mtime_ns, observed_at=STAMP)
         self.assertTrue(self.run_job(first))
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             previous = str(connection.execute("SELECT current_version_id FROM files WHERE id=%s",
                                               (job["file_id"],)).fetchone()["current_version_id"])
         old_version = self.provider.puts[0][1]
         local.write_bytes(PAYLOAD)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
                 size=len(PAYLOAD), mtime_ns=local.stat().st_mtime_ns, observed_at=STAMP)
             jobs = [queue_upload(connection, job["file_id"], total_bytes=len(PAYLOAD), requested_at=STAMP)]
@@ -968,7 +955,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertEqual(len(self.provider.reads), 2, "Verification stream was replayed with DB work")
         self.assertEqual(len(self.provider.deleted), 1, "DB retry replayed an external deletion")
         self.assertEqual(self.provider.deleted[0]["VersionId"], old_version)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["status"], "completed")
             # The superseded version left the catalog with its cleanup.
             self.assertIsNone(connection.execute("SELECT 1 FROM archive_versions WHERE id=%s", (previous,)).fetchone())
@@ -994,7 +981,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         ):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(len(attempts), 2)
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             state = connection.execute("SELECT status,retry_count FROM jobs WHERE id=%s", (jobs[0],)).fetchone()
             self.assertEqual(state, {"status": "retrying", "retry_count": 1})
         self.assertEqual(self.provider.puts, [])
@@ -1013,7 +1000,7 @@ class AggregateDeadlockTests(unittest.TestCase):
         self.assertEqual(len(attempts), DATABASE_RETRY_MAX_ATTEMPTS)
         self.assertEqual(len(self.provider.puts), 1)
         self.assertEqual(self.provider.deleted, [])
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             state = connection.execute("SELECT status,retry_count,archive_version_id FROM jobs WHERE id=%s", (jobs[0],)).fetchone()
         self.assertEqual(state, {"status": "failed", "retry_count": 0, "archive_version_id": None})
         # Persistent adoption after exhaustion/process death belongs to #464;
@@ -1022,9 +1009,9 @@ class AggregateDeadlockTests(unittest.TestCase):
     def test_late_old_timestamp_commit_survives_incremental_and_full_rebuild(self):
         self.seed()
         for increment, full in enumerate((False, True), 1):
-            with PostgresConnection(self.path) as marker:
+            with self.database.connect() as marker:
                 marker.execute("INSERT INTO directory_aggregate_dirty(vault_id,path,marked_at) VALUES (2,'0',%s)", (STAMP,))
-            with self.subTest(full_rebuild=full), PostgresConnection(self.path) as writer:
+            with self.subTest(full_rebuild=full), self.database.connect() as writer:
                 # Change canonical data and mark BEFORE cutoff, but commit only
                 # AFTER the consumer has built its projection from old data.
                 path = writer.execute("SELECT f.path FROM jobs j JOIN files f ON f.id=j.file_id LIMIT 1").fetchone()["path"]
@@ -1037,14 +1024,14 @@ class AggregateDeadlockTests(unittest.TestCase):
                     writer.commit()
                     return original_delete(connection, **kwargs)
 
-                with PostgresConnection(self.path) as reader, patch.object(
+                with self.database.connect() as reader, patch.object(
                     aggregates, "_delete_claimed_dirty_rows", side_effect=commit_late
                 ):
                     if full:
                         aggregates.rebuild_vault_directory_aggregates(reader, 2)
                     else:
                         aggregates.flush_directory_aggregates(reader, vault_id=2)
-                with PostgresConnection(self.path) as reader:
+                with self.database.connect() as reader:
                     remaining = reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall()
                     self.assertIn({"path": "0"}, remaining)
                     aggregates.flush_directory_aggregates(reader, vault_id=2)
@@ -1054,7 +1041,7 @@ class AggregateDeadlockTests(unittest.TestCase):
     def test_folder_rollups_are_read_before_the_vault_row_is_locked(self):
         """#696: a large folder's rollup takes seconds; uploads must not wait on it."""
         self.seed()
-        with PostgresConnection(self.path) as marker:
+        with self.database.connect() as marker:
             aggregates.mark_path_dirty(marker, 2, "0/a.bin")
         original = aggregates._compute_directory_rollup
         computed = []
@@ -1062,19 +1049,19 @@ class AggregateDeadlockTests(unittest.TestCase):
         def compute(connection, vault_id, directory):
             # Another unit of the Vault (a scan batch, an upload) takes the
             # Vault row while the rollup is being read: it does not wait.
-            with PostgresConnection(self.path) as other:
+            with self.database.connect() as other:
                 other.execute("SET LOCAL lock_timeout='250ms'")
                 other.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
             computed.append(directory)
             return original(connection, vault_id, directory)
 
-        with PostgresConnection(self.path) as reader, patch.object(
+        with self.database.connect() as reader, patch.object(
             aggregates, "_compute_directory_rollup", side_effect=compute
         ):
             result = aggregates.flush_directory_aggregates(reader, vault_id=2)
         self.assertEqual(computed, ["0"])
         self.assertEqual(result["rebuilt_directories"], 1)
-        with PostgresConnection(self.path) as reader:
+        with self.database.connect() as reader:
             self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [])
             row = reader.execute(
                 "SELECT item_count FROM directory_aggregates WHERE vault_id=2 AND path='0'"
@@ -1083,24 +1070,24 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_a_write_committed_while_a_rollup_is_read_refreshes_it_next_flush(self):
         self.seed()
-        with PostgresConnection(self.path) as marker:
+        with self.database.connect() as marker:
             aggregates.mark_path_dirty(marker, 2, "0/a.bin")
         original = aggregates._compute_directory_rollup
 
         def compute(connection, vault_id, directory):
             rollup = original(connection, vault_id, directory)
             # Committed after the read, before the flush writes and locks.
-            with PostgresConnection(self.path) as writer:
+            with self.database.connect() as writer:
                 aggregates.lock_vaults_in_order(writer, [2])
                 writer.execute("UPDATE files SET local_size=local_size+1")
                 aggregates.mark_path_dirty(writer, 2, "0/a.bin")
             return rollup
 
-        with PostgresConnection(self.path) as reader, patch.object(
+        with self.database.connect() as reader, patch.object(
             aggregates, "_compute_directory_rollup", side_effect=compute
         ):
             aggregates.flush_directory_aggregates(reader, vault_id=2)
-        with PostgresConnection(self.path) as reader:
+        with self.database.connect() as reader:
             self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
             aggregates.flush_directory_aggregates(reader, vault_id=2)
             row = reader.execute(
@@ -1110,27 +1097,27 @@ class AggregateDeadlockTests(unittest.TestCase):
 
     def test_writer_does_not_wait_for_consumer_deleting_same_path(self):
         self.seed()
-        with PostgresConnection(self.path) as marker:
+        with self.database.connect() as marker:
             aggregates.mark_path_dirty(marker, 2, "0/a.bin")
-        with PostgresConnection(self.path) as consumer:
+        with self.database.connect() as consumer:
             aggregates.flush_directory_aggregates(consumer, vault_id=2)
             # Consumer holds the DELETE locks, but no writer targets those row
             # identities anymore. The old shared-key upsert times out here.
-            with PostgresConnection(self.path) as writer:
+            with self.database.connect() as writer:
                 writer.execute("SET LOCAL lock_timeout='250ms'")
                 aggregates.mark_path_dirty(writer, 2, "0/b.bin")
-        with PostgresConnection(self.path) as reader:
+        with self.database.connect() as reader:
             self.assertEqual(reader.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
             aggregates.flush_directory_aggregates(reader, vault_id=2)
 
     def test_same_connection_rollback_does_not_suppress_durable_mark(self):
         self.seed()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             aggregates.mark_path_dirty(connection, 2, "0/a.bin")
             connection.rollback()
             aggregates.mark_path_dirty(connection, 2, "0/b.bin")
             connection.commit()
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT path FROM directory_aggregate_dirty").fetchall(), [{"path": "0"}])
 
 

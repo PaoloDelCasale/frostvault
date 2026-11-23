@@ -12,14 +12,13 @@ The rename destination under the Vault namespace (former
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
-from types import SimpleNamespace
 from unittest.mock import patch
 
 # Windows test hosts lack the Linux open flags imported by vault decommission.
@@ -36,8 +35,6 @@ from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.storage import expected_cloud_key, process_jobs_once
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
 
 
 class S3DestinationTests(unittest.TestCase):
@@ -59,7 +56,7 @@ class S3DestinationTests(unittest.TestCase):
             expected_cloud_key("../outside.txt", "vaults/11111111-1111-1111-1111-111111111111")
 
 
-class S3UploadPrefixTests(unittest.TestCase):
+class S3UploadPrefixTests(FrostVaultTestCase):
     def test_upload_and_read_back_use_vault_prefix_matching_head_object(self) -> None:
         prefix = "vaults/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         relative_path = "reports/q1.txt"
@@ -73,13 +70,9 @@ class S3UploadPrefixTests(unittest.TestCase):
             target = source / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(payload)
-            database_path = root / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-            with PostgresConnection(str(database_path)) as connection:
-                insert_owner(connection)
-                insert_vault(connection, id=2, source_root=str(source),
+            with self.database.connect() as connection:
+                seed_vault(connection, id=2, source_root=str(source),
                              bucket="example-bucket", uuid=prefix.removeprefix("vaults/"))
                 from app.services.vault_relocation import enroll_vault_root_identity
                 enroll_vault_root_identity(connection, 2, str(source))
@@ -106,37 +99,29 @@ class S3UploadPrefixTests(unittest.TestCase):
                 kwargs["on_chunk"](payload)
                 return len(payload)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
-                operation_concurrency=1,
-                restore_poll_interval=900,
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs(relative_path, "upload", 2)
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    mock_sdk_upload( side_effect=fake_upload),
-                    mock_sdk_read( side_effect=fake_read),
-                    patch(
-                        "app.storage.s3_client",
-                        return_value=VersionedS3Stub(
-                            version_bytes=payload,
-                            head_object=lambda **kwargs: (
-                                head_keys.append(kwargs["Key"])
-                                or {
-                                    "VersionId": "s3-version-1",
-                                    "ContentLength": len(payload),
-                                    "StorageClass": "STANDARD",
-                                    "ETag": '"etag"',
-                                }
-                            )
-                        ),
+            queue_jobs(relative_path, "upload", 2)
+            with (
+                override_settings(operation_concurrency=1, restore_poll_interval=900),
+                patch("app.storage.validate_cloud_vault"),
+                mock_sdk_upload( side_effect=fake_upload),
+                mock_sdk_read( side_effect=fake_read),
+                patch(
+                    "app.storage.s3_client",
+                    return_value=VersionedS3Stub(
+                        version_bytes=payload,
+                        head_object=lambda **kwargs: (
+                            head_keys.append(kwargs["Key"])
+                            or {
+                                "VersionId": "s3-version-1",
+                                "ContentLength": len(payload),
+                                "StorageClass": "STANDARD",
+                                "ETag": '"etag"',
+                            }
+                        )
                     ),
-                ):
-                    process_jobs_once()
+                ),
+            ):
+                process_jobs_once()
 
             upload_destinations = [
                 call[2] for call in transfer_calls if call[:1] == ("upload",)

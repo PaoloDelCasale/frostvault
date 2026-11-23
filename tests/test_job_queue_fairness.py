@@ -7,10 +7,8 @@ classification) need no database.
 from __future__ import annotations
 
 import os
-import tempfile
 import unittest
 import uuid
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,12 +19,9 @@ from watchfiles import Change
 
 from app import main, storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.services import health, notifications, vault_relocation
 from app.services.operation_policies import queue_auto_uploads
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 
 class QueueStallDetectorTests(unittest.TestCase):
@@ -89,30 +84,26 @@ class DeferralAndClassificationTests(unittest.TestCase):
         self.assertFalse(storage._is_source_removal_error(RuntimeError("other")))
 
 
-class QueueFixture(unittest.TestCase):
+class QueueFixture(FrostVaultTestCase):
     """Two Vaults on the shared simulated clock (copied from the #423 fixture)."""
 
     def setUp(self):
         storage._deferred_jobs.clear()
         self.addCleanup(storage._deferred_jobs.clear)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
-        self.database = self.base / "catalog"
-        migrated = run_alembic(self.database)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
+        self.enterContext(override_settings(operation_concurrency=1, restore_poll_interval=900))
+        self.base = self.tmp_path
         self.start = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
         self.clock = self.start
         self.access = SimpleNamespace(local_operations_allowed=True, volume_alias=None, volume_health="healthy")
         self.roots: dict[int, Path] = {}
         self.vaults: dict[int, dict] = {}
         with self.db() as connection:
-            insert_owner(connection)
             for vault_id, slug in ((2, "photos"), (3, "docs")):
                 root = self.base / slug
                 root.mkdir()
                 self.roots[vault_id] = root
-                insert_vault(
+                seed_vault(
                     connection, id=vault_id, name=slug.title(), source_root=str(root),
                     bucket="test-bucket",
                     root_identity=vault_relocation.root_identity(str(root)),
@@ -131,8 +122,6 @@ class QueueFixture(unittest.TestCase):
         for patcher in (
             patch("app.storage.runtime_status", {}),
             patch("app.services.operation_policies.datetime", Clock),
-            patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.database))),
-            patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
             # Per-Vault operation policies are not in the v0.6 baseline yet.
@@ -142,7 +131,7 @@ class QueueFixture(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def db(self):
-        return PostgresConnection(self.database)
+        return self.database.connect()
 
     def advance(self, seconds):
         self.clock += timedelta(seconds=seconds)
@@ -829,17 +818,8 @@ class FailureGroupingTests(QueueFixture):
 class CancelPendingHttpTests(QueueFixture):
     def setUp(self):
         super().setUp()
-        configured = replace(settings, database_dsn=database_dsn(str(self.database)), cookie_secure=False)
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
-        with self.db() as connection:
-            token = create_session(connection, auth_method="oidc")
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.headers = {"X-CSRF-Token": csrf}
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
         for name in ("album/a.jpg", "album/b.jpg", "other/c.jpg"):
             self.write(2, name)
         self.write(3, "d.txt")

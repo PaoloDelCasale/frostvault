@@ -1,23 +1,16 @@
 """Deployment-owned SMTP adapters and unchanged event routing (#414)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection
-
 import socket
-import tempfile
 import threading
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-from app.config import settings
 
 from app.services import notifications
 from app.storage import _deliver_notifications_once, set_job
 from tests import service_probes
-from tests.owner_fixtures import insert_job, insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
+from tests.owner_fixtures import insert_job
 
 
 class _SmtpRecorder(threading.Thread):
@@ -84,38 +77,28 @@ class _SmtpRecorder(threading.Thread):
         self.join(timeout=2)
 
 
-class OutboundDeliveryClientTests(unittest.TestCase):
+class OutboundDeliveryClientTests(FrostVaultTestCase):
+    settings_overrides = {
+        "smtp_host": "127.0.0.1",
+        "smtp_port": 9,
+        "smtp_from_address": "frostvault@example.com",
+        "smtp_to_address": "ops@example.com",
+        "smtp_use_tls": False,
+        "smtp_username": "",
+        "smtp_password": "",
+    }
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "notify.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.email_settings = replace(
-            settings,
-            smtp_host="127.0.0.1",
-            smtp_port=9,
-            smtp_from_address="frostvault@example.com",
-            smtp_to_address="ops@example.com",
-            smtp_use_tls=False,
-            smtp_username="",
-            smtp_password="",
-        )
-        patcher = patch.object(notifications, "settings", self.email_settings)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            insert_vault(connection, id=2)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2)
             self.job_id = insert_job(connection, vault_id=2, status="uploading")
 
     def test_smtp_adapter_delivers_to_env_recipient_not_login_address(self) -> None:
         smtp = _SmtpRecorder()
         smtp.start()
         self.addCleanup(smtp.stop)
-        with patch.object(
-            notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
-        ), PostgresConnection(str(self.path)) as connection:
+        with override_settings(smtp_port=smtp.port), self.database.connect() as connection:
             notifications.enqueue_notification(
                 connection, vault_id=2, event="job_failed",
                 title="Upload failed", body="AccessDenied", job_id=self.job_id,
@@ -135,16 +118,16 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.assertNotIn("To: owner@example.com", smtp.messages[0])
 
     def test_only_terminal_upload_failure_not_routine_success_uses_email(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             # A terminal Job never runs again: each outcome ends its own Job.
             jobs = {"completed": self.job_id,
                     "failed": insert_job(connection, vault_id=2, path="b.txt", status="uploading")}
         for status, job_id in jobs.items():
             with self.subTest(status=status), patch(
-                "app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))
+                "app.storage.db", side_effect=lambda: self.database.connect()
             ):
                 self.assertTrue(set_job(job_id, status, "result"))
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT n.event, d.channel FROM notification_deliveries d "
                 "JOIN notifications n ON n.id=d.notification_id"
@@ -153,7 +136,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
             self.assertEqual(len(notifications.list_in_app_notifications(connection)), 1)
 
     def test_existing_incidents_reach_both_channels_once(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             incident = {"id": 1, "vault_id": 2, "path": "a.txt"}
             self.assertEqual(service_probes.enqueue_archive_version_missing(
                 connection, incident=incident), 1)
@@ -170,9 +153,8 @@ class OutboundDeliveryClientTests(unittest.TestCase):
 
     def test_missing_or_partial_email_configuration_leaves_inbox_working(self) -> None:
         for field in ("smtp_host", "smtp_from_address", "smtp_to_address"):
-            with self.subTest(field=field), patch.object(
-                notifications, "settings", replace(self.email_settings, **{field: " "})
-            ), PostgresConnection(str(self.path)) as connection:
+            with self.subTest(field=field), override_settings(**{field: " "}), \
+                    self.database.connect() as connection:
                 self.assertIsNone(notifications.production_smtp_client())
                 notifications.set_problem(
                     connection, key=f"blocked:{field}", event="protection_blocked",
@@ -187,18 +169,16 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         smtp = _SmtpRecorder()
         smtp.start()
         self.addCleanup(smtp.stop)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             notifications.enqueue_notification(
                 connection, event="job_failed", title="failed",
                 channels=("in_app", "email"),
             )
-        with patch.object(
-            notifications, "settings", replace(self.email_settings, smtp_port=smtp.port)
-        ), patch("app.storage.db", side_effect=lambda: PostgresConnection(str(self.path))), patch(
+        with override_settings(smtp_port=smtp.port), patch("app.storage.db", side_effect=lambda: self.database.connect()), patch(
             "app.services.protection_notifications.maintain_notifications"
         ):
             _deliver_notifications_once()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             delivery = connection.execute(
                 "SELECT status, attempt_count FROM notification_deliveries"
             ).fetchone()
@@ -207,7 +187,7 @@ class OutboundDeliveryClientTests(unittest.TestCase):
         self.assertEqual(len(smtp.messages), 1)
 
     def test_retry_backoff_is_in_the_future_and_errors_are_redacted(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             notifications.enqueue_notification(
                 connection, event="job_failed", title="failed",
                 channels=("in_app", "email"),

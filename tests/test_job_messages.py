@@ -7,26 +7,14 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app.config import settings
 from app.catalog import ArchiveCatalog
 
 from app.i18n import LOCALE_COOKIE_NAME, present_job_message
-from app.main import app
-from app.sessions import create_session
 from app.storage import schedule_upload_retry, set_job
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 class PresentJobMessageTests(unittest.TestCase):
@@ -57,16 +45,13 @@ class PresentJobMessageTests(unittest.TestCase):
         )
 
 
-class JobMessagePersistenceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+class JobMessagePersistenceTests(FrostVaultTestCase):
+    owner = None
 
-        with PostgresConnection(str(self.database_path)) as connection:
-            seed_vault(connection, vault_id=2)
+    def setUp(self) -> None:
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, source_root="/source")
             file_id = ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
                 path="a.txt",
@@ -85,22 +70,13 @@ class JobMessagePersistenceTests(unittest.TestCase):
                 (file_id,),
             ).fetchone()["id"]
 
-        self.settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-        )
-        for target in ("app.database.settings", "app.storage.settings"):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
     def test_set_job_stores_message_key_and_english_fallback(self) -> None:
         set_job(
             self.job_id,
             "completed",
             message_key="job.upload_verified",
         )
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT status, message, message_key, message_params FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -123,7 +99,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
         ):
             set_job(self.job_id, "completed", message_key="job.upload_verified")
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -136,7 +112,7 @@ class JobMessagePersistenceTests(unittest.TestCase):
             message_params={"error": "SlowDown"},
             retry_count=1,
         )
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT status, message, message_key, message_params FROM jobs WHERE id=%s",
                 (self.job_id,),
@@ -147,19 +123,16 @@ class JobMessagePersistenceTests(unittest.TestCase):
         self.assertEqual(row["message_params"], {"error": "SlowDown"})
 
 
-class JobMessageHttpTests(unittest.TestCase):
+class JobHttpFixture(FrostVaultTestCase):
+    """The signed-in Owner with one Vault and one completed upload, and no tests."""
+
     PASSWORD = "correct horse battery staple"
+    owner = {"password": PASSWORD}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, password=self.PASSWORD)
-            vault_id = insert_vault(connection, name="Docs", source_root="/source")["id"]
+        super().setUp()
+        with self.database.connect() as connection:
+            vault_id = seed_vault(connection, name="Docs", source_root="/source")["id"]
             file_id = ArchiveCatalog(connection).observe_local_copy(
                 vault_id=vault_id,
                 path="a.txt",
@@ -184,30 +157,11 @@ class JobMessageHttpTests(unittest.TestCase):
             self.vault_id = vault_id
             self.file_id = file_id
 
-        self.settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        self.client = self.http_client()
+        self.sign_in()
 
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
-        with PostgresConnection(str(self.database_path)) as connection:
-            raw = create_session(
-                connection,
-                ip="127.0.0.1",
-                user_agent="test",
-                auth_method="oidc",
-            )
-        self.client.cookies.set(self.settings.session_cookie_name, raw)
 
+class JobMessageHttpTests(JobHttpFixture):
     def test_jobs_api_localizes_message_for_locale_cookie(self) -> None:
         self.client.cookies.set(LOCALE_COOKIE_NAME, "it")
         response = self.client.get("/api/jobs")

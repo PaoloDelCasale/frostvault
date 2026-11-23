@@ -1,17 +1,14 @@
 """Directory listing scale + durable aggregates (issue #229)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
+
+import psycopg
 
 from app.catalog import ArchiveCatalog
 
@@ -20,20 +17,20 @@ from app.services import directory_aggregates as aggregates
 from tests.listing_oracles import build_directory_items
 from app.services import metrics as metrics_service
 from app.services.vaults import VAULT_ROW_SQL
-from tests.catalog_support import fingerprint, protect, seed_vault
-from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 def _seed_vault(
-    connection: PostgresConnection,
+    connection: psycopg.Connection,
     vault_id: int = 2,
     *,
     name: str | None = None,
 ) -> None:
     seed_vault(
         connection,
-        vault_id=vault_id,
+        id=vault_id,
         name=name or ("Docs" if vault_id == 2 else f"Vault {vault_id}"),
         source_root="/source" if vault_id == 2 else f"/source-{vault_id}",
     )
@@ -67,7 +64,7 @@ def _directory_scale_file_count() -> int:
 
 
 def _bulk_local_files(
-    connection: PostgresConnection,
+    connection: psycopg.Connection,
     *,
     vault_id: int,
     paths_and_sizes: list[tuple[str, int]],
@@ -94,24 +91,22 @@ def _bulk_local_files(
     connection.execute("ANALYZE files")
 
 
-class DirectoryScaleTests(unittest.TestCase):
+class DirectoryScaleTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
         # Request-path scheduling must not spawn background rebuild threads in
         # unit tests (they race the shared PostgreSQL fixture connection).
         aggregates.set_maintenance_scheduling_enabled(False)
-        self._tmp = tempfile.TemporaryDirectory()
-        self.database_path = Path(self._tmp.name) / "catalog.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.database_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
-        self._tmp.cleanup()
         aggregates.set_maintenance_scheduling_enabled(True)
 
     def test_migration_creates_directory_aggregate_tables(self) -> None:
@@ -382,11 +377,7 @@ class DirectoryScaleTests(unittest.TestCase):
         # HTTP seam also stays bounded. Release this connection's write lock
         # first so list_files can open its own PostgreSQL handle.
         self.connection.commit()
-        test_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(self.database_path)),
-        )
-        with patch("app.database.settings", test_settings):
-            result = list_files(directory="", page=1, page_size=100, vault={"id": 2})
+        result = list_files(directory="", page=1, page_size=100, vault={"id": 2})
         self.assertEqual(result["total"], 4)
         self.assertEqual(len(result["items"]), 4)
 
@@ -749,24 +740,22 @@ class DirectoryScaleTests(unittest.TestCase):
         self.assertEqual(int(dirty), 0)
 
 
-class DirectoryAggregateInvalidationTests(unittest.TestCase):
+class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
+    owner = None
+
     """Direct catalog writers must invalidate aggregate ancestors."""
 
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
         aggregates.set_maintenance_scheduling_enabled(False)
-        self._tmp = tempfile.TemporaryDirectory()
-        self.database_path = Path(self._tmp.name) / "catalog.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.database_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
-        self._tmp.cleanup()
         aggregates.set_maintenance_scheduling_enabled(True)
 
     def _seed_both_file(self, path: str = "photos/shot.jpg") -> str:
@@ -1252,7 +1241,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
         self.connection.commit()
 
         # Restart recovery: a fresh connection still sees durable dirty rows.
-        with PostgresConnection(str(self.database_path)) as other:
+        with self.database.connect() as other:
             dirty = {
                 row["path"]
                 for row in other.execute(
@@ -1263,7 +1252,7 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             aggregates.flush_directory_aggregates(other, vault_id=2)
             other.commit()
 
-        with PostgresConnection(str(self.database_path)) as verify:
+        with self.database.connect() as verify:
             catalog = ArchiveCatalog(verify)
             names = {
                 item["name"] for item in catalog.list_files_page(2)["items"]
@@ -1272,25 +1261,21 @@ class DirectoryAggregateInvalidationTests(unittest.TestCase):
             self.assertNotIn("persist-old", names)
 
 
-class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
-    """Per-Vault single-flight across global sweeps and targeted workers."""
+class MaintenanceFixture(FrostVaultTestCase):
+    """Two Vaults with the maintenance pass enabled, and no tests."""
+
+    owner = None
 
     def setUp(self) -> None:
         metrics_service.reset_for_tests()
         aggregates.reset_maintenance_runtime_for_tests()
         aggregates.set_maintenance_scheduling_enabled(True)
-        self._tmp = tempfile.TemporaryDirectory()
-        self.database_path = Path(self._tmp.name) / "catalog.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.database_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         _seed_vault(self.connection, 3)
         self.catalog = ArchiveCatalog(self.connection)
-        self._db_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(self.database_path)),
-        )
 
     def tearDown(self) -> None:
         # Stop further pending drains, then join any worker already started so
@@ -1302,7 +1287,6 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
             worker.join(timeout=5)
         aggregates.reset_maintenance_runtime_for_tests()
         self.connection.__exit__(None, None, None)
-        self._tmp.cleanup()
         aggregates.set_maintenance_scheduling_enabled(True)
 
     def _seed_dirty_vault(self, vault_id: int, path: str) -> None:
@@ -1317,8 +1301,12 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
         # Leave durable dirty work for maintenance (no flush).
         self.connection.commit()
 
-    def _open_db(self) -> PostgresConnection:
-        return PostgresConnection(str(self.database_path))
+    def _open_db(self) -> psycopg.Connection:
+        return self.database.connect()
+
+
+class DirectoryAggregateMaintenanceSingleFlightTests(MaintenanceFixture):
+    """Per-Vault single-flight across global sweeps and targeted workers."""
 
     def _drain_maintenance_workers(self) -> None:
         """Join inflight workers; suppress further pending reschedules."""
@@ -1349,7 +1337,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 self.assertTrue(release.wait(timeout=5), "release timed out")
             return original_flush(connection, vault_id=vault_id)
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=gated_flush
         ):
             global_thread = threading.Thread(
@@ -1397,7 +1385,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 self.assertTrue(release.wait(timeout=5), "release timed out")
             return original_flush(connection, vault_id=vault_id)
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=gated_flush
         ):
             targeted_thread = threading.Thread(
@@ -1509,7 +1497,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
             follow_up_starts.set()
             # No-op body: only count dispatch coalescing.
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=hold_flush
         ), patch.object(
             aggregates, "_run_scheduled_maintenance", side_effect=track_follow_up
@@ -1584,7 +1572,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 runs.append(vault_id)
             return original_run(vault_id=vault_id)
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=gated_flush
         ), patch.object(
             aggregates, "_run_scheduled_maintenance", side_effect=tracking_run
@@ -1648,7 +1636,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 runs.append(vault_id)
             return original_run(vault_id=vault_id)
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=gated_flush
         ), patch.object(
             aggregates, "_run_scheduled_maintenance", side_effect=tracking_run
@@ -1780,7 +1768,7 @@ class DirectoryAggregateMaintenanceSingleFlightTests(unittest.TestCase):
                 "invalidate": list(invalidate),
             }
 
-        with patch("app.database.settings", self._db_settings), patch.object(
+        with patch.object(
             aggregates, "flush_directory_aggregates", side_effect=gated_flush
         ), patch(
             "app.services.catalog_events.record_catalog_revision",
@@ -1816,13 +1804,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class DirectoryAggregateMaintenanceLockTests(unittest.TestCase):
+class DirectoryAggregateMaintenanceLockTests(MaintenanceFixture):
     """The maintenance pass computes no rollup with the Vault row held (#707)."""
-
-    setUp = DirectoryAggregateMaintenanceSingleFlightTests.setUp
-    tearDown = DirectoryAggregateMaintenanceSingleFlightTests.tearDown
-    _seed_dirty_vault = DirectoryAggregateMaintenanceSingleFlightTests._seed_dirty_vault
-    _open_db = DirectoryAggregateMaintenanceSingleFlightTests._open_db
 
     def test_rollups_run_serial_and_before_the_vault_row_is_taken(self) -> None:
         self._seed_dirty_vault(2, "early/a.bin")
@@ -1849,8 +1832,7 @@ class DirectoryAggregateMaintenanceLockTests(unittest.TestCase):
             rollups.append((directory, state["locked"], next(iter(parallel.values()))))
             return original_rollup(connection, vault_id, directory)
 
-        with patch("app.database.settings", self._db_settings), \
-                patch.object(aggregates, "lock_vaults_in_order", side_effect=lock), \
+        with patch.object(aggregates, "lock_vaults_in_order", side_effect=lock), \
                 patch.object(aggregates, "_compute_directory_rollup", side_effect=rollup):
             result = aggregates.process_directory_aggregate_maintenance(vault_id=2, publish=True)
 

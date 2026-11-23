@@ -1,6 +1,6 @@
 """Every write path of the Class Entry (``storage_class_since``, #731).
 
-Real PostgreSQL 16 (disposable fixture databases, ``tests.postgres``); S3 is a
+Real PostgreSQL 16 (disposable fixture databases, ``tests.fixtures``); S3 is a
 listing stub, never AWS. The Class Entry is set when a version is written
 straight into a class (direct PUT here; the copy path is covered in
 ``tests.test_rename_sync``) and changes only when an observation (cloud scan,
@@ -19,24 +19,18 @@ minimum in its duplicate cleanup.
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from app.catalog import ArchiveCatalog
-from app.config import Settings
 from app.services import duplicate_cleanup, minimum_storage, source_layout
 from app.services import vaults as vaults_service
 from app.services.catalog_audit import audit_vault_catalog
 from tests.fake_bucket_s3 import fake_vault_buckets
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn
 from tests.test_cloud_scan_batching import PREFIX, VAULT, VAULT_UUID, _run_scan, _seed_vault
-from tests.test_database import run_alembic
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase
 
 MIB = 1024 ** 2
 DEEP_NOW = {"transitions": [{"days": 0, "storage_class": "DEEP_ARCHIVE"}]}
@@ -48,26 +42,24 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class ClassEntryFixture(unittest.TestCase):
+class ClassEntryFixture(FrostVaultTestCase):
+    owner = None
+
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "class-entry.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
+        super().setUp()
+        with self.database.connect() as connection:
             _seed_vault(connection)
         self.plan(DEEP_NOW)
 
     def plan(self, plan: dict) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET storage_plan=%s::jsonb WHERE id=2", (json.dumps(plan),))
 
     def put(self, path: str, *, storage_class: str | None = "STANDARD", size: int = MIB,
             created_at: datetime = LONG_AGO) -> str:
         """A version uploaded by a direct PUT (``begin_replacement``)."""
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=size, mtime_ns=1,
@@ -79,13 +71,13 @@ class ClassEntryFixture(unittest.TestCase):
 
     def legacy(self, version_id: str, *, storage_class: str | None = "STANDARD") -> None:
         """A version written before #731: no recorded Class Entry."""
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE archive_versions SET storage_class=%s, storage_class_since=NULL WHERE id=%s",
                 (storage_class, version_id))
 
     def version(self, version_id: str) -> dict:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return dict(connection.execute(
                 "SELECT storage_class, storage_class_since, created_at FROM archive_versions WHERE id=%s",
                 (version_id,)).fetchone())
@@ -116,7 +108,7 @@ class CloudScanTests(ClassEntryFixture):
         versions = [{"Key": PREFIX + path, "VersionId": f"{path}-v1", "Size": MIB,
                      "StorageClass": storage_class, "ETag": '"e"',
                      "LastModified": LONG_AGO} for path, storage_class in items]
-        _run_scan(self.path, pages=[{"Versions": versions, "DeleteMarkers": []}])
+        _run_scan(self.database, pages=[{"Versions": versions, "DeleteMarkers": []}])
 
     def test_an_unchanged_class_keeps_its_entry_across_repeated_scans(self) -> None:
         version_id = self.put("a.bin")
@@ -178,7 +170,7 @@ class CloudScanTests(ClassEntryFixture):
 class RestoreCheckTests(ClassEntryFixture):
 
     def check(self, version_id: str, storage_class: str | None, checked_at: datetime) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).update_restore_state(
                 version_id, state=None, expiry=None, checked_at=checked_at.isoformat(),
                 storage_class=storage_class)
@@ -219,7 +211,7 @@ class CatalogAuditTests(ClassEntryFixture):
 
         client = Mock()
         client.get_paginator.return_value = Paginator()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return audit_vault_catalog(connection, dict(VAULT), client)
 
     def test_the_audit_keeps_an_unchanged_class_and_stamps_a_change(self) -> None:
@@ -227,7 +219,7 @@ class CatalogAuditTests(ClassEntryFixture):
         lower = self.put("lower.bin", storage_class="standard")
         changed = self.put("changed.bin")
         unknown = self.put("unknown.bin", storage_class=None)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             # Not available: the audit writes the row although the class is the same.
             connection.execute("UPDATE archive_versions SET availability='unknown' WHERE id=%s", (same,))
         for _ in range(2):
@@ -256,7 +248,7 @@ class VaultSummaryQueryTests(ClassEntryFixture):
 
     def test_versions_with_the_same_class_entry_hour_aggregate_into_one_row(self) -> None:
         ids = [self.put(f"{n}.bin", storage_class="DEEP_ARCHIVE") for n in range(3)]
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for minute, version_id in enumerate(ids):
                 connection.execute(
                     "UPDATE archive_versions SET storage_class_since=%s WHERE id=%s",
@@ -272,7 +264,7 @@ class VaultSummaryQueryTests(ClassEntryFixture):
         recent = utcnow() - timedelta(days=10)
         self.put("replacing.bin", created_at=recent)
         superseded = self.put("superseded.bin", created_at=recent)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             # Neither current nor replacing: a superseded version awaiting cleanup.
             connection.execute(
                 "UPDATE files SET replacing_version_id=NULL WHERE replacing_version_id=%s", (superseded,))
@@ -282,30 +274,21 @@ class VaultSummaryQueryTests(ClassEntryFixture):
         self.assertEqual(classes["STANDARD"]["beyond"], {"count": 1, "bytes": MIB})
 
 
-class NewVaultTests(unittest.TestCase):
+class NewVaultTests(FrostVaultTestCase):
+    owner = {"display_name": "Alice"}
+
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "new-vault.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        sources = Path(self._tmp.name) / "sources"
+        super().setUp()
+        sources = self.tmp_path / "sources"
         sources.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(sources)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection, display_name="Alice")
-        configured = replace(Settings(), database_dsn=database_dsn(str(self.path)))
         fake_vault_buckets(self)
-        for target in ("app.database.settings", "app.services.vaults.settings"):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
     def test_a_new_vault_does_not_wait_for_the_minimum(self) -> None:
         vault = vaults_service.create_vault("Fresh Archive")
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault["id"],)).fetchone()
         self.assertIs(row["duplicate_cleanup_beyond_minimum"], False)
         self.assertIs(duplicate_cleanup._settings(row)["beyond_minimum"], False)

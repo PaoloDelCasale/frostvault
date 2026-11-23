@@ -17,29 +17,28 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
 from app.services.vaults import VAULT_ROW_SQL
-from tests.owner_fixtures import insert_owner, insert_vault
 from tests.catalog_support import fingerprint, protect
+from tests.fixtures import FrostVaultTestCase, create_owner, fresh_database, override_settings, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 
 
-class WatcherAutomaticUploadTests(unittest.TestCase):
+class WatcherCase(FrostVaultTestCase):
+    """One watched Vault on a simulated clock, with its helpers and no tests."""
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
+        # Written with the fixture functions instead of ``super().setUp()``: modules not yet on
+        # ``FrostVaultTestCase`` still borrow this method into plain ``TestCase`` classes (#801).
+        self.database = self.enterContext(fresh_database())
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.root = self.base / "source"
         self.root.mkdir()
-        self.database = self.base / "catalog"
-        migrated = run_alembic(self.database)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.start = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
         self.clock = self.start
         self.access = SimpleNamespace(local_operations_allowed=True, volume_alias=None, volume_health="healthy")
         with self.db() as connection:
-            insert_owner(connection)
-            insert_vault(
+            create_owner(connection)
+            seed_vault(
                 connection, id=2, name="Photos", source_root=str(self.root), bucket="test-bucket",
                 root_identity=vault_relocation.root_identity(str(self.root)),
                 root_identity_version=vault_relocation.ROOT_IDENTITY_VERSION,
@@ -52,13 +51,13 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             def now(cls, tz=None):
                 return outer.clock.astimezone(tz) if tz else outer.clock.replace(tzinfo=None)
 
+        self.settings = self.enterContext(override_settings(
+            database_dsn=self.database.dsn, operation_concurrency=1, restore_poll_interval=900))
         for patcher in (
             # Scan generations are process-local. Do not leak a simulated
             # future generation into unrelated direct cloud-scan fixtures.
             patch("app.storage.runtime_status", {}),
             patch("app.services.operation_policies.datetime", Clock),
-            patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.database))),
-            patch("app.storage.settings", SimpleNamespace(operation_concurrency=1, restore_poll_interval=900)),
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
         ):
@@ -66,7 +65,7 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def db(self):
-        return PostgresConnection(self.database)
+        return self.database.connect()
 
     def leases(self):
         with self.db() as connection:
@@ -107,6 +106,8 @@ class WatcherAutomaticUploadTests(unittest.TestCase):
             return protect(catalog, 2, "photo.jpg", digest, provider_version_id="previous",
                            created_at=self.clock.isoformat(), verified_at=self.clock.isoformat())
 
+
+class WatcherAutomaticUploadTests(WatcherCase):
     def test_copy_reaches_verified_in_five_minutes_without_full_scan(self):
         with patch("app.storage.scan_vault", side_effect=AssertionError("must not scan")), patch("app.storage.s3_client") as no_cloud:
             self.write()

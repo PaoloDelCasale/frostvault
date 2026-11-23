@@ -15,18 +15,10 @@ from the bundled AWS list prices of the configured region (parity with
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import hashlib
 import tempfile
-from dataclasses import replace
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
-
-from app import config
-from app.catalog import ArchiveCatalog
 
 from fastapi import HTTPException
 
@@ -43,12 +35,8 @@ from app.services.restore_estimates import (
     is_high_impact_restore,
 )
 from app.storage import process_jobs_once
-from tests.test_database import run_alembic
-from tests.test_recovery_verification import (
-    _FakeBody,
-    _add_cloud_only_version,
-    _prepare_cloud_only_version,
-)
+from tests.fixtures import Database, FrostVaultTestCase, override_settings
+from tests.test_recovery_verification import _add_cloud_only_version, _prepare_cloud_only_version
 
 
 class RestoreEstimateTests(unittest.TestCase):
@@ -100,30 +88,29 @@ class RestoreEstimateTests(unittest.TestCase):
         )
 
 
-class HighImpactApprovalTests(unittest.TestCase):
+class HighImpactApprovalTests(FrostVaultTestCase):
+    owner = None
+
     def test_high_impact_glacier_restore_waits_for_owner_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             # 100 GiB → high impact by size even with cheap Bulk pricing
             size = 100 * 1024**3
             payload = b"x"  # content unused until download
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="huge.bin",
                 payload=payload,
                 storage_class="GLACIER",
                 object_key="docs/huge.bin",
             )
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute(
                     "UPDATE archive_versions SET size=%s WHERE id=%s",
                     (size, version_id),
                 )
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
                 restore_days=3,
@@ -142,20 +129,19 @@ class HighImpactApprovalTests(unittest.TestCase):
             )
             client.restore_object = Mock()
             client.get_object = Mock()
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs("huge.bin", "recover", 2)
-                self.assertTrue(queued["approval_required"])
-                with (
-                    patch("app.storage.settings", worker_settings),
-                    patch("app.storage.validate_cloud_vault"),
-                    patch("app.storage.s3_client", return_value=client),
-                ):
-                    process_jobs_once()
+            queued = queue_jobs("huge.bin", "recover", 2)
+            self.assertTrue(queued["approval_required"])
+            with (
+                override_settings(**worker_settings),
+                patch("app.storage.validate_cloud_vault"),
+                patch("app.storage.s3_client", return_value=client),
+            ):
+                process_jobs_once()
 
             client.restore_object.assert_not_called()
             client.get_object.assert_not_called()
             client.head_object.assert_not_called()
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT j.status, j.message, rr.approval_deadline AS pending_until FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE f.path=%s",
                     ("huge.bin",),
@@ -179,23 +165,20 @@ class HighImpactApprovalTests(unittest.TestCase):
             root = Path(directory)
             size = 1 * 1024**3
             expected_cost = milan  # 1 GiB × eu-south-1 Glacier Standard rate
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="priced.bin",
                 payload=b"x",
                 storage_class="GLACIER",
                 object_key="docs/priced.bin",
             )
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute(
                     "UPDATE archive_versions SET size=%s WHERE id=%s",
                     (size, version_id),
                 )
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
                 restore_days=3,
@@ -215,8 +198,7 @@ class HighImpactApprovalTests(unittest.TestCase):
             )
             client.restore_object = Mock()
             client.get_object = Mock()
-            runtime = replace(
-                config.settings,
+            runtime = dict(
                 restore_tier="Standard",
                 restore_days=3,
                 restore_high_impact_gib=100,
@@ -225,12 +207,11 @@ class HighImpactApprovalTests(unittest.TestCase):
                 aws_region="eu-south-1",
             )
             with (
-                patch("app.database.settings", database_settings),
-                patch("app.main.settings", runtime),
+                override_settings(**runtime),
             ):
                 queue_jobs("priced.bin", "recover", 2, restore_tier="Standard")
                 with (
-                    patch("app.storage.settings", worker_settings),
+                    override_settings(**worker_settings),
                     patch("app.storage.validate_cloud_vault"),
                     patch("app.storage.s3_client", return_value=client),
                 ):
@@ -238,7 +219,7 @@ class HighImpactApprovalTests(unittest.TestCase):
 
             client.restore_object.assert_not_called()
             client.head_object.assert_not_called()
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     """
                     SELECT j.status, rr.approval_deadline AS pending_until, rr.estimated_cost_eur
@@ -262,65 +243,58 @@ class HighImpactApprovalTests(unittest.TestCase):
 
 
 def _add_cloud_only_file(
-    database_path: Path, *, relative_path: str, storage_class: str
+    database: Database, *, relative_path: str, storage_class: str
 ) -> str:
     """Seed one more verified, locally released file in Vault 2."""
     return _add_cloud_only_version(
-        database_path, relative_path=relative_path, payload=b"x", storage_class=storage_class,
+        database, relative_path=relative_path, payload=b"x", storage_class=storage_class,
         provider_version_id=f"s3-{relative_path}", object_key=f"docs/{relative_path}",
     )
 
 
-class DirectoryRestoreTierTests(unittest.TestCase):
+class DirectoryRestoreTierTests(FrostVaultTestCase):
     """#532: a directory recovery persists the tier/days chosen in the dialog."""
 
-    def _prepare_directory(self, root: Path) -> Path:
-        _source, database_path, _version_id = _prepare_cloud_only_version(
-            root,
+    owner = None
+
+    def _prepare_directory(self, root: Path) -> None:
+        _source, _version_id = _prepare_cloud_only_version(
+            self.database, root,
             relative_path="photos/a.jpg",
             payload=b"x",
             storage_class="DEEP_ARCHIVE",
             object_key="docs/photos/a.jpg",
         )
         _add_cloud_only_file(
-            database_path, relative_path="photos/b.jpg", storage_class="DEEP_ARCHIVE"
+            self.database, relative_path="photos/b.jpg", storage_class="DEEP_ARCHIVE"
         )
         _add_cloud_only_file(
-            database_path, relative_path="photos/sub/c.jpg", storage_class="GLACIER"
+            self.database, relative_path="photos/sub/c.jpg", storage_class="GLACIER"
         )
         _add_cloud_only_file(
-            database_path, relative_path="photos/d.jpg", storage_class="STANDARD"
+            self.database, relative_path="photos/d.jpg", storage_class="STANDARD"
         )
-        return database_path
 
-    def _jobs(self, database_path: Path) -> dict[str, dict]:
-        with PostgresConnection(str(database_path)) as connection:
+    def _jobs(self) -> dict[str, dict]:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT f.path, jr.tier AS restore_tier, jr.days AS restore_days FROM jobs j JOIN files f ON f.id=j.file_id LEFT JOIN job_restores jr ON jr.job_id=j.id LEFT JOIN restore_requests rr ON rr.group_id=j.group_id WHERE j.action='recover'"
             ).fetchall()
         return {row["path"]: dict(row) for row in rows}
 
-    def _queue(self, database_path: Path, **kwargs):
-        database_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(database_path)),
-        )
-        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
+    def _queue(self, **kwargs):
+        runtime = dict(restore_tier="Bulk", restore_days=3)
         with (
-            patch("app.database.settings", database_settings),
-            patch("app.main.settings", runtime),
+            override_settings(**runtime),
         ):
             return queue_jobs("photos", "recover", 2, True, **kwargs)
 
     def test_directory_standard_tier_and_days_reach_every_cold_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            database_path = self._prepare_directory(Path(directory))
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
+            self._prepare_directory(Path(directory))
+            runtime = dict(restore_tier="Bulk", restore_days=3)
             with (
-                patch("app.database.settings", database_settings),
-                patch("app.main.settings", runtime),
+                override_settings(**runtime),
             ):
                 estimate = recover_estimate(
                     RecoverEstimateRequest(
@@ -331,8 +305,8 @@ class DirectoryRestoreTierTests(unittest.TestCase):
                     ),
                     {"id": 2},
                 )
-            result = self._queue(database_path, restore_tier="Standard", restore_days=5)
-            jobs = self._jobs(database_path)
+            result = self._queue(restore_tier="Standard", restore_days=5)
+            jobs = self._jobs()
 
         self.assertEqual(result["item_count"], 4)
         self.assertEqual(result["restore_tier"], "Standard")
@@ -351,9 +325,9 @@ class DirectoryRestoreTierTests(unittest.TestCase):
 
     def test_directory_bulk_tier_uses_default_days(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            database_path = self._prepare_directory(Path(directory))
-            result = self._queue(database_path, restore_tier="Bulk")
-            jobs = self._jobs(database_path)
+            self._prepare_directory(Path(directory))
+            result = self._queue(restore_tier="Bulk")
+            jobs = self._jobs()
 
         self.assertEqual(result["restore_tier"], "Bulk")
         self.assertEqual(result["restore_days"], 3)
@@ -363,22 +337,22 @@ class DirectoryRestoreTierTests(unittest.TestCase):
 
     def test_directory_rejects_tier_invalid_for_archived_classes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            database_path = self._prepare_directory(Path(directory))
+            self._prepare_directory(Path(directory))
             for tier in ("Expedited", "Fast"):
                 with self.subTest(tier=tier):
                     with self.assertRaises(HTTPException) as raised:
-                        self._queue(database_path, restore_tier=tier)
+                        self._queue(restore_tier=tier)
                     self.assertEqual(raised.exception.status_code, 422)
-            self.assertEqual(self._jobs(database_path), {})
+            self.assertEqual(self._jobs(), {})
 
     def test_directory_without_archived_files_echoes_no_tier(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _source, database_path, _version_id = _prepare_cloud_only_version(
-                root, relative_path="photos/a.jpg", payload=b"x"
+            _source, _version_id = _prepare_cloud_only_version(
+                self.database, root, relative_path="photos/a.jpg", payload=b"x"
             )
-            result = self._queue(database_path, restore_tier="Standard")
-            jobs = self._jobs(database_path)
+            result = self._queue(restore_tier="Standard")
+            jobs = self._jobs()
 
         self.assertIsNone(result["restore_tier"])
         self.assertIsNone(result["restore_days"])
@@ -387,15 +361,15 @@ class DirectoryRestoreTierTests(unittest.TestCase):
     def test_worker_requests_the_directory_tier_from_aws(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            _source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="photos/a.jpg",
                 payload=b"x",
                 storage_class="DEEP_ARCHIVE",
                 object_key="docs/photos/a.jpg",
             )
-            self._queue(database_path, restore_tier="Standard", restore_days=5)
-            worker_settings = SimpleNamespace(
+            self._queue(restore_tier="Standard", restore_days=5)
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=900,
                 restore_days=3,
@@ -415,11 +389,7 @@ class DirectoryRestoreTierTests(unittest.TestCase):
             client.restore_object = Mock()
             client.get_object = Mock()
             with (
-                patch(
-                    "app.database.settings",
-                    SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-                ),
-                patch("app.storage.settings", worker_settings),
+                override_settings(**worker_settings),
                 patch("app.storage.validate_cloud_vault"),
                 patch("app.storage.s3_client", return_value=client),
             ):
@@ -446,23 +416,24 @@ def _worker_settings(**overrides):
         restore_approval_hold_seconds=3600,
     )
     values.update(overrides)
-    return SimpleNamespace(**values)
+    return values
 
 
-class GroupRestoreApprovalTests(unittest.TestCase):
-    """#533/#534: Restore Approval is one decision per recovery request."""
+class GroupRestoreFixture(FrostVaultTestCase):
+    """One recovery request of many small archived files, and no tests."""
+
+    owner = None
 
     COLD_FILES = 24
     FILE_GIB = 5  # 24 × 5 GiB = 120 GiB: each file is far below 100 GiB
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        super().setUp()
         # ``cancel_job_group`` raises process-wide cancel flags by Job id; keep
         # them out of later tests whose fresh catalogs reuse the same ids.
         self.enterContext(patch("app.storage.cancelled_jobs", set()))
-        _source, self.database_path, _version_id = _prepare_cloud_only_version(
-            Path(self._tmp.name),
+        _source, _version_id = _prepare_cloud_only_version(
+            self.database, self.tmp_path,
             relative_path="photos/p00.jpg",
             payload=b"x",
             storage_class="DEEP_ARCHIVE",
@@ -470,21 +441,18 @@ class GroupRestoreApprovalTests(unittest.TestCase):
         )
         for index in range(1, self.COLD_FILES):
             _add_cloud_only_file(
-                self.database_path,
+                self.database,
                 relative_path=f"photos/p{index:02d}.jpg",
                 storage_class="DEEP_ARCHIVE",
             )
         _add_cloud_only_file(
-            self.database_path, relative_path="photos/hot.jpg", storage_class="STANDARD"
+            self.database, relative_path="photos/hot.jpg", storage_class="STANDARD"
         )
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE archive_versions SET size=%s WHERE storage_class='DEEP_ARCHIVE'",
                 (self.FILE_GIB * GIB,),
             )
-        self.database_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(self.database_path)),
-        )
 
     def _runtime(self, **overrides):
         values = dict(
@@ -495,12 +463,11 @@ class GroupRestoreApprovalTests(unittest.TestCase):
             restore_approval_hold_seconds=3600,
         )
         values.update(overrides)
-        return replace(config.settings, **values)
+        return values
 
     def _queue_and_estimate(self, runtime):
         with (
-            patch("app.database.settings", self.database_settings),
-            patch("app.main.settings", runtime),
+            override_settings(**runtime),
         ):
             estimate = recover_estimate(
                 RecoverEstimateRequest(path="photos", is_directory=True, restore_tier="Bulk"),
@@ -510,7 +477,7 @@ class GroupRestoreApprovalTests(unittest.TestCase):
         return estimate, queued
 
     def _jobs(self) -> dict[str, dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute(
                 """
                 SELECT f.path, j.status, rr.approval_deadline AS pending_until, rr.approved_at, rr.estimated_cost_eur
@@ -537,8 +504,7 @@ class GroupRestoreApprovalTests(unittest.TestCase):
 
     def _run_worker(self, client: Mock, worker_settings, rounds: int = 1) -> None:
         with (
-            patch("app.database.settings", self.database_settings),
-            patch("app.storage.settings", worker_settings),
+            override_settings(**worker_settings),
             patch("app.storage.validate_cloud_vault"),
             patch("app.storage.s3_client", return_value=client),
         ):
@@ -553,6 +519,9 @@ class GroupRestoreApprovalTests(unittest.TestCase):
             statuses = {row["status"] for row in self._jobs().values()}
             if "queued" not in statuses and client.restore_object.call_count == before:
                 return
+
+class GroupRestoreApprovalTests(GroupRestoreFixture):
+    """#533/#534: Restore Approval is one decision per recovery request."""
 
     def test_folder_of_small_files_over_the_total_threshold_waits_as_one_group(self) -> None:
         estimate, queued = self._queue_and_estimate(self._runtime())
@@ -596,10 +565,9 @@ class GroupRestoreApprovalTests(unittest.TestCase):
 
     def test_one_approval_releases_the_whole_group(self) -> None:
         _estimate, queued = self._queue_and_estimate(self._runtime())
-        with patch("app.database.settings", self.database_settings):
-            approved = approve_recover(
-                RecoverApproveAction(group_id=queued["group_id"]), {"id": 1}, {"id": 2}
-            )
+        approved = approve_recover(
+            RecoverApproveAction(group_id=queued["group_id"]), {"id": 1}, {"id": 2}
+        )
         self.assertEqual(sorted(approved["job_ids"]), sorted(queued["job_ids"]))
         jobs = self._jobs()
         for path, job in jobs.items():
@@ -627,7 +595,7 @@ class GroupRestoreApprovalTests(unittest.TestCase):
 
         # Settings change after AWS accepted the restores (#534): the worker
         # polls the ongoing restores and must not hold them again.
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE jobs SET updated_at='2000-01-01T00:00:00+00:00' WHERE status='restoring'"
             )
@@ -635,7 +603,7 @@ class GroupRestoreApprovalTests(unittest.TestCase):
         lowered = _worker_settings(
             restore_high_impact_gib=0.000001, restore_high_impact_eur=0.000001
         )
-        with patch("app.main.settings", self._runtime(
+        with override_settings(**self._runtime(
             restore_high_impact_gib=0.000001, restore_high_impact_eur=0.000001
         )):
             self._run_worker(ongoing, lowered, rounds=self.COLD_FILES + 2)

@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app import main, storage
-from app.config import settings
 
 from app.services.metadata_backups import build_config_snapshot
+from tests.fixtures import override_settings
 
 
 class EssentialAdministrationTests(unittest.TestCase):
@@ -27,10 +26,8 @@ class EssentialAdministrationTests(unittest.TestCase):
             self.assertEqual(client.get(path).status_code, 401)
 
     def test_configuration_consumers_never_query_database_overrides(self):
-        configured = replace(settings, restore_tier="Standard", scan_interval=1234)
         with (
-            patch("app.main.settings", configured),
-            patch("app.storage.settings", configured),
+            override_settings(restore_tier="Standard", scan_interval=1234) as configured,
             patch("app.main.db", side_effect=AssertionError("no DB resolution")),
             patch("app.storage.db", side_effect=AssertionError("no DB resolution")),
         ):

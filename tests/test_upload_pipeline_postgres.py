@@ -25,7 +25,7 @@ from app.services import upload_pipeline as pipeline, upload_provenance as prove
 from app.services.vault_pause import set_paused
 from app.services.vault_relocation import enroll_vault_root_identity
 from tests import test_upload_provenance_worker as worker_tests
-from tests.owner_fixtures import insert_vault
+from tests.fixtures import seed_vault
 from tests.postgres import PostgresConnection
 from tests.upload_support import claimed_job_row
 
@@ -61,7 +61,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         file = source / "other.txt"
         file.write_bytes(worker_tests.A)
         with PostgresConnection(self.worker.db_path) as connection:
-            insert_vault(connection, id=3, name="Other", source_root=str(source), bucket="bucket")
+            seed_vault(connection, id=3, name="Other", source_root=str(source), bucket="bucket")
             enroll_vault_root_identity(connection, 3, str(source))
             ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
                 size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())

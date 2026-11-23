@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import patch
 
 from app.services.upload_remediation import project_jobs
-from tests.postgres import PostgresConnection
-from tests import test_job_messages as fixtures
+from tests import test_job_messages as job_messages
+from tests.fixtures import seed_vault
 
 # Job groups are uuids scoped to one Vault (``job_groups``); fixed ids keep the
 # assertions readable.
@@ -18,13 +18,11 @@ def add_group(connection, group_id, vault_id, path="folder"):
                        "ON CONFLICT (id) DO NOTHING", (group_id, vault_id, path))
 
 
-class BoundedJobsHttpTests(unittest.TestCase):
-    setUp = fixtures.JobMessageHttpTests.setUp
-    PASSWORD = fixtures.JobMessageHttpTests.PASSWORD
+class BoundedJobsHttpTests(job_messages.JobHttpFixture):
 
     def seed_group(self, count=301, *, active=True):
         """``count`` uploads of a.txt in group BULK; the last one queued when ``active``."""
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             add_group(connection, BULK, self.vault_id)
             connection.execute("""
                 INSERT INTO jobs(vault_id,file_id,action,status,message,
@@ -83,7 +81,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
 
     def test_filters_precede_summary_window_and_old_file_deletion_is_not_hidden(self):
         self.seed_group(active=False)
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             add_group(connection, OLD_DELETION, self.vault_id, "parent-folder")
             connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
                 requested_at,updated_at,group_id,run_after)
@@ -100,15 +98,14 @@ class BoundedJobsHttpTests(unittest.TestCase):
     def test_matching_group_identity_in_another_vault_never_leaks_members_or_totals(self):
         from app.catalog import ArchiveCatalog
         import psycopg
-        from tests.owner_fixtures import insert_vault
         self.seed_group(3)
-        with PostgresConnection(self.database_path) as connection:
-            other = insert_vault(connection, name="Other", source_root="/other-source")["id"]
+        with self.database.connect() as connection:
+            other = seed_vault(connection, name="Other", source_root="/other-source")["id"]
             secret = ArchiveCatalog(connection).observe_local_copy(vault_id=other,path="secret.txt",file_type="regular",
                                                                   size=999,mtime_ns=1,observed_at="2026-11-11")
         # The schema itself scopes a group to its Vault: another Vault's Job
         # can never join it.
-        with PostgresConnection(self.database_path) as connection, \
+        with self.database.connect() as connection, \
                 self.assertRaises(psycopg.errors.ForeignKeyViolation):
             connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
                 requested_at,updated_at,group_id,total_bytes)
@@ -122,7 +119,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertNotIn("secret.txt",[row["path"] for row in detail["items"]])
 
     def test_summary_pages_include_complete_terminal_groups_not_just_recent_members(self):
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             # 101 complete terminal groups of one Job each, beside the
             # fixture's ungrouped Job.
             for _ in range(101):
@@ -148,7 +145,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
 
     def test_active_group_cursor_does_not_move_when_newest_member_completes(self):
         from app.catalog import ArchiveCatalog
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             # 53 active Jobs, one file each: 51 single-Job groups plus LONG,
             # which holds the oldest and the newest Job.
             catalog = ArchiveCatalog(connection)
@@ -170,7 +167,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         self.assertIn(LONG,first_ids)
         cursor = first["next_groups_before_id"]
         self.assertIsNotNone(cursor)
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed' WHERE id=(SELECT max(id) FROM jobs)")
         second = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true&groups_before_id={cursor}")
         self.assertEqual(second.status_code,200,second.text)
@@ -183,7 +180,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         from tests.listing_oracles import build_job_groups
         from app.services.upload_remediation import project_jobs
         self.seed_group(4)
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             # Terminal Jobs are written once: the failed and cancelled members
             # join the group as their own rows.
             for status, moved in (("failed", 150), ("cancelled", 30)):
@@ -200,7 +197,7 @@ class BoundedJobsHttpTests(unittest.TestCase):
         for field in ("status","item_count","completed_count","failed_count","cancelled_count",
                       "resolved_failed_count","unresolved_failed_count","total_bytes","transferred_bytes","percent"):
             self.assertEqual(actual[field],expected[field],field)
-        with PostgresConnection(self.database_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed' WHERE status='queued'")
         self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}").json()["groups"][0]["status"],"failed")
 

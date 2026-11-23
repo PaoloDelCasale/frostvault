@@ -1,21 +1,16 @@
 """#646: a Recovery in progress is visible on the file, in the list and in the panel."""
 from __future__ import annotations
 
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from app import config
 from app.catalog import ArchiveCatalog
 from app.main import queue_jobs
 from app.services.job_queries import list_jobs
 from app.services.recovery_progress import project_recovery
 from app.storage import process_jobs_once
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import FrostVaultTestCase, override_settings
 from tests.test_recovery_verification import _prepare_cloud_only_version
 
 VAULT = 2
@@ -61,40 +56,39 @@ class ProjectRecoveryTests(unittest.TestCase):
                                            local_exists=True, now=self.NOW))
 
 
-class RecoveryInProgressCatalogTests(unittest.TestCase):
+class RecoveryInProgressCatalogTests(FrostVaultTestCase):
     """A DEEP_ARCHIVE recovery waiting for AWS (the scenario of #646)."""
 
+    owner = None
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        super().setUp()
         self.enterContext(patch("app.storage.cancelled_jobs", set()))
-        _source, self.database_path, _ = _prepare_cloud_only_version(
-            Path(self._tmp.name), relative_path="cold/c0.bin", payload=b"x",
+        _source, _ = _prepare_cloud_only_version(
+            self.database, self.tmp_path, relative_path="cold/c0.bin", payload=b"x",
             storage_class="DEEP_ARCHIVE", object_key="docs/cold/c0.bin",
         )
-        database = SimpleNamespace(database_dsn=database_dsn(str(self.database_path)))
-        self.enterContext(patch("app.database.settings", database))
-        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
-        with patch("app.main.settings", runtime):
+        runtime = dict(restore_tier="Bulk", restore_days=3)
+        with override_settings(**runtime):
             queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Standard", restore_days=1)
         client = Mock()
         client.head_object = Mock(return_value={"ContentLength": 1, "StorageClass": "DEEP_ARCHIVE",
                                                 "VersionId": "s3-version-1"})
-        worker = SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, restore_days=3,
+        worker = dict(operation_concurrency=1, restore_poll_interval=900, restore_days=3,
                                  restore_tier="Bulk", restore_high_impact_gib=100, restore_high_impact_eur=10.0,
                                  restore_approval_hold_seconds=3600)
-        with (patch("app.storage.settings", worker), patch("app.storage.validate_cloud_vault"),
+        with (override_settings(**worker), patch("app.storage.validate_cloud_vault"),
               patch("app.storage.s3_client", return_value=client)):
             process_jobs_once()
         client.restore_object.assert_called_once()
         client.get_object.assert_not_called()
 
     def _item(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return ArchiveCatalog(connection).get_file_item(VAULT, "cold/c0.bin")
 
     def _requested_at(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT requested_at FROM jobs WHERE action='recover'").fetchone()["requested_at"]
 
     def test_file_detail_shows_the_recovery_and_offers_no_new_one(self):
@@ -109,14 +103,14 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         self.assertEqual(_instant(recovery["ready_by"]), requested + timedelta(hours=12))
 
     def test_list_page_carries_the_recovery(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             page = ArchiveCatalog(connection).list_files_page(VAULT, directory="cold")
         [item] = [row for row in page["items"] if row["type"] == "file"]
         self.assertEqual(item["recovery"]["state"], "waiting_for_cloud")
         self.assertFalse(item["recover_eligible"])
 
     def test_job_group_reports_request_instant_and_expected_readiness(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             [group] = list_jobs(connection, vault_id=VAULT, locale="it", actions=["recover"], active_only=True)["groups"]
         self.assertEqual(group["status"], "restoring")
         self.assertEqual(group["restore_tier"], "Standard")
@@ -124,7 +118,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         self.assertEqual(_instant(group["ready_by"]), self._requested_at() + timedelta(hours=12))
 
     def test_stopped_wait_keeps_the_cloud_restore_and_offers_resuming_it(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='cancelled' WHERE action='recover'")
         item = self._item()
         self.assertTrue(item["recover_eligible"])
@@ -137,16 +131,16 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         if restore_header:
             head["Restore"] = restore_header
         client.head_object = Mock(return_value=head)
-        worker = SimpleNamespace(operation_concurrency=1, restore_poll_interval=900, restore_days=3,
+        worker = dict(operation_concurrency=1, restore_poll_interval=900, restore_days=3,
                                  restore_tier="Bulk", restore_high_impact_gib=100, restore_high_impact_eur=10.0,
                                  restore_approval_hold_seconds=3600)
-        with (patch("app.storage.settings", worker), patch("app.storage.validate_cloud_vault"),
+        with (override_settings(**worker), patch("app.storage.validate_cloud_vault"),
               patch("app.storage.s3_client", return_value=client)):
             process_jobs_once()
         return client
 
     def _stop_waiting(self):
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             ids = [row["id"] for row in connection.execute(
                 "SELECT id FROM jobs WHERE action='recover' AND status NOT IN ('completed','failed','cancelled')")]
             ArchiveCatalog(connection).cancel_jobs(
@@ -154,19 +148,19 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
                 message_key="job.recovery_stopped", now=datetime.now(timezone.utc).isoformat())
 
     def _resume(self):
-        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
-        with patch("app.main.settings", runtime):
+        runtime = dict(restore_tier="Bulk", restore_days=3)
+        with override_settings(**runtime):
             queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Bulk", restore_days=3)
         client = self._process('ongoing-request="true"')
         client.restore_object.assert_not_called()
 
     def test_resumed_recovery_shows_the_first_cloud_request(self):
         """#677: a new «Recupera» after «Smetti di attendere» keeps the AWS request time."""
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET requested_at=requested_at - interval '5 minutes' WHERE action='recover'")
         first = self._requested_at()
         self._stop_waiting()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             [row] = connection.execute("SELECT message_key FROM jobs WHERE action='recover'").fetchall()
         self.assertEqual(row["message_key"], "job.recovery_stopped_waiting")
         self._resume()
@@ -175,7 +169,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
                          ("waiting_for_cloud", True, "Standard", 1))
         self.assertEqual(_instant(recovery["requested_at"]), first)
         self.assertEqual(_instant(recovery["ready_by"]), first + timedelta(hours=12))
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             [group] = list_jobs(connection, vault_id=VAULT, locale="it", actions=["recover"], active_only=True)["groups"]
         self.assertEqual(group["requested_at"], first)
         # A second stop and resume still leads back to the first request.
@@ -184,16 +178,16 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
         self.assertEqual(_instant(self._item()["recovery"]["requested_at"]), first)
 
     def test_recovery_stopped_before_aws_resumes_nothing(self):
-        runtime = replace(config.settings, restore_tier="Bulk", restore_days=3)
-        with PostgresConnection(str(self.database_path)) as connection:
+        runtime = dict(restore_tier="Bulk", restore_days=3)
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='queued' WHERE action='recover'")
         self._stop_waiting()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             [row] = connection.execute("SELECT message_key FROM jobs WHERE action='recover'").fetchall()
         self.assertEqual(row["message_key"], "job.recovery_stopped")
-        with patch("app.main.settings", runtime):
+        with override_settings(**runtime):
             queue_jobs("cold/c0.bin", "recover", VAULT, False, restore_tier="Bulk", restore_days=3)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             latest = connection.execute(
                 "SELECT requested_at FROM jobs WHERE action='recover' ORDER BY id DESC LIMIT 1").fetchone()["requested_at"]
         recovery = self._item()["recovery"]
@@ -202,7 +196,7 @@ class RecoveryInProgressCatalogTests(unittest.TestCase):
 
     def test_restored_copy_is_available_until_its_expiry(self):
         expiry = datetime.now(timezone.utc) + timedelta(days=1)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='cancelled' WHERE action='recover'")
             connection.execute("UPDATE archive_versions SET restore_state='available', restore_expiry=%s", (expiry,))
         item = self._item()
