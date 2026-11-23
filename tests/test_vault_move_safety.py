@@ -5,11 +5,11 @@ import io
 import unittest
 from unittest.mock import Mock, patch
 
-from types import SimpleNamespace
 
 from app.services import copy_provenance, s3_copy, upload_provenance as provenance, vault_moves as moves
 from app.services.s3_copy import COPY_TOKEN_KEY
 from tests.upload_provenance_provider import VersionedProvider
+from tests.upload_support import fake_worker
 
 
 VAULT = {'s3_bucket': 'bucket', 's3_key_layout': 'vault_prefix', 'uuid': '11111111-1111-1111-1111-111111111111'}
@@ -113,7 +113,8 @@ class ExactCopyTests(unittest.TestCase):
         journal.__enter__ = Mock(return_value=journal)
         journal.__exit__ = Mock(return_value=False)
         journal.execute.return_value.fetchall.return_value = []
-        worker = SimpleNamespace(db=lambda: journal)
+        worker = fake_worker()
+        worker.db.return_value = journal
         return copy_provenance.reconcile(worker, {"id": 1}, attempt, provider, Mock())
 
     def test_discovery_uses_the_copy_token_not_class_size_or_etag(self):

@@ -209,7 +209,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
             self.assertIsNotNone(claimed)
             job = claimed_job_row(connection, job_id, claimed)
         self.assertIsNone(storage._claim_token_for(job_id))
-        outcome = UploadExecution(storage).run(job)
+        outcome = UploadExecution(storage.worker_adapter).run(job)
         version = self.assert_keeper(job_id)
         self.assertEqual((outcome.job_id, outcome.status, str(outcome.archive_version_id)),
                          (job_id, "completed", str(version["id"])))

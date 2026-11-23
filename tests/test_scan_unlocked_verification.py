@@ -195,7 +195,7 @@ class UnlockedVerificationTests(_AdoptionFixture):
             )
         job = self._jobs()[0]
         with patch("app.storage.hash_stable_regular_file") as hashing:
-            outcome = UploadExecution(storage)._automatic_gate(job)
+            outcome = UploadExecution(storage.worker_adapter)._automatic_gate(job)
         hashing.assert_not_called()
         self.assertEqual(outcome.status, "cancelled")
         self.assertEqual(self._jobs()[0]["status"], "cancelled")

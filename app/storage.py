@@ -10,7 +10,6 @@ import os
 import random
 import re
 import stat
-import sys
 import threading
 import time
 import uuid
@@ -66,8 +65,8 @@ from .services import system_bucket as system_bucket_service
 from .services import retention_lock as retention_lock_service
 from .services import metrics as metrics_service
 # ``prepare_upload_snapshot``, ``validated_s3_proof`` and
-# ``_verification_version_head`` are not called here: the Upload execution
-# reads them from this module, which it receives as its worker adapter.
+# ``_verification_version_head`` are called only by ``_WorkerAdapter``, the
+# worker seam the Upload execution receives.
 from .services.s3 import (
     object_version_entries as _object_version_entries,
     verification_version_head as _verification_version_head,
@@ -4525,17 +4524,15 @@ def cleanup_superseded_upload(
     the file's Current, so a file never holds more than Current, one
     replacement in progress and versions with open cleanup.
     """
-    import sys
     from .services import snapshot_cleanup
-    snapshot_cleanup.cleanup(sys.modules[__name__], job, keeper_id, client)
+    snapshot_cleanup.cleanup(worker_adapter, job, keeper_id, client)
 
 
 def require_sole_keeper(job: dict[str, Any], keeper: dict[str, Any], *, client: Any,
                         bucket: str) -> None:
     """Postcondition of a published keeper that superseded nothing (#622)."""
-    import sys
     from .services import snapshot_cleanup
-    snapshot_cleanup.require_sole_keeper(sys.modules[__name__], job, keeper,
+    snapshot_cleanup.require_sole_keeper(worker_adapter, job, keeper,
                                          client=client, bucket=bucket)
 
 
@@ -4574,15 +4571,180 @@ def _close_stale_upload_snapshot(job: dict[str, Any]) -> None:
         logging.getLogger(__name__).warning("Stale Upload Snapshot was not closed; the retry reuses it")
 
 
+class _WorkerAdapter:
+    """Production Adapter of the worker seam (``services/worker_seam.py``, #793).
+
+    What the Upload/copy Modules ask of this worker, under the seam's names.
+    Stateless and built once: every method resolves the storage function when
+    it is called, so a patched ``app.storage.X`` is the one that runs.
+    """
+
+    __slots__ = ()
+
+    # -- JobClaim ------------------------------------------------------------
+    OperationCancelled = OperationCancelled
+    JobLeaseLost = JobLeaseLost
+    WorkerStopping = WorkerStopping
+
+    def claim(self, job: dict[str, Any]) -> Any:
+        return _job_claim_context(job, lost_event=_claim_lost_event_for(job["id"]))
+
+    def claim_lost_event(self, job_id: int) -> threading.Event | None:
+        return _claim_lost_event_for(job_id)
+
+    def stopped_in_process(self, job_id: int) -> bool:
+        # Runs for every chunk an Upload reads: ``shutdown_state.checkpoint()``
+        # written out, so the seam adds no call to that loop.
+        if shutdown_state.requested:
+            raise WorkerStopping("Process shutdown requested")
+        return job_cancelled(job_id)
+
+    def job_cancelled(self, job_id: int) -> bool:
+        return job_cancelled(job_id)
+
+    def ensure_job_active(self, job_id: int, message: str) -> None:
+        ensure_job_active(job_id, message)
+
+    def ensure_job_claim_owned_in_transaction(
+        self, connection: Any, job: dict[str, Any], message: str,
+    ) -> None:
+        ensure_job_claim_owned_in_transaction(connection, job, message)
+
+    def set_job(self, job_id: int, status: str, message: str = "", *,
+                message_key: str | None = None) -> bool:
+        return set_job(job_id, status, message, message_key=message_key)
+
+    def set_job_in_transaction(
+        self, connection: Any, job_id: int, status: str, *,
+        message_key: str | None = None, transferred_bytes: int | None = None,
+        fenced_unit: bool = False,
+    ) -> bool:
+        return _set_job_in_transaction(
+            connection, job_id, status, message_key=message_key,
+            transferred_bytes=transferred_bytes, fenced_unit=fenced_unit)
+
+    def set_job_message_in_transaction(
+        self, connection: Any, job_id: int, message_key: str,
+    ) -> None:
+        _set_job_message_in_transaction(connection, job_id, message_key)
+
+    # -- SourceVolume --------------------------------------------------------
+    UploadSourceRemoved = UploadSourceRemoved
+
+    def safe_local_path(self, source_root: str, path: str) -> Path:
+        return safe_local_path(source_root, path)
+
+    def source_volume_problem_open(self, connection: Any, job: dict[str, Any]) -> bool:
+        return _source_volume_problem_open(connection, job)
+
+    def resolve_source_volume_problem(self, job: dict[str, Any]) -> None:
+        _resolve_source_volume_problem(job)
+
+    def check_upload_source_root(self, job: dict[str, Any], vault: dict[str, Any] | None) -> None:
+        _upload_source_root_check(job, vault)
+
+    def require_upload_source_identity(self, job: dict[str, Any]) -> None:
+        _require_upload_source_identity(job)
+
+    # -- UploadCatalog -------------------------------------------------------
+    def db(self) -> Any:
+        return db()
+
+    def now_iso(self) -> str:
+        return now_iso()
+
+    def catalog_unit(self, job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any], *,
+                     shared: bool = False) -> Any:
+        return _upload_catalog_unit(job, mutation, shared=shared)
+
+    def upload_key(self, job: dict[str, Any]) -> str:
+        return _upload_key(job)
+
+    def record_reconciliation_block(self, job: dict[str, Any], reason: str) -> None:
+        _record_upload_reconciliation_block(job, reason)
+
+    def clear_reconciliation_problem(self, job: dict[str, Any]) -> None:
+        _clear_upload_reconciliation_problem(job)
+
+    def record_verification_failure(self, reason: str) -> None:
+        _record_verification_failure(reason)
+
+    # -- AutomaticUploadGate -------------------------------------------------
+    UPLOAD_READY = UPLOAD_READY
+    UPLOAD_SOURCE_REMOVED = UPLOAD_SOURCE_REMOVED
+    UPLOAD_OBSERVATION_WITHDRAWN = UPLOAD_OBSERVATION_WITHDRAWN
+
+    def automatic_upload_state(self, job: dict[str, Any]) -> str:
+        return _automatic_upload_state(job)
+
+    def close_removed_upload(self, job: dict[str, Any]) -> bool:
+        return _close_removed_upload(job)
+
+    def close_withdrawn_upload(self, job: dict[str, Any]) -> bool:
+        return _close_withdrawn_upload(job)
+
+    def upload_protection_paused(self, job: dict[str, Any]) -> bool:
+        return _upload_protection_paused(job)
+
+    # -- UploadTransport -----------------------------------------------------
+    def s3_client(self) -> Any:
+        return s3_client()
+
+    def validate_cloud_vault(self, job: dict[str, Any]) -> None:
+        validate_cloud_vault(job)
+
+    def is_cloud_readiness_error(self, error: BaseException) -> bool:
+        return cloud_preflight_gate.is_readiness_error(error)
+
+    def prepare_upload_snapshot(
+        self, source: Path, check_active: Callable[[], None], *, payload: Any = None,
+    ) -> Any:
+        # Without a payload the call stays the two-argument one.
+        if payload is None:
+            return prepare_upload_snapshot(source, check_active)
+        return prepare_upload_snapshot(source, check_active, payload=payload)
+
+    def upload_s3_file(self, job: dict[str, Any], *, source: Path, key: str) -> dict[str, Any]:
+        return upload_s3_file(job, source=source, key=key)
+
+    def validated_s3_proof(
+        self, proof: dict[str, Any], *, version_id: str, snapshot: Any, source: str,
+        completion: bool = False,
+    ) -> dict[str, str] | None:
+        return validated_s3_proof(proof, version_id=version_id, snapshot=snapshot,
+                                  source=source, completion=completion)
+
+    def verification_version_head(
+        self, client: Any, job: dict[str, Any], target: dict[str, Any],
+    ) -> dict[str, Any]:
+        return _verification_version_head(client, job, target)
+
+    def stream_plaintext_for_verification(
+        self, job: dict[str, Any], *, target: dict[str, Any], source_size: int,
+        check_active: Callable[[], None] | None = None, floor_reported: bool = False,
+    ) -> tuple[str, int]:
+        return _stream_plaintext_for_verification(
+            job, target=target, source_size=source_size, check_active=check_active,
+            floor_reported=floor_reported)
+
+    def cleanup_superseded_upload(
+        self, job: dict[str, Any], *, keeper_id: str | None, client: Any = None,
+    ) -> None:
+        cleanup_superseded_upload(job, keeper_id=keeper_id, client=client)
+
+    def require_sole_keeper(
+        self, job: dict[str, Any], keeper: dict[str, Any], *, client: Any, bucket: str,
+    ) -> None:
+        require_sole_keeper(job, keeper, client=client, bucket=bucket)
+
+
+worker_adapter = _WorkerAdapter()
+
+
 def process_upload(job: dict[str, Any]) -> None:
     """Compatibility hook: the UploadExecution Module owns the per-file protocol."""
     from .services.upload_execution import UploadExecution
-    UploadExecution(sys.modules[__name__]).run(job)
-
-
-def _copy_worker() -> Any:
-    """This module as the worker seam of the copy engine (patched in tests)."""
-    return sys.modules[__name__]
+    UploadExecution(worker_adapter).run(job)
 
 
 _RENAME_CHAIN_LIMIT = 3
@@ -4622,7 +4784,7 @@ def process_rename(job: dict[str, Any]) -> None:
     try:
         for _link in range(_RENAME_CHAIN_LIMIT):
             try:
-                keeper = copy_provenance.run(_copy_worker(), job, purpose="rename")
+                keeper = copy_provenance.run(worker_adapter, job, purpose="rename")
                 break
             except UploadBlocked as exc:
                 if exc.reason != "identity_changed" or not _refresh_rename_path(job):
@@ -4952,7 +5114,7 @@ def process_storage_class(job: dict[str, Any]) -> None:
     colder_only = bool(change["colder_only"])
     try:
         keeper = copy_provenance.run(
-            _copy_worker(), job, purpose="storage-class", storage_class=target_class,
+            worker_adapter, job, purpose="storage-class", storage_class=target_class,
             check_source=partial(vault_moves.check_source, target_class) if colder_only else None)
     except copy_provenance.CopyNeedsRestore as exc:
         if colder_only:
