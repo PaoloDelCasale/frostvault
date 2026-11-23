@@ -48,6 +48,8 @@ from app.catalog import ArchiveCatalog
 from app.services import cloud_preflight_gate
 from tests import test_upload_worker as worker_fixture
 from tests.fixtures import override_settings
+from app.services.job_queue import JobQueue
+from app.services import job_queue
 
 MAX_TRANSACTIONS = 14
 MAX_STATEMENTS = 110
@@ -168,9 +170,9 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
                JOIN vault_targets t ON t.id=v.target_id WHERE j.id=%s""", job_id)[0]
         with counted() as run:
             with storage.db() as connection:
-                claimed = ArchiveCatalog(connection).claim_job(
+                claimed = JobQueue(connection).claim_job(
                     job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                    claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                    claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                     restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed, "the Job must be claimable")
             storage.process_job({**candidate, "claim_token": claimed["claim_token"],
@@ -527,21 +529,22 @@ class ClaimCheckpointTests(worker_fixture.UploadWorkerCase):
 
     def test_checkpoints_inside_the_renew_window_read_without_writing(self):
         job = self.claim(self.queue())
-        with storage._job_claim_context(job), patch.object(
-            storage, "_renew_claim_if_owned", wraps=storage._renew_claim_if_owned,
+        with job_queue.job_claim_context(job), patch.object(
+            storage.job_runner, "renew_claim_if_owned",
+            wraps=storage.job_runner.renew_claim_if_owned,
         ) as renew:
             for _ in range(5):
                 storage.ensure_job_active(job["id"], "stopped")
             self.assertEqual(renew.call_count, 1)
-            with patch.object(storage, "CLAIM_CHECKPOINT_RENEW_SECONDS", 0.0):
+            with patch.object(job_queue, "CLAIM_CHECKPOINT_RENEW_SECONDS", 0.0):
                 storage.ensure_job_active(job["id"], "stopped")
             self.assertEqual(renew.call_count, 2)
 
     def test_the_dispatch_renewal_opens_the_renew_window(self):
         job = self.claim(self.queue())
-        with storage._job_claim_context(job):
+        with job_queue.job_claim_context(job):
             self.assertIsNotNone(storage._load_claimed_job_status(job))
-            with patch.object(storage, "_renew_claim_if_owned") as renew:
+            with patch.object(storage.job_runner, "renew_claim_if_owned") as renew:
                 storage.ensure_job_active(job["id"], "stopped")
             renew.assert_not_called()
 
@@ -556,11 +559,11 @@ class ClaimCheckpointTests(worker_fixture.UploadWorkerCase):
                     connection.execute("UPDATE jobs SET status='cancelled', finished_at=now() "
                                        "WHERE status NOT IN ('completed', 'failed', 'cancelled')")
                 job = self.claim(self.queue())
-                with storage._job_claim_context(job):
+                with job_queue.job_claim_context(job):
                     storage.ensure_job_active(job["id"], "stopped")
                     with self.db() as connection:
                         connection.execute(change, (job["id"],))
-                    with patch.object(storage, "_renew_claim_if_owned") as renew:
+                    with patch.object(storage.job_runner, "renew_claim_if_owned") as renew:
                         with self.assertRaises((storage.JobLeaseLost, storage.OperationCancelled)):
                             storage.ensure_job_active(job["id"], "stopped")
                     renew.assert_not_called()

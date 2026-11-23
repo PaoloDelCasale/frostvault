@@ -21,6 +21,7 @@ from app.services.vault_paths import object_prefix
 from tests.fake_bucket_s3 import FakeBucketS3, fake_vault_buckets
 from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
+from app.services.job_queue import JobQueue
 
 UUID = "2f1c7e36-0000-4000-8000-000000000001"
 DEEP = LifecycleProfile(transitions=(LifecycleTransition(days=0, storage_class="DEEP_ARCHIVE"),))
@@ -622,9 +623,9 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
         self.assertEqual(queue_jobs("photos/report.txt", "upload", 2)["item_count"], 1)
         with self.database.connect() as connection:
             job_id = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=str(self.uuid_module.uuid4()),
-                claimed_at=storage.now_iso(), claim_expires_at=storage._claim_expiry_at(),
+                claimed_at=storage.now_iso(), claim_expires_at=storage.job_runner.claim_expiry_at(),
                 now=storage.now_iso(), restore_due_before=storage.now_iso())
             job = claimed_job_row(connection, job_id, claimed)
         storage.process_job(job)

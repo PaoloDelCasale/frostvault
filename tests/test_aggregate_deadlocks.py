@@ -22,6 +22,9 @@ from tests.stress_profile import stress_file_count
 from tests.upload_support import claimed_job_row, job_row, queue_upload
 from tests import catalog_probe
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
+from app.services.job_queue import JobQueue
+from app.services import job_queue
+from functools import partial
 
 PAYLOAD = b"nested concurrent upload content"
 STAMP = "2026-07-21T10:00:00+00:00"
@@ -146,9 +149,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
     def run_job(self, job_id):
         with self.database.connect() as connection:
             token = uuid.uuid4().hex
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso(),
             )
             self.assertIsNotNone(claimed)
@@ -299,9 +302,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         job_id = self.seed()[0]
         token = uuid.uuid4().hex
         with self.database.connect() as connection:
-            self.assertIsNotNone(ArchiveCatalog(connection).claim_job(
+            self.assertIsNotNone(JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso(),
             ))
 
@@ -315,7 +318,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         # whereas terminal/admission-relevant and unclaimed writes still do.
         with self.database.connect() as blocker, \
                 patch.object(storage, "db", side_effect=bounded_db), \
-                patch.object(storage, "_claim_token_for", return_value=token) as claim:
+                patch.object(job_queue, "claim_token_for", return_value=token) as claim:
             blocker.execute("SELECT id FROM vaults WHERE id=2 FOR NO KEY UPDATE")
             self.assertTrue(storage.set_job(job_id, "uploading"))
             self.assertTrue(storage.set_job(job_id, "verifying"))
@@ -325,13 +328,13 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     with self.assertRaises(psycopg.errors.LockNotAvailable):
                         storage.set_job(job_id, status)
             claim.return_value = token
-            real_subject = storage._transition_subject
+            real_subject = job_queue.transition_subject
 
             def bound_subject(connection, job_id):
                 # As if the Job moved an Upload Remediation episode too.
                 return {**real_subject(connection, job_id), "unbound": False}
 
-            with patch.object(storage, "_transition_subject", side_effect=bound_subject):
+            with patch.object(job_queue, "transition_subject", side_effect=bound_subject):
                 with self.assertRaises(psycopg.errors.LockNotAvailable):
                     storage.set_job(job_id, "uploading")
             for kwargs in ({"remediation_suspension": "paused"}, {"remediation_reason": "file_removed"}):
@@ -398,14 +401,14 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             # observation settles the older one, not only its INSERT branch.
             unsent = self.seed(prefix="unsent")[0]
             with self.database.connect() as c:
-                claimed = ArchiveCatalog(c).claim_job(
+                claimed = JobQueue(c).claim_job(
                     job_id=unsent, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                    claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                    claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                     restore_due_before=storage.now_iso())
                 job = claimed_job_row(c, unsent, claimed)
                 generation = c.execute("SELECT generation FROM files WHERE id=%s", (job["file_id"],)).fetchone()["generation"]
             snapshot, _ = prepare_upload_snapshot(self.source / job["path"], lambda: None)
-            with storage._job_claim_context(job):
+            with job_queue.job_claim_context(job):
                 pinned = audited(job, lambda cat: provenance.target(cat.connection, job,
                     key=storage._upload_key(job), provider="fake", shared=True), shared=True)
                 for before in ({"versions": [], "markers": []}, {"versions": ["old"], "markers": []}):
@@ -439,9 +442,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         with self.database.connect() as c:
             rows = []
             for job_id in jobs:
-                claimed = ArchiveCatalog(c).claim_job(job_id=job_id,
+                claimed = JobQueue(c).claim_job(job_id=job_id,
                     claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                    claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                    claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                     restore_due_before=storage.now_iso())
                 self.assertIsNotNone(claimed)
                 rows.append(claimed_job_row(c, job_id, claimed))
@@ -516,8 +519,8 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                 with self.database.connect() as c:
                     self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
                     self.assertEqual(c.execute("SELECT status FROM jobs WHERE id=%s", (pending,)).fetchone()["status"], "cancelled")
-                    self.assertIsNone(ArchiveCatalog(c).claim_job(job_id=pending, claim_token=uuid.uuid4().hex,
-                        claimed_at=storage.now_iso(), claim_expires_at=storage._claim_expiry_at(),
+                    self.assertIsNone(JobQueue(c).claim_job(job_id=pending, claim_token=uuid.uuid4().hex,
+                        claimed_at=storage.now_iso(), claim_expires_at=storage.job_runner.claim_expiry_at(),
                         now=storage.now_iso(), restore_due_before=storage.now_iso()))
             finally:
                 release.set()
@@ -676,9 +679,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     self.assertLess(control_times[-1], 10, "Pause/resume writer starved behind shared upload steps")
                     if paused:
                         with self.database.connect() as c:
-                            self.assertIsNone(ArchiveCatalog(c).claim_job(
+                            self.assertIsNone(JobQueue(c).claim_job(
                                 job_id=pending, claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
-                                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                                 restore_due_before=storage.now_iso()))
                         began = time.monotonic()
                         result = cancel_pending_uploads(PendingUploadCancelAction(path="cancel-pending"),
@@ -701,9 +704,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                 token = uuid.uuid4().hex
                 deadline = time.monotonic() + 30
                 while True:
-                    claimed = ArchiveCatalog(claimer).claim_job(
+                    claimed = JobQueue(claimer).claim_job(
                         job_id=job_id, claim_token=token, claimed_at=storage.now_iso(),
-                        claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                        claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                         restore_due_before=storage.now_iso(),
                     )
                     claimer.commit()
@@ -828,8 +831,9 @@ class AggregateDeadlockTests(FrostVaultTestCase):
 
     def test_post_response_progress_flush_and_status_units_retry_without_put(self):
         jobs = self.seed()
-        original_transition = storage._set_job_in_transaction
-        original_progress = storage.set_job_progress.__wrapped__
+        original_transition = storage.job_runner.set_job_in_transaction
+        original_progress = partial(
+            job_queue.QueueRunner.set_job_progress.__wrapped__, storage.job_runner)
         original_init = storage._ThrottledByteProgress.__init__
         injected = set()
         progress_calls = []
@@ -856,7 +860,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             original_init(reporter, job)
             reporter._min_interval, reporter._last_report = 0.0, 0.0
 
-        with patch.object(storage, "_set_job_in_transaction", side_effect=transition_once), patch(
+        with patch.object(storage.job_runner, "set_job_in_transaction", side_effect=transition_once), patch(
             "app.storage.set_job_progress", storage.retry_database_unit(progress_once)
         ), patch.object(storage._ThrottledByteProgress, "__init__", unthrottled):
             self.assertTrue(self.run_job(jobs[0]))
@@ -965,7 +969,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
 
     def test_retry_status_transaction_is_itself_retried(self):
         jobs = self.seed()
-        original = storage._dirty_job_protection
+        original = job_queue.dirty_job_protection
         attempts = []
 
         def retry_status_once(connection, job_id):
@@ -977,7 +981,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced retry status abort' USING ERRCODE='40P01'; END $$")
 
         with patch("app.storage.upload_file", side_effect=RuntimeError("SlowDown")), patch(
-            "app.storage._dirty_job_protection", side_effect=retry_status_once
+            "app.services.job_queue.dirty_job_protection", side_effect=retry_status_once
         ):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(len(attempts), 2)

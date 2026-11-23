@@ -10,6 +10,7 @@ from unittest.mock import patch
 from app import storage
 from tests import test_worker_loop_decoupling as worker_tests
 from tests.fixtures import override_settings
+from app.services import job_queue
 
 
 class WorkerCompletionRefillTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class WorkerCompletionRefillTests(unittest.TestCase):
                         connection.execute("UPDATE vaults SET paused=TRUE WHERE id=10")
             else:
                 second_started.set()
-            with storage._job_claim_context(job):
+            with job_queue.job_claim_context(job):
                 storage.set_job(job["id"], "completed", "test transfer finished")
             if job["id"] == first:
                 completed.set()

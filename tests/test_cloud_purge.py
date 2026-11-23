@@ -30,6 +30,7 @@ from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from tests import test_upload_worker as fixtures
 from tests.test_upload_worker import A, B
+from app.services.job_queue import JobQueue
 
 PAST = (datetime.now(timezone.utc) - timedelta(days=8)).replace(microsecond=0).isoformat()
 
@@ -94,9 +95,9 @@ class CloudPurgeCase(fixtures.UploadWorkerCase):
         claimed_at = storage.now_iso()
         token = str(uuid.uuid4())
         with self.db() as connection:
-            group = ArchiveCatalog(connection).claim_purge_group(
+            group = JobQueue(connection).claim_purge_group(
                 lead_job_id=lead, claim_token=token, claimed_at=claimed_at,
-                claim_expires_at=storage._claim_expiry_at(claimed_at), now=claimed_at,
+                claim_expires_at=storage.job_runner.claim_expiry_at(claimed_at), now=claimed_at,
                 message="Deleting", message_key="job.cloud_purge_deleting")
             if not group:
                 return None

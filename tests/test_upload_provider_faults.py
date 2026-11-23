@@ -18,6 +18,7 @@ from botocore.parsers import ResponseParserError
 from app import storage
 from app.services import cloud_preflight_gate, upload_provenance as provenance
 from app.services.upload_retry import classify_upload_failure, is_provider_transient
+from app.services import job_queue
 
 
 def client_error(code, status, operation="HeadObject"):
@@ -269,7 +270,7 @@ class WorkerRefusalTests(unittest.TestCase):
         with patch.object(storage, "_load_claimed_job_status", return_value={"status": "queued"}), \
                 patch.object(storage.source_layout, "vault_local_access", return_value=MagicMock(local_operations_allowed=True)), \
                 patch.object(storage, "process_upload", side_effect=client_error("AccessDenied", 403, "HeadObject")), \
-                patch.object(storage, "_claim_is_lost", return_value=False), \
+                patch.object(job_queue, "claim_is_lost", return_value=False), \
                 patch.object(storage, "_fail_upload_on_permission_refusal", return_value=True) as fail, \
                 patch.object(cloud_preflight_gate, "invalidate") as invalidate:
             self.assertTrue(storage._process_claimed_job(job))

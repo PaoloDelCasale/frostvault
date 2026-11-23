@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import email.utils
 import hashlib
 import json
@@ -48,7 +47,7 @@ from .services import excluded_folders as excluded_folder_rules
 from .services import write_access
 from .services.catalog_event_hub import publish_committed_event
 from .services.catalog_events import record_catalog_revision
-from .i18n import DEFAULT_LOCALE, format_message_params, parse_message_params, translate
+from .i18n import parse_message_params, translate
 from .services.s3_preflight import check_bucket_readiness, failure_message_key, preflight_failure_message
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
@@ -124,8 +123,11 @@ from .services.shutdown import (
 )
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
-from .services.job_queue import JOB_LEASE_HELD_STATUSES, TERMINAL_JOB_STATUSES
-from .services.job_scheduler import job_priority, select_fair_jobs, turn_is_aged
+from .services import job_queue
+from .services.job_queue import (
+    TERMINAL_JOB_STATUSES, JobLeaseLost, JobQueue, job_cancelled, job_priority,
+    select_fair_jobs,
+)
 from .services.operation_policies import (
     get_policy,
     queue_auto_local_cleanups,
@@ -144,10 +146,8 @@ from .services.operation_policies import (
 # process-local; a crash remains conservative because no missing transition is
 # committed until the scan completes.
 _active_scan_journals: dict[tuple[int, str], dict[str, Any]] = {}
-operation_process_lock = threading.Lock()
 
 
-cancelled_jobs: set[int] = set()
 # Long transfers stay on this pool so the worker loop can heartbeat, deliver
 # notifications, and start other Jobs without waiting for the whole batch.
 NOTIFICATION_MAX_LATENCY_SECONDS = 5.0
@@ -189,16 +189,6 @@ CLOUD_SCAN_WRITE_BATCH_SIZE = 250
 CLOUD_DELETE_BATCH_SIZE = 1000
 
 
-# A claim is intentionally durable rather than process-local.  Five minutes is
-# long enough for ordinary provider calls while status/progress checkpoints renew
-# it during transfers; a dead process becomes recoverable once the lease expires,
-# without waiting for another restart.
-JOB_CLAIM_LEASE_SECONDS = 5 * 60
-# A foreground checkpoint extends the lease at most this often and otherwise
-# only reads it. Far below the keeper's lease/3 cadence, so a claim that passes
-# checkpoints is never closer to expiry than one that only has its keeper.
-CLAIM_CHECKPOINT_RENEW_SECONDS = 15.0
-EXPIRED_LEASE_RECONCILE_BATCH = 100
 # How often the backlog gauges and the stall detector re-read a deep queue.
 BACKLOG_OBSERVE_SECONDS = 10.0
 # How often the background loop folds dirty directories into their aggregates
@@ -208,245 +198,16 @@ BACKLOG_OBSERVE_SECONDS = 10.0
 # Freshness: a listing that finds dirty directories reports ``stale`` with the
 # previous projection and schedules its own refresh at once (ADR-0038).
 DIRECTORY_AGGREGATE_BATCH_SECONDS = 2.0
-_JOB_COUNTER_ACTIONS = frozenset(
-    {
-        "upload",
-        "recover",
-        "free-space",
-        "rename",
-        "cloud-purge",
-        "storage-class",
-    }
-)
-_pending_job_counters: contextvars.ContextVar[list[tuple[str, str]] | None] = (
-    contextvars.ContextVar("pending_job_counters", default=None)
-)
-_INTERRUPTED_JOB_SQL = """
-(
-        (j.action='recover' AND j.status IN ('downloading', 'verifying'))
-     OR (j.action='upload' AND j.status IN ('uploading', 'verifying'))
-     OR (j.action='rename' AND j.status IN ('uploading', 'verifying', 'cleaning'))
-     OR (j.action='free-space' AND j.status='cleaning')
-     OR (j.action='storage-class' AND j.status='uploading')
-     OR (j.action='cloud-purge' AND j.status='cleaning')
-)
-"""
-_worker_claim = threading.local()
-
-
-class JobLeaseLost(OperationCancelled):
-    """The worker no longer owns the durable claim required to publish work."""
-
-
-def _claim_expiry_at(timestamp: str | None = None) -> str:
-    """Build an ISO deadline using the same UTC representation as Job rows."""
-    base = datetime.fromisoformat(timestamp or now_iso())
-    if base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
-    return (base + timedelta(seconds=JOB_CLAIM_LEASE_SECONDS)).isoformat()
-
-
-def _claim_token_for(job_id: int) -> str | None:
-    active = getattr(_worker_claim, "active", None)
-    if not active:
-        return None
-    active_id, token = active
-    return str(token) if int(active_id) == int(job_id) else None
-
-
-def _claim_lost_event_for(job_id: int) -> threading.Event | None:
-    active = getattr(_worker_claim, "active", None)
-    lost = getattr(_worker_claim, "lost_event", None)
-    if not active or not isinstance(lost, threading.Event):
-        return None
-    return lost if int(active[0]) == int(job_id) else None
-
-
-def _claim_is_lost(job_id: int) -> bool:
-    event = _claim_lost_event_for(job_id)
-    return bool(event and event.is_set())
-
-
-def _mark_claim_lost(job_id: int) -> None:
-    event = _claim_lost_event_for(job_id)
-    if event is not None:
-        event.set()
-
-
-@contextmanager
-def _job_claim_context(
-    job: dict[str, Any],
-    *,
-    lost_event: threading.Event | None = None,
-):
-    """Make a scheduler-acquired claim and its loss signal available to helpers."""
-    token = job.get("claim_token")
-    if not token:
-        yield
-        return
-    previous_active = getattr(_worker_claim, "active", None)
-    previous_lost = getattr(_worker_claim, "lost_event", None)
-    _worker_claim.active = (int(job["id"]), str(token))
-    _worker_claim.lost_event = lost_event or threading.Event()
-    try:
-        yield
-    finally:
-        if previous_active is None:
-            for attribute in ("active", "lost_event"):
-                try:
-                    delattr(_worker_claim, attribute)
-                except AttributeError:
-                    pass
-        else:
-            _worker_claim.active = previous_active
-            _worker_claim.lost_event = previous_lost
-
-
-@retry_database_unit
-def _renew_claim_if_owned(job_id: int, claim_token: str) -> dict[str, Any] | None:
-    timestamp = now_iso()
-    with owned_connection(db()) as connection:
-        return ArchiveCatalog(connection).renew_job_claim(
-            job_id=int(job_id),
-            claim_token=claim_token,
-            now=timestamp,
-            claim_expires_at=_claim_expiry_at(timestamp),
-        )
-
-
-@retry_database_unit
-def _claim_is_live(job_id: int, claim_token: str) -> bool:
-    with owned_connection(db()) as connection:
-        return ArchiveCatalog(connection).job_claim_is_live(
-            job_id=int(job_id), claim_token=claim_token, now=now_iso(),
-        )
-
-
-def _checkpoint_claim(job_id: int, claim_token: str) -> bool:
-    """Durable ownership checkpoint of the foreground worker's own claim.
-
-    Every checkpoint still asks PostgreSQL whether the claim is live, so
-    cancellation, takeover and expiry are observed exactly as before. Only the
-    lease *extension* is amortized: a small upload passes ~20 checkpoints in a
-    few seconds, and extending a five-minute lease each time cost one WAL-logged
-    non-HOT ``jobs`` update and a synchronous commit per checkpoint.
-    """
-    renewed = getattr(_worker_claim, "renewed", None)
-    current = time.monotonic()
-    if (
-        renewed is not None and renewed[0] == (int(job_id), claim_token)
-        and current - renewed[1] < CLAIM_CHECKPOINT_RENEW_SECONDS
-    ):
-        return _claim_is_live(job_id, claim_token)
-    if _renew_claim_if_owned(job_id, claim_token) is None:
-        return False
-    _worker_claim.renewed = ((int(job_id), claim_token), current)
-    return True
-
-
-class _ClaimLeaseHeartbeat:
-    """Renew a claimed Job while CPU/provider work has no progress callback."""
-
-    def __init__(self, job: dict[str, Any]) -> None:
-        self.job_id = int(job["id"])
-        self.claim_token = str(job["claim_token"]) if job.get("claim_token") else None
-        self.lost = threading.Event()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def __enter__(self) -> "_ClaimLeaseHeartbeat":
-        if self.claim_token:
-            self._thread = threading.Thread(
-                target=self._run,
-                name=f"job-lease-{self.job_id}",
-                daemon=True,
-            )
-            self._thread.start()
-        return self
-
-    def _run(self) -> None:
-        # Use a fraction of the lease rather than a fixed setting so tests and
-        # future policy changes cannot silently make a live transfer reclaimable.
-        interval = max(0.1, JOB_CLAIM_LEASE_SECONDS / 3)
-        while not self._stop.wait(interval):
-            if shutdown_state.requested:
-                return
-            try:
-                if _renew_claim_if_owned(self.job_id, str(self.claim_token)) is None:
-                    self.lost.set()
-                    return
-            except Exception:
-                # The foreground worker observes this shared signal at its next
-                # checkpoint and fences all post-provider catalog/audit writes.
-                self.lost.set()
-                return
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1)
-
-
-def cancel_jobs(job_ids: list[int]) -> None:
-    """Signal SDK transfers and verification streams to stop at checkpoints."""
-    with operation_process_lock:
-        cancelled_jobs.update(job_ids)
-
-
-def job_cancelled(job_id: int) -> bool:
-    with operation_process_lock:
-        return job_id in cancelled_jobs
-
-
-def ensure_job_active(job_id: int, message: str) -> None:
-    """Stop work when local cancellation, DB cancellation, or lease loss wins.
-
-    ``cancel_jobs`` is a fast same-process signal.  The durable claim check is
-    also required because another application process may cancel or reclaim the
-    row while this worker is inside a long-running operation.
-    """
-    shutdown_state.checkpoint()
-    if job_cancelled(job_id):
-        raise OperationCancelled(message)
-    if _claim_is_lost(job_id):
-        raise JobLeaseLost(message)
-    claim_token = _claim_token_for(job_id)
-    if claim_token and not _checkpoint_claim(job_id, claim_token):
-        _mark_claim_lost(job_id)
-        raise JobLeaseLost(message)
-
-
-def ensure_job_claim_owned_in_transaction(
-    connection: Any,
-    job: dict[str, Any],
-    message: str,
-) -> None:
-    """Fence a catalog/audit transaction behind the currently owned lease.
-
-    The conditional renewal locks the Job row, then its lease, until the
-    surrounding transaction commits (the claim's lock order).  A cancellation/takeover that won first therefore
-    prevents every post-provider catalog or audit write in that transaction.
-    """
-    shutdown_state.checkpoint()
-    job_id = int(job["id"])
-    if job_cancelled(job_id):
-        raise OperationCancelled(message)
-    if _claim_is_lost(job_id):
-        raise JobLeaseLost(message)
-    claim_token = job.get("claim_token")
-    if not claim_token:
-        return
-    timestamp = now_iso()
-    current = ArchiveCatalog(connection).renew_job_claim(
-        job_id=job_id,
-        claim_token=str(claim_token),
-        now=timestamp,
-        claim_expires_at=_claim_expiry_at(timestamp),
-        lock_job=True,
-    )
-    if current is None:
-        _mark_claim_lost(job_id)
-        raise JobLeaseLost(message)
+# The Job queue as this process runs it (#794). Claim, lease, transitions and
+# reconciliation live in ``services/job_queue``; the runner reads this Module's
+# ``db`` and ``now_iso`` when it is called (a patched one is the one that runs).
+job_runner = job_queue.QueueRunner(db=lambda: db(), now_iso=lambda: now_iso())
+# The runner's verbs, as the worker code below asks them of it.
+set_job = job_runner.set_job
+set_job_progress = job_runner.set_job_progress
+schedule_upload_retry = job_runner.schedule_upload_retry
+ensure_job_active = job_runner.ensure_job_active
+ensure_job_claim_owned_in_transaction = job_runner.ensure_job_claim_owned_in_transaction
 
 
 def now_iso() -> str:
@@ -3179,293 +2940,6 @@ def _identify_new_local_copies(
     return summary
 
 
-def _job_counter_action(action: str | None) -> str:
-    value = str(action or "other")
-    return value if value in _JOB_COUNTER_ACTIONS else "other"
-
-
-def _inc_job_counter(kind: str, action: str | None) -> None:
-    names = {
-        "completed": "jobs_completed_total",
-        "failed": "jobs_failed_total",
-        "retries": "jobs_retries_total",
-    }
-    try:
-        metrics_service.inc(names[kind], action=_job_counter_action(action))
-    except Exception:
-        pass
-
-
-def _record_committed_job_counter(kind: str, action: str | None) -> None:
-    """Count a committed Job outcome, or defer until the outer transaction."""
-    pending = _pending_job_counters.get()
-    if pending is not None:
-        pending.append((kind, _job_counter_action(action)))
-        return
-    _inc_job_counter(kind, action)
-
-
-@contextmanager
-def _defer_job_counters() -> Iterator[None]:
-    """Hold Job counters until the surrounding DB transaction commits."""
-    items: list[tuple[str, str]] = []
-    token = _pending_job_counters.set(items)
-    try:
-        yield
-    except BaseException:
-        raise
-    else:
-        for kind, action in items:
-            _inc_job_counter(kind, action)
-    finally:
-        _pending_job_counters.reset(token)
-
-
-@retry_database_unit
-def set_job(
-    job_id: int,
-    status: str,
-    message: str = "",
-    *,
-    message_key: str | None = None,
-    message_params: dict[str, Any] | None = None,
-    remediation_suspension: str | None = None,
-    remediation_reason: str | None = None,
-) -> bool:
-    """Persist a state transition without letting a cancelled/lost claim win.
-
-    Worker calls inherit their token from ``_job_claim_context``.  A status
-    change then becomes a compare-and-swap: a concurrent cancellation or a new
-    claimant makes this a harmless no-op instead of resurrecting the Job.
-    Direct administrative/test callers without a claim retain the historic
-    update behavior.
-    """
-    if _claim_is_lost(job_id):
-        return False
-    with _defer_job_counters():
-        with owned_connection(db()) as connection:
-            return _set_job_in_transaction(
-                connection, job_id, status, message,
-                message_key=message_key, message_params=message_params,
-                remediation_suspension=remediation_suspension,
-                remediation_reason=remediation_reason,
-            )
-
-
-def _set_job_in_transaction(
-    connection: Any, job_id: int, status: str, message: str = "", *,
-    message_key: str | None = None,
-    message_params: dict[str, Any] | None = None,
-    remediation_suspension: str | None = None,
-    remediation_reason: str | None = None,
-    transferred_bytes: int | None = None,
-    fenced_unit: bool = False,
-) -> bool:
-    """DB-only transition; caller owns commit/retry and deferred counters.
-
-    This is the same transition used by set_job, not a second completion path.
-    Terminal/retry transitions still lock the Vault exclusively; never invoke
-    from an audited SHARE callback. Final upload progress can share its CAS.
-
-    ``fenced_unit``: the caller is an exclusive claim-fenced upload unit
-    (``_upload_catalog_unit``), which already holds the Vault row NO KEY UPDATE
-    and renewed this lease under the Job row lock in the same transaction. The
-    Vault lock and a held status's second renewal are then not asked again; a
-    terminal status still ends the lease by its own CAS.
-    """
-    params = message_params or {}
-    if message_key and not message:
-        message = translate(message_key, locale=DEFAULT_LOCALE, **params)
-    timestamp = now_iso()
-    if _claim_is_lost(job_id):
-        return False
-    claim_token = _claim_token_for(job_id)
-    held = status in JOB_LEASE_HELD_STATUSES
-    previous_status = None
-    action = None
-    vault_lock = "NO KEY UPDATE"
-    current = None
-    if (held and claim_token
-            and remediation_suspension is None and remediation_reason is None):
-        # A held step reads its subject before the Vault lock, whose mode it
-        # decides; its previous status feeds no counter.
-        current = _transition_subject(connection, job_id)
-    # An unbound held step moves no Upload Remediation episode (see below).
-    unbound_held = bool(current and current["unbound"])
-    if unbound_held:
-        # ADR-0031: a held step changes no admission predicate. Keep Vault-first
-        # order before locking Jobs or append-only aggregate dirty FK marks.
-        vault_lock = "KEY SHARE"
-    if not fenced_unit:
-        connection.execute(
-            f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
-            (job_id,),
-        )
-    if current is None:
-        current = _transition_subject(connection, job_id)
-    if current is not None:
-        previous_status, action = current["status"], current["action"]
-    catalog = ArchiveCatalog(connection)
-    updated = catalog.transition_job(
-        job_id=job_id,
-        status=status,
-        message=message,
-        message_key=message_key,
-        message_params=format_message_params(params) if message_key else None,
-        now=timestamp,
-        claim_token=claim_token,
-        claim_expires_at=_claim_expiry_at(timestamp) if held else None,
-        transferred_bytes=transferred_bytes,
-        lease_renewed=fenced_unit,
-    )
-    if updated and action == "upload":
-        from .services import upload_remediation
-        if not unbound_held:
-            # Bindings are written only with the Job's creation or completion:
-            # an unbound held step has no episode to move (ADR-0035, #592).
-            upload_remediation.transition(
-                connection, job_id, status, timestamp,
-                suspension=remediation_suspension, closing_reason=remediation_reason,
-                bound=not current["unbound"], job=catalog.transitioned_job,
-            )
-        # Same row as _dirty_job_protection would read again.
-        mark_path_dirty(connection, int(current["vault_id"]), current["path"])
-        if remediation_reason == "file_removed" and current is not None:
-            ArchiveCatalog(connection).mark_local_path_missing(
-                vault_id=int(current["vault_id"]), path=current["path"], observed_at=timestamp,
-            )
-    if updated and status in {"completed", "failed"}:
-        if action == "upload" and status == "completed":
-            # A completed upload notifies no one (see
-            # enqueue_job_terminal_notification): only leave the outbox.
-            notification_service.mark_terminal_notification_done(connection, job_id=job_id)
-        else:
-            notification_service.enqueue_job_terminal_notification_best_effort(
-                connection, job_id=job_id)
-        if previous_status not in TERMINAL_JOB_STATUSES:
-            _record_committed_job_counter("completed" if status == "completed" else "failed", action)
-    return updated
-
-
-def _set_job_message_in_transaction(connection: Any, job_id: int, message_key: str) -> None:
-    """Change only the visible message of a claimed, running Job.
-
-    No status, lease, protection or remediation change: the caller's
-    claim-fenced unit already holds the Job row. A Job that moved on keeps its
-    own message (the CAS matches only the status the run is in).
-    """
-    connection.execute(
-        """UPDATE jobs SET message=%s, message_key=%s, message_params=NULL, updated_at=%s
-           WHERE id=%s AND status IN ('uploading', 'verifying')""",
-        (translate(message_key, locale=DEFAULT_LOCALE), message_key, now_iso(), job_id),
-    )
-
-
-def _transition_subject(connection: Any, job_id: int) -> dict[str, Any] | None:
-    """The Job a transition moves, and whether it is unbound, in one read.
-
-    ``unbound``: a held-status step of ``job_id`` writes nothing admission
-    reads. An upload bound to an Upload Remediation episode also moves that
-    episode (``upload_remediation.transition``); it keeps the exclusive Vault
-    lock. Bindings are written only with the Job's creation or completion,
-    never while a claimant holds it, so this unlocked read cannot go stale.
-    """
-    return connection.execute(
-        """
-        SELECT j.status, j.action, j.vault_id, f.path,
-               NOT (
-                   j.action='upload'
-                   AND EXISTS (SELECT 1 FROM upload_remediation_jobs b WHERE b.job_id=j.id)
-               ) AS unbound
-        FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.id=%s
-        """,
-        (job_id,),
-    ).fetchone()
-
-
-@retry_database_unit
-def schedule_upload_retry(
-    job_id: int,
-    *,
-    message: str = "",
-    message_key: str | None = None,
-    message_params: dict[str, Any] | None = None,
-    retry_count: int,
-    delay_seconds: int | None = None,
-    remediation_suspension: str | None = None,
-) -> bool:
-    delay = (
-        int(delay_seconds)
-        if delay_seconds is not None
-        else upload_retry_delay_seconds(retry_count)
-    )
-    # Bounded jitter keeps thundering herds apart without changing the base delay.
-    jitter = delay * 0.2 * (uuid.uuid4().int % 1000) / 1000.0
-    retry_after = (
-        datetime.now(timezone.utc) + timedelta(seconds=delay + jitter)
-    ).isoformat()
-    params = message_params or {}
-    if message_key and not message:
-        message = translate(message_key, locale=DEFAULT_LOCALE, **params)
-    timestamp = now_iso()
-    if _claim_is_lost(job_id):
-        return False
-    claim_token = _claim_token_for(job_id)
-    action = None
-    with owned_connection(db()) as connection:
-        # Stays exclusive (ADR-0031, #535): releasing the lease returns the
-        # Job to the unstarted set ('retrying') that cancel-pending and the
-        # scheduler select, and moves a bound remediation episode; sharing
-        # was not proven safe, and retries are rare.
-        connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
-        current = connection.execute(
-            "SELECT action FROM jobs WHERE id=%s",
-            (job_id,),
-        ).fetchone()
-        if current is not None:
-            action = current["action"]
-        updated = ArchiveCatalog(connection).transition_job(
-            job_id=job_id,
-            status="retrying",
-            message=message,
-            message_key=message_key,
-            message_params=format_message_params(params) if message_key else None,
-            now=timestamp,
-            claim_token=claim_token,
-            run_after=retry_after,
-            retry_count=retry_count,
-        )
-        if updated and action == "upload":
-            from .services import upload_remediation
-            upload_remediation.transition(connection, job_id, "retrying", timestamp, suspension=remediation_suspension)
-            _dirty_job_protection(connection, job_id)
-    if updated and not remediation_suspension:
-        # A wait for the Source Volume is not a retry of the transfer.
-        _record_committed_job_counter("retries", action)
-    return updated
-
-
-@retry_database_unit
-def set_job_progress(
-    job_id: int,
-    transferred_bytes: int,
-    *,
-    claim_token: str | None = None,
-) -> bool:
-    timestamp = now_iso()
-    if _claim_is_lost(job_id):
-        return False
-    claim_token = claim_token or _claim_token_for(job_id)
-    with owned_connection(db()) as connection:
-        return ArchiveCatalog(connection).record_job_progress(
-            job_id=job_id,
-            transferred_bytes=transferred_bytes,
-            now=timestamp,
-            claim_token=claim_token,
-            claim_expires_at=_claim_expiry_at(timestamp),
-        )
-
-
 def _remove_abandoned_restore_files(target: Path) -> None:
     """Remove only application-owned recovery files left by a stopped worker."""
     try:
@@ -3568,46 +3042,6 @@ def _sweep_restore_residues() -> int:
     return removed
 
 
-def _dirty_job_protection(connection: Any, job_id: int) -> None:
-    row = connection.execute(
-        """SELECT j.vault_id, f.path FROM jobs j JOIN files f ON f.id = j.file_id
-           WHERE j.id=%s AND j.action='upload'""", (job_id,),
-    ).fetchone()
-    if row:
-        mark_path_dirty(connection, int(row["vault_id"]), row["path"])
-
-
-def _reconcile_job_transition(
-    connection: Any,
-    *,
-    job_id: int,
-    status: str,
-    message: str,
-    timestamp: str,
-    reset_progress: bool = False,
-    complete_progress: bool = False,
-) -> bool:
-    """Publish one restart decision only if no worker renewed the old lease."""
-    updated = ArchiveCatalog(connection).settle_stale_job(
-        job_id=job_id,
-        status=status,
-        message=message,
-        now=timestamp,
-        progress="reset" if reset_progress else "complete" if complete_progress else None,
-    )
-    if updated:
-        _dirty_job_protection(connection, job_id)
-    if updated and status in {"completed", "failed"}:
-        row = connection.execute(
-            "SELECT action FROM jobs WHERE id=%s",
-            (job_id,),
-        ).fetchone()
-        _record_committed_job_counter(
-            status, row["action"] if row is not None else None
-        )
-    return updated
-
-
 def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> None:
     from .services import upload_provenance as provenance
     if reason in provenance.WAIT_REASONS:
@@ -3685,7 +3119,7 @@ def _reconcile_recover_job(
     """Reconcile a recovery destination without ever deleting its final path."""
 
     def transition(status: str, message: str, *, complete: bool = False) -> str:
-        changed = _reconcile_job_transition(
+        changed = job_queue.settle_interrupted_job(
             connection,
             job_id=int(job["id"]),
             status=status,
@@ -3791,7 +3225,7 @@ def _reconcile_storage_class_job(
     reconciles a started copy from S3 by its journaled receipt or token and
     never sends it again.
     """
-    return "requeued" if _reconcile_job_transition(
+    return "requeued" if job_queue.settle_interrupted_job(
         connection, job_id=int(job["id"]), status="queued",
         message="Storage class change interrupted; its copy attempt will be reconciled",
         timestamp=timestamp,
@@ -3882,7 +3316,7 @@ def _reconcile_cloud_purge_group(
         file_ids=[str(job["file_id"]) for job in remaining],
     )
     for job in remaining:
-        if _reconcile_job_transition(
+        if job_queue.settle_interrupted_job(
             connection,
             job_id=int(job["id"]),
             status="queued",
@@ -3918,18 +3352,7 @@ def observe_stuck_lease_jobs() -> tuple[int, float]:
     timestamp = now_iso()
     now = datetime.now(timezone.utc)
     with db() as connection:
-        row = connection.execute(
-            f"""
-            SELECT COUNT(*) AS total,
-                   MIN(l.expires_at) AS oldest_expiry,
-                   MIN(j.updated_at) AS oldest_update
-            FROM jobs j
-            LEFT JOIN job_leases l ON l.job_id = j.id
-            WHERE {_INTERRUPTED_JOB_SQL}
-              AND (l.job_id IS NULL OR l.expires_at <= %s::timestamptz)
-            """,
-            (timestamp,),
-        ).fetchone()
+        row = JobQueue(connection).interrupted_job_backlog(now=timestamp)
     count = int(row["total"] or 0) if row is not None else 0
     if count <= 0:
         return 0, 0.0
@@ -3964,214 +3387,136 @@ def observe_failed_job_backlog() -> tuple[int, float]:
 
 
 def reconcile_interrupted_jobs() -> dict[str, int]:
-    """Reconcile expired or legacy durable worker states."""
-    with _defer_job_counters():
-        return _reconcile_interrupted_jobs_impl()
-
-
-def _reconcile_interrupted_jobs_impl() -> dict[str, int]:
     """Reconcile expired or legacy durable worker states.
 
-    A live lease is authoritative even when another process is sweeping.  The
-    explicit action/state matrix covers every operation state which can be
-    persisted mid-I/O; waiting states (retrying, pending approval/delay, and
-    Glacier restoring) remain scheduler-owned and are not reset.  Each call
-    is bounded so a large backlog of expired leases cannot monopolize a poll.
+    The Job queue selects the interrupted Jobs and publishes every decision
+    (``job_queue.QueueRunner``); this worker says what the Local Copy or the
+    bucket shows about each one.
     """
-    summary = {"completed": 0, "requeued": 0, "failed": 0}
-    local_actions = {"recover", "upload", "rename", "free-space"}
-    seen_purge_groups: set[tuple[int, str]] = set()
-    with db() as connection:
-        timestamp = now_iso()
-        jobs = connection.execute(
-            f"""
-            SELECT j.*, f.path, v.source_root, v.uuid AS vault_uuid,
-                   t.bucket AS s3_bucket, t.key_layout AS s3_key_layout
-            FROM jobs j
-            JOIN files f ON f.id = j.file_id
-            JOIN vaults v ON v.id=j.vault_id
-            JOIN vault_targets t ON t.id = v.target_id
-            WHERE {_INTERRUPTED_JOB_SQL}
-              AND NOT EXISTS (
-                  SELECT 1 FROM job_leases l
-                  WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
-              )
-            ORDER BY j.requested_at ASC, j.id ASC
-            LIMIT %s
-            """,
-            (timestamp, EXPIRED_LEASE_RECONCILE_BATCH),
-        ).fetchall()
+    return job_runner.reconcile_interrupted_jobs(
+        reachable=_interrupted_job_reachable,
+        reconcile_job=_reconcile_interrupted_job,
+        reconcile_purge_group=_reconcile_cloud_purge_group,
+    )
 
-        for job in jobs:
-            # A cloud-purge group must be reconciled as one operation, not once
-            # per member, otherwise one restart could split its exact-version
-            # postconditions across competing retries.
-            if job["action"] == "cloud-purge":
-                group_key = (int(job["vault_id"]), str(job.get("group_id") or ""))
-                if group_key in seen_purge_groups:
-                    continue
-                seen_purge_groups.add(group_key)
-                try:
-                    result = _reconcile_cloud_purge_group(
-                        connection, job, timestamp=timestamp
-                    )
-                    for key, value in result.items():
-                        summary[key] += value
-                except Exception as exc:
-                    # A provider postcondition we cannot prove is never retried
-                    # blindly.  Mark every stale group member terminal instead.
-                    group_rows = connection.execute(
-                        """
-                        SELECT j.id FROM jobs j
-                        WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
-                          AND j.status='cleaning'
-                          AND NOT EXISTS (
-                              SELECT 1 FROM job_leases l
-                              WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
-                          )
-                        """,
-                        (job["vault_id"], job.get("group_id"), timestamp),
-                    ).fetchall()
-                    for row in group_rows:
-                        if _reconcile_job_transition(
-                            connection,
-                            job_id=int(row["id"]),
-                            status="failed",
-                            message=f"Post-restart reconciliation failed: {exc}",
-                            timestamp=timestamp,
-                        ):
-                            notification_service.enqueue_job_terminal_notification_best_effort(
-                                connection, job_id=int(row["id"])
-                            )
-                            summary["failed"] += 1
-                continue
 
-            if job["action"] in local_actions:
-                access = source_layout.vault_local_access(job["source_root"])
-                if not access.local_operations_allowed:
-                    # Keep interrupted local work suspended without touching the
-                    # absent, inaccessible, or replaced tree.
-                    continue
-            try:
-                if job["action"] == "recover":
-                    source_root = Path(job["source_root"])
-                    if not source_root.is_dir():
-                        raise RuntimeError("Source folder is unavailable")
-                    target_path = safe_local_entry_path(
-                        job["source_root"], job["path"]
-                    )
-                    _remove_abandoned_restore_files(target_path)
-                    recovery_target = ArchiveCatalog(connection).get_job_target(
-                        int(job["id"])
-                    )
-                    outcome = _reconcile_recover_job(
-                        connection,
-                        job,
-                        target_path=target_path,
-                        target=recovery_target,
-                        timestamp=timestamp,
-                    )
-                elif job["action"] == "free-space":
-                    source_root = Path(job["source_root"])
-                    if not source_root.is_dir():
-                        raise RuntimeError("Source folder is unavailable")
-                    target = safe_local_entry_path(job["source_root"], job["path"])
-                    if os.path.lexists(target):
-                        outcome = (
-                            "requeued"
-                            if _reconcile_job_transition(
-                                connection,
-                                job_id=int(job["id"]),
-                                status="queued",
-                                message="Operation interrupted by restart; automatically resumed",
-                                timestamp=timestamp,
-                                reset_progress=True,
-                            )
-                            else "skipped"
-                        )
-                    else:
-                        claim_restored = False
-                        surviving_claims: list[Path] = []
-                        for claim in sorted(target.parent.glob(f".{target.name}.cleanup-*.tmp")):
-                            if CLEANUP_TEMPORARY_RE.fullmatch(claim.name) is None:
-                                continue
-                            surviving_claims.append(claim)
-                            if restore_claimed_local_copy(claim, target) and os.path.lexists(target):
-                                claim_restored = True
-                                break
-                        if claim_restored:
-                            outcome = (
-                                "requeued"
-                                if _reconcile_job_transition(
-                                    connection,
-                                    job_id=int(job["id"]),
-                                    status="queued",
-                                    message="Cleanup claim restored after restart; free-space resumed",
-                                    timestamp=timestamp,
-                                    reset_progress=True,
-                                )
-                                else "skipped"
-                            )
-                        else:
-                            remaining_claims = [claim for claim in surviving_claims if claim.exists()]
-                            if remaining_claims:
-                                message = (
-                                    "Cleanup claim could not be restored after restart; "
-                                    f"original content was preserved at {remaining_claims[0]}"
-                                )
-                                outcome = "failed"
-                            else:
-                                ArchiveCatalog(connection).mark_local_copy_missing(
-                                    job["file_id"], observed_at=timestamp
-                                )
-                                message = "Local space freed (reconciled after restart)"
-                                outcome = "completed"
-                            changed = _reconcile_job_transition(
-                                connection,
-                                job_id=int(job["id"]),
-                                status=outcome,
-                                message=message,
-                                timestamp=timestamp,
-                                complete_progress=outcome == "completed",
-                            )
-                            if changed and outcome in {"completed", "failed"}:
-                                notification_service.enqueue_job_terminal_notification_best_effort(
-                                    connection, job_id=int(job["id"])
-                                )
-                            if not changed:
-                                outcome = "skipped"
-                elif job["action"] == "storage-class":
-                    outcome = _reconcile_storage_class_job(
-                        connection, job, timestamp=timestamp
-                    )
-                else:
-                    outcome = (
-                        "requeued"
-                        if _reconcile_job_transition(
-                            connection,
-                            job_id=int(job["id"]),
-                            status="queued",
-                            message="Operation interrupted by restart; automatically resumed",
-                            timestamp=timestamp,
-                            reset_progress=True,
-                        )
-                        else "skipped"
-                    )
-                if outcome in summary:
-                    summary[outcome] += 1
-            except Exception as exc:
-                if _reconcile_job_transition(
+def _interrupted_job_reachable(job: dict[str, Any]) -> bool:
+    """False while interrupted local work stays suspended: its tree is absent,
+    inaccessible, or replaced, and must not be touched."""
+    if job["action"] in {"recover", "upload", "rename", "free-space"}:
+        access = source_layout.vault_local_access(job["source_root"])
+        if not access.local_operations_allowed:
+            return False
+    return True
+
+
+def _reconcile_interrupted_job(connection: Any, job: dict[str, Any], *, timestamp: str) -> str:
+    """Settle one interrupted Job from what its Local Copy shows; its outcome."""
+    if job["action"] == "recover":
+        source_root = Path(job["source_root"])
+        if not source_root.is_dir():
+            raise RuntimeError("Source folder is unavailable")
+        target_path = safe_local_entry_path(
+            job["source_root"], job["path"]
+        )
+        _remove_abandoned_restore_files(target_path)
+        recovery_target = ArchiveCatalog(connection).get_job_target(
+            int(job["id"])
+        )
+        outcome = _reconcile_recover_job(
+            connection,
+            job,
+            target_path=target_path,
+            target=recovery_target,
+            timestamp=timestamp,
+        )
+    elif job["action"] == "free-space":
+        source_root = Path(job["source_root"])
+        if not source_root.is_dir():
+            raise RuntimeError("Source folder is unavailable")
+        target = safe_local_entry_path(job["source_root"], job["path"])
+        if os.path.lexists(target):
+            outcome = (
+                "requeued"
+                if job_queue.settle_interrupted_job(
                     connection,
                     job_id=int(job["id"]),
-                    status="failed",
-                    message=f"Post-restart reconciliation failed: {exc}",
+                    status="queued",
+                    message="Operation interrupted by restart; automatically resumed",
                     timestamp=timestamp,
-                ):
+                    reset_progress=True,
+                )
+                else "skipped"
+            )
+        else:
+            claim_restored = False
+            surviving_claims: list[Path] = []
+            for claim in sorted(target.parent.glob(f".{target.name}.cleanup-*.tmp")):
+                if CLEANUP_TEMPORARY_RE.fullmatch(claim.name) is None:
+                    continue
+                surviving_claims.append(claim)
+                if restore_claimed_local_copy(claim, target) and os.path.lexists(target):
+                    claim_restored = True
+                    break
+            if claim_restored:
+                outcome = (
+                    "requeued"
+                    if job_queue.settle_interrupted_job(
+                        connection,
+                        job_id=int(job["id"]),
+                        status="queued",
+                        message="Cleanup claim restored after restart; free-space resumed",
+                        timestamp=timestamp,
+                        reset_progress=True,
+                    )
+                    else "skipped"
+                )
+            else:
+                remaining_claims = [claim for claim in surviving_claims if claim.exists()]
+                if remaining_claims:
+                    message = (
+                        "Cleanup claim could not be restored after restart; "
+                        f"original content was preserved at {remaining_claims[0]}"
+                    )
+                    outcome = "failed"
+                else:
+                    ArchiveCatalog(connection).mark_local_copy_missing(
+                        job["file_id"], observed_at=timestamp
+                    )
+                    message = "Local space freed (reconciled after restart)"
+                    outcome = "completed"
+                changed = job_queue.settle_interrupted_job(
+                    connection,
+                    job_id=int(job["id"]),
+                    status=outcome,
+                    message=message,
+                    timestamp=timestamp,
+                    complete_progress=outcome == "completed",
+                )
+                if changed and outcome in {"completed", "failed"}:
                     notification_service.enqueue_job_terminal_notification_best_effort(
                         connection, job_id=int(job["id"])
                     )
-                    summary["failed"] += 1
-    return summary
+                if not changed:
+                    outcome = "skipped"
+    elif job["action"] == "storage-class":
+        outcome = _reconcile_storage_class_job(
+            connection, job, timestamp=timestamp
+        )
+    else:
+        outcome = (
+            "requeued"
+            if job_queue.settle_interrupted_job(
+                connection,
+                job_id=int(job["id"]),
+                status="queued",
+                message="Operation interrupted by restart; automatically resumed",
+                timestamp=timestamp,
+                reset_progress=True,
+            )
+            else "skipped"
+        )
+    return outcome
 
 
 def job_progress_callback(
@@ -4524,7 +3869,7 @@ def _upload_catalog_unit(
     from .services.upload_pipeline import catalog_capacity
     # Acquired before connection checkout/Vault locks, released after COMMIT
     # (or rollback), and outside the retry decorator's sleep between attempts.
-    with catalog_capacity(job), _defer_job_counters():
+    with catalog_capacity(job), job_queue.defer_job_counters():
         with owned_connection(db()) as connection, unit_dirty_marks(connection):
             # Same Vault -> Job/file order as admission/cleanup, in either mode.
             # The private capability exists only inside this DB unit and still
@@ -4611,10 +3956,11 @@ class _WorkerAdapter:
     WorkerStopping = WorkerStopping
 
     def claim(self, job: dict[str, Any]) -> Any:
-        return _job_claim_context(job, lost_event=_claim_lost_event_for(job["id"]))
+        return job_queue.job_claim_context(
+            job, lost_event=job_queue.claim_lost_event_for(job["id"]))
 
     def claim_lost_event(self, job_id: int) -> threading.Event | None:
-        return _claim_lost_event_for(job_id)
+        return job_queue.claim_lost_event_for(job_id)
 
     def stopped_in_process(self, job_id: int) -> bool:
         # Runs for every chunk an Upload reads: ``shutdown_state.checkpoint()``
@@ -4643,14 +3989,14 @@ class _WorkerAdapter:
         message_key: str | None = None, transferred_bytes: int | None = None,
         fenced_unit: bool = False,
     ) -> bool:
-        return _set_job_in_transaction(
+        return job_runner.set_job_in_transaction(
             connection, job_id, status, message_key=message_key,
             transferred_bytes=transferred_bytes, fenced_unit=fenced_unit)
 
     def set_job_message_in_transaction(
         self, connection: Any, job_id: int, message_key: str,
     ) -> None:
-        _set_job_message_in_transaction(connection, job_id, message_key)
+        job_runner.set_job_message_in_transaction(connection, job_id, message_key)
 
     # -- SourceVolume --------------------------------------------------------
     UploadSourceRemoved = UploadSourceRemoved
@@ -5540,7 +4886,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         revoked_ids.update(revoked)
         expected_job_ids[:] = [i for i in expected_job_ids if i not in revoked]
         if valid and int(job["id"]) in revoked:
-            released = ArchiveCatalog(connection).release_purge_group_claim(
+            released = JobQueue(connection).release_purge_group_claim(
                 vault_id=vault_id, group_id=group_id, claim_token=str(claim_token), now=now_iso(),
             )
             if released:
@@ -5556,7 +4902,7 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
     with db() as connection:
         if not still_valid(connection):
             return
-        purge_jobs, items = ArchiveCatalog(connection).load_claimed_purge_group(
+        purge_jobs, items = JobQueue(connection).load_claimed_purge_group(
             lead_job_id=int(job["id"]), claim_token=str(claim_token), now=now_iso(),
         )
         lock_days = retention_lock_service.vault_lock_days(connection, vault_id)
@@ -5579,12 +4925,12 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
 
     def renew(connection: Any) -> None:
         stamp = now_iso()
-        if _claim_is_lost(int(job["id"])) or not ArchiveCatalog(connection).renew_purge_group_claim(
+        if job_queue.claim_is_lost(int(job["id"])) or not JobQueue(connection).renew_purge_group_claim(
             vault_id=vault_id, group_id=group_id, claim_token=str(claim_token),
             expected_job_ids=expected_job_ids, now=stamp,
-            claim_expires_at=_claim_expiry_at(stamp),
+            claim_expires_at=job_runner.claim_expiry_at(stamp),
         ):
-            _mark_claim_lost(int(job["id"]))
+            job_queue.mark_claim_lost(int(job["id"]))
             raise JobLeaseLost("Cloud purge claim was lost")
 
     for offset in range(0, len(items), CLOUD_DELETE_BATCH_SIZE):
@@ -5632,8 +4978,8 @@ def process_cloud_purge(job: dict[str, Any]) -> None:
         except psycopg.Error:
             if not sent:
                 raise
-        if _claim_is_lost(int(job["id"])):
-            _mark_claim_lost(int(job["id"]))
+        if job_queue.claim_is_lost(int(job["id"])):
+            job_queue.mark_claim_lost(int(job["id"]))
             raise _PurgeUnsettled("Cloud purge claim was lost")
         deleted: list[dict[str, Any]] = []
         failed: list[tuple[dict[str, Any], str]] = []
@@ -5750,16 +5096,7 @@ def _locked_purge_members(
 def _load_claimed_job_status(job: dict[str, Any]) -> dict[str, Any] | None:
     claim_token = job.get("claim_token")
     if claim_token:
-        with owned_connection(db()) as connection:
-            renewed = ArchiveCatalog(connection).renew_job_claim(
-                job_id=int(job["id"]), claim_token=str(claim_token),
-                now=now_iso(), claim_expires_at=_claim_expiry_at(),
-            )
-        if renewed is not None and _claim_token_for(int(job["id"])) == str(claim_token):
-            # This is the run's first extension: the next checkpoints read the
-            # lease and extend it again only after the usual interval.
-            _worker_claim.renewed = ((int(job["id"]), str(claim_token)), time.monotonic())
-        return renewed
+        return job_runner.renew_started_claim(job)
     with owned_connection(db()) as connection:
         # Direct unit/service callers retain the historic unclaimed seam;
         # production scheduling always supplies a token.
@@ -5773,7 +5110,7 @@ def _release_preflight_purge_claim(job: dict[str, Any]) -> None:
     # The group was leased as cleaning, but preflight precedes DeleteObjects.
     # Release the complete group; keep exact deletion consent and its deadline.
     with owned_connection(db()) as connection:
-        ArchiveCatalog(connection).release_purge_group_claim(
+        JobQueue(connection).release_purge_group_claim(
             vault_id=int(job["vault_id"]), group_id=str(job["group_id"]),
             claim_token=str(job["claim_token"]), now=now_iso(),
         )
@@ -5932,8 +5269,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         if current["status"] in {"queued", "retrying", "restoring"}:
             # Drop stale in-memory cancel flags from prior process/test DBs that
             # reused this Job id; a live cancel after this point re-arms the set.
-            with operation_process_lock:
-                cancelled_jobs.discard(int(job["id"]))
+            job_queue.forget_job_cancellation(int(job["id"]))
         local_statuses = {
             "upload": {"queued", "retrying"},
             "rename": {"queued", "retrying"},
@@ -6035,7 +5371,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
                 outcome="cancelled",
             )
     except Exception as exc:
-        if _claim_is_lost(int(job["id"])):
+        if job_queue.claim_is_lost(int(job["id"])):
             return False
         from .services import upload_provenance as _provenance
         if (job["action"] in _provenance.TARGET_ACTIONS and isinstance(exc, _provenance.UploadBlocked)
@@ -6143,9 +5479,8 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
 
 def process_job(job: dict[str, Any]) -> bool:
     """Run a Job with its durable scheduler claim bound to nested helpers."""
-    with _ClaimLeaseHeartbeat(job) as heartbeat:
-        with _job_claim_context(job, lost_event=heartbeat.lost):
-            return _process_claimed_job(job)
+    with job_runner.hold_claim(job):
+        return _process_claimed_job(job)
 
 
 def _restore_due_before(runtime: Any, *, current: datetime | None = None) -> str:
@@ -6558,7 +5893,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
     """Claim and dispatch one fair, concurrency-bounded scheduler batch.
 
     Selecting candidates is intentionally separate from acquisition.  Every
-    selected row is rechecked by a conditional UPDATE in ``ArchiveCatalog``;
+    selected row is rechecked by the conditional claim of ``JobQueue``;
     two processes may read the same queue but only one receives a claim token.
     Expired intermediate leases are reconciled first so a dead worker does not
     leave ``uploading``/``verifying``/``cleaning`` Jobs invisible to the scheduler.
@@ -6611,9 +5946,9 @@ def process_jobs_once(*, wait: bool = True) -> int:
     for _scan_round in range(MAX_SCAN_ROUNDS):
         with db() as connection:
             scope = _database_scope(connection)
-            catalog = ArchiveCatalog(connection)
+            queue = JobQueue(connection)
             candidates = [
-                row for row in catalog.list_claimable_jobs(
+                row for row in queue.list_claimable_jobs(
                     now=now,
                     restore_due_before=_restore_due_before(runtime, current=current),
                     limit=max(10, concurrency * 10) * 8,
@@ -6631,11 +5966,11 @@ def process_jobs_once(*, wait: bool = True) -> int:
             if not candidates:
                 # This includes a wholly deferred local queue: leaving its old
                 # clock open would incorrectly bank the backoff after restart.
-                catalog.observe_scheduler_turns(now=now, runnable_vault_ids=[])
+                queue.observe_scheduler_turns(now=now, runnable_vault_ids=[])
                 break
             seen_ids.update(int(row["id"]) for row in candidates)
             if _scan_round == 0:
-                active_by_vault = catalog.active_job_counts(now=now)
+                active_by_vault = queue.active_job_counts(now=now)
                 preflight = cloud_preflight_gate.snapshot(connection)
                 preflight_wait = ((preflight['status'] == 'blocked' and
                                    not cloud_preflight_gate.probe_due(preflight, current))
@@ -6683,7 +6018,7 @@ def process_jobs_once(*, wait: bool = True) -> int:
                 _clear_deferral(scope, int(job['id']))
             runnable_vaults.add(vault_id)
         with db() as connection:
-            turns = ArchiveCatalog(connection).observe_scheduler_turns(
+            turns = JobQueue(connection).observe_scheduler_turns(
                 now=now, runnable_vault_ids=sorted(runnable_vaults),
             )
         eligible_candidates = [job for job in eligible_candidates if int(job['id']) not in unready_ids]
@@ -6740,46 +6075,8 @@ def process_jobs_once(*, wait: bool = True) -> int:
     for job in selected:
         if shutdown_state.requested:
             break
-        claimed_at = now_iso()
-        claim_token = str(uuid.uuid4())
-        claim_expires_at = _claim_expiry_at(claimed_at)
-        generation = job.get('scheduler_generation') if turn_is_aged(job) else None
-        with db() as connection:
-            catalog = ArchiveCatalog(connection)
-            if job["action"] == "cloud-purge":
-                group = catalog.claim_purge_group(
-                    lead_job_id=int(job["id"]),
-                    claim_token=claim_token,
-                    claimed_at=claimed_at,
-                    claim_expires_at=claim_expires_at,
-                    now=claimed_at,
-                    message=translate(
-                        "job.cloud_purge_deleting", locale=DEFAULT_LOCALE
-                    ),
-                    message_key="job.cloud_purge_deleting",
-                    scheduler_generation=generation,
-                )
-                lead = next(
-                    (row for row in group if int(row["id"]) == int(job["id"])),
-                    None,
-                )
-                if lead is None:
-                    continue
-                job.update(lead)
-            else:
-                claimed = catalog.claim_job(
-                    job_id=int(job["id"]),
-                    claim_token=claim_token,
-                    claimed_at=claimed_at,
-                    claim_expires_at=claim_expires_at,
-                    now=claimed_at,
-                    restore_due_before=_restore_due_before(runtime),
-                    scheduler_generation=generation,
-                )
-                if claimed is None:
-                    continue
-                job.update(claimed)
-        claimed_jobs.append(job)
+        if job_runner.claim(job, restore_due_before=lambda: _restore_due_before(runtime)):
+            claimed_jobs.append(job)
 
     if claimed_jobs:
         if wait:
@@ -6814,7 +6111,7 @@ def claimable_queue_depth(*, exclude_deferred: bool = False) -> int:
     timestamp = now_iso()
     with db() as connection:
         runtime = settings
-        return ArchiveCatalog(connection).claimable_queue_depth(
+        return JobQueue(connection).claimable_queue_depth(
             now=timestamp,
             restore_due_before=_restore_due_before(runtime),
             exclude_job_ids=(

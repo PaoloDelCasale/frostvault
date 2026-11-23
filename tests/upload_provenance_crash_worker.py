@@ -11,11 +11,11 @@ from unittest.mock import patch
 
 from psycopg.conninfo import conninfo_to_dict
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.database import db
 from tests.fixtures import override_settings
 from tests.upload_provenance_provider import VersionedProvider
 from tests.upload_support import claimed_job_row
+from app.services.job_queue import JobQueue
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
     provider.hook = crash
     with override_settings(database_dsn=config["dsn"]), patch("app.storage.validate_cloud_vault"), patch("app.storage.s3_client", return_value=provider), patch("app.storage.upload_file", side_effect=provider.upload):
         with db() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(job_id=config["job_id"], claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(), claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(), restore_due_before=storage.now_iso())
+            claimed = JobQueue(connection).claim_job(job_id=config["job_id"], claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(), claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(), restore_due_before=storage.now_iso())
             job = claimed_job_row(connection, config["job_id"], claimed)
         storage.process_job(job)
     raise AssertionError("Fault hook did not terminate the worker")

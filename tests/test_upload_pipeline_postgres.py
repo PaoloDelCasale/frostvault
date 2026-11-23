@@ -27,6 +27,8 @@ from app.services.vault_relocation import enroll_vault_root_identity
 from tests import test_upload_provenance_worker as worker_tests
 from tests.fixtures import seed_vault
 from tests.upload_support import claimed_job_row
+from app.services import job_queue
+from app.services.job_queue import JobQueue
 
 
 class UploadPipelinePostgresTests(unittest.TestCase):
@@ -70,9 +72,9 @@ class UploadPipelinePostgresTests(unittest.TestCase):
 
     def claim(self, job_id):
         with self.worker.database.connect() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
+            claimed = JobQueue(connection).claim_job(job_id=job_id,
                 claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso())
             if claimed is None:
                 return None
@@ -551,7 +553,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             if not response_ready.wait(15):
                 raise RuntimeError("test did not release late response")
             def sdk_ack():
-                self.assertIsNone(storage._claim_token_for(job), "SDK thread has no publication authority")
+                self.assertIsNone(job_queue.claim_token_for(job), "SDK thread has no publication authority")
                 transfer_job["_on_upload_acknowledged"](raw)
             with ThreadPoolExecutor(max_workers=1) as sdk:
                 sdk.submit(sdk_ack).result(timeout=10)

@@ -22,6 +22,7 @@ from app.services import upload_provenance as provenance
 from app.services import upload_remediation as remediation
 from tests import test_upload_worker as worker
 from tests.fixtures import seed_vault
+from app.services.job_queue import JobQueue
 
 A = worker.A
 
@@ -239,7 +240,7 @@ class UploadRemediationTests(worker.UploadWorkerCase):
         episode = self.episode()
         self.assertEqual((episode["state"], episode["reason"]), ("suspended", "active_operation"))
         with self.db() as connection:
-            ArchiveCatalog(connection).cancel_jobs(vault_id=2, job_ids=[other], message="",
+            JobQueue(connection).cancel_open_jobs(vault_id=2, job_ids=[other], message="",
                                                    message_key=None, now=storage.now_iso())
         self.make_due()
         self.assertEqual(self.sweep(), 1)
@@ -270,7 +271,7 @@ class UploadRemediationTests(worker.UploadWorkerCase):
         self.sweep()
         resumed = self.admitted()
         with self.db() as connection:
-            ArchiveCatalog(connection).cancel_jobs(vault_id=2, job_ids=[resumed], message="",
+            JobQueue(connection).cancel_open_jobs(vault_id=2, job_ids=[resumed], message="",
                                                    message_key=None, now=storage.now_iso())
             remediation.transition(connection, resumed, "cancelled", storage.now_iso())
         episode = self.episode()

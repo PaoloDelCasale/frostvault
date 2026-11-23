@@ -12,12 +12,13 @@ from unittest.mock import patch
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services import notifications, upload_provenance as provenance
 from app.services import upload_remediation as remediation
 from app.services.vault_relocation import VaultRelocationError
 from tests import test_upload_provenance_worker as fixtures
 from tests.upload_support import job_row
+from app.services import job_queue
+from app.services.job_queue import JobQueue
 
 
 
@@ -480,7 +481,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         with self.unreadable_root():
             self.assertEqual(storage.sweep_source_volume_problems(), 0, "an upload still waits for the volume")
         self.assertEqual(self.source_volume_problem_status(), ["open"])
-        storage.cancel_jobs([job])
+        job_queue.signal_job_cancellation([job])
         self.assertEqual(storage.sweep_source_volume_problems(), 1)
         self.assertEqual(self.source_volume_problem_status(), ["resolved"])
         self.assertEqual(storage.sweep_source_volume_problems(), 0)
@@ -549,7 +550,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
             original = provenance.record_no_write
             def cancel_after_proof(*args, **kwargs):
                 settled = original(*args, **kwargs)
-                storage.cancel_jobs([resumed])  # the Owner's cancel signal, same process
+                job_queue.signal_job_cancellation([resumed])  # the Owner's cancel signal, same process
                 return settled
             with patch.object(provenance, "record_no_write", side_effect=cancel_after_proof):
                 self.run_job(resumed)
@@ -683,9 +684,9 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         # A paused Vault holds its Jobs at the claim: the remediation Job is
         # never claimed and keeps waiting queued, with its episode open.
         with self.db() as connection:
-            self.assertIsNone(ArchiveCatalog(connection).claim_job(
+            self.assertIsNone(JobQueue(connection).claim_job(
                 job_id=resumed, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso()))
         row = self.row(resumed)
         self.assertEqual(row["status"], "queued", row["message"])

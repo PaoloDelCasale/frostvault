@@ -11,9 +11,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import main, storage
-from app.catalog import ArchiveCatalog
 from app.services import recovery_approval, vault_pause
 from tests.test_job_queue_fairness import QueueFixture
+from app.services.job_queue import JobQueue
+from app.services import job_queue
 
 
 class VaultPauseTests(QueueFixture):
@@ -56,7 +57,7 @@ class VaultPauseTests(QueueFixture):
             return vault_pause.set_paused(c, vault_id=vault_id, paused=paused)
 
     def claim(self, c, job_id, *, generation=None):
-        return ArchiveCatalog(c).claim_job(
+        return JobQueue(c).claim_job(
             job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.clock.isoformat(),
             claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
             now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),
@@ -70,7 +71,7 @@ class VaultPauseTests(QueueFixture):
         # New connection simulates process restart: no runtime flag needed.
         with self.db() as c:
             self.assertTrue(c.execute("SELECT paused FROM vaults WHERE id=2").fetchone()["paused"])
-            self.assertEqual(ArchiveCatalog(c).claimable_queue_depth(
+            self.assertEqual(JobQueue(c).claimable_queue_depth(
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()), 0)
             self.assertIsNone(self.claim(c, before[0]["id"]))
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='vault_paused'").fetchone()["n"], 1)
@@ -139,12 +140,12 @@ class VaultPauseTests(QueueFixture):
         expected = {jobs[index]["id"] for index in (4, 5, 6)}
         self.assertEqual({j["id"] for j in self.candidates(limit=50)}, expected)
         with self.db() as c:
-            self.assertEqual(ArchiveCatalog(c).claimable_queue_depth(now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()), 3)
+            self.assertEqual(JobQueue(c).claimable_queue_depth(now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()), 3)
             for job in jobs:
                 self.assertEqual(self.claim(c, job["id"]) is not None, job["id"] in expected)
         for job in self.jobs(2):
             if job["id"] in expected:
-                with storage._job_claim_context(job):
+                with job_queue.job_claim_context(job):
                     self.assertTrue(storage.set_job(job["id"], "downloading"))
                     self.assertTrue(storage.set_job(job["id"], "completed"))
         self.assertTrue(all(j["status"] == "completed" for j in self.jobs(2) if j["id"] in expected))
@@ -162,7 +163,7 @@ class VaultPauseTests(QueueFixture):
         job.update(claimed)
         self.pause()
         # Includes the claim-to-handler handoff: pause never revokes a lease.
-        with storage._job_claim_context(job):
+        with job_queue.job_claim_context(job):
             self.assertTrue(storage.set_job(job["id"], "uploading"))
             self.assertTrue(storage.set_job(job["id"], "verifying"))
             self.assertTrue(storage.set_job(job["id"], "completed"))
@@ -236,7 +237,7 @@ class VaultPauseTests(QueueFixture):
                       (group_id,))
         self.pause()
         def claim_group(c):
-            return ArchiveCatalog(c).claim_purge_group(lead_job_id=job["id"], claim_token=str(uuid.uuid4()),
+            return JobQueue(c).claim_purge_group(lead_job_id=job["id"], claim_token=str(uuid.uuid4()),
                 claimed_at=self.clock.isoformat(), claim_expires_at=(self.clock+timedelta(hours=1)).isoformat(),
                 now=self.clock.isoformat(), message="deleting", message_key="job.cloud_purge_deleting")
         with self.db() as c:

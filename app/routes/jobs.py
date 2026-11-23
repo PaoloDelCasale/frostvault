@@ -23,9 +23,10 @@ from ..services.catalog_event_stream import coalesced_catchup_signal, iter_catal
 from ..services.restore_estimates import SUPPORTED_RESTORE_TIERS
 from ..services import cloud_deletion as cloud_deletion_service
 from ..services import job_admission
+from ..services import job_queue
 from ..services.runtime_status import runtime_status
 from ..services.vault_paths import safe_relative_path
-from ..storage import cancel_jobs, now_iso, queue_scan
+from ..storage import now_iso, queue_scan
 from .deps import (
     LOGICAL_PATH_ERROR_RESPONSES,
     SCOPED_NOT_FOUND_RESPONSES,
@@ -497,7 +498,7 @@ def cancel_job_group(
                 actor=actor,
                 cancelled_at=now_iso(),
             )
-            cancel_jobs(
+            job_queue.signal_job_cancellation(
                 [
                     int(row["id"])
                     for row in connection.execute(
@@ -514,10 +515,10 @@ def cancel_job_group(
                 "cancelled_count": cancelled.cancelled_count,
             }
         rows = connection.execute(
-            """
+            f"""
             SELECT id FROM jobs
             WHERE vault_id=%s AND group_id=%s AND action=%s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
+              AND {job_queue.OPEN_JOB_SQL}
             """,
             (vault["id"], group_id, job_action),
         ).fetchall()
@@ -550,17 +551,19 @@ def _cancel_active_jobs(
     automatic_cleanup_rows = []
     if job_action == "free-space":
         automatic_cleanup_rows = connection.execute(
-            """
+            f"""
             SELECT j.id, f.path, j.archive_version_id
             FROM jobs j JOIN files f ON f.id = j.file_id
             WHERE j.vault_id=%s AND j.id = ANY(%s) AND j.action='free-space'
               AND j.origin='automatic'
-              AND j.status NOT IN ('completed', 'failed', 'cancelled')
+              AND {job_queue.open_job_sql("j")}
             """,
             (vault["id"], job_ids),
         ).fetchall()
-    cancel_jobs(job_ids)
-    ArchiveCatalog(connection).cancel_jobs(
+    # The threads of this process stop at their next checkpoint; the rows end
+    # for every process.
+    job_queue.signal_job_cancellation(job_ids)
+    job_queue.JobQueue(connection).cancel_open_jobs(
         vault_id=vault["id"], job_ids=job_ids, message=message,
         message_key=message_key, now=now_iso(),
     )

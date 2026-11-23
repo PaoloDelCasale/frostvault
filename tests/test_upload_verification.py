@@ -21,9 +21,9 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 
 from app.services.job_admission import queue_jobs
+from app.services import job_queue
 from app.storage import (
     OperationCancelled,
-    cancel_jobs,
     process_jobs_once,
 )
 from tests.fixtures import Database, FrostVaultTestCase, create_owner, fresh_database, override_settings, seed_vault
@@ -778,9 +778,8 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
                     return
 
             def cancelling_stream(*args, **kwargs) -> int:
-                from app.storage import cancel_jobs
 
-                cancel_jobs([job_id_holder["id"]])
+                job_queue.signal_job_cancellation([job_id_holder["id"]])
                 raise OperationCancelled("Upload stopped")
 
             worker_settings = dict(

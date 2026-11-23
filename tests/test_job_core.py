@@ -18,6 +18,7 @@ from app.catalog import ArchiveCatalog
 from app.services import job_admission, recovery_approval, vault_pause
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests.fixtures import FrostVaultTestCase, seed_vault
+from app.services.job_queue import JobQueue
 
 START = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 
@@ -72,7 +73,7 @@ class JobCoreFixture(FrostVaultTestCase):
     def claim(self, job_id: int, *, seconds: float = 0, lease: float = 300,
               claim_token: str | None = None, generation: int | None = None):
         with self.db() as connection:
-            return ArchiveCatalog(connection).claim_job(
+            return JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=claim_token or token(), claimed_at=stamp(seconds),
                 claim_expires_at=stamp(seconds + lease), now=stamp(seconds),
                 restore_due_before=stamp(seconds), scheduler_generation=generation,
@@ -81,7 +82,7 @@ class JobCoreFixture(FrostVaultTestCase):
     def renew(self, job_id: int, claim_token: str, *, seconds: float, lease: float = 300,
               lock_job: bool = False):
         with self.db() as connection:
-            return ArchiveCatalog(connection).renew_job_claim(
+            return JobQueue(connection).renew_job_claim(
                 job_id=job_id, claim_token=claim_token, now=stamp(seconds),
                 claim_expires_at=stamp(seconds + lease), lock_job=lock_job,
             )
@@ -89,7 +90,7 @@ class JobCoreFixture(FrostVaultTestCase):
     def transition(self, job_id: int, status: str, *, claim_token: str | None,
                    seconds: float, **kwargs) -> bool:
         with self.db() as connection:
-            return ArchiveCatalog(connection).transition_job(
+            return JobQueue(connection).transition_job(
                 job_id=job_id, status=status, message=status, message_key=None,
                 message_params=None, now=stamp(seconds), claim_token=claim_token,
                 claim_expires_at=stamp(seconds + 300), **kwargs,
@@ -98,7 +99,7 @@ class JobCoreFixture(FrostVaultTestCase):
     def cancel(self, vault_id: int, job_ids, *, seconds: float = 0) -> list[int]:
         with self.db() as connection:
             connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault_id,))
-            return ArchiveCatalog(connection).cancel_jobs(
+            return JobQueue(connection).cancel_open_jobs(
                 vault_id=vault_id, job_ids=list(job_ids), message="stopped",
                 message_key="job.upload_stopped", now=stamp(seconds),
             )
@@ -106,13 +107,13 @@ class JobCoreFixture(FrostVaultTestCase):
     def candidates(self, seconds: float = 0, **kwargs) -> list[dict]:
         kwargs.setdefault("limit", 10)
         with self.db() as connection:
-            return ArchiveCatalog(connection).list_claimable_jobs(
+            return JobQueue(connection).list_claimable_jobs(
                 now=stamp(seconds), restore_due_before=stamp(seconds), **kwargs,
             )
 
     def depth(self, seconds: float = 0) -> int:
         with self.db() as connection:
-            return ArchiveCatalog(connection).claimable_queue_depth(
+            return JobQueue(connection).claimable_queue_depth(
                 now=stamp(seconds), restore_due_before=stamp(seconds),
             )
 
@@ -251,7 +252,7 @@ class ClaimLeaseTests(JobCoreFixture):
         self.assertIsNone(self.renew(job_id, old, seconds=62))
         self.assertFalse(self.transition(job_id, "completed", claim_token=old, seconds=62))
         with self.db() as connection:
-            self.assertFalse(ArchiveCatalog(connection).record_job_progress(
+            self.assertFalse(JobQueue(connection).record_job_progress(
                 job_id=job_id, transferred_bytes=5, now=stamp(62), claim_token=old,
                 claim_expires_at=stamp(400)))
         self.assertTrue(self.transition(job_id, "uploading", claim_token=new, seconds=63))
@@ -264,7 +265,7 @@ class ClaimLeaseTests(JobCoreFixture):
         self.assertIsNotNone(self.renew(job_id, lease, seconds=59, lease=60))
         self.assertIsNone(self.renew(job_id, lease, seconds=200))
         with self.db() as connection:
-            self.assertFalse(ArchiveCatalog(connection).job_claim_is_live(
+            self.assertFalse(JobQueue(connection).job_claim_is_live(
                 job_id=job_id, claim_token=lease, now=stamp(200)))
 
     def test_renewal_that_wins_keeps_the_job_from_a_concurrent_takeover(self):
@@ -311,14 +312,14 @@ class ClaimLeaseTests(JobCoreFixture):
         lease = token()
         self.claim(job_id, claim_token=lease)
         with self.db() as fence:
-            self.assertIsNotNone(ArchiveCatalog(fence).renew_job_claim(
+            self.assertIsNotNone(JobQueue(fence).renew_job_claim(
                 job_id=job_id, claim_token=lease, now=stamp(1),
                 claim_expires_at=stamp(301), lock_job=True))
             with ThreadPoolExecutor(max_workers=1) as pool:
                 pending = pool.submit(self.cancel, 10, [job_id], seconds=2)
                 with self.assertRaises(TimeoutError):
                     pending.result(timeout=1)
-                self.assertTrue(ArchiveCatalog(fence).transition_job(
+                self.assertTrue(JobQueue(fence).transition_job(
                     job_id=job_id, status="completed", message="done", message_key=None,
                     message_params=None, now=stamp(1), claim_token=lease))
                 fence.commit()
@@ -367,10 +368,10 @@ class ClaimLeaseTests(JobCoreFixture):
         self.claim(job_id, claim_token=lease, lease=60)
         self.assertTrue(self.transition(job_id, "uploading", claim_token=lease, seconds=1))
         with self.db() as connection:
-            self.assertFalse(ArchiveCatalog(connection).settle_stale_job(
+            self.assertFalse(JobQueue(connection).settle_stale_job(
                 job_id=job_id, status="queued", message="resumed", now=stamp(30), progress="reset"))
         with self.db() as connection:
-            self.assertTrue(ArchiveCatalog(connection).settle_stale_job(
+            self.assertTrue(JobQueue(connection).settle_stale_job(
                 job_id=job_id, status="queued", message="resumed", now=stamp(400), progress="reset"))
         job = self.job(job_id)
         self.assertEqual((job["status"], job["lease_token"], job["transferred_bytes"]), ("queued", None, 0))
@@ -459,7 +460,7 @@ class PurgeGroupTests(JobCoreFixture):
 
     def claim_group(self, lead: int, seconds: float, claim_token: str | None = None):
         with self.db() as connection:
-            return ArchiveCatalog(connection).claim_purge_group(
+            return JobQueue(connection).claim_purge_group(
                 lead_job_id=lead, claim_token=claim_token or token(), claimed_at=stamp(seconds),
                 claim_expires_at=stamp(seconds + 300), now=stamp(seconds),
                 message="deleting", message_key="job.cloud_purge_deleting",
@@ -475,11 +476,11 @@ class PurgeGroupTests(JobCoreFixture):
         self.assertEqual({self.job(i)["status"] for i in ids}, {"cleaning"})
         self.assertEqual(self.claim_group(ids[1], 62), [])
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            self.assertTrue(catalog.renew_purge_group_claim(
+            queue = JobQueue(connection)
+            self.assertTrue(queue.renew_purge_group_claim(
                 vault_id=10, group_id=group, claim_token=lease, expected_job_ids=ids,
                 now=stamp(70), claim_expires_at=stamp(400)))
-            self.assertEqual(catalog.release_purge_group_claim(
+            self.assertEqual(queue.release_purge_group_claim(
                 vault_id=10, group_id=group, claim_token=lease, now=stamp(71)), ids)
         self.assertEqual({self.job(i)["status"] for i in ids}, {"queued"})
         self.assertEqual(self.lease_count(), 0)
@@ -530,7 +531,7 @@ class FairWindowTests(JobCoreFixture):
         self.claim(busy, seconds=3)
         self.assertEqual([row["id"] for row in self.candidates(4, unserved_only=True)], [idle])
         with self.db() as connection:
-            self.assertEqual(ArchiveCatalog(connection).active_job_counts(now=stamp(4)), {10: 1})
+            self.assertEqual(JobQueue(connection).active_job_counts(now=stamp(4)), {10: 1})
 
     def test_scheduler_generation_rejects_a_stale_aged_nomination(self):
         [first] = self.queue()
