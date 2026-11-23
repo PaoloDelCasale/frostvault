@@ -48,7 +48,7 @@ from .storage import (
     stop_background_executors,
     reconcile_interrupted_jobs,
 )
-from .routes import browse, jobs, ops, policy, sign_in, storage_plan, vaults
+from .routes import browse, jobs, ops, policy, register_routes, sign_in, storage_plan, vaults
 from .routes.deps import LocalizedHTTPError, ReauthRequired, _read_session_cookie, _request_locale
 
 
@@ -219,15 +219,18 @@ async def _invalid_logical_path_handler(
     )
 
 
-# Routers in the historical registration order: the OpenAPI paths keep their
-# order and the SPA fallback of ``ops.router`` stays last.
-app.include_router(sign_in.router)
-app.include_router(ops.pages_router)
-app.include_router(sign_in.session_router)
-app.include_router(vaults.router)
-app.include_router(browse.router)
-app.include_router(jobs.router)
-app.include_router(vaults.inventory_router)
-app.include_router(policy.router)
-app.include_router(storage_plan.router)
-app.include_router(ops.router)
+# Routes in the historical registration order, flat on the application: the
+# OpenAPI paths keep their order and the SPA fallback of ``ops.router`` stays last.
+register_routes(
+    app,
+    sign_in.router,
+    ops.pages_router,
+    sign_in.session_router,
+    vaults.router,
+    browse.router,
+    jobs.router,
+    vaults.inventory_router,
+    policy.router,
+    storage_plan.router,
+    ops.router,
+)

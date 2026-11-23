@@ -7,11 +7,12 @@ import unittest
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.routing import APIRoute, iter_route_contexts
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.routing import Route
 
 from app.api_models import JsonObjectResponse, response_model
-from app.main import app
+from app.main import app, lifespan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,17 +27,13 @@ RAW_RESPONSE_EXCEPTIONS = {
 RAW_JSON_EXCEPTIONS = RAW_RESPONSE_EXCEPTIONS
 
 
-def api_routes() -> list[APIRoute]:
-    """Every route of the application in matching order, through its included routers."""
-    routes = [context.original_route for context in iter_route_contexts(app.routes)]
-    return [route for route in routes if isinstance(route, APIRoute)]
-
-
 class OpenApiResponseContractTests(unittest.TestCase):
     def test_every_json_route_has_an_explicit_nonempty_success_schema(self) -> None:
         schema = app.openapi()
         checked = 0
-        for route in api_routes():
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
             if not (
                 route.path.startswith("/api/") or route.path in {"/health", "/ready"}
             ):
@@ -167,12 +164,18 @@ class OpenApiResponseContractTests(unittest.TestCase):
             (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
         )
         self.assertEqual(committed, app.openapi())
-        # The routers are included in the order the routes always had (#796).
+        # The routers are registered in the order the routes always had (#796).
         self.assertEqual(list(committed["paths"]), list(app.openapi()["paths"]))
 
-    def test_every_route_is_reachable_and_the_spa_fallback_matches_last(self) -> None:
-        routes = api_routes()
-        # No router is included twice and none is left out of the document.
+    def test_the_route_table_is_flat_and_the_spa_fallback_matches_last(self) -> None:
+        # Every route sits on the application itself: an included router stays
+        # nested and is resolved again at every request, and its lifespan wraps
+        # the application's (#796).
+        # (plain ``Route``: the documentation pages, when they are enabled).
+        self.assertEqual({type(route) for route in app.routes} - {Route}, {APIRoute})
+        routes = [route for route in app.routes if isinstance(route, APIRoute)]
+        self.assertIs(app.router.lifespan_context, lifespan)
+        # No router is registered twice and none is left out of the document.
         self.assertEqual(len({(route.path, *sorted(route.methods)) for route in routes}), len(routes))
         documented = {route.path_format for route in routes if route.include_in_schema}
         self.assertEqual(documented, set(app.openapi()["paths"]))
@@ -233,8 +236,8 @@ class OpenApiResponseContractTests(unittest.TestCase):
         )
 
     def test_all_api_response_models_are_nonfiltering_contracts(self) -> None:
-        for route in api_routes():
-            if route.path in RAW_RESPONSE_EXCEPTIONS:
+        for route in app.routes:
+            if not isinstance(route, APIRoute) or route.path in RAW_RESPONSE_EXCEPTIONS:
                 continue
             if route.path.startswith("/api/") or route.path in {"/health", "/ready"}:
                 self.assertIsNotNone(route.response_model, route.path)
