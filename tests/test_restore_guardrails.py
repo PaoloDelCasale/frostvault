@@ -10,7 +10,7 @@ Seams under test:
 
 BUG-015 (REQ-027): the queue-time high-impact seam must price Glacier restores
 from the bundled AWS list prices of the configured region (parity with
-``POST /api/recover/estimate``), not from another region's rates (#413).
+``POST /api/vaults/{vault_id}/recover/estimate``), not from another region's rates (#413).
 """
 
 from __future__ import annotations

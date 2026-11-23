@@ -1,4 +1,4 @@
-"""POST /api/scan on a busy Vault queues the scan instead of dropping it (#759)."""
+"""POST /api/vaults/{vault_id}/scan on a busy Vault queues the scan instead of dropping it (#759)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class ScanQueueHttpTests(FrostVaultTestCase):
         self.sign_in()
 
     def scan(self):
-        return self.client.post(f"/api/scan?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers)
+        return self.client.post(f"/api/vaults/{self.vault_id}/scan", headers=self.signed_in.csrf_headers)
 
     def test_a_scan_requested_while_admission_holds_the_vault_is_queued_and_runs_after_it(self) -> None:
         lock = runtime_status.scan_lock_for_vault(self.vault_id)

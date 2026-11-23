@@ -23,32 +23,24 @@ const DEFAULT_DOMAINS: CatalogInvalidationDomains[] = [
   "stats",
 ];
 
-export function catalogEventsUrl(afterRevision = 0, vaultId?: number): string {
-  const params = new URLSearchParams();
-  if (vaultId !== undefined) params.set("vault_id", String(vaultId));
-  if (afterRevision > 0) {
-    params.set("after_revision", String(afterRevision));
-  }
-  const query = params.toString();
-  return query ? `/api/catalog/events?${query}` : "/api/catalog/events";
+/** The Vault is part of the address (ADR-0056): `/api/vaults/{id}/catalog/…`. */
+function catalogUrl(vaultId: number, resource: "events" | "revision", afterRevision: number): string {
+  const query = afterRevision > 0 ? `?after_revision=${afterRevision}` : "";
+  return `/api/vaults/${vaultId}/catalog/${resource}${query}`;
 }
 
-export function catalogRevisionUrl(afterRevision = 0, vaultId?: number): string {
-  const params = new URLSearchParams();
-  if (vaultId !== undefined) params.set("vault_id", String(vaultId));
-  if (afterRevision > 0) {
-    params.set("after_revision", String(afterRevision));
-  }
-  const query = params.toString();
-  return query
-    ? `/api/catalog/revision?${query}`
-    : "/api/catalog/revision";
+export function catalogEventsUrl(afterRevision: number, vaultId: number): string {
+  return catalogUrl(vaultId, "events", afterRevision);
+}
+
+export function catalogRevisionUrl(afterRevision: number, vaultId: number): string {
+  return catalogUrl(vaultId, "revision", afterRevision);
 }
 
 export async function fetchCatalogRevision(
-  afterRevision = 0,
-  init?: RequestInit,
-  vaultId?: number,
+  afterRevision: number,
+  init: RequestInit | undefined,
+  vaultId: number,
 ): Promise<CatalogRevisionSignal> {
   const response = await fetch(catalogRevisionUrl(afterRevision, vaultId), {
     credentials: "same-origin",
@@ -161,7 +153,7 @@ export function openCatalogEventSource(
   afterRevision: number,
   handlers: CatalogEventHandlers,
   createSource: CatalogEventSourceFactory = defaultEventSourceFactory,
-  vaultId?: number,
+  vaultId: number,
 ): CatalogEventSource {
   const source = createSource(catalogEventsUrl(afterRevision, vaultId));
   let closed = false;

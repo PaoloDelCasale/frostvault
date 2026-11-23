@@ -13,7 +13,7 @@ from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
 from ..database import db
-from ..errors import BadRequest, Forbidden, NotFound, RateLimited, Unauthenticated
+from ..errors import BadRequest, Conflict, Forbidden, NotFound, RateLimited, Unauthenticated
 from ..emergency_password import (
     REAUTHENTICATION,
     SIGN_IN,
@@ -34,9 +34,11 @@ from ..sessions import (
     resolve_session,
     revoke_session,
     rotate_session,
+    set_session_vault,
 )
+from ..services.vaults import VAULT_ROW_SQL
 from .deps import (
-    NoVault,
+    _OPERATIONAL_VAULT,
     _api_message,
     _clear_session_cookie,
     _client_ip,
@@ -46,7 +48,6 @@ from .deps import (
     _set_locale_cookie,
     _set_session_cookie,
     current_user,
-    current_vault,
 )
 from .ops import _spa_index_response
 
@@ -355,14 +356,53 @@ def oidc_callback(
     return redirect
 
 
+def _session_vault(request: Request) -> dict[str, Any] | None:
+    """The Vault the interface opens on: the Session's, else the first operational one.
+
+    It addresses no operation (ADR-0056). A Vault chosen here because the
+    Session named none, or one no longer operational, is written into the
+    Session.
+    """
+    session = request.state.session
+    requested_id = session.get("vault_id")
+    with db() as connection:
+        vault = None
+        if requested_id:
+            vault = connection.execute(
+                f"{VAULT_ROW_SQL} WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
+                (requested_id,),
+            ).fetchone()
+        if not vault:
+            vault = connection.execute(
+                f"""
+                {VAULT_ROW_SQL} WHERE {_OPERATIONAL_VAULT}
+                ORDER BY v.name
+                LIMIT 1
+                """
+            ).fetchone()
+        if not vault:
+            return None
+        if session.get("vault_id") != vault["id"]:
+            updated = set_session_vault(
+                connection,
+                session["id"],
+                vault["id"],
+                expected_version=session["transition_version"],
+            )
+            if not updated:
+                # A concurrent logout, OIDC rotation, expiry, or Vault choice
+                # won after current_user resolved this request. Do not let this
+                # older process overwrite the newer persisted transition.
+                raise Conflict("api.session_changed")
+            session.update(updated)
+    return vault
+
+
 @session_router.get("/api/me", response_model=response_model("MeResponse"))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
     _set_csrf_cookie(response, csrf_token)
-    try:
-        vault = current_vault(request, user)
-    except NoVault:
-        vault = None
+    vault = _session_vault(request)
     vault_block = None
     stopped_vault_block = None
     if vault is not None:

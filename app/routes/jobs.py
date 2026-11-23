@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -34,9 +34,9 @@ from .deps import (
     _api_message,
     _request_locale,
     current_user,
-    current_vault,
     normalize_directory,
     require_recent_reauth,
+    vault_in_path,
 )
 
 
@@ -143,10 +143,10 @@ class CloudPurgeRequest(CloudDeletionPreviewRequest):
     fingerprint: str | None = Field(default=None, max_length=128)
 
 
-@router.get("/api/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+@router.get("/api/vaults/{vault_id}/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def jobs(
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
     *,
     action: Annotated[list[str] | None, Query()] = None,
     active_only: bool = False,
@@ -167,12 +167,12 @@ def jobs(
                          groups_before_id=groups_before_id)
 
 
-@router.get("/api/job-groups/{group_id}/jobs", response_model=response_model("FileJobHistoryResponse"))
+@router.get("/api/vaults/{vault_id}/job-groups/{group_id}/jobs", response_model=response_model("FileJobHistoryResponse"))
 def job_group_detail(
     request: Request, group_id: str,
     before_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=50, ge=1, le=50),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """Newest-first keyset page of one group's Jobs, scoped to this Vault."""
     from ..services.job_queries import group_jobs
@@ -181,8 +181,8 @@ def job_group_detail(
                           locale=_request_locale(request), before_id=before_id, limit=limit)
 
 
-@router.get("/api/jobs/{job_id}", response_model=response_model("JobRecord"))
-def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(current_vault)):
+@router.get("/api/vaults/{vault_id}/jobs/{job_id}", response_model=response_model("JobRecord"))
+def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services.job_queries import job_record
     with db() as connection:
         record = job_record(connection, vault_id=vault["id"], job_id=job_id,
@@ -192,9 +192,9 @@ def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(cu
     return record
 
 
-@router.get("/api/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+@router.get("/api/vaults/{vault_id}/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def file_job_history(request: Request, path: str = Query(), before_id: int | None = Query(default=None,ge=1),
-                     limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(current_vault)):
+                     limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services.job_queries import file_jobs
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
@@ -205,10 +205,10 @@ def file_job_history(request: Request, path: str = Query(), before_id: int | Non
     return history
 
 
-@router.post("/api/scan", status_code=202, response_model=response_model("ScanResponse"))
+@router.post("/api/vaults/{vault_id}/scan", status_code=202, response_model=response_model("ScanResponse"))
 async def start_scan(
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     status = runtime_status.get(vault["id"], {})
     if status.get("scanning"):
@@ -231,10 +231,10 @@ async def start_scan(
         "waiting_since": waiting["scan_waiting_since"]}
 
 
-@router.get("/api/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
+@router.get("/api/vaults/{vault_id}/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
 def catalog_revision_snapshot(
     after_revision: int = Query(0, ge=0),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """One-shot catch-up for focus/online recovery without holding a stream."""
     signal = coalesced_catchup_signal(
@@ -254,7 +254,7 @@ def catalog_revision_snapshot(
 
 
 @router.get(
-    "/api/catalog/events",
+    "/api/vaults/{vault_id}/catalog/events",
     response_class=StreamingResponse,
     responses={
         200: {
@@ -275,7 +275,7 @@ async def catalog_events_stream(
     after_revision: int = Query(0, ge=0),
     subscribe: bool = Query(True),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
     user: dict[str, Any] = Depends(current_user),
 ):
     """Authenticated SSE stream of coalesced catalog invalidation signals.
@@ -306,7 +306,8 @@ async def catalog_events_stream(
             resume_after=resume_after,
             subscribe=subscribe,
             is_disconnected=request.is_disconnected,
-            explicit_vault="vault_id" in request.query_params,
+            # The path names the Vault: the Session's selection is not consulted.
+            explicit_vault=True,
         ):
             yield chunk
 
@@ -322,13 +323,13 @@ async def catalog_events_stream(
 
 
 @router.get(
-    "/api/files/versions",
+    "/api/vaults/{vault_id}/files/versions",
     response_model=response_model("FileVersionsResponse"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def file_versions(
     path: str = Query(),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
@@ -354,13 +355,13 @@ def file_versions(
 
 
 @router.post(
-    "/api/recover/estimate",
+    "/api/vaults/{vault_id}/recover/estimate",
     response_model=response_model("RecoverEstimateResponse"),
     responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
 )
 def recover_estimate(
     action: RecoverEstimateRequest,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     return job_admission.estimate_recovery(
         vault["id"],
@@ -374,7 +375,7 @@ def recover_estimate(
 
 
 @router.post(
-    "/api/upload",
+    "/api/vaults/{vault_id}/upload",
     status_code=202,
     response_model=JsonObjectResponse,
     responses=LOGICAL_PATH_ERROR_RESPONSES,
@@ -383,7 +384,7 @@ def upload(
     action: UploadAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     if action.is_directory:
         from ..services import bulk_upload_admission
@@ -399,9 +400,9 @@ def upload(
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
-@router.get("/api/upload/admissions/{group_id}", response_model=response_model("BulkUploadAdmissionResponse"))
+@router.get("/api/vaults/{vault_id}/upload/admissions/{group_id}", response_model=response_model("BulkUploadAdmissionResponse"))
 def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(current_user),
-                            vault: dict[str, Any] = Depends(current_vault)):
+                            vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services import bulk_upload_admission
     with db() as connection:
         result = bulk_upload_admission.get(connection, vault_id=vault["id"], group_id=str(group_id))
@@ -410,8 +411,8 @@ def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(cur
     return result
 
 
-@router.post("/api/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
-def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(current_vault)):
+@router.post("/api/vaults/{vault_id}/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(vault_in_path)):
     """Exact resume only, including protected files for which upload returns 409.
 
     Common target arbiter; no arbitrary deletion or cancellation resurrection. It
@@ -428,10 +429,7 @@ def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = 
         return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat(), remediation_id=action.remediation_id)
 
 
-@router.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))
-def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
-                         _: dict[str, Any] = Depends(current_user)):
-    """Explicit scope: omitted Vault means installation, never Session choice."""
+def _retry_failed_uploads(vault_id: int | None) -> dict[str, Any]:
     from ..storage import queue_vault_auto_uploads, _ScanRootMismatch
     with db() as connection:
         vaults = connection.execute(
@@ -450,8 +448,29 @@ def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
     return {"item_count": count}
 
 
+def _names_no_vault(request: Request) -> None:
+    # The address that took a Vault here is gone: a client still sending one
+    # asked for a single Vault and must not get all of them retried.
+    if "vault_id" in request.query_params:
+        raise Invalid("api.invalid_operation")
+
+
+@router.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"),
+             dependencies=[Depends(_names_no_vault)])
+def retry_failed_uploads(_: dict[str, Any] = Depends(current_user)):
+    """Every Vault of the installation, never the Session's choice."""
+    return _retry_failed_uploads(None)
+
+
+@router.post("/api/vaults/{vault_id}/upload/retry-failed", status_code=202,
+             response_model=response_model("RetryFailedUploadsResponse"))
+def retry_failed_vault_uploads(vault_id: int = Path(ge=1), _: dict[str, Any] = Depends(current_user)):
+    """One Vault's failed Uploads; any existing Vault, operational or not."""
+    return _retry_failed_uploads(vault_id)
+
+
 @router.post(
-    "/api/files/cloud-only-conflict/replace",
+    "/api/vaults/{vault_id}/files/cloud-only-conflict/replace",
     status_code=202,
     response_model=JsonObjectResponse,
     responses=LOGICAL_PATH_ERROR_RESPONSES,
@@ -460,7 +479,7 @@ def replace_cloud_only_copy(
     action: CloudOnlyReplacementAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """Confirm that new content replaces the only cloud copy at its path."""
     queued = job_admission.confirm_cloud_only_replacement(
@@ -594,7 +613,7 @@ class PendingUploadCancelAction(BaseModel):
 
 
 @router.post(
-    "/api/upload/cancel-pending",
+    "/api/vaults/{vault_id}/upload/cancel-pending",
     response_model=response_model("JobCancelResponse"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
@@ -602,9 +621,9 @@ def cancel_pending_uploads(
     action: PendingUploadCancelAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
-    """Cancel the uploads of the selected Vault (or one folder) that have not begun.
+    """Cancel the uploads of the Vault (or one folder) that have not begun.
 
     One call replaces thousands of per-file cancels after a burst or a moved
     folder (issue #493). An empty ``path`` means the whole Vault; a folder
@@ -632,18 +651,18 @@ def cancel_pending_uploads(
     }
 
 
-@router.post("/api/jobs/cancel", response_model=response_model("JobCancelResponse"))
+@router.post("/api/vaults/{vault_id}/jobs/cancel", response_model=response_model("JobCancelResponse"))
 def cancel_job(
     action: JobCancelAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     return cancel_job_group(action.group_id, action.action, vault, _actor(request))
 
 
 @router.post(
-    "/api/recover",
+    "/api/vaults/{vault_id}/recover",
     status_code=202,
     response_model=JsonObjectResponse,
     responses=LOGICAL_PATH_ERROR_RESPONSES,
@@ -652,7 +671,7 @@ def recover(
     action: RecoverRequest,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     queued = job_admission.queue_jobs(
         action.path,
@@ -667,11 +686,11 @@ def recover(
     return {**queued, **_api_message(request, "api.recovery_started")}
 
 
-@router.post("/api/recover/approve", status_code=202, response_model=JsonObjectResponse)
+@router.post("/api/vaults/{vault_id}/recover/approve", status_code=202, response_model=JsonObjectResponse)
 def approve_recover(
     action: RecoverApproveAction,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     from ..services import recovery_approval
 
@@ -694,7 +713,7 @@ def approve_recover(
 
 
 @router.post(
-    "/api/free-space",
+    "/api/vaults/{vault_id}/free-space",
     status_code=202,
     response_model=JsonObjectResponse,
     responses=LOGICAL_PATH_ERROR_RESPONSES,
@@ -703,7 +722,7 @@ def free_space(
     action: FileAction,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     queued = job_admission.queue_jobs(
         action.path, "free-space", vault["id"], action.is_directory
@@ -731,10 +750,10 @@ def cloud_deletion_settings(user: dict[str, Any] = Depends(current_user)):
     return {"purge_delay_seconds": cloud_deletion_service.DELETION_DELAY_SECONDS}
 
 
-@router.post("/api/cloud-deletion/preview", response_model=response_model("CloudDeletionPreview"))
+@router.post("/api/vaults/{vault_id}/cloud-deletion/preview", response_model=response_model("CloudDeletionPreview"))
 def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     with db() as connection:
         preview = cloud_deletion_service.preview_selection(
@@ -744,12 +763,12 @@ def preview_cloud_deletion(
     }
 
 
-@router.post("/api/cloud-purge", status_code=202, response_model=JsonObjectResponse)
+@router.post("/api/vaults/{vault_id}/cloud-purge", status_code=202, response_model=JsonObjectResponse)
 def cloud_purge(
     action: CloudPurgeRequest,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
     with db() as connection:

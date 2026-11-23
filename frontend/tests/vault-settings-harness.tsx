@@ -160,7 +160,7 @@ export function createVaultAccessFetch(
 ): Mock<ApiFetch> {
   const messages = loadCatalog(locale);
   return vi.fn<ApiFetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input).replace(/\?vault_id=\d+$/, "");
+    const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     const key = `${method} ${url}`;
 
@@ -177,7 +177,7 @@ export function createVaultAccessFetch(
       return typeof byUrl === "function" ? byUrl(init) : byUrl;
     }
 
-    if (url.startsWith("/api/jobs?")) {
+    if (/^\/api\/vaults\/\d+\/jobs\?/.test(url)) {
       return jsonResponse({ items: [], groups: [], next_groups_before_id: null });
     }
     if (/^\/api\/vaults\/\d+\/operation-policy$/.test(url)) {

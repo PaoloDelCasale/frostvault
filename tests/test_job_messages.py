@@ -2,7 +2,7 @@
 
 Seams under test:
 - ``storage.set_job`` / ``schedule_upload_retry`` persist ``message_key`` + params
-- ``app.i18n.present_job_message`` / ``/api/jobs`` localize for the request locale
+- ``app.i18n.present_job_message`` / ``/api/vaults/{vault_id}/jobs`` localize for the request locale
 """
 
 from __future__ import annotations
@@ -164,7 +164,7 @@ class JobHttpFixture(FrostVaultTestCase):
 class JobMessageHttpTests(JobHttpFixture):
     def test_jobs_api_localizes_message_for_locale_cookie(self) -> None:
         self.client.cookies.set(LOCALE_COOKIE_NAME, "it")
-        response = self.client.get("/api/jobs")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/jobs")
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         item = payload["items"][0]

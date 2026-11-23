@@ -30,12 +30,12 @@ describe("apiRequest CSRF", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true }))
       .mockResolvedValueOnce(jsonResponse({ ok: true }));
 
-    await apiRequest("/api/scan", { method: "POST", body: "{}" });
+    await apiRequest("/api/vaults/1/scan", { method: "POST", body: "{}" });
     await apiRequest("/api/me");
 
     const postCall = fetchMock.mock.calls[0];
     const getCall = fetchMock.mock.calls[1];
-    expect(postCall?.[0]).toBe("/api/scan");
+    expect(postCall?.[0]).toBe("/api/vaults/1/scan");
     expect(new Headers(postCall?.[1]?.headers).get("X-CSRF-Token")).toBe(
       "test-csrf-token",
     );
@@ -496,7 +496,7 @@ describe("apiRequest session and errors", () => {
     );
 
     await expect(
-      apiRequest("/api/upload", { method: "POST", body: "{}" }),
+      apiRequest("/api/vaults/1/upload", { method: "POST", body: "{}" }),
     ).rejects.toMatchObject({
       message: "Operation failed.",
       messageKey: "api.operation_failed",

@@ -97,7 +97,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         self.assertEqual(self.row(job)["status"], "failed")
         self.assertTrue(self.intent()["send_started"])
         client = self.http_client()
-        response = client.post("/api/upload/retry-failed?vault_id=2")
+        response = client.post("/api/vaults/2/upload/retry-failed")
         self.assertEqual((response.status_code, response.json()), (202, {"item_count": 1}))
         resumed = max(j["id"] for j in self.jobs())
         # Absence is proven, then the database drops once more before the send.
@@ -128,14 +128,14 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_attempts WHERE outcome='no_write'").fetchone()["n"], 1)
         self.assertEqual([j["status"] for j in self.jobs()], ["failed", "completed"])
         self.assertTrue(self.intent()["settled"])
-        self.assertEqual(client.post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 0})
+        self.assertEqual(client.post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 0})
 
     def test_network_loss_while_reconciling_keeps_the_item_in_verification_not_failed(self):
         # #486: an unreadable S3 inventory is neither a changed inventory nor a failure.
         from botocore.exceptions import EndpointConnectionError
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         with patch.object(self.provider, "list_object_versions",
                           side_effect=EndpointConnectionError(endpoint_url="https://s3.invalid")):
@@ -156,7 +156,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         job = self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
         self.provider.multiparts.append((self.KEY, "in-flight-upload"))
         client = self.http_client()
-        self.assertEqual(client.post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(client.post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         self.run_job(resumed)
         row = self.row(resumed)
@@ -173,7 +173,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
     def test_reconcile_names_the_real_reason_instead_of_identity_changed_for_an_active_job(self):
         job = self.fail_before_provider_request(RuntimeError("timeout talking to the database"))
         self.assertEqual(self.row(job)["status"], "retrying")
-        response = self.http_client().post("/api/upload/reconcile", json={"path": "report.txt", "is_directory": False})
+        response = self.http_client().post("/api/vaults/2/upload/reconcile", json={"path": "report.txt", "is_directory": False})
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["message_key"], "reconciliation.reason.active_operation")
         self.assertEqual(len(self.jobs()), 1)
@@ -184,7 +184,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
             connection.execute("""INSERT INTO vault_component_health(vault_id,component,last_error,updated_at)
                 VALUES (2,'source','mount lost',%s) ON CONFLICT (vault_id,component)
                 DO UPDATE SET last_error=excluded.last_error""", (storage.now_iso(),))
-        response = self.http_client().post("/api/upload/reconcile", json={"path": "report.txt", "is_directory": False})
+        response = self.http_client().post("/api/vaults/2/upload/reconcile", json={"path": "report.txt", "is_directory": False})
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["message_key"],
                          "reconciliation.reason.source_volume_unavailable")
@@ -236,7 +236,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         from app.services import cloud_preflight_gate
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         with patch.object(cloud_preflight_gate, "invalidate") as invalidate, patched, self.bucket_probe(True):
             self.run_job(resumed)
@@ -279,7 +279,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         from app.services import cloud_preflight_gate
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        self.http_client().post("/api/vaults/2/upload/retry-failed")
         resumed = max(j["id"] for j in self.jobs())
         for code in ("AccessDenied", "Forbidden"):
             with self.subTest(code=code), patch.object(cloud_preflight_gate, "invalidate") as invalidate, \
@@ -294,7 +294,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         from app.services import cloud_preflight_gate
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        self.http_client().post("/api/vaults/2/upload/retry-failed")
         resumed = max(j["id"] for j in self.jobs())
         with patch.object(cloud_preflight_gate, "invalidate") as invalidate, \
                 patch.object(self.provider, "list_object_versions", side_effect=self.denied("InvalidAccessKeyId", 403)):
@@ -305,7 +305,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
     def test_provider_5xx_on_a_listing_is_retried_not_reported_as_a_changed_inventory(self):
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.http_client().post("/api/upload/retry-failed?vault_id=2")
+        self.http_client().post("/api/vaults/2/upload/retry-failed")
         resumed = max(j["id"] for j in self.jobs())
         with patch.object(self.provider, "list_object_versions", side_effect=self.denied("InternalError", 500)):
             self.run_job(resumed)
@@ -325,7 +325,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         if foreign_version:
             # Something is listed for the key, so reconciliation must HEAD it.
             self.provider.add(self.KEY, b"another writer", {})
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         return max(j["id"] for j in self.jobs())
 
     def test_403_on_the_version_head_blocks_the_file_when_the_bucket_is_still_ready(self):
@@ -544,7 +544,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         """
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         if cancel:
             original = provenance.record_no_write
@@ -594,7 +594,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
             for job in (original, resumed):
                 failed = connection.execute("SELECT problem_status FROM notifications WHERE event='job_failed' AND job_id=%s", (job,)).fetchone()
                 self.assertEqual(failed["problem_status"], "resolved", job)
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 0})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 0})
 
     def test_a_void_episode_never_offers_resume_and_never_occupies_a_retry_slot(self):
         self.rearmed_then_stopped()
@@ -650,7 +650,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
     def remediation_job(self):
         self.stable_content()
         original = self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         return original, max(j["id"] for j in self.jobs())
 
     def episode(self):
@@ -732,7 +732,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
     def test_a_proven_absence_never_starts_an_upload_while_protection_is_paused(self):
         self.stable_content()
         self.fail_before_provider_request(RuntimeError("worker crashed before the request"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         self.assertTrue(next(j for j in self.jobs() if j["id"] == resumed)["upload_reconcile_only"])
         # Real policy: protection is paused after the attempt was claimed, while
@@ -756,7 +756,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
             self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "protection_paused")
         # Once protection is resumed the same explicit reconcile proves absence and sends.
         self.set_auto_upload(True)
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         again = max(j["id"] for j in self.jobs())
         self.run_job(again)
         self.assert_keeper(again)

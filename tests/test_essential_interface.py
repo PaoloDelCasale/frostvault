@@ -1,6 +1,5 @@
 """DB-free request-scope, deep-link and Owner shell contracts (#430)."""
 from contextlib import contextmanager
-from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -15,34 +14,29 @@ from app.services.operation_policies import OperationPolicy
 
 
 class EssentialInterfaceTests(unittest.TestCase):
-    def request(self):
-        return SimpleNamespace(state=SimpleNamespace(session={"id": 5, "vault_id": 1, "transition_version": 9}))
-
     @contextmanager
     def connection(self, connection):
         yield connection
 
     def test_explicit_scope_ignores_session_selection_and_never_mutates_it(self):
         connection = Mock(); connection.execute.return_value.fetchone.return_value = {"id": 2, "name": "Second"}
-        request = self.request()
-        with patch.object(deps, "db", lambda: self.connection(connection)), patch.object(deps, "set_session_vault") as select:
-            vault = deps.current_vault(request, {"id": 1}, vault_id=2)
+        with patch.object(deps, "db", lambda: self.connection(connection)):
+            vault = deps.vault_in_path(2, {"id": 1})
         self.assertEqual(vault["id"], 2)
-        self.assertEqual(request.state.session["vault_id"], 1)
-        select.assert_not_called()
+        # One read of the Vault in the path: the Session is neither read nor written.
+        self.assertEqual(connection.execute.call_count, 1)
         self.assertEqual(connection.execute.call_args.args[1], (2,))
 
     def test_explicit_invalid_or_stopped_scope_does_not_fall_back_to_another_vault(self):
         connection = Mock(); connection.execute.return_value.fetchone.return_value = None
-        with patch.object(deps, "db", lambda: self.connection(connection)), patch.object(deps, "set_session_vault") as select:
+        with patch.object(deps, "db", lambda: self.connection(connection)):
             with self.assertRaises(NotFound):
-                deps.current_vault(self.request(), {"id": 1}, vault_id=99)
+                deps.vault_in_path(99, {"id": 1})
         self.assertEqual(connection.execute.call_count, 1)
-        select.assert_not_called()
 
     def test_all_vault_scoped_contracts_accept_explicit_identity(self):
         paths = main.app.openapi()["paths"]
-        for path in ["/api/vaults/{vault_id}/files", "/api/vaults/{vault_id}/files/detail", "/api/vaults/{vault_id}/stats", "/api/files/versions", "/api/recover", "/api/free-space", "/api/cloud-purge", "/api/jobs/cancel", "/api/vaults/{vault_id}/operation-policy", "/api/vaults/{vault_id}/lifecycle", "/api/vaults/{vault_id}/move"]:
+        for path in ["/api/vaults/{vault_id}/files", "/api/vaults/{vault_id}/files/detail", "/api/vaults/{vault_id}/stats", "/api/vaults/{vault_id}/files/versions", "/api/vaults/{vault_id}/recover", "/api/vaults/{vault_id}/free-space", "/api/vaults/{vault_id}/cloud-purge", "/api/vaults/{vault_id}/jobs/cancel", "/api/vaults/{vault_id}/operation-policy", "/api/vaults/{vault_id}/lifecycle", "/api/vaults/{vault_id}/move"]:
             for method, operation in paths[path].items():
                 if method in {"get", "post", "put"}:
                     self.assertIn("vault_id", [p["name"] for p in operation.get("parameters", [])], (path, method))

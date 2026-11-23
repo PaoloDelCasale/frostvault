@@ -302,8 +302,8 @@ an application migration or preflight.
 
 **General → Retry failed uploads** selects all Vaults; the same action in
 **Vault settings** selects only that Vault. `POST /api/upload/retry-failed`
-accepts an optional `vault_id` query parameter: omission means global scope,
-never the Session's selected Vault. A repeat click safely returns zero when
+is the global scope, never the Session's selected Vault;
+`POST /api/vaults/{vault_id}/upload/retry-failed` is one Vault. A repeat click safely returns zero when
 there is no newly eligible work. Existing failed attempts remain unchanged.
 
 Only files whose latest upload attempt failed and which still pass ordinary
@@ -314,8 +314,8 @@ and exclusion rules remain fenced. Failed recover/free-space/cloud-purge Jobs
 are never retried. This action neither completes historical verified failures
 (#459) nor grants authority over unknown cloud versions (#464).
 
-**Vault settings → Upload whole Vault** uses the existing `/api/upload` action
-with `{"path":"","is_directory":true}` and explicit `vault_id`. This narrow root
+**Vault settings → Upload whole Vault** uses the existing
+`/api/vaults/{vault_id}/upload` action with `{"path":"","is_directory":true}`. This narrow root
 allowance applies only to uploads; traversal, absolute paths and empty paths for
 other operations remain rejected. The catalog's usual eligibility/active-Job
 checks still apply.

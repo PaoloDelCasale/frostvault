@@ -830,8 +830,8 @@ class CancelPendingHttpTests(QueueFixture):
 
     def cancel(self, path, vault_id=2):
         return self.client.post(
-            "/api/upload/cancel-pending", json={"path": path},
-            params={"vault_id": vault_id}, headers=self.headers,
+            f"/api/vaults/{vault_id}/upload/cancel-pending", json={"path": path},
+            headers=self.headers,
         )
 
     def statuses(self, vault_id):
@@ -877,8 +877,8 @@ class CancelPendingHttpTests(QueueFixture):
         first, _ = self.queue_manual("manual/a.jpg")
         _, group = self.queue_manual("single/b.jpg")
         self.assertEqual(self.cancel("manual").json()["cancelled_count"], 1)
-        response = self.client.post("/api/jobs/cancel", json={"group_id": group, "action": "upload"},
-                                    params={"vault_id": 2}, headers=self.headers)
+        response = self.client.post("/api/vaults/2/jobs/cancel", json={"group_id": group, "action": "upload"},
+                                    headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual({row["path"]: (row["origin"], row["status"]) for row in self.jobs(2)
                           if row["path"] in {"manual/a.jpg", "single/b.jpg"}},
@@ -958,9 +958,9 @@ class CancelPendingHttpTests(QueueFixture):
 
     def test_unauthenticated_and_csrf_less_requests_are_refused(self):
         anonymous = TestClient(main.app, client=("127.0.0.1", 50001))
-        self.assertIn(anonymous.post("/api/upload/cancel-pending", json={"path": ""}).status_code, {401, 403})
+        self.assertIn(anonymous.post("/api/vaults/2/upload/cancel-pending", json={"path": ""}).status_code, {401, 403})
         self.assertEqual(
-            self.client.post("/api/upload/cancel-pending", json={"path": ""}, params={"vault_id": 2}).status_code,
+            self.client.post("/api/vaults/2/upload/cancel-pending", json={"path": ""}).status_code,
             403,
         )
 

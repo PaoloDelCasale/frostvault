@@ -1,4 +1,4 @@
-import { cleanup, waitFor } from "@testing-library/react";
+import { act, cleanup, waitFor } from "@testing-library/react";
 import {
   type QueryClient,
   useQuery,
@@ -7,7 +7,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { CATALOG_REFRESH_MS, STATS_REFRESH_MS, apiQueryKeys, openCatalogEventSource, parseCatalogEventData, useCatalogEvents, type CatalogEventSourceFactory, type CatalogRevisionSignal } from "@/api";
+import { CATALOG_REFRESH_MS, STATS_REFRESH_MS, apiQueryKeys, catalogEventsUrl, catalogRevisionUrl, openCatalogEventSource, parseCatalogEventData, useCatalogEvents, type CatalogEventSourceFactory, type CatalogRevisionSignal } from "@/api";
 import { createTestQueryClient, renderWithQueryClient } from "./support/queryClient";
 
 type MessageListener = (event: MessageEvent<string>) => void;
@@ -30,8 +30,9 @@ function Harness({
   vaultId: number | null;
   createSource?: CatalogEventSourceFactory;
   fetchRevision?: (
-    afterRevision?: number,
-    init?: RequestInit,
+    afterRevision: number,
+    init: RequestInit | undefined,
+    vaultId: number,
   ) => Promise<CatalogRevisionSignal>;
   schedule?: (callback: () => void, ms: number) => number;
   cancelSchedule?: (id: number) => void;
@@ -76,6 +77,13 @@ describe("catalog event helpers", () => {
       has_gap: false,
     });
     expect(parseCatalogEventData("not-json")).toBeNull();
+  });
+
+  it("names the Vault in the path of the stream and of the catch-up (ADR-0056)", () => {
+    expect(catalogEventsUrl(0, 7)).toBe("/api/vaults/7/catalog/events");
+    expect(catalogEventsUrl(12, 7)).toBe("/api/vaults/7/catalog/events?after_revision=12");
+    expect(catalogRevisionUrl(0, 7)).toBe("/api/vaults/7/catalog/revision");
+    expect(catalogRevisionUrl(12, 7)).toBe("/api/vaults/7/catalog/revision?after_revision=12");
   });
 });
 
@@ -366,6 +374,50 @@ describe("useCatalogEvents", () => {
     expect(timers.every((timer) => timer.ms >= 1_000)).toBe(true);
   });
 
+  it("opens, resumes and catches up on the address of its own Vault", async () => {
+    const client = createQueryClient();
+    const opened: string[] = [];
+    const sources: Array<{ catalog?: MessageListener; onerror: ((ev: Event) => unknown) | null }> = [];
+    const createSource: CatalogEventSourceFactory = (url) => {
+      opened.push(url);
+      const source: (typeof sources)[number] & { close: () => void; addEventListener: (type: string, listener: MessageListener) => void } = {
+        close: vi.fn(), onerror: null,
+        addEventListener: (type, listener) => { if (type === "catalog") source.catalog = listener; },
+      };
+      sources.push(source);
+      return source;
+    };
+    const fetchRevision = vi.fn(async (_after: number, _init: RequestInit | undefined, vaultId: number): Promise<CatalogRevisionSignal> => (
+      { vault_id: vaultId, revision: 4, domains: ["files"], has_gap: false, changed: false }));
+    const timers: Array<{ cb: () => void; ms: number }> = [];
+    const schedule = (cb: () => void, ms: number) => timers.push({ cb, ms });
+    const cancelSchedule = () => undefined;
+    let openVault: (vaultId: number) => void = () => undefined;
+    function Switcher() {
+      const [vaultId, setVaultId] = useState(1);
+      openVault = setVaultId;
+      return <Harness vaultId={vaultId} createSource={createSource} fetchRevision={fetchRevision} schedule={schedule} cancelSchedule={cancelSchedule} />;
+    }
+    renderWithClient(client, <Switcher />);
+    await waitFor(() => expect(sources.length).toBe(1));
+    sources[0]!.catalog!({ data: JSON.stringify({ vault_id: 1, revision: 4, domains: ["files"], has_gap: false }) } as MessageEvent<string>);
+    sources[0]!.onerror?.(new Event("error"));
+    timers.find((timer) => timer.ms === 1_000)!.cb();
+    await waitFor(() => expect(sources.length).toBe(2));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(fetchRevision).toHaveBeenCalledWith(4, undefined, 1));
+    // Another Vault: its own address, from its own first revision.
+    act(() => openVault(2));
+    await waitFor(() => expect(sources.length).toBe(3));
+    expect(opened).toEqual([
+      "/api/vaults/1/catalog/events",
+      "/api/vaults/1/catalog/events?after_revision=4",
+      "/api/vaults/2/catalog/events",
+    ]);
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(fetchRevision).toHaveBeenLastCalledWith(0, undefined, 2));
+  });
+
   it.each([
     "vault_switched", "vault_access_revoked", "session_revoked",
     "session_expired", "session_version_mismatch",
@@ -426,11 +478,14 @@ describe("useCatalogEvents", () => {
     const onHello = vi.fn();
     const onCatalog = vi.fn();
     const onError = vi.fn();
+    const opened: string[] = [];
     const handle = openCatalogEventSource(
       2,
       { onHello, onCatalog, onError },
-      () => source,
+      (url) => { opened.push(url); return source; },
+      1,
     );
+    expect(opened).toEqual(["/api/vaults/1/catalog/events?after_revision=2"]);
 
     listeners.get("hello")?.({
       data: JSON.stringify({ vault_id: 1, revision: 2 }),

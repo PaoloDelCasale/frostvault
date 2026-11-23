@@ -130,7 +130,7 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/api/catalog/events")
+@app.get("/api/vaults/1/catalog/events")
 async def events(request: Request):
     request.state.session = {"id": "disposable-session"}
     return await catalog_events_stream(request, after_revision=0, subscribe=True,

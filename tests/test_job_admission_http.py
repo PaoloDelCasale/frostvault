@@ -71,7 +71,7 @@ class JobAdmissionHttpFixture(FrostVaultTestCase):
         )
 
     def post(self, url: str, body: dict):
-        return self.client.post(url, params={"vault_id": 2}, json=body, headers=self.headers)
+        return self.client.post(url, json=body, headers=self.headers)
 
     def sql(self, query: str, params: tuple = ()) -> list[dict]:
         with self.database.connect() as connection:
@@ -99,7 +99,7 @@ class JobAdmissionHttpFixture(FrostVaultTestCase):
 class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
     def test_single_file_estimate_is_the_exact_list_price_with_its_assumptions(self) -> None:
         prices = list_prices(REGION)
-        response = self.post("/api/recover/estimate", {"path": "photos/sub/c.jpg"})
+        response = self.post("/api/vaults/2/recover/estimate", {"path": "photos/sub/c.jpg"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {
             "path": "photos/sub/c.jpg",
@@ -125,7 +125,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         })
 
     def test_single_file_estimate_takes_the_requested_tier_and_days(self) -> None:
-        body = self.post("/api/recover/estimate", {
+        body = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos/sub/c.jpg", "restore_tier": "Expedited", "restore_days": 7,
             "archive_version_id": self.glacier,
         }).json()
@@ -137,7 +137,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(body["estimate"]["assumptions"]["restore_days"], 7)
 
     def test_single_file_tier_invalid_for_its_class_falls_back_to_bulk(self) -> None:
-        body = self.post("/api/recover/estimate", {
+        body = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos/a.jpg", "restore_tier": "Expedited"}).json()
         self.assertEqual(body["estimate"]["tier"], "Bulk")
         self.assertEqual(body["estimate"]["estimated_cost_eur"],
@@ -145,7 +145,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(body["estimate"]["estimated_hours"], 48.0)
 
     def test_single_file_estimate_without_cloud_restore_has_no_price(self) -> None:
-        response = self.post("/api/recover/estimate", {"path": "photos/d.jpg"})
+        response = self.post("/api/vaults/2/recover/estimate", {"path": "photos/d.jpg"})
         self.assertEqual(response.json(), {
             "path": "photos/d.jpg", "archive_version_id": self.standard,
             "storage_class": "STANDARD", "requires_restore": False,
@@ -156,29 +156,29 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET size=%s WHERE id=%s",
                                (100 * GIB, self.glacier))
-        body = self.post("/api/recover/estimate", {"path": "photos/sub/c.jpg"}).json()
+        body = self.post("/api/vaults/2/recover/estimate", {"path": "photos/sub/c.jpg"}).json()
         self.assertTrue(body["high_impact"])
         # A restore already requested is still priced, but needs no approval.
         self.set_restore_state("restoring", "GLACIER")
-        body = self.post("/api/recover/estimate", {"path": "photos/sub/c.jpg"}).json()
+        body = self.post("/api/vaults/2/recover/estimate", {"path": "photos/sub/c.jpg"}).json()
         self.assertFalse(body["high_impact"])
         self.assertTrue(body["requires_restore"])
         self.assertEqual(body["estimate"]["estimated_cost_eur"],
                          restore_cost(100 * GIB, "GLACIER", "Standard"))
 
     def test_single_file_estimate_refusals(self) -> None:
-        stale = self.post("/api/recover/estimate", {
+        stale = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos/a.jpg", "archive_version_id": self.deep_b})
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.json()["detail"], "The current snapshot changed; retry recovery")
-        missing = self.post("/api/recover/estimate", {"path": "photos/none.jpg"})
+        missing = self.post("/api/vaults/2/recover/estimate", {"path": "photos/none.jpg"})
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.json()["detail"], "No recoverable Archive Version found")
-        outside = self.post("/api/recover/estimate", {"path": "../a.jpg"})
+        outside = self.post("/api/vaults/2/recover/estimate", {"path": "../a.jpg"})
         self.assertEqual(outside.status_code, 422)
 
     def test_directory_estimate_prices_the_whole_request_once(self) -> None:
-        response = self.post("/api/recover/estimate", {
+        response = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos", "is_directory": True, "restore_tier": "Standard",
             "restore_days": 5})
         self.assertEqual(response.status_code, 200, response.text)
@@ -194,7 +194,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
             + restore_cost(GLACIER_SIZE, "GLACIER", "Standard")), places=9)
 
     def test_directory_estimate_defaults_and_threshold(self) -> None:
-        body = self.post("/api/recover/estimate", {
+        body = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos/sub", "is_directory": True}).json()
         self.assertEqual(body["estimate"], {
             "tier": "Standard", "days": 3, "estimated_hours": 5.0,
@@ -204,7 +204,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
 
     def test_directory_estimate_charges_only_restores_not_yet_requested(self) -> None:
         self.set_restore_state("restoring", "DEEP_ARCHIVE")
-        body = self.post("/api/recover/estimate", {"path": "photos", "is_directory": True}).json()
+        body = self.post("/api/vaults/2/recover/estimate", {"path": "photos", "is_directory": True}).json()
         # Only the GLACIER file is charged and counted toward the thresholds;
         # the time is the slowest class of the folder, already requested or not.
         self.assertEqual(body["estimate"], {
@@ -213,7 +213,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         })
         self.assertFalse(body["high_impact"])
         self.set_restore_state("available", "GLACIER")
-        body = self.post("/api/recover/estimate", {"path": "photos", "is_directory": True}).json()
+        body = self.post("/api/vaults/2/recover/estimate", {"path": "photos", "is_directory": True}).json()
         self.assertTrue(body["requires_restore"])
         self.assertEqual(body["estimate"]["estimated_cost_eur"], 0)
         self.assertEqual(body["estimate"]["estimated_hours"], 12.0)
@@ -222,18 +222,18 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
     def test_directory_estimate_without_archived_files_and_invalid_tier(self) -> None:
         with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET storage_class='STANDARD'")
-        response = self.post("/api/recover/estimate", {"path": "photos", "is_directory": True})
+        response = self.post("/api/vaults/2/recover/estimate", {"path": "photos", "is_directory": True})
         self.assertEqual(response.json(), {
             "path": "photos", "archive_version_id": None, "requires_restore": False,
             "restore_object_irreversible": False, "high_impact": False, "estimate": None,
         })
-        invalid = self.post("/api/recover/estimate", {
+        invalid = self.post("/api/vaults/2/recover/estimate", {
             "path": "photos", "is_directory": True, "restore_tier": "Expedited"})
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(invalid.json()["detail"], "Choose Standard or Bulk")
 
     def test_selection_estimate_counts_overlapping_items_once(self) -> None:
-        body = self.post("/api/recover/estimate", {"selection": [
+        body = self.post("/api/vaults/2/recover/estimate", {"selection": [
             {"path": "photos/sub", "is_directory": True},
             {"path": "photos/sub/c.jpg"},
             {"path": "photos/a.jpg"},
@@ -249,7 +249,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
 
 class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
     def test_single_file_recovery_queues_current_with_the_request_estimate(self) -> None:
-        response = self.post("/api/recover", {"path": "photos/sub/c.jpg"})
+        response = self.post("/api/vaults/2/recover", {"path": "photos/sub/c.jpg"})
         self.assertEqual(response.status_code, 202, response.text)
         body = response.json()
         cost = restore_cost(GLACIER_SIZE, "GLACIER", "Standard")
@@ -270,7 +270,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         self.assertIsNone(job["approval_deadline"])
 
     def test_single_file_recovery_takes_tier_days_and_the_pinned_current(self) -> None:
-        body = self.post("/api/recover", {
+        body = self.post("/api/vaults/2/recover", {
             "path": "photos/sub/c.jpg", "archive_version_id": self.glacier,
             "restore_tier": "Expedited", "restore_days": 9}).json()
         self.assertEqual(body["archive_version_id"], self.glacier)
@@ -283,7 +283,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
 
     def test_single_file_recovery_of_a_restore_already_requested_keeps_the_rounded_estimate(self) -> None:
         self.set_restore_state("restoring", "GLACIER")
-        body = self.post("/api/recover", {"path": "photos/sub/c.jpg"}).json()
+        body = self.post("/api/vaults/2/recover", {"path": "photos/sub/c.jpg"}).json()
         rounded = round(restore_cost(GLACIER_SIZE, "GLACIER", "Standard"), 6)
         self.assertNotEqual(rounded, restore_cost(GLACIER_SIZE, "GLACIER", "Standard"))
         self.assertEqual(body["estimated_cost_eur"], rounded)
@@ -294,7 +294,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(job["status"], "queued")
 
     def test_single_file_recovery_without_cloud_restore_has_no_estimate(self) -> None:
-        body = self.post("/api/recover", {"path": "photos/d.jpg"}).json()
+        body = self.post("/api/vaults/2/recover", {"path": "photos/d.jpg"}).json()
         self.assertEqual(body["archive_version_id"], self.standard)
         self.assertEqual(
             [body[key] for key in ("restore_tier", "restore_days", "estimated_cost_eur",
@@ -306,7 +306,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET size=%s WHERE id=%s",
                                (100 * GIB, self.glacier))
-        body = self.post("/api/recover", {"path": "photos/sub/c.jpg"}).json()
+        body = self.post("/api/vaults/2/recover", {"path": "photos/sub/c.jpg"}).json()
         self.assertTrue(body["approval_required"])
         self.assertEqual(body["estimated_cost_eur"], restore_cost(100 * GIB, "GLACIER", "Standard"))
         job = self.jobs()["photos/sub/c.jpg"]
@@ -317,19 +317,19 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(len(self.sql(
             "SELECT 1 FROM notifications WHERE event='recovery_approval'")), 1)
 
-        approved = self.post("/api/recover/approve", {"group_id": body["group_id"]})
+        approved = self.post("/api/vaults/2/recover/approve", {"group_id": body["group_id"]})
         self.assertEqual(approved.status_code, 202, approved.text)
         self.assertEqual(approved.json(), {
             "group_id": body["group_id"], "job_ids": body["job_ids"],
             "message": "High-impact restore approved"})
         self.assertEqual(self.jobs()["photos/sub/c.jpg"]["status"], "queued")
-        again = self.post("/api/recover/approve", {"group_id": body["group_id"]})
+        again = self.post("/api/vaults/2/recover/approve", {"group_id": body["group_id"]})
         self.assertEqual(again.status_code, 409)
         self.assertEqual(again.json()["detail"],
                          "No high-impact restore is waiting for approval (it may have expired)")
 
     def test_directory_recovery_is_one_request_priced_and_held_on_its_total(self) -> None:
-        response = self.post("/api/recover", {
+        response = self.post("/api/vaults/2/recover", {
             "path": "photos", "is_directory": True, "restore_tier": "Standard",
             "restore_days": 5})
         self.assertEqual(response.status_code, 202, response.text)
@@ -352,7 +352,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
             "SELECT 1 FROM notifications WHERE event='recovery_approval'")), 1)
 
     def test_directory_recovery_below_the_thresholds_is_released_at_once(self) -> None:
-        body = self.post("/api/recover", {"path": "photos/sub", "is_directory": True}).json()
+        body = self.post("/api/vaults/2/recover", {"path": "photos/sub", "is_directory": True}).json()
         self.assertEqual((body["restore_tier"], body["restore_days"]), ("Standard", 3))
         self.assertEqual(body["estimated_cost_eur"], restore_cost(GLACIER_SIZE, "GLACIER", "Standard"))
         self.assertEqual(body["estimated_hours"], 5.0)
@@ -361,7 +361,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
 
     def test_directory_recovery_ignores_restores_already_requested(self) -> None:
         self.set_restore_state("restoring", "DEEP_ARCHIVE")
-        body = self.post("/api/recover", {"path": "photos", "is_directory": True}).json()
+        body = self.post("/api/vaults/2/recover", {"path": "photos", "is_directory": True}).json()
         self.assertEqual(body["item_count"], 4)
         self.assertEqual(body["estimated_cost_eur"], restore_cost(GLACIER_SIZE, "GLACIER", "Standard"))
         self.assertEqual(body["estimated_hours"], 5.0)
@@ -370,7 +370,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
     def test_directory_recovery_without_archived_files_echoes_no_tier(self) -> None:
         with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET storage_class='STANDARD'")
-        body = self.post("/api/recover", {
+        body = self.post("/api/vaults/2/recover", {
             "path": "photos", "is_directory": True, "restore_tier": "Standard"}).json()
         self.assertEqual(
             [body[key] for key in ("restore_tier", "restore_days", "estimated_cost_eur",
@@ -378,7 +378,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
             [None, None, None, None, False])
 
     def test_selection_recovery_queues_each_file_once(self) -> None:
-        body = self.post("/api/recover", {"selection": [
+        body = self.post("/api/vaults/2/recover", {"selection": [
             {"path": "photos/sub", "is_directory": True},
             {"path": "photos/sub/c.jpg"},
             {"path": "photos/d.jpg"},
@@ -400,22 +400,22 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
              "No files are eligible for this operation"),
         ):
             with self.subTest(body=body):
-                response = self.post("/api/recover", body)
+                response = self.post("/api/vaults/2/recover", body)
                 self.assertEqual(response.status_code, status, response.text)
                 self.assertEqual(response.json()["detail"], detail)
         self.assertEqual(self.jobs(), {})
         self.assertEqual(self.sql("SELECT 1 FROM restore_requests"), [])
 
     def test_a_second_request_on_the_same_file_is_refused(self) -> None:
-        self.assertEqual(self.post("/api/recover", {"path": "photos/d.jpg"}).status_code, 202)
-        again = self.post("/api/recover", {"path": "photos/d.jpg"})
+        self.assertEqual(self.post("/api/vaults/2/recover", {"path": "photos/d.jpg"}).status_code, 202)
+        again = self.post("/api/vaults/2/recover", {"path": "photos/d.jpg"})
         self.assertEqual(again.status_code, 409)
         self.assertEqual(again.json()["detail"], "No files are eligible for this operation")
 
     def test_recovery_into_a_folder_that_may_not_be_written_is_refused(self) -> None:
         (self.source / "photos").mkdir()
         with patch("app.services.write_access._writable", return_value=False):
-            response = self.post("/api/recover", {"path": "photos/d.jpg"})
+            response = self.post("/api/vaults/2/recover", {"path": "photos/d.jpg"})
         self.assertEqual(response.status_code, 409, response.text)
         body = response.json()
         self.assertEqual(body["message_key"], "job.destination_not_writable")
@@ -425,9 +425,9 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
 
 class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
     ACTIONS = (
-        ("/api/recover", {"path": "photos/d.jpg"}),
-        ("/api/upload", {"path": "photos/d.jpg"}),
-        ("/api/free-space", {"path": "photos/d.jpg"}),
+        ("/api/vaults/2/recover", {"path": "photos/d.jpg"}),
+        ("/api/vaults/2/upload", {"path": "photos/d.jpg"}),
+        ("/api/vaults/2/free-space", {"path": "photos/d.jpg"}),
     )
 
     def test_a_vault_waiting_for_its_reconnect_scan_admits_no_local_work(self) -> None:
@@ -451,7 +451,7 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
                                  "Local storage for this vault is unavailable (unavailable)")
 
     def test_upload_and_local_release_refusals(self) -> None:
-        for url in ("/api/upload", "/api/free-space"):
+        for url in ("/api/vaults/2/upload", "/api/vaults/2/free-space"):
             with self.subTest(url=url):
                 response = self.post(url, {"path": "photos/d.jpg"})
                 self.assertEqual(response.status_code, 409, response.text)
@@ -462,7 +462,7 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
         with self.database.connect() as connection:
             record_component_health(
                 connection, vault_id=2, component="cloud", ok=False, error="S3 unreachable")
-        response = self.post("/api/free-space", {"path": "photos/d.jpg"})
+        response = self.post("/api/vaults/2/free-space", {"path": "photos/d.jpg"})
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(response.json(), {
             "detail": ("Local release blocked: the protection of this Vault is not "
@@ -473,7 +473,7 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
         })
 
     def test_replacing_a_cloud_only_copy_needs_its_conflict(self) -> None:
-        response = self.post("/api/files/cloud-only-conflict/replace", {"path": "photos/d.jpg"})
+        response = self.post("/api/vaults/2/files/cloud-only-conflict/replace", {"path": "photos/d.jpg"})
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(response.json()["detail"],
                          "No conflict with a cloud-only file at this path")

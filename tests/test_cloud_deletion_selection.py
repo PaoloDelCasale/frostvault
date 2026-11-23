@@ -250,33 +250,33 @@ class SelectionHttpTests(SelectionFixture):
         self.cloud_only_at("library/old/photo.jpg", PHOTO)
         self.cloud_only_at("library/old/original.jpg", ORIGINAL)
         body = {"directories": ["library"], "paths": ["report.txt"], "duplicates_only": True}
-        preview = self.client.post("/api/cloud-deletion/preview", json=body, headers=self.headers)
+        preview = self.client.post("/api/vaults/2/cloud-deletion/preview", json=body, headers=self.headers)
         self.assertEqual(preview.status_code, 200, preview.text)
         data = preview.json()
         self.assertEqual((data["object_count"], data["duplicate_count"], data["no_local_copy_count"],
                           data["skipped"]["present_locally"], data["mode"]),
                          (1, 1, 1, 2, "selection"))
         confirm = {**body, "confirmation": "Docs", "reason": "moved by Immich"}
-        stale = self.client.post("/api/cloud-purge", json={**confirm, "fingerprint": "f" * 64},
+        stale = self.client.post("/api/vaults/2/cloud-purge", json={**confirm, "fingerprint": "f" * 64},
                                  headers={**self.headers, "Accept-Language": "it"})
         self.assertEqual(stale.status_code, 409, stale.text)
         self.assertEqual(stale.json()["message_key"], "api.cloud_purge_selection_changed")
-        missing = self.client.post("/api/cloud-purge", json=confirm, headers=self.headers)
+        missing = self.client.post("/api/vaults/2/cloud-purge", json=confirm, headers=self.headers)
         self.assertEqual(missing.status_code, 409, missing.text)
-        done = self.client.post("/api/cloud-purge", json={**confirm, "fingerprint": data["fingerprint"]},
+        done = self.client.post("/api/vaults/2/cloud-purge", json={**confirm, "fingerprint": data["fingerprint"]},
                                 headers=self.headers)
         self.assertEqual(done.status_code, 202, done.text)
         self.assertEqual(len(done.json()["job_ids"]), 1)
 
     def test_a_list_view_and_an_empty_request(self) -> None:
         self.cloud_only_at("top.bin", b"top")
-        response = self.client.post("/api/cloud-deletion/preview",
+        response = self.client.post("/api/vaults/2/cloud-deletion/preview",
                                     json={"listing": {"state": "cloud_only"}}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["eligible_count"], 1)
-        empty = self.client.post("/api/cloud-deletion/preview", json={}, headers=self.headers)
+        empty = self.client.post("/api/vaults/2/cloud-deletion/preview", json={}, headers=self.headers)
         self.assertEqual(empty.status_code, 422, empty.text)
-        single = self.client.post("/api/cloud-deletion/preview", json={"path": "report.txt"},
+        single = self.client.post("/api/vaults/2/cloud-deletion/preview", json={"path": "report.txt"},
                                   headers=self.headers)
         self.assertEqual(single.status_code, 409, single.text)
 

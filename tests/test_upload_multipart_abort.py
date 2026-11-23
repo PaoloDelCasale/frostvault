@@ -33,7 +33,7 @@ class UploadMultipartAbortTests(fixtures.UploadProvenanceWorkerCase):
             provenance.journal_multipart(storage.db, intent["id"], "own-upload", storage.now_iso())
         if foreign:
             self.provider.multiparts.append((self.key, "foreign-upload"))
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         return job, max(j["id"] for j in self.jobs())
 
     def multiparts(self):
@@ -99,7 +99,7 @@ class UploadMultipartAbortTests(fixtures.UploadProvenanceWorkerCase):
         self.assertEqual(self.provider.puts, 1)
         provenance.journal_multipart(storage.db, self.intent()["id"], "completed-upload", storage.now_iso())
         self.assertEqual(self.multiparts(), [("completed-upload", "open")])
-        self.assertEqual(self.http_client().post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 1})
+        self.assertEqual(self.http_client().post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 1})
         resumed = max(j["id"] for j in self.jobs())
         self.run_job(resumed)
         self.assert_keeper(resumed)

@@ -11,7 +11,7 @@ describe("active Owner work without a routine notification feed", () => {
     const calls: string[] = [];
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
-      if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [
+      if (/^\/api\/vaults\/\d+\/jobs\?/.test(url)) return jsonResponse({ groups: [
         { id: "restore", action: "recover", path: "photos", status: "pending_approval", item_count: 2, completed_count: 0, percent: 0, estimated_cost_eur: 20, estimated_hours: 48 },
         { id: "upload", action: "upload", path: "routine.jpg", status: "uploading", item_count: 1, completed_count: 0, percent: 5 },
       ] });
@@ -20,11 +20,11 @@ describe("active Owner work without a routine notification feed", () => {
     renderWithQueryClient(<ActiveOperations vaultId={2} t={(key, params) => `${key}${params ? JSON.stringify(params) : ""}`} />);
     const user = userEvent.setup(); await user.click(await screen.findByRole("button", { name: "ui.approve_restore" }));
     expect(screen.getByText(/essential.approval_cost/)).toHaveTextContent('{"cost":"€20.00","hours":48}');
-    await waitFor(() => expect(calls).toContain("/api/recover/approve?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/recover/approve"));
     await user.click(screen.getByRole("button", { name: "ui.cancel" }));
-    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/jobs/cancel"));
     expect(screen.queryByText(/routine.jpg/)).not.toBeInTheDocument();
-    expect(calls).toContain("/api/jobs?action=recover&action=free-space&active_only=true&vault_id=2");
+    expect(calls).toContain("/api/vaults/2/jobs?action=recover&action=free-space&active_only=true");
   });
   it("pages bounded active summaries instead of hiding older approvals behind unrelated jobs", async () => {
     const calls: string[] = [];
@@ -37,7 +37,7 @@ describe("active Owner work without a routine notification feed", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "ui.next" }));
     await screen.findByText("action.recover · old-folder");
-    expect(calls).toContain("/api/jobs?action=recover&action=free-space&active_only=true&groups_before_id=100&vault_id=2");
+    expect(calls).toContain("/api/vaults/2/jobs?action=recover&action=free-space&active_only=true&groups_before_id=100");
     expect(screen.getByText(/0\/30001/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "ui.next" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "ui.previous" }));
@@ -53,13 +53,13 @@ describe("active Owner work without a routine notification feed", () => {
     renderWithQueryClient(<><ActiveOperations vaultId={2} t={(key) => key} /><ActiveOperations vaultId={2} moves t={(key) => key} /></>);
     await screen.findByText("move.title · move-folder");
     await screen.findByText("action.recover · restore-folder");
-    expect(calls).toContain("/api/jobs?action=storage-class&active_only=true&vault_id=2");
+    expect(calls).toContain("/api/vaults/2/jobs?action=storage-class&active_only=true");
   });
   it("shows a cloud restore as a wait with times, and stopping it explains that AWS continues (#646)", async () => {
     const calls: string[] = [];
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
-      if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [
+      if (/^\/api\/vaults\/\d+\/jobs\?/.test(url)) return jsonResponse({ groups: [
         { id: "cold", action: "recover", path: "cold/c0.bin", status: "restoring", item_count: 1, completed_count: 0, percent: 0, restore_tier: "Standard", restore_days: 1, requested_at: "2026-11-14T09:57:00Z", ready_by: "2026-11-14T21:57:00Z" },
       ] });
       return jsonResponse({});
@@ -74,22 +74,22 @@ describe("active Owner work without a routine notification feed", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent('recovery.stop_waiting_help_days{"count":1}');
     await user.click(within(dialog).getByRole("button", { name: "recovery.keep_waiting" }));
-    expect(calls).not.toContain("/api/jobs/cancel?vault_id=2");
+    expect(calls).not.toContain("/api/vaults/2/jobs/cancel");
     await user.click(screen.getByRole("button", { name: "recovery.stop_waiting" }));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "recovery.stop_waiting" }));
-    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/jobs/cancel"));
     expect(await screen.findByRole("status")).toHaveTextContent("ui.operation_not_cancellable");
   });
   it("cancels a recovery AWS has not accepted yet without a dialog or a not-cancellable notice", async () => {
     const calls: string[] = [];
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
-      if (url.startsWith("/api/jobs?")) return jsonResponse({ groups: [{ id: "queued", action: "recover", path: "cold/c1.bin", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
+      if (/^\/api\/vaults\/\d+\/jobs\?/.test(url)) return jsonResponse({ groups: [{ id: "queued", action: "recover", path: "cold/c1.bin", status: "queued", item_count: 1, completed_count: 0, percent: 0 }] });
       return jsonResponse({});
     }) });
     renderWithQueryClient(<ActiveOperations vaultId={2} t={(key) => key} />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "ui.cancel" }));
-    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/jobs/cancel"));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.queryByText("ui.operation_not_cancellable")).not.toBeInTheDocument();
   });

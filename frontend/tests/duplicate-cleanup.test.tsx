@@ -81,7 +81,7 @@ describe("Automatic Duplicate Cleanup settings", () => {
         last_outcome: { outcome: "scheduled", at: "2026-11-16T03:00:00Z", file_count: 2149, byte_count: 6.6 * 1024 ** 3 },
         pending,
       }),
-      "POST /api/jobs/cancel": (init) => {
+      "POST /api/vaults/1/jobs/cancel": (init) => {
         cancels.push(JSON.parse(String(init?.body)));
         pending = [];
         return jsonResponse({ cancelled: 2149 });

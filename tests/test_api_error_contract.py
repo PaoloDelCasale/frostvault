@@ -9,9 +9,12 @@ error at its seam.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import patch
+
+import psycopg
 
 from app.i18n import translate
 from tests.fixtures import FrostVaultTestCase, seed_job, seed_vault
@@ -90,19 +93,19 @@ class SessionErrors(ApiErrorCase):
              {"cloud_disposition": "delete", "confirmation": "Docs", "reason": "r"}),
             ("PUT", "/api/vaults/1/duplicate-cleanup", {"enabled": True}),
             ("PUT", "/api/vaults/1/mirror-cleanup", {"enabled": True}),
-            ("POST", "/api/cloud-purge", {"path": "a.txt", "confirmation": "Docs", "reason": "r"}),
+            ("POST", "/api/vaults/1/cloud-purge", {"path": "a.txt", "confirmation": "Docs", "reason": "r"}),
         ):
             self.check(method, url, body, 403, REAUTH_REQUIRED)
 
     def test_vault_of_the_request(self) -> None:
         missing = problem("api.protected_vault_not_found")
-        self.check("GET", "/api/jobs?vault_id=99", X, 404, missing)
-        self.check("GET", "/api/jobs?vault_id=2", X, 404, missing)
+        self.check("GET", "/api/vaults/99/jobs", X, 404, missing)
+        self.check("GET", "/api/vaults/2/jobs", X, 404, missing)
         self.check("POST", "/api/vaults/select", {"vault_id": 99}, 404, missing)
         self.check("POST", "/api/vaults/select", {"vault_id": 2}, 404, missing)
         with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
-        self.check("GET", "/api/jobs", X, 403, problem("api.no_vault"))
+        self.check("GET", "/api/vaults/1/jobs", X, 404, missing)
         me = self.client.get("/api/me")
         self.assertEqual((me.status_code, me.json()["vault"]), (200, None))
 
@@ -177,7 +180,7 @@ class VaultManagementErrors(ApiErrorCase):
             ("GET", "/api/vaults/99/billed-cost", X, 404, problem("api.billed_cost.not_found")),
             ("POST", "/api/vaults/99/reconnect", reconnect,
              404, problem("api.reconnect.not_found")),
-            ("POST", "/api/upload/retry-failed?vault_id=99", X, 404, vault_not_found),
+            ("POST", "/api/vaults/99/upload/retry-failed", X, 404, vault_not_found),
             ("POST", "/api/general/cost-estimates/storage", {"vault_id": 99},
              404, vault_not_found),
         ):
@@ -320,12 +323,12 @@ class BrowseErrors(ApiErrorCase):
                    404, problem("api.file_not_found"))
         self.check("GET", "/api/vaults/1/files/detail?path=../outside", X,
                    422, problem("api.invalid_path"))
-        self.check("GET", "/api/files/jobs?path=missing.txt", X,
+        self.check("GET", "/api/vaults/1/files/jobs?path=missing.txt", X,
                    404, problem("api.file_not_found"))
-        self.check("GET", "/api/jobs/99999", X, 404, problem("api.job_not_found"))
+        self.check("GET", "/api/vaults/1/jobs/99999", X, 404, problem("api.job_not_found"))
         self.check("POST", "/api/notifications/read", {"notification_id": 99},
                    404, problem("api.notification_not_found"))
-        self.check("GET", "/api/catalog/events?subscribe=false", X,
+        self.check("GET", "/api/vaults/1/catalog/events?subscribe=false", X,
                    422, problem("api.last_event_id_invalid"),
                    headers={"Last-Event-ID": "not-a-number"})
 
@@ -548,6 +551,177 @@ class BrowseAddress(VaultAddressCase):
         self.each_address_is_matched_by_its_own_route(self.OPERATIONS)
 
 
+class JobsAddress(VaultAddressCase):
+    """Jobs, scan, catalog events, Uploads, recovery and cloud deletion take their Vault from the path (ADR-0056)."""
+
+    PURGE = {"path": "a.txt", "confirmation": "Docs", "reason": "r"}
+    OPERATIONS = (
+        ("GET", "jobs", X),
+        ("GET", "jobs/1", X),
+        ("POST", "jobs/cancel", {"group_id": NO_GROUP, "action": "upload"}),
+        ("GET", f"job-groups/{NO_GROUP}/jobs", X),
+        ("GET", "files/jobs?path=a.txt", X),
+        ("GET", "files/versions?path=a.txt", X),
+        ("POST", "files/cloud-only-conflict/replace", {"path": "a.txt"}),
+        ("POST", "scan", X),
+        ("GET", "catalog/revision", X),
+        ("GET", "catalog/events?subscribe=false", X),
+        ("POST", "upload", {"path": "a.txt"}),
+        ("GET", f"upload/admissions/{NO_GROUP}", X),
+        ("POST", "upload/reconcile", {"path": "a.txt"}),
+        ("POST", "upload/cancel-pending", {"path": ""}),
+        ("POST", "recover", {"path": "a.txt"}),
+        ("POST", "recover/estimate", {"path": "a.txt"}),
+        ("POST", "recover/approve", {"group_id": NO_GROUP}),
+        ("POST", "free-space", {"path": "a.txt"}),
+        ("POST", "cloud-deletion/preview", {"path": "a.txt"}),
+        ("POST", "cloud-purge", PURGE),
+    )
+    # The route of an address whose last segments are parameters.
+    TEMPLATES = {
+        "jobs/1": "jobs/{job_id}",
+        f"job-groups/{NO_GROUP}/jobs": "job-groups/{group_id}/jobs",
+        f"upload/admissions/{NO_GROUP}": "upload/admissions/{group_id}",
+    }
+    RETRY = "upload/retry-failed"
+
+    def template(self, suffix: str) -> str:
+        path = suffix.partition("?")[0]
+        return f"/api/vaults/{{vault_id}}/{self.TEMPLATES.get(path, path)}"
+
+    def events(self, vault_id: int) -> list[tuple[str, dict[str, Any]]]:
+        """The frames of the finite event stream of one Vault."""
+        response = self.client.get(f"/api/vaults/{vault_id}/catalog/events?subscribe=false")
+        self.assertEqual(response.status_code, 200, response.text)
+        frames = []
+        for block in response.text.strip().split("\n\n"):
+            fields = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+            if "event" in fields:
+                frames.append((fields["event"], json.loads(fields["data"])))
+        return frames
+
+    def test_the_table_is_every_operation_of_the_router(self) -> None:
+        from app.routes import jobs
+        routed = {(method, route.path) for route in jobs.router.routes
+                  for method in route.methods if "{vault_id}" in route.path}
+        listed = {(method, self.template(suffix)) for method, suffix, _body in self.OPERATIONS}
+        self.assertEqual(routed, listed | {("POST", f"/api/vaults/{{vault_id}}/{self.RETRY}")})
+        # What stays without a Vault is installation-wide.
+        self.assertEqual(
+            {(method, route.path) for route in jobs.router.routes
+             for method in route.methods if "{vault_id}" not in route.path},
+            {("POST", "/api/upload/retry-failed"), ("GET", "/api/cloud-deletion")})
+
+    def test_only_an_operational_vault_in_the_path_is_accepted(self) -> None:
+        self.only_an_operational_vault_is_accepted(self.OPERATIONS)
+
+    def test_the_session_vault_is_neither_an_address_nor_written(self) -> None:
+        with self.database.connect() as connection:
+            seed_vault(connection, id=4, name="Second", source_root="/sources/managed/second")
+            other_job = seed_job(connection, vault_id=4, path="b.txt")
+        for pinned in (None, 4):
+            with self.database.connect() as connection:
+                connection.execute("UPDATE sessions SET vault_id=%s", (pinned,))
+            for vault_id, job_id, path, foreign in ((1, self.job_id, "a.txt", other_job),
+                                                    (4, other_job, "b.txt", self.job_id)):
+                with self.subTest(pinned=pinned, vault_id=vault_id):
+                    base = f"/api/vaults/{vault_id}"
+                    jobs = self.client.get(f"{base}/jobs")
+                    self.assertEqual(jobs.status_code, 200, jobs.text)
+                    self.assertEqual([item["path"] for item in jobs.json()["items"]], [path])
+                    self.assertEqual(self.client.get(f"{base}/jobs/{job_id}").json()["path"], path)
+                    self.check("GET", f"{base}/jobs/{foreign}", X, 404, problem("api.job_not_found"))
+                    revision = self.client.get(f"{base}/catalog/revision")
+                    self.assertEqual((revision.status_code, revision.json()["vault_id"]), (200, vault_id))
+                    # A Session on another Vault does not close the stream of this one.
+                    self.assertEqual(self.events(vault_id), [("hello", {"vault_id": vault_id, "revision": 0})])
+            self.assertEqual(self.session_vault(), pinned)
+
+    def test_the_job_history_of_an_existing_file_lists_its_jobs(self) -> None:
+        # Was a 500: the query named ``file_id``, a column ``job_rows`` lacked.
+        history = self.client.get("/api/vaults/1/files/jobs?path=a.txt")
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual([(item["id"], item["path"]) for item in history.json()["items"]],
+                         [(self.job_id, "a.txt")])
+        self.assertIsNone(history.json()["next_before_id"])
+
+    def test_the_session_vault_is_still_written_by_me_alone(self) -> None:
+        for suffix in ("jobs", "catalog/revision", "catalog/events?subscribe=false"):
+            self.assertEqual(self.client.get(f"/api/vaults/1/{suffix}").status_code, 200)
+        self.assertEqual(self.client.post("/api/vaults/1/scan").status_code, 202)
+        self.assertIsNone(self.session_vault())
+        self.assertEqual(self.client.get("/api/me").json()["vault"]["id"], 1)
+        self.assertEqual(self.session_vault(), 1)
+
+    def test_without_an_operational_vault_the_answer_is_the_path_one(self) -> None:
+        # The Session fallback is gone with its 403 ``api.no_vault``.
+        with self.database.connect() as connection:
+            connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
+        for method, suffix, body in self.OPERATIONS:
+            self.check(method, f"/api/vaults/1/{suffix}", body,
+                       404, problem("api.protected_vault_not_found"))
+        self.assertIsNone(self.session_vault())
+
+    def test_the_old_addresses_are_gone_without_an_alias(self) -> None:
+        paths = self.client.app.openapi()["paths"]
+        for method, suffix, body in self.OPERATIONS:
+            old = self.template(suffix).replace("/vaults/{vault_id}", "")
+            self.assertNotIn(old, paths)
+            for query in ("", "vault_id=1"):
+                with self.subTest(method=method, suffix=suffix, query=query):
+                    separator = ("&" if "?" in suffix else "?") if query else ""
+                    response = self.client.request(method, f"/api/{suffix}{separator}{query}", json=body)
+                    self.assertEqual((response.status_code, response.json()),
+                                     (404, {"detail": "Not Found"}))
+        self.assertIsNone(self.session_vault())
+
+    def test_the_vault_is_not_a_query_parameter_any_more(self) -> None:
+        paths = self.client.app.openapi()["paths"]
+        operations = [(method, self.template(suffix)) for method, suffix, _body in self.OPERATIONS]
+        for method, path in (*operations, ("POST", f"/api/vaults/{{vault_id}}/{self.RETRY}")):
+            parameters = paths[path][method.lower()]["parameters"]
+            self.assertEqual([(item["name"], item["in"]) for item in parameters
+                              if item["name"] == "vault_id"], [("vault_id", "path")], path)
+        self.assertNotIn("parameters", paths["/api/upload/retry-failed"]["post"])
+        # A leftover ``?vault_id=`` is ignored: the path is the whole address.
+        jobs = self.client.get("/api/vaults/1/jobs?vault_id=99")
+        self.assertEqual(jobs.status_code, 200, jobs.text)
+        self.assertEqual([item["path"] for item in jobs.json()["items"]], ["a.txt"])
+
+    def test_each_new_address_is_matched_by_its_own_route(self) -> None:
+        from starlette.routing import Match
+        routes = self.client.app.router.routes
+        for method, suffix, _body in (*self.OPERATIONS, ("POST", self.RETRY, X)):
+            scope = {"type": "http", "method": method, "path": f"/api/vaults/1/{suffix.partition('?')[0]}"}
+            first = next(route for route in routes if route.matches(scope)[0] is Match.FULL)
+            self.assertEqual(first.path, self.template(suffix), (method, suffix))
+        # As before the move: ``cancel`` is a Job id only for a GET, and not a valid one.
+        self.assertEqual(self.client.get("/api/vaults/1/jobs/cancel").status_code, 422)
+
+    def test_one_vault_retry_accepts_any_existing_vault(self) -> None:
+        # Unlike the other operations: a Tombstone and a Vault being created are accepted.
+        for vault_id in (1, 2, 3):
+            response = self.client.post(f"/api/vaults/{vault_id}/{self.RETRY}")
+            self.assertEqual((response.status_code, response.json()), (202, {"item_count": 0}), vault_id)
+        self.check("POST", f"/api/vaults/99/{self.RETRY}", X, 404, problem("api.vault_not_found"))
+        self.assertEqual(self.client.post(f"/api/vaults/0/{self.RETRY}").status_code, 422)
+        self.assertIsNone(self.session_vault())
+
+    def test_the_installation_retry_keeps_its_address_and_loses_the_vault_parameter(self) -> None:
+        with self.database.connect() as connection:
+            connection.execute("UPDATE sessions SET vault_id=1")
+        from app import storage
+        with patch.object(storage, "queue_vault_auto_uploads", return_value=1) as queue:
+            response = self.client.post("/api/upload/retry-failed")
+            self.assertEqual((response.status_code, response.json()), (202, {"item_count": 3}))
+            self.assertEqual([call.args[0]["id"] for call in queue.call_args_list], [1, 2, 3])
+            # A client still naming one Vault the old way is refused, not widened to all.
+            for vault_id in (1, 99):
+                self.check("POST", f"/api/upload/retry-failed?vault_id={vault_id}", X,
+                           422, problem("api.invalid_operation"))
+            self.assertEqual(queue.call_count, 3)
+
+
 class PolicyErrors(ApiErrorCase):
     def test_operation_policy(self) -> None:
         glob = {"field": "exclude_globs", "action": "remove", "glob": "*.tmp"}
@@ -598,23 +772,23 @@ class PolicyErrors(ApiErrorCase):
 class JobErrors(ApiErrorCase):
     def test_admission(self) -> None:
         nothing = problem("api.admission.none_eligible")
-        self.check("POST", "/api/upload", {"path": "a.txt"}, 409, nothing)
-        self.check("POST", "/api/upload", {"path": "../outside"}, 422, problem("api.invalid_path"))
-        self.check("POST", "/api/recover", {"path": "a.txt"}, 409, nothing)
-        self.check("POST", "/api/recover/estimate", {"path": "a.txt"},
+        self.check("POST", "/api/vaults/1/upload", {"path": "a.txt"}, 409, nothing)
+        self.check("POST", "/api/vaults/1/upload", {"path": "../outside"}, 422, problem("api.invalid_path"))
+        self.check("POST", "/api/vaults/1/recover", {"path": "a.txt"}, 409, nothing)
+        self.check("POST", "/api/vaults/1/recover/estimate", {"path": "a.txt"},
                    404, problem("api.admission.no_recoverable_version"))
-        self.check("POST", "/api/free-space", {"path": "a.txt"}, 409, nothing)
-        self.check("POST", "/api/files/cloud-only-conflict/replace", {"path": "a.txt"},
+        self.check("POST", "/api/vaults/1/free-space", {"path": "a.txt"}, 409, nothing)
+        self.check("POST", "/api/vaults/1/files/cloud-only-conflict/replace", {"path": "a.txt"},
                    409, problem("api.admission.no_cloud_only_conflict"))
-        self.check("GET", f"/api/upload/admissions/{NO_GROUP}", X,
+        self.check("GET", f"/api/vaults/1/upload/admissions/{NO_GROUP}", X,
                    404, problem("api.upload_admission.not_found"))
-        self.check("POST", "/api/upload/reconcile", {"path": "a.txt", "is_directory": True},
+        self.check("POST", "/api/vaults/1/upload/reconcile", {"path": "a.txt", "is_directory": True},
                    422, problem("api.reconcile.single_file"))
         with patch("app.routes.jobs.vault_local_access") as access:
             access.return_value.local_operations_allowed = False
-            self.check("POST", "/api/upload/reconcile", {"path": "a.txt"},
+            self.check("POST", "/api/vaults/1/upload/reconcile", {"path": "a.txt"},
                        503, problem("api.reconcile.volume_unavailable"))
-        self.check("POST", "/api/recover/approve", {"group_id": NO_GROUP},
+        self.check("POST", "/api/vaults/1/recover/approve", {"group_id": NO_GROUP},
                    409, problem("api.recover_approval.none_waiting"))
 
     def test_admission_refusals(self) -> None:
@@ -634,7 +808,7 @@ class JobErrors(ApiErrorCase):
              409, problem("api.local_release_blocked_path", path="a/b")),
         ):
             with patch.object(job_admission, "queue_jobs", side_effect=error):
-                self.check("POST", f"/api/free-space?case={type(error).__name__}",
+                self.check("POST", f"/api/vaults/1/free-space?case={type(error).__name__}",
                            {"path": "a.txt"}, status, payload)
 
     def test_upload_reconciliation(self) -> None:
@@ -647,34 +821,34 @@ class JobErrors(ApiErrorCase):
             with patch.object(upload_remediation, "schedule_resume", side_effect=error), \
                     patch("app.routes.jobs.vault_local_access") as access:
                 access.return_value.local_operations_allowed = True
-                self.check("POST", f"/api/upload/reconcile?case={reason}", {"path": "a.txt"},
+                self.check("POST", f"/api/vaults/1/upload/reconcile?case={reason}", {"path": "a.txt"},
                            409, problem(f"reconciliation.reason.{key}"))
 
     def test_folder_upload(self) -> None:
         folder = {"path": "folder", "is_directory": True, "request_id": NO_GROUP}
-        self.assertEqual(self.client.post("/api/upload", json=folder).status_code, 202)
-        self.check("POST", "/api/upload", {**folder, "path": "other"},
+        self.assertEqual(self.client.post("/api/vaults/1/upload", json=folder).status_code, 202)
+        self.check("POST", "/api/vaults/1/upload", {**folder, "path": "other"},
                    409, problem("api.upload_admission.request_reused"))
 
     def test_cancel(self) -> None:
         cancel = {"group_id": NO_GROUP, "action": "upload"}
-        self.check("POST", "/api/jobs/cancel", {**cancel, "action": "made-up"},
+        self.check("POST", "/api/vaults/1/jobs/cancel", {**cancel, "action": "made-up"},
                    422, problem("api.invalid_operation"))
-        self.check("POST", "/api/jobs/cancel", cancel,
+        self.check("POST", "/api/vaults/1/jobs/cancel", cancel,
                    409, problem("api.operation_not_running"))
-        self.check("POST", "/api/jobs/cancel", {**cancel, "action": "cloud-purge"},
+        self.check("POST", "/api/vaults/1/jobs/cancel", {**cancel, "action": "cloud-purge"},
                    409, problem("api.cloud_deletion.not_cancellable"))
 
     def test_cloud_deletion(self) -> None:
         only_cloud = problem("api.cloud_deletion.cloud_only_required")
-        self.check("POST", "/api/cloud-deletion/preview", {"path": "a.txt"}, 409, only_cloud)
-        self.check("POST", "/api/cloud-deletion/preview", {"path": "../outside"},
+        self.check("POST", "/api/vaults/1/cloud-deletion/preview", {"path": "a.txt"}, 409, only_cloud)
+        self.check("POST", "/api/vaults/1/cloud-deletion/preview", {"path": "../outside"},
                    409, problem("api.cloud_deletion.invalid_paths"))
         purge = {"path": "a.txt", "confirmation": "Docs", "reason": "r"}
-        self.check("POST", "/api/cloud-purge", purge, 409, only_cloud)
-        self.check("POST", "/api/cloud-purge", {**purge, "confirmation": "wrong"},
+        self.check("POST", "/api/vaults/1/cloud-purge", purge, 409, only_cloud)
+        self.check("POST", "/api/vaults/1/cloud-purge", {**purge, "confirmation": "wrong"},
                    422, problem("api.confirmation_required"))
-        self.check("POST", "/api/cloud-purge", {
+        self.check("POST", "/api/vaults/1/cloud-purge", {
             "directories": ["folder"], "confirmation": "Docs", "reason": "r",
             "fingerprint": "stale"}, 409, problem("api.cloud_purge_selection_changed"))
 

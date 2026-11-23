@@ -48,10 +48,10 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await expect(recovery).toContainText(/automatic release is off/i);
     await recovery.getByRole("combobox").selectOption("Standard");
     await expect(recovery.getByRole("combobox")).toHaveValue("Standard");
-    const request = page.waitForRequest((req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/recover");
+    const request = page.waitForRequest((req) => req.method() === "POST" && new URL(req.url()).pathname.endsWith("/recover"));
     await recovery.getByRole("button", { name: /^recover$/i }).click();
     const sent = await request;
-    expect(new URL(sent.url()).searchParams.get("vault_id")).toBe(String(credentials.vaults.secondary.id));
+    expect(new URL(sent.url()).pathname).toBe(`/api/vaults/${credentials.vaults.secondary.id}/recover`);
     expect(sent.postDataJSON()).toMatchObject({ path: "photos/cold.jpg", restore_tier: "Standard" });
     await expect(recovery).toBeHidden();
   });
@@ -80,7 +80,7 @@ test.describe("essential Owner flows (#365 D1–D17)", () => {
     await details.getByRole("button", { name: /replace the cloud copy/i }).click();
     const confirm = page.getByRole("alertdialog");
     await expect(confirm).toContainText(/only recoverable cloud copy/i);
-    const response = page.waitForResponse((res) => res.request().method() === "POST" && new URL(res.url()).pathname === "/api/files/cloud-only-conflict/replace");
+    const response = page.waitForResponse((res) => res.request().method() === "POST" && new URL(res.url()).pathname.endsWith("/files/cloud-only-conflict/replace"));
     await confirm.getByRole("button", { name: /replace the cloud copy/i }).click();
     expect((await response).status()).toBe(202);
   });

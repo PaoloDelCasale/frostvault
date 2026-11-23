@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW_RESPONSE_EXCEPTIONS = {
     "/api/general/metadata-backups/download/{run_id}",
     "/api/recovery-kit/download",
-    "/api/catalog/events",
+    "/api/vaults/{vault_id}/catalog/events",
 }
 # Backward-compatible alias used by older call sites in this module.
 RAW_JSON_EXCEPTIONS = RAW_RESPONSE_EXCEPTIONS
@@ -87,7 +87,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         download = paths["/api/general/metadata-backups/download/{run_id}"]["get"]
         metrics = paths["/metrics"]["get"]
-        catalog_events = paths["/api/catalog/events"]["get"]
+        catalog_events = paths["/api/vaults/{vault_id}/catalog/events"]["get"]
         self.assertEqual(
             download["responses"]["200"]["content"]["application/octet-stream"]["schema"],
             {"type": "string", "format": "binary"},

@@ -20,7 +20,7 @@ JOB_COLUMNS = """id,path,action,status,message,message_key,message_params,reques
 # One flat row per Job for display. ``pending_until`` is what the Job waits
 # for: its request's approval deadline, or a delayed deletion's due time.
 JOB_ROWS = """job_rows AS NOT MATERIALIZED (
-    SELECT j.id, j.vault_id, f.path, j.action, j.status, j.message, j.message_key,
+    SELECT j.id, j.vault_id, j.file_id, f.path, j.action, j.status, j.message, j.message_key,
         j.message_params::text AS message_params, j.requested_at, j.updated_at,
         j.group_id, g.path AS group_path, j.total_bytes, j.transferred_bytes,
         CASE j.status WHEN 'pending_approval' THEN rr.approval_deadline

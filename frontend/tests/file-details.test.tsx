@@ -15,12 +15,12 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
     if (/^\/api\/vaults\/\d+\/files\/detail\?/.test(url)) return jsonResponse({ ...stale, state, local_exists: local, cloud_exists: true, cloud_only_conflict: conflict, ...extra });
-    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified", ...versionExtra }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
-    if (url.startsWith("/api/files/jobs")) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
-    if (url.startsWith("/api/jobs/")) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
-    if (url.startsWith("/api/jobs")) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
-    if (url.startsWith("/api/cloud-purge") && purgeFailure) return jsonResponse(purgeFailure, 409);
-    if (url.startsWith("/api/cloud-deletion/preview")) return jsonResponse({ object_count: 1, version_count: 1, delete_marker_count: 0, byte_count: 12 });
+    if (/^\/api\/vaults\/\d+\/files\/versions/.test(url)) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified", ...versionExtra }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
+    if (/^\/api\/vaults\/\d+\/files\/jobs/.test(url)) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
+    if (/^\/api\/vaults\/\d+\/jobs\//.test(url)) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
+    if (/^\/api\/vaults\/\d+\/jobs/.test(url)) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
+    if (/^\/api\/vaults\/\d+\/cloud-purge/.test(url) && purgeFailure) return jsonResponse(purgeFailure, 409);
+    if (/^\/api\/vaults\/\d+\/cloud-deletion\/preview/.test(url)) return jsonResponse({ object_count: 1, version_count: 1, delete_marker_count: 0, byte_count: 12 });
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
     return jsonResponse({});
   }) });
@@ -37,8 +37,8 @@ describe("deliberate file Details", () => {
     expect(screen.queryByText("remediation.reason: cleanup_unavailable")).not.toBeInTheDocument();
     expect(within(screen.getByTestId("details-summary")).getByText("state.pending")).toHaveAttribute("data-state", "pending");
     await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
-    await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
-    expect(calls.some((url) => url.startsWith("/api/upload?"))).toBe(false);
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/upload/reconcile"));
+    expect(calls.some((url) => /^\/api\/vaults\/\d+\/upload$/.test(url))).toBe(false);
   });
   it("shows the class the storage plan expects when the transition is not observed yet (#731)", async () => {
     versionExtra = { expected_storage_class: "DEEP_ARCHIVE", storage_class_since: "2026-11-02T00:00:00+00:00",
@@ -75,7 +75,7 @@ describe("deliberate file Details", () => {
     expect(help).toHaveTextContent("essential.stopped_help");
     expect(screen.queryByText("essential.open_problem")).not.toBeInTheDocument();
     await userEvent.setup().click(within(help).getByRole("button", { name: "essential.upload_now" }));
-    await waitFor(() => expect(calls).toContain("/api/upload?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/upload"));
   });
   it.each([["symlink", "essential.unsupported_symlink_help"], ["other", "essential.unsupported_other_help"]])("explains an unsupported %s entry by its cause, not as a problem (#524)", async (type, help) => {
     setup("unsupported", true, false, false, false, { local_file_type: type, cloud_exists: 0 });
@@ -128,9 +128,9 @@ describe("deliberate file Details", () => {
     await user.click(screen.getByText("remediation.history"));
     await screen.findByText("Nov 1, 2026 · Historical failure");
     await user.click(screen.getByRole("button", { name: "remediation.older" }));
-    await waitFor(() => expect(calls).toContain("/api/files/jobs?path=same.jpg&before_id=100&vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/files/jobs?path=same.jpg&before_id=100"));
     await user.click(screen.getByRole("button", { name: "remediation.job · operation.failed" }));
-    await waitFor(() => expect(calls).toContain("/api/jobs/1?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/jobs/1"));
     expect(screen.getByRole("button", { name: "remediation.original" })).toBeInTheDocument();
   });
   it("offers scope-pinned exact reconciliation even when protected and normal upload is ineligible", async () => {
@@ -138,24 +138,24 @@ describe("deliberate file Details", () => {
     await screen.findByText("reconciliation.reason.orphan_different");
     expect(screen.queryByRole("button", { name: "essential.retry" })).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "reconciliation.resume" }));
-    await waitFor(() => expect(calls).toContain("/api/upload/reconcile?vault_id=2"));
-    expect(calls.some((url) => url.includes("/api/upload?"))).toBe(false);
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/upload/reconcile"));
+    expect(calls.some((url) => /^\/api\/vaults\/\d+\/upload$/.test(url))).toBe(false);
     expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
   });
   it("revalidates stale Cloud-only selection and never offers cloud deletion for a present local copy", async () => {
     const calls = setup("protected", true);
     await screen.findByText("exact");
     expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
-    expect(calls.every((url) => url.endsWith("vault_id=2") || url.startsWith("/api/vaults/2/"))).toBe(true);
-    expect(calls.some((url) => url.startsWith("/api/cloud-purge"))).toBe(false);
+    expect(calls.every((url) => url.startsWith("/api/vaults/2/"))).toBe(true);
+    expect(calls.some((url) => /^\/api\/vaults\/\d+\/cloud-purge/.test(url))).toBe(false);
   });
   it("finds an old pending deletion by exact file membership, even in a folder group outside recent50", async () => {
     const calls = setup("cloud_only", false, false, false, false, {}, true);
     await screen.findByText("essential.deletion_pending");
-    expect(calls).toContain("/api/jobs?action=cloud-purge&active_only=true&path=same.jpg&vault_id=2");
+    expect(calls).toContain("/api/vaults/2/jobs?action=cloud-purge&active_only=true&path=same.jpg");
     expect(screen.queryByText("essential.danger_zone")).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "essential.cancel_deletion" }));
-    await waitFor(() => expect(calls).toContain("/api/jobs/cancel?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/jobs/cancel"));
   });
   it("holds a conflict and explains external rename or explicit replacement without list deletion", async () => {
     setup("problem", true, true);
@@ -170,11 +170,11 @@ describe("deliberate file Details", () => {
     await user.click(screen.getByRole("button", { name: "ui.cloud_purge_title" }));
     await screen.findByTestId("cloud-purge-form");
     expect(screen.getByTestId("cloud-purge-submit")).toBeDisabled();
-    expect(calls).toContain("/api/cloud-deletion/preview?vault_id=2");
+    expect(calls).toContain("/api/vaults/2/cloud-deletion/preview");
     await user.type(screen.getByTestId("cloud-purge-reason"), "Deliberate removal");
     await user.type(screen.getByTestId("cloud-purge-confirmation"), "Second");
     await user.click(screen.getByTestId("cloud-purge-submit"));
-    await waitFor(() => expect(calls).toContain("/api/cloud-purge?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/cloud-purge"));
   });
   it("shows a cloud deletion failure inside the open dialog, not in the hidden Details sheet (#651)", async () => {
     purgeFailure = { detail: "Bucket refused the deletion", code: "conflict", message_key: "api.cloud_purge_refused", message_params: {} };
@@ -186,7 +186,7 @@ describe("deliberate file Details", () => {
     await user.type(within(dialog).getByTestId("cloud-purge-reason"), "Deliberate removal");
     await user.type(within(dialog).getByTestId("cloud-purge-confirmation"), "Second");
     await user.click(within(dialog).getByTestId("cloud-purge-submit"));
-    await waitFor(() => expect(calls).toContain("/api/cloud-purge?vault_id=2"));
+    await waitFor(() => expect(calls).toContain("/api/vaults/2/cloud-purge"));
     const alert = await within(dialog).findByRole("alert");
     expect(alert).toHaveTextContent("Bucket refused the deletion");
     expect(alert).not.toHaveTextContent("ApiError");

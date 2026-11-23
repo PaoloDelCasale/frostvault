@@ -222,7 +222,7 @@ Before indexing a terabyte of data:
 
 1. use a test source folder containing two unimportant files;
 2. wait for the local catalog to pick them up through the filesystem watcher
-   (or trigger an administrative `POST /api/scan` if you need a full
+   (or trigger an administrative `POST /api/vaults/{vault_id}/scan` if you need a full
    reconciliation immediately);
 3. upload one file and confirm that a distinct S3 version exists in the bucket;
 4. confirm the catalog keeps the version unverified until the requested SHA-256

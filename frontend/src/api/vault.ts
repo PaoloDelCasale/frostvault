@@ -53,12 +53,11 @@ import type {
  * immutable: it never reads or changes the Session's selection, and the URL,
  * including its scope, survives CSRF/reauth retries unchanged.
  *
- * The server names the Vault in two ways, both built only here: a `vault_id`
- * query parameter (`scoped`) or a `/api/vaults/{id}/…` path (`owned`).
+ * The server names the Vault in one way, built only here: a
+ * `/api/vaults/{id}/…` path (`owned`, ADR-0056).
  */
 export function vaultApi(vaultId: number) {
   if (!Number.isSafeInteger(vaultId) || vaultId < 1) throw new Error("Invalid Vault identity");
-  const scoped = (path: string) => `${path}${path.includes("?") ? "&" : "?"}vault_id=${vaultId}`;
   const owned = (suffix: string) => `/api/vaults/${vaultId}/${suffix}`;
   const get = <T>(url: string) => apiRequest<T>(url);
   const send = <T>(method: "POST" | "PUT", url: string, body?: unknown) =>
@@ -70,9 +69,9 @@ export function vaultApi(vaultId: number) {
 
     files: (params: URLSearchParams) => get<FilesResponse>(owned(`files?${params}`)),
     details: (path: string) => get<ArchiveListItem>(owned(`files/detail?path=${encodeURIComponent(path)}`)),
-    versions: (path: string) => get<FileVersionsResponse>(scoped(`/api/files/versions?path=${encodeURIComponent(path)}`)),
-    fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(scoped(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
-    replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", scoped("/api/files/cloud-only-conflict/replace"), { path }),
+    versions: (path: string) => get<FileVersionsResponse>(owned(`files/versions?path=${encodeURIComponent(path)}`)),
+    fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(owned(`files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
+    replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", owned("files/cloud-only-conflict/replace"), { path }),
 
     policy: () => get<OperationPolicy>(owned("operation-policy")),
     updatePolicy: (policy: Partial<OperationPolicy>) => send<OperationPolicy>("PUT", owned("operation-policy"), policy),
@@ -98,30 +97,30 @@ export function vaultApi(vaultId: number) {
       if (options.activeOnly) params.set("active_only", "true");
       if (options.path !== undefined) params.set("path", options.path);
       if (options.groupsBeforeId) params.set("groups_before_id", String(options.groupsBeforeId));
-      return get<JobsResponse>(scoped(`/api/jobs?${params}`));
+      return get<JobsResponse>(owned(`jobs?${params}`));
     },
-    groupJobs: (groupId: string, beforeId?: number) => get<FileJobHistoryResponse>(scoped(`/api/job-groups/${encodeURIComponent(groupId)}/jobs${beforeId ? `?before_id=${beforeId}` : ""}`)),
-    job: (id: number) => get<JobRecord>(scoped(`/api/jobs/${id}`)),
+    groupJobs: (groupId: string, beforeId?: number) => get<FileJobHistoryResponse>(owned(`job-groups/${encodeURIComponent(groupId)}/jobs${beforeId ? `?before_id=${beforeId}` : ""}`)),
+    job: (id: number) => get<JobRecord>(owned(`jobs/${id}`)),
     /** Cancel one group of Jobs of `action`, e.g. a pending Delayed Cloud Deletion before it starts. */
-    cancelJobGroup: (groupId: string | number, action: string) => send<JobCancelResponse>("POST", scoped("/api/jobs/cancel"), { group_id: groupId, action }),
+    cancelJobGroup: (groupId: string | number, action: string) => send<JobCancelResponse>("POST", owned("jobs/cancel"), { group_id: groupId, action }),
     /** Restore Approval of one held recover request (#533). */
-    approveRecover: (groupId: string) => send<JsonObjectResponse>("POST", scoped("/api/recover/approve"), { group_id: groupId }),
+    approveRecover: (groupId: string) => send<JsonObjectResponse>("POST", owned("recover/approve"), { group_id: groupId }),
 
-    estimate: (payload: unknown) => send<RecoverEstimateResponse>("POST", scoped("/api/recover/estimate"), payload),
-    action: (action: "recover" | "free-space", payload: FileOperationPayload) => send<FileOperationResponse>("POST", scoped(`/api/${action}`), payload),
+    estimate: (payload: unknown) => send<RecoverEstimateResponse>("POST", owned("recover/estimate"), payload),
+    action: (action: "recover" | "free-space", payload: FileOperationPayload) => send<FileOperationResponse>("POST", owned(action), payload),
 
     /** Upload one item, or the whole Vault with `path: ""`; `request_id` makes a retry idempotent. */
     upload: (payload: { path: string; is_directory?: boolean; request_id?: string }) =>
-      send<{ admission?: BulkUploadAdmissionResponse }>("POST", scoped("/api/upload"), payload),
-    uploadAdmission: (groupId: string) => get<BulkUploadAdmissionResponse>(scoped(`/api/upload/admissions/${groupId}`)),
-    reconcileUpload: (payload: { path: string; remediation_id?: string }) => send<UploadReconciliationResponse>("POST", scoped("/api/upload/reconcile"), payload),
+      send<{ admission?: BulkUploadAdmissionResponse }>("POST", owned("upload"), payload),
+    uploadAdmission: (groupId: string) => get<BulkUploadAdmissionResponse>(owned(`upload/admissions/${groupId}`)),
+    reconcileUpload: (payload: { path: string; remediation_id?: string }) => send<UploadReconciliationResponse>("POST", owned("upload/reconcile"), payload),
     /** Cancels every Upload of the Vault still waiting to start. */
-    cancelPendingUploads: () => send<JobCancelResponse>("POST", scoped("/api/upload/cancel-pending"), { path: "" }),
-    retryFailedUploads: () => send<RetryFailedUploadsResponse>("POST", scoped("/api/upload/retry-failed")),
+    cancelPendingUploads: () => send<JobCancelResponse>("POST", owned("upload/cancel-pending"), { path: "" }),
+    retryFailedUploads: () => send<RetryFailedUploadsResponse>("POST", owned("upload/retry-failed")),
 
-    cloudDeletionSettings: () => get<CloudDeletionSettings>(scoped("/api/cloud-deletion")),
-    previewCloudDeletion: (payload: Record<string, unknown>) => send<CloudDeletionPreview>("POST", scoped("/api/cloud-deletion/preview"), payload),
-    cloudPurge: (payload: Record<string, unknown>) => send<JsonObjectResponse>("POST", scoped("/api/cloud-purge"), payload),
+    cloudDeletionSettings: () => get<CloudDeletionSettings>("/api/cloud-deletion"),
+    previewCloudDeletion: (payload: Record<string, unknown>) => send<CloudDeletionPreview>("POST", owned("cloud-deletion/preview"), payload),
+    cloudPurge: (payload: Record<string, unknown>) => send<JsonObjectResponse>("POST", owned("cloud-purge"), payload),
 
     bucket: () => get<VaultBucketStatus>(owned("bucket")),
     retryBucket: () => send<VaultBucketStatus>("POST", owned("bucket/retry")),

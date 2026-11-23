@@ -108,7 +108,7 @@ describe("Mirror Cleanup settings", () => {
         current: { count: 12, bytes: 3 * 1024 ** 3 },
         pending,
       }),
-      "POST /api/jobs/cancel": (init) => {
+      "POST /api/vaults/1/jobs/cancel": (init) => {
         cancels.push(JSON.parse(String(init?.body)));
         pending = [];
         return jsonResponse({ cancelled: 12 });

@@ -231,7 +231,7 @@ export function useCatalogEvents({
           },
         },
         createSource,
-        explicitVault ? vaultId : undefined,
+        vaultId,
       );
     };
 
@@ -252,8 +252,7 @@ export function useCatalogEvents({
 
     const catchUp = () => {
       if (closed || activeVaultRef.current !== vaultId) return;
-      const snapshot = explicitVault ? fetchRevision(lastRevisionRef.current, undefined, vaultId) : fetchRevision(lastRevisionRef.current);
-      void snapshot
+      void fetchRevision(lastRevisionRef.current, undefined, vaultId)
         .then((signal) => {
           if (closed || activeVaultRef.current !== vaultId) return;
           if (signal.vault_id !== vaultId) {

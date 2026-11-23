@@ -84,7 +84,7 @@ class ServerShutdownTests(unittest.TestCase):
                         time.sleep(0.02)
                 with stream:
                     stream.settimeout(3)
-                    stream.sendall(b"GET /api/catalog/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    stream.sendall(b"GET /api/vaults/1/catalog/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
                     received = b""
                     while b"event: hello" not in received:
                         chunk = stream.recv(4096)

@@ -2014,12 +2014,22 @@
         }
       }
     },
-    "/api/jobs": {
+    "/api/vaults/{vault_id}/jobs": {
       "get": {
         "summary": "Jobs",
         "description": "At most 50 recent Jobs and 50 complete group summaries, never all members.\n\nAction, active and exact-file filters select groups before the bounded cut;\ntheir summaries still account for every member in this Vault. The cursor\npages summaries only; individual members use the group-detail endpoint.",
-        "operationId": "jobs_api_jobs_get",
+        "operationId": "jobs_api_vaults__vault_id__jobs_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "action",
             "in": "query",
@@ -2081,23 +2091,6 @@
               ],
               "title": "Groups Before Id"
             }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
-            }
           }
         ],
         "responses": {
@@ -2124,11 +2117,11 @@
         }
       }
     },
-    "/api/job-groups/{group_id}/jobs": {
+    "/api/vaults/{vault_id}/job-groups/{group_id}/jobs": {
       "get": {
         "summary": "Job Group Detail",
         "description": "Newest-first keyset page of one group's Jobs, scoped to this Vault.",
-        "operationId": "job_group_detail_api_job_groups__group_id__jobs_get",
+        "operationId": "job_group_detail_api_vaults__vault_id__job_groups__group_id__jobs_get",
         "parameters": [
           {
             "name": "group_id",
@@ -2137,6 +2130,16 @@
             "schema": {
               "type": "string",
               "title": "Group Id"
+            }
+          },
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
             }
           },
           {
@@ -2167,23 +2170,6 @@
               "default": 50,
               "title": "Limit"
             }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
-            }
           }
         ],
         "responses": {
@@ -2210,10 +2196,10 @@
         }
       }
     },
-    "/api/jobs/{job_id}": {
+    "/api/vaults/{vault_id}/jobs/{job_id}": {
       "get": {
         "summary": "Job Detail",
-        "operationId": "job_detail_api_jobs__job_id__get",
+        "operationId": "job_detail_api_vaults__vault_id__jobs__job_id__get",
         "parameters": [
           {
             "name": "job_id",
@@ -2226,18 +2212,11 @@
           },
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2266,11 +2245,21 @@
         }
       }
     },
-    "/api/files/jobs": {
+    "/api/vaults/{vault_id}/files/jobs": {
       "get": {
         "summary": "File Job History",
-        "operationId": "file_job_history_api_files_jobs_get",
+        "operationId": "file_job_history_api_vaults__vault_id__files_jobs_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "path",
             "in": "query",
@@ -2308,23 +2297,6 @@
               "default": 50,
               "title": "Limit"
             }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
-            }
           }
         ],
         "responses": {
@@ -2351,25 +2323,18 @@
         }
       }
     },
-    "/api/scan": {
+    "/api/vaults/{vault_id}/scan": {
       "post": {
         "summary": "Start Scan",
-        "operationId": "start_scan_api_scan_post",
+        "operationId": "start_scan_api_vaults__vault_id__scan_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2398,12 +2363,22 @@
         }
       }
     },
-    "/api/catalog/revision": {
+    "/api/vaults/{vault_id}/catalog/revision": {
       "get": {
         "summary": "Catalog Revision Snapshot",
         "description": "One-shot catch-up for focus/online recovery without holding a stream.",
-        "operationId": "catalog_revision_snapshot_api_catalog_revision_get",
+        "operationId": "catalog_revision_snapshot_api_vaults__vault_id__catalog_revision_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "after_revision",
             "in": "query",
@@ -2413,23 +2388,6 @@
               "minimum": 0,
               "default": 0,
               "title": "After Revision"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -2457,12 +2415,22 @@
         }
       }
     },
-    "/api/catalog/events": {
+    "/api/vaults/{vault_id}/catalog/events": {
       "get": {
         "summary": "Catalog Events Stream",
         "description": "Authenticated SSE stream of coalesced catalog invalidation signals.\n\nThe payload carries only Vault identity, monotonic revision, affected\ndomains, and an optional retention gap flag \u2014 never filesystem paths.\nPass ``subscribe=false`` for a finite catch-up response used by tests and\nbounded recovery probes. Open streams observe the durable journal so\nmulti-process writers are visible without client idle polling.\n\nDocumented like ``/metrics`` as a non-JSON success body (SSE text stream);\nit is excluded from the JsonObjectResponse OpenAPI contract suite.",
-        "operationId": "catalog_events_stream_api_catalog_events_get",
+        "operationId": "catalog_events_stream_api_vaults__vault_id__catalog_events_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "after_revision",
             "in": "query",
@@ -2482,23 +2450,6 @@
               "type": "boolean",
               "default": true,
               "title": "Subscribe"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           },
           {
@@ -2542,11 +2493,21 @@
         }
       }
     },
-    "/api/files/versions": {
+    "/api/vaults/{vault_id}/files/versions": {
       "get": {
         "summary": "File Versions",
-        "operationId": "file_versions_api_files_versions_get",
+        "operationId": "file_versions_api_vaults__vault_id__files_versions_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "path",
             "in": "query",
@@ -2554,23 +2515,6 @@
             "schema": {
               "type": "string",
               "title": "Path"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -2598,25 +2542,18 @@
         }
       }
     },
-    "/api/recover/estimate": {
+    "/api/vaults/{vault_id}/recover/estimate": {
       "post": {
         "summary": "Recover Estimate",
-        "operationId": "recover_estimate_api_recover_estimate_post",
+        "operationId": "recover_estimate_api_vaults__vault_id__recover_estimate_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2665,25 +2602,18 @@
         }
       }
     },
-    "/api/upload": {
+    "/api/vaults/{vault_id}/upload": {
       "post": {
         "summary": "Upload",
-        "operationId": "upload_api_upload_post",
+        "operationId": "upload_api_vaults__vault_id__upload_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2722,10 +2652,10 @@
         }
       }
     },
-    "/api/upload/admissions/{group_id}": {
+    "/api/vaults/{vault_id}/upload/admissions/{group_id}": {
       "get": {
         "summary": "Upload Admission Status",
-        "operationId": "upload_admission_status_api_upload_admissions__group_id__get",
+        "operationId": "upload_admission_status_api_vaults__vault_id__upload_admissions__group_id__get",
         "parameters": [
           {
             "name": "group_id",
@@ -2739,18 +2669,11 @@
           },
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2779,26 +2702,19 @@
         }
       }
     },
-    "/api/upload/reconcile": {
+    "/api/vaults/{vault_id}/upload/reconcile": {
       "post": {
         "summary": "Reconcile Upload",
         "description": "Exact resume only, including protected files for which upload returns 409.\n\nCommon target arbiter; no arbitrary deletion or cancellation resurrection. It\nnever PUTs by itself: the Job may send only when S3 positively proves the\nearlier send never landed (ADR-0025), and never on a path with paused protection.",
-        "operationId": "reconcile_upload_api_upload_reconcile_post",
+        "operationId": "reconcile_upload_api_vaults__vault_id__upload_reconcile_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2840,23 +2756,35 @@
     "/api/upload/retry-failed": {
       "post": {
         "summary": "Retry Failed Uploads",
-        "description": "Explicit scope: omitted Vault means installation, never Session choice.",
+        "description": "Every Vault of the installation, never the Session's choice.",
         "operationId": "retry_failed_uploads_api_upload_retry_failed_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryFailedUploadsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vaults/{vault_id}/upload/retry-failed": {
+      "post": {
+        "summary": "Retry Failed Vault Uploads",
+        "description": "One Vault's failed Uploads; any existing Vault, operational or not.",
+        "operationId": "retry_failed_vault_uploads_api_vaults__vault_id__upload_retry_failed_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2885,26 +2813,19 @@
         }
       }
     },
-    "/api/files/cloud-only-conflict/replace": {
+    "/api/vaults/{vault_id}/files/cloud-only-conflict/replace": {
       "post": {
         "summary": "Replace Cloud Only Copy",
         "description": "Confirm that new content replaces the only cloud copy at its path.",
-        "operationId": "replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post",
+        "operationId": "replace_cloud_only_copy_api_vaults__vault_id__files_cloud_only_conflict_replace_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -2943,26 +2864,19 @@
         }
       }
     },
-    "/api/upload/cancel-pending": {
+    "/api/vaults/{vault_id}/upload/cancel-pending": {
       "post": {
         "summary": "Cancel Pending Uploads",
-        "description": "Cancel the uploads of the selected Vault (or one folder) that have not begun.\n\nOne call replaces thousands of per-file cancels after a burst or a moved\nfolder (issue #493). An empty ``path`` means the whole Vault; a folder\nmatches itself and its descendants only (``foo`` never matches ``foobar``).\nOnly uploads that never started are cancelled: running or verifying ones,\nreconcile-only attempts, jobs with a started or recorded send and jobs of a\nremediation episode are left to their own cancel and Resume, so an ambiguous\nsend is never closed for good by a bulk action. A cancelled upload, manual or\nautomatic, is not re-queued automatically until the file's content changes,\nlike a single cancel (#618).",
-        "operationId": "cancel_pending_uploads_api_upload_cancel_pending_post",
+        "description": "Cancel the uploads of the Vault (or one folder) that have not begun.\n\nOne call replaces thousands of per-file cancels after a burst or a moved\nfolder (issue #493). An empty ``path`` means the whole Vault; a folder\nmatches itself and its descendants only (``foo`` never matches ``foobar``).\nOnly uploads that never started are cancelled: running or verifying ones,\nreconcile-only attempts, jobs with a started or recorded send and jobs of a\nremediation episode are left to their own cancel and Resume, so an ambiguous\nsend is never closed for good by a bulk action. A cancelled upload, manual or\nautomatic, is not re-queued automatically until the file's content changes,\nlike a single cancel (#618).",
+        "operationId": "cancel_pending_uploads_api_vaults__vault_id__upload_cancel_pending_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3001,25 +2915,18 @@
         }
       }
     },
-    "/api/jobs/cancel": {
+    "/api/vaults/{vault_id}/jobs/cancel": {
       "post": {
         "summary": "Cancel Job",
-        "operationId": "cancel_job_api_jobs_cancel_post",
+        "operationId": "cancel_job_api_vaults__vault_id__jobs_cancel_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3058,25 +2965,18 @@
         }
       }
     },
-    "/api/recover": {
+    "/api/vaults/{vault_id}/recover": {
       "post": {
         "summary": "Recover",
-        "operationId": "recover_api_recover_post",
+        "operationId": "recover_api_vaults__vault_id__recover_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3115,25 +3015,18 @@
         }
       }
     },
-    "/api/recover/approve": {
+    "/api/vaults/{vault_id}/recover/approve": {
       "post": {
         "summary": "Approve Recover",
-        "operationId": "approve_recover_api_recover_approve_post",
+        "operationId": "approve_recover_api_vaults__vault_id__recover_approve_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3172,25 +3065,18 @@
         }
       }
     },
-    "/api/free-space": {
+    "/api/vaults/{vault_id}/free-space": {
       "post": {
         "summary": "Free Space",
-        "operationId": "free_space_api_free_space_post",
+        "operationId": "free_space_api_vaults__vault_id__free_space_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3247,25 +3133,18 @@
         }
       }
     },
-    "/api/cloud-deletion/preview": {
+    "/api/vaults/{vault_id}/cloud-deletion/preview": {
       "post": {
         "summary": "Preview Cloud Deletion",
-        "operationId": "preview_cloud_deletion_api_cloud_deletion_preview_post",
+        "operationId": "preview_cloud_deletion_api_vaults__vault_id__cloud_deletion_preview_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3304,25 +3183,18 @@
         }
       }
     },
-    "/api/cloud-purge": {
+    "/api/vaults/{vault_id}/cloud-purge": {
       "post": {
         "summary": "Cloud Purge",
-        "operationId": "cloud_purge_api_cloud_purge_post",
+        "operationId": "cloud_purge_api_vaults__vault_id__cloud_purge_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
