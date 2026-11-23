@@ -106,7 +106,7 @@ class EngineContract:
                 "min(j.run_after) AS run_after, bool_and(j.status = 'pending_delay') AS cancellable "
                 "FROM jobs j JOIN cloud_purge_requests r ON r.group_id = j.group_id "
                 f"WHERE j.vault_id=%s AND r.automatic AND {self.pending_filter} AND j.action='cloud-purge' "
-                "AND j.status NOT IN ('completed','failed','cancelled') "
+                "AND j.status NOT IN ('completed', 'failed', 'cancelled') "
                 "GROUP BY j.group_id ORDER BY min(j.run_after), j.group_id")
 
     # -- when a Vault is due -------------------------------------------------

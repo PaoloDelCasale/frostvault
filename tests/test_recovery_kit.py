@@ -183,7 +183,7 @@ class RecoveryKitTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         # Every nonterminal Job, including a pending cloud-purge consent.
         self.assertIn("status='cancelled'", jobs[0])
-        self.assertIn("WHERE status NOT IN ('completed','failed','cancelled')", jobs[0])
+        self.assertIn("WHERE status NOT IN ('completed', 'failed', 'cancelled')", jobs[0])
         self.assertIn("lifecycle='reconnect_required'", statements[vaults])
         self.assertLess(vaults, statements.index(jobs[0]))
         self.assertFalse(any("cloud_deletion_items" in sql for sql in statements))

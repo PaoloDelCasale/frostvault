@@ -23,7 +23,7 @@ from .catalog_incidents import (
     resolve_archive_version_incidents,
 )
 from .directory_aggregates import invalidate_for_archive_version_ids
-from .job_admission import TERMINAL_JOB_STATUSES
+from .job_queue import TERMINAL_JOB_STATUSES
 from .minimum_storage import observed_since_sql
 from .retention_lock import adopt_orphans, report_delete_markers, retained_versions
 

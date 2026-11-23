@@ -123,7 +123,7 @@ from .services.shutdown import (
 )
 from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
-from .services.job_admission import JOB_LEASE_HELD_STATUSES, TERMINAL_JOB_STATUSES
+from .services.job_queue import JOB_LEASE_HELD_STATUSES, TERMINAL_JOB_STATUSES
 from .services.job_scheduler import job_priority, select_fair_jobs, turn_is_aged
 from .services.operation_policies import (
     get_policy,
@@ -207,7 +207,6 @@ BACKLOG_OBSERVE_SECONDS = 10.0
 # Freshness: a listing that finds dirty directories reports ``stale`` with the
 # previous projection and schedules its own refresh at once (ADR-0038).
 DIRECTORY_AGGREGATE_BATCH_SECONDS = 2.0
-JOB_TERMINAL_STATUSES = frozenset(TERMINAL_JOB_STATUSES)
 _JOB_COUNTER_ACTIONS = frozenset(
     {
         "upload",
@@ -3318,7 +3317,7 @@ def _set_job_in_transaction(
         else:
             notification_service.enqueue_job_terminal_notification_best_effort(
                 connection, job_id=job_id)
-        if previous_status not in JOB_TERMINAL_STATUSES:
+        if previous_status not in TERMINAL_JOB_STATUSES:
             _record_committed_job_counter("completed" if status == "completed" else "failed", action)
     return updated
 
@@ -3591,7 +3590,7 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     if reason in provenance.TERMINAL_JOB_REASONS:
         with db() as connection:
             row = connection.execute("SELECT status FROM jobs WHERE id=%s", (job["id"],)).fetchone()
-        if row and row["status"] in JOB_TERMINAL_STATUSES:
+        if row and row["status"] in TERMINAL_JOB_STATUSES:
             return  # The Job is already over: nothing about the file is blocked.
     @retry_database_unit
     def persist() -> None:
@@ -3807,7 +3806,7 @@ def _reconcile_cloud_purge_group(
         (timestamp, lead["vault_id"], group_id),
     ).fetchall()
     active_rows = [
-        row for row in group_rows if row["status"] not in JOB_TERMINAL_STATUSES
+        row for row in group_rows if row["status"] not in TERMINAL_JOB_STATUSES
     ]
     result = {"completed": 0, "requeued": 0, "failed": 0}
     # Reconciliation must never split a group around another worker's live
@@ -5902,7 +5901,7 @@ def _process_claimed_job(job: dict[str, Any]) -> bool:
         current = _load_claimed_job_status(job)
         if current is None:
             return False
-        if current["status"] in JOB_TERMINAL_STATUSES:
+        if current["status"] in TERMINAL_JOB_STATUSES:
             return False
         job["status"] = current["status"]
         if current["status"] in {"queued", "retrying", "restoring"}:

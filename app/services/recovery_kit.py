@@ -20,6 +20,7 @@ from cryptography.fernet import Fernet
 from ..config import settings
 from ..schema_guard import require_current_schema
 from . import system_bucket
+from .job_queue import OPEN_JOB_SQL
 
 
 def now_iso() -> str:
@@ -313,10 +314,10 @@ def record_metadata_restore(connection: Any, backup_created_at: str) -> None:
         INSERT INTO metadata_restore_vaults(vault_id)
         SELECT id FROM vaults WHERE lifecycle='reconnect_required'
         """)
-    connection.execute("""
+    connection.execute(f"""
         UPDATE jobs SET status='cancelled', updated_at=%s, finished_at=%s,
             message=%s, message_key=NULL, message_params=NULL
-        WHERE status NOT IN ('completed','failed','cancelled')
+        WHERE {OPEN_JOB_SQL}
         """, (recorded, recorded, RESTORE_CANCEL_MESSAGE))
     connection.execute("DELETE FROM metadata_restore_updates")
     connection.execute("""

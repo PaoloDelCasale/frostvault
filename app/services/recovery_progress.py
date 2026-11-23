@@ -18,9 +18,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from .job_queue import TERMINAL_JOB_STATUSES
 from .restore_estimates import DEFAULT_RESTORE_HOURS
-
-TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 # A Recovery Job stopped while AWS was restoring ends with this key: the cloud
 # restore it requested goes on, and a new Recovery resumes it (#677).

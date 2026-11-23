@@ -19,6 +19,7 @@ from .lifecycle_profiles import ALLOWED_TARGETS
 from . import s3
 from .s3 import restore_header_state
 from .s3_copy import S3_SINGLE_COPY_MAX_BYTES
+from .job_queue import open_job_sql
 from .vault_paths import object_prefix
 
 MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
@@ -57,13 +58,13 @@ def candidates(connection: Any, vault_id: int) -> list[dict[str, Any]]:
     Only the columns ``eligibility``, ``refresh_cold_sources``, ``estimate``
     and ``schedule`` read: a large Vault has one row per file (#718).
     """
-    return connection.execute("""
+    return connection.execute(f"""
         SELECT f.id AS file_id, f.path, av.storage_class, av.integrity,
             av.availability, av.plaintext_sha256, av.size, av.provider_version_id,
             av.restore_state, av.object_key,
             f.replacing_version_id IS NOT NULL OR f.held_version_id IS NOT NULL
             OR EXISTS(SELECT 1 FROM jobs j WHERE j.file_id=f.id
-                AND j.status NOT IN ('completed','failed','cancelled'))
+                AND {open_job_sql("j")})
             OR EXISTS(SELECT 1 FROM upload_attempts a WHERE a.file_id=f.id AND a.settled_at IS NULL)
             OR EXISTS(SELECT 1 FROM copy_attempts c WHERE c.file_id=f.id AND c.settled_at IS NULL)
             AS busy

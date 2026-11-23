@@ -32,6 +32,7 @@ from psycopg.types.json import Jsonb
 from ..i18n import DEFAULT_LOCALE, translate
 from . import cloud_deletion, minimum_storage
 from .audit_events import record_audit_event
+from .job_queue import open_job_sql
 from .lifecycle_policies import load_vault_plan
 
 POLL_SECONDS = 300.0
@@ -272,7 +273,7 @@ class Cleanup:
                   min(j.run_after) AS run_after, bool_and(j.status = 'pending_delay') AS cancellable
            FROM jobs j JOIN cloud_purge_requests r ON r.group_id = j.group_id
            WHERE j.vault_id=%s AND r.automatic AND {own} AND j.action='cloud-purge'
-             AND j.status NOT IN ('completed','failed','cancelled')
+             AND {open_job_sql("j")}
            GROUP BY j.group_id ORDER BY min(j.run_after), j.group_id""",
             (vault_id,)).fetchall()
         settings = self.settings(row)

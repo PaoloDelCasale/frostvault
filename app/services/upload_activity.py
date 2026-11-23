@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .operation_policies import get_policy, stopped_upload_holds_automatic_admission_sql
+from .job_queue import open_job_sql
 from .upload_path_rules import eligibility_sql as _eligibility_sql
 
 STAGES = ("stability_wait", "queued", "uploading", "verifying")
@@ -50,7 +51,7 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
     # 'uploading' with nothing sent is a lease left by a stopped process (or one
     # about to be suspended), so it waits like a queued Job (#487). Sent bytes
     # stay visible as uploading until the worker or lease reconciliation moves them.
-    for row in connection.execute("""
+    for row in connection.execute(f"""
         WITH gate AS (SELECT COALESCE(
             (SELECT status='blocked' FROM cloud_preflight_state WHERE id=1), false) AS blocked)
         SELECT j.vault_id, CASE
@@ -61,7 +62,7 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
             count(*) AS files, COALESCE(sum(GREATEST(j.total_bytes,0)),0) AS bytes,
             COALESCE(sum(LEAST(GREATEST(j.transferred_bytes,0),GREATEST(j.total_bytes,0))),0) AS transferred_bytes
         FROM jobs j LEFT JOIN job_uploads u ON u.job_id=j.id CROSS JOIN gate
-        WHERE j.action='upload' AND j.status NOT IN ('completed','failed','cancelled')
+        WHERE j.action='upload' AND {open_job_sql("j")}
         GROUP BY 1,2
     """).fetchall():
         if row["vault_id"] in items:
@@ -90,7 +91,7 @@ def upload_activity(connection: Any, *, now: datetime | None = None) -> dict[str
                         AND av.availability IS NOT DISTINCT FROM 'available'
                         AND av.plaintext_sha256 IS NOT DISTINCT FROM f.local_sha256)
                     AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id
-                        AND j.status NOT IN ('completed','failed','cancelled'))
+                        AND {open_job_sql("j")})
                     AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.file_id=f.id
                         AND {stopped_upload_holds_automatic_admission_sql("j", "f")})
                     AND {rules}

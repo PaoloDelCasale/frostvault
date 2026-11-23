@@ -8,10 +8,12 @@ from typing import Any, Sequence
 
 from psycopg.rows import tuple_row
 
-from .services.job_admission import (
+from .services.job_admission import lock_vault
+from .services.job_queue import (
     JOB_LEASE_HELD_STATUSES,
+    OPEN_JOB_SQL,
     TERMINAL_JOB_STATUSES,
-    lock_vault,
+    open_job_sql,
 )
 from .services.s3 import storage_class_requires_restore
 from .services.protection_states import (
@@ -53,7 +55,6 @@ AUTO_RENAME_WINDOW = timedelta(hours=1)
 
 # A Job holds its File until it ends. A pending Delayed Cloud Deletion is only
 # the Owner's consent: a reappearance or a rename revokes it (#587, #594).
-_OPEN_JOB_SQL = "status NOT IN ('completed', 'failed', 'cancelled')"
 _DELETION_CONSENT_SQL = "action='cloud-purge' AND status='pending_delay'"
 
 # The verification the Owner requested for Current's upload, read from the
@@ -1411,7 +1412,7 @@ class ArchiveCatalog:
                  OR EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = f.id)) AS has_history,
                 EXISTS (
                     SELECT 1 FROM jobs j
-                    WHERE j.file_id = f.id AND j.{_OPEN_JOB_SQL}
+                    WHERE j.file_id = f.id AND {open_job_sql("j")}
                       AND NOT (j.action = 'cloud-purge' AND j.status = 'pending_delay')
                 ) AS has_open_job
             FROM files f
@@ -2383,7 +2384,7 @@ class ArchiveCatalog:
                         WHERE purge_peer.vault_id = {prefix}vault_id
                           AND purge_peer.group_id = {prefix}group_id
                           AND purge_peer.action = 'cloud-purge'
-                          AND purge_peer.status NOT IN ('completed', 'failed', 'cancelled')
+                          AND {open_job_sql("purge_peer")}
                           AND (
                                 (
                                     purge_peer.status <> 'queued'
@@ -2807,10 +2808,10 @@ class ArchiveCatalog:
         token = self._lease_token(claim_token)
         if lock_job:
             return self.connection.execute(
-                """
+                f"""
                 WITH job AS (
                     SELECT id, status, updated_at FROM jobs
-                    WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+                    WHERE id=%s AND {OPEN_JOB_SQL}
                     FOR NO KEY UPDATE
                 )
                 UPDATE job_leases l SET expires_at=%s
@@ -2891,10 +2892,10 @@ class ArchiveCatalog:
                 ) is None:
                     return False
             elif self.connection.execute(
-                """
+                f"""
                 WITH job AS (
                     SELECT id FROM jobs
-                    WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+                    WHERE id=%s AND {OPEN_JOB_SQL}
                     FOR NO KEY UPDATE
                 )
                 DELETE FROM job_leases l USING job
@@ -2909,14 +2910,14 @@ class ArchiveCatalog:
         if isinstance(params, Mapping):
             params = json.dumps(dict(params))
         result = self.connection.execute(
-            """
+            f"""
             UPDATE jobs
             SET status=%s, message=%s, message_key=%s, message_params=%s::jsonb,
                 updated_at=%s,
                 transferred_bytes=COALESCE(%s, transferred_bytes),
                 run_after=COALESCE(%s::timestamptz, run_after),
                 retry_count=COALESCE(%s, retry_count)
-            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            WHERE id=%s AND {OPEN_JOB_SQL}
             RETURNING id, file_id, vault_id, action, status, retry_count, run_after,
                       archive_version_id
             """,
@@ -2948,14 +2949,14 @@ class ArchiveCatalog:
         waiting_key = STOPPED_WAITING_KEY if message_key == "job.recovery_stopped" else message_key
         waiting_message = translate(waiting_key, locale=DEFAULT_LOCALE) if waiting_key != message_key else message
         rows = self.connection.execute(
-            """
+            f"""
             UPDATE jobs
             SET status='cancelled',
                 message=CASE WHEN action='recover' AND status='restoring' THEN %s ELSE %s END,
                 message_key=CASE WHEN action='recover' AND status='restoring' THEN %s ELSE %s END,
-                message_params='{}'::jsonb, updated_at=%s
+                message_params='{{}}'::jsonb, updated_at=%s
             WHERE vault_id=%s AND id = ANY(%s::bigint[])
-              AND status NOT IN ('completed', 'failed', 'cancelled')
+              AND {OPEN_JOB_SQL}
             RETURNING id
             """,
             (waiting_message, message, waiting_key, message_key, now, vault_id,
@@ -2980,9 +2981,9 @@ class ArchiveCatalog:
             ) is None:
                 return False
         result = self.connection.execute(
-            """
+            f"""
             UPDATE jobs SET transferred_bytes=%s, updated_at=%s
-            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            WHERE id=%s AND {OPEN_JOB_SQL}
             """,
             (max(0, int(transferred_bytes)), now, job_id),
         )
@@ -3091,9 +3092,9 @@ class ArchiveCatalog:
         if progress not in {None, "reset", "complete"}:
             raise ValueError("Unknown progress update")
         if self.connection.execute(
-            """
+            f"""
             SELECT id FROM jobs
-            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            WHERE id=%s AND {OPEN_JOB_SQL}
             FOR NO KEY UPDATE
             """,
             (job_id,),
@@ -3116,7 +3117,7 @@ class ArchiveCatalog:
             f"""
             UPDATE jobs SET status=%s, message=%s, message_key=NULL,
                 message_params=NULL, updated_at=%s{progress_sql}
-            WHERE id=%s AND status NOT IN ('completed', 'failed', 'cancelled')
+            WHERE id=%s AND {OPEN_JOB_SQL}
             """,
             (status, message, now, job_id),
         )
@@ -3145,7 +3146,7 @@ class ArchiveCatalog:
         if lead is None or not lead.get("group_id"):
             return [], []
         all_active = self.connection.execute(
-            """
+            f"""
             SELECT j.id, j.status, j.file_id,
                    l.token::text AS claim_token, l.expires_at AS claim_expires_at,
                    COALESCE(
@@ -3155,7 +3156,7 @@ class ArchiveCatalog:
             FROM jobs j
             LEFT JOIN job_leases l ON l.job_id = j.id
             WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
-              AND j.status NOT IN ('completed', 'failed', 'cancelled')
+              AND {open_job_sql("j")}
             ORDER BY j.requested_at ASC, j.id ASC
             """,
             (self._lease_token(claim_token), now, lead["vault_id"], lead["group_id"]),
@@ -3251,10 +3252,10 @@ class ArchiveCatalog:
             local_bytes += int(row["local_bytes"] or 0)
             cloud_bytes += int(row["cloud_bytes"] or 0)
         active_jobs = self.connection.execute(
-            """
+            f"""
             SELECT COUNT(*) AS total FROM jobs
             WHERE vault_id=%s
-              AND status NOT IN ('completed', 'failed', 'cancelled')
+              AND {OPEN_JOB_SQL}
             """,
             (vault_id,),
         ).fetchone()["total"]
@@ -3388,10 +3389,10 @@ class ArchiveCatalog:
             raise ValueError("Invalid admission verification mode")
         clauses = [
             "f.vault_id=%s",
-            """NOT EXISTS (
+            f"""NOT EXISTS (
                 SELECT 1 FROM jobs open_job
                 WHERE open_job.file_id=f.id
-                  AND open_job.status NOT IN ('completed', 'failed', 'cancelled')
+                  AND {open_job_sql("open_job")}
             )""",
         ]
         params: list[Any] = [vault_id]

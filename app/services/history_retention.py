@@ -50,12 +50,11 @@ import psycopg
 from .. import oidc
 from ..config import settings
 from .catalog_events import CatalogEventStore
+from .job_queue import open_job_sql, terminal_job_sql
 from .directory_aggregates import mark_path_dirty
 
 POLL_SECONDS = 60 * 60
 BATCH_SIZE = 500
-
-_TERMINAL = "('completed', 'failed', 'cancelled')"
 
 
 @dataclass(frozen=True)
@@ -92,7 +91,7 @@ _NOTIFICATION = """
 """
 
 _JOB = f"""
-    j.status IN {_TERMINAL} AND j.finished_at < %(cutoff)s
+    {terminal_job_sql("j")} AND j.finished_at < %(cutoff)s
     AND NOT EXISTS (SELECT 1 FROM job_terminal_notifications o WHERE o.job_id = j.id)
     AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.job_id = j.id)
     AND NOT EXISTS (SELECT 1 FROM job_leases l WHERE l.job_id = j.id)
@@ -144,7 +143,7 @@ _REMEDIATION = "r.closed_at IS NOT NULL AND r.closed_at < %(cutoff)s"
 # reconcile it. The guard triggers forbid open uncertainty independently.
 _ATTEMPT_FILE_QUIET = f"""
     AND NOT EXISTS (
-        SELECT 1 FROM jobs j WHERE j.file_id = a.file_id AND j.status NOT IN {_TERMINAL}
+        SELECT 1 FROM jobs j WHERE j.file_id = a.file_id AND {open_job_sql("j")}
     )
     AND NOT EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = a.file_id)
     AND NOT EXISTS (
