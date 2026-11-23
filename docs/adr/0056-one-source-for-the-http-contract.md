@@ -1,6 +1,6 @@
 # One source for the HTTP contract and one address for a Vault
 
-Status: accepted by the Owner on 2026-11-24 (issue #805, epic #788). This ADR
+Status: accepted by the Owner on 2026-11-23 (issue #805, epic #788). This ADR
 records the decision; the code follows in the pull requests listed under
 "Migration".
 
