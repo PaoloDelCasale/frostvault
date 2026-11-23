@@ -222,7 +222,7 @@ class VaultReconnectTests(FrostVaultTestCase):
 
     def test_scan_lock_serializes_reconnect_handoff(self):
         from fastapi import BackgroundTasks
-        from app.main import VaultReconnect, reconnect_vault_root
+        from app.routes.vaults import VaultReconnect, reconnect_vault_root
         from app.storage import scan_vault
         entered, proceed = threading.Event(), threading.Event()
         original = vault_relocation.reconnect_vault_root
@@ -235,7 +235,7 @@ class VaultReconnectTests(FrostVaultTestCase):
                 request = SimpleNamespace(state=SimpleNamespace(session={"auth_method": "oidc"}))
                 outcome.append(reconnect_vault_root(7, VaultReconnect(volume_alias="photos", relative_path="new", reason="restore"), BackgroundTasks(), request, {"id": 1}))
             except BaseException as exc: outcome.append(exc)
-        with patch("app.main.vault_relocation_service.reconnect_vault_root", side_effect=delayed):
+        with patch("app.routes.vaults.vault_relocation_service.reconnect_vault_root", side_effect=delayed):
             thread = threading.Thread(target=invoke); thread.start()
             self.assertTrue(entered.wait(5))
             self.assertEqual(scan_vault({"id": 7}), {"already_running": 1})

@@ -120,7 +120,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         self.sign_in()
         endpoint = "/api/vault/operation-policy"
         self.addCleanup(watch_plan.forget, self.vault_id)
-        with patch("app.main.request_full_scan") as request:
+        with patch("app.routes.policy.request_full_scan") as request:
             for globs in (["backups/**", "*.tmp"], ["backups/**"], ["backups/**", "**/cache/**"]):
                 response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"exclude_globs": globs})
                 self.assertEqual(response.status_code, 200, response.text)

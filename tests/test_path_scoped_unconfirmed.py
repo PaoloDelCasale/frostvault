@@ -181,9 +181,9 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
         self.assertEqual(secret["state_counts"], {"excluded": 1, "unconfirmed": 1})
 
     def test_stats_say_how_many_paths_are_unreadable(self) -> None:
-        from app.main import stats
+        from app.routes.browse import stats
 
-        with patch("app.main.vault_local_access", return_value=ONLINE):
+        with patch("app.routes.browse.vault_local_access", return_value=ONLINE):
             payload = stats({"id": 2, "source_root": "/source"})
         self.assertEqual(payload["states"], {"protected": 3, "unconfirmed": 1})
         self.assertEqual(payload["runtime"]["unreadable_paths"], 1)

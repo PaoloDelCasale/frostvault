@@ -164,7 +164,7 @@ class ProblemTextTests(FrostVaultTestCase):
 
 class ProblemResolvingTests(unittest.TestCase):
     def test_a_running_scan_can_close_a_blocked_source(self) -> None:
-        from app.main import _problem_resolving
+        from app.routes.browse import _problem_resolving
         blocked = {"event": "protection_blocked", "vault_id": 4, "message_params": {"component": "source"}}
         with patch.dict(storage.runtime_status, {4: {"scanning": True}}):
             self.assertEqual(_problem_resolving(blocked), "scan")

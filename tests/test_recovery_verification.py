@@ -30,7 +30,7 @@ from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
 
-from app.main import cancel_job_group
+from app.routes.jobs import cancel_job_group
 from app.services.job_admission import queue_jobs
 from app.storage import process_jobs_once, reconcile_interrupted_jobs
 from app.services.vault_relocation import enroll_vault_root_identity

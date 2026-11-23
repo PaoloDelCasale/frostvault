@@ -67,7 +67,7 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
         self.assertEqual([detail["glob"] for detail in self.audit("vault_operation_glob_removed")], ["*.tmp"])
 
     def test_removing_a_folder_rule_one_at_a_time_looks_inside_again(self) -> None:
-        with patch("app.main.request_full_scan") as scan:
+        with patch("app.routes.policy.request_full_scan") as scan:
             self.edit("exclude_globs", "add", "upload/**")
             scan.assert_not_called()
             self.edit("exclude_globs", "remove", "upload/**")
@@ -88,7 +88,7 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
         self.assertTrue(body["folder_rule"])
         self.assertEqual((body["files"], body["bytes"], body["complete"]), (2, 50, True))
         self.assertEqual(body["estimate"]["size_bytes"], 50)
-        with patch("app.main.request_full_scan"):
+        with patch("app.routes.policy.request_full_scan"):
             included = self.client.post("/api/vault/exclusions/include", headers=self.signed_in.csrf_headers,
                                         json={"path": "upload", "is_directory": True})
         self.assertEqual(included.status_code, 200, included.text)

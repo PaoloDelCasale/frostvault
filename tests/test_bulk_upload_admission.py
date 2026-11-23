@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from app import main
+from app.routes.deps import current_user, current_vault
 from app.services import bulk_upload_admission as bulk
 from app.services import job_admission
 
@@ -13,8 +14,8 @@ from app.services import job_admission
 class BulkUploadApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
-        main.app.dependency_overrides[main.current_user] = lambda: {"id": 1}
-        main.app.dependency_overrides[main.current_vault] = lambda: {"id": 9}
+        main.app.dependency_overrides[current_user] = lambda: {"id": 1}
+        main.app.dependency_overrides[current_vault] = lambda: {"id": 9}
         self.addCleanup(main.app.dependency_overrides.clear)
 
     def test_bulk_returns_202_without_catalog_enumeration_or_filesystem_or_background_task(self):
@@ -23,9 +24,9 @@ class BulkUploadApiTests(unittest.TestCase):
         @contextmanager
         def db():
             yield Mock()
-        with patch.object(main, "db", db), patch.object(bulk, "create", return_value=admission) as create, \
+        with patch("app.routes.jobs.db", db), patch.object(bulk, "create", return_value=admission) as create, \
                 patch.object(job_admission, "queue_jobs", side_effect=AssertionError("synchronous catalog traversal")), \
-                patch.object(main, "vault_local_access", side_effect=AssertionError("filesystem probe")):
+                patch("app.routes.jobs.vault_local_access", side_effect=AssertionError("filesystem probe")):
             response = self.client.post("/api/upload", json={"path": "photos", "is_directory": True, "request_id": group})
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()["admission"], admission)
@@ -46,7 +47,7 @@ class BulkUploadApiTests(unittest.TestCase):
         @contextmanager
         def db():
             yield Mock()
-        with patch.object(main, "db", db), patch.object(bulk, "get", return_value=None) as get:
+        with patch("app.routes.jobs.db", db), patch.object(bulk, "get", return_value=None) as get:
             self.assertEqual(self.client.get(f"/api/upload/admissions/{group}").status_code, 404)
         self.assertEqual(get.call_args.kwargs, {"vault_id": 9, "group_id": group})
         self.assertEqual(self.client.post("/api/upload", json={"path": "", "is_directory": True, "request_id": "bad"}).status_code, 422)

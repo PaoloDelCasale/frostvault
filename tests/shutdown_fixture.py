@@ -18,6 +18,7 @@ from botocore.stub import Stubber
 from fastapi import FastAPI, Request
 
 from app import main, storage
+from app.routes.jobs import catalog_events_stream, iter_catalog_event_sse
 from app.services.catalog_event_hub import catalog_event_hub
 from app.services.catalog_event_stream import StreamTickSnapshot
 from app.services.s3_upload import upload_file
@@ -58,10 +59,10 @@ async def lifespan(app):
         )))
         # A long cadence proves shutdown wakes SSE rather than waiting for its
         # heartbeat. Keep the actual route and iterator in the request path.
-        original_iter = main.iter_catalog_event_sse
+        original_iter = iter_catalog_event_sse
         def long_poll(**kwargs):
             return original_iter(**kwargs, durable_poll_seconds=3600)
-        patches.enter_context(patch("app.main.iter_catalog_event_sse", long_poll))
+        patches.enter_context(patch("app.routes.jobs.iter_catalog_event_sse", long_poll))
         with tempfile.TemporaryDirectory() as directory:
             active = queued = None
             receipts = []
@@ -132,5 +133,5 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/api/catalog/events")
 async def events(request: Request):
     request.state.session = {"id": "disposable-session"}
-    return await main.catalog_events_stream(request, after_revision=0, subscribe=True,
+    return await catalog_events_stream(request, after_revision=0, subscribe=True,
         last_event_id=None, vault={"id": 1}, user={"id": 1})

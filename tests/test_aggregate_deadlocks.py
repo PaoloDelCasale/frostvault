@@ -491,7 +491,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             job_admission.lock_vault(c, 2)  # available again after shared commit
 
     def test_551_pause_and_cancel_pending_keep_a_leased_upload_and_its_receipt(self):
-        from app.main import cancel_pending_uploads, PendingUploadCancelAction
+        from app.routes.jobs import cancel_pending_uploads, PendingUploadCancelAction
         from app.services import upload_provenance as provenance, vault_pause
         running, pending = self.seed(2)
         sending, release = threading.Event(), threading.Event()
@@ -662,7 +662,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             return upload(*args, **kwargs)
 
         def controls():
-            from app.main import cancel_pending_uploads, PendingUploadCancelAction
+            from app.routes.jobs import cancel_pending_uploads, PendingUploadCancelAction
             from app.services import vault_pause
             start.wait(timeout=20)
             self.assertTrue(sending.wait(30))

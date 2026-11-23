@@ -44,7 +44,7 @@ from watchfiles import Change
 from app import storage
 from app.catalog import ArchiveCatalog
 
-from app.main import FileAction, cancel_job_group, free_space, jobs
+from app.routes.jobs import FileAction, cancel_job_group, free_space, jobs
 from app.services.job_admission import queue_jobs
 
 
@@ -649,8 +649,8 @@ class StorageCleanupTests(FrostVaultTestCase):
             with self.subTest(action=action):
                 connection = CancelGroupConnection()
                 with (
-                    patch("app.main.db", return_value=connection),
-                    patch("app.main.cancel_jobs") as cancel_jobs_mock,
+                    patch("app.routes.jobs.db", return_value=connection),
+                    patch("app.routes.jobs.cancel_jobs") as cancel_jobs_mock,
                 ):
                     result = cancel_job_group("group-123", action, {"id": 2}, 7)
 
@@ -674,13 +674,13 @@ class StorageCleanupTests(FrostVaultTestCase):
     def test_cancelling_automatic_cleanup_is_audited_but_not_notified(self) -> None:
         connection = CancelGroupConnection(automatic_cleanup=True)
         with (
-            patch("app.main.db", return_value=connection),
-            patch("app.main.cancel_jobs"),
+            patch("app.routes.jobs.db", return_value=connection),
+            patch("app.routes.jobs.cancel_jobs"),
             patch(
-                "app.main.audit_event_store.record_audit_event"
+                "app.routes.jobs.audit_event_store.record_audit_event"
             ) as record_audit_event,
             patch(
-                "app.main.notification_service.enqueue_notification"
+                "app.services.notifications.enqueue_notification"
             ) as enqueue_notification,
         ):
             cancel_job_group("group-123", "free-space", {"id": 2}, "owner")

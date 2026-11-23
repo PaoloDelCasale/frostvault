@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
 from app.api_models import JsonObjectResponse, response_model
@@ -26,13 +26,17 @@ RAW_RESPONSE_EXCEPTIONS = {
 RAW_JSON_EXCEPTIONS = RAW_RESPONSE_EXCEPTIONS
 
 
+def api_routes() -> list[APIRoute]:
+    """Every route of the application in matching order, through its included routers."""
+    routes = [context.original_route for context in iter_route_contexts(app.routes)]
+    return [route for route in routes if isinstance(route, APIRoute)]
+
+
 class OpenApiResponseContractTests(unittest.TestCase):
     def test_every_json_route_has_an_explicit_nonempty_success_schema(self) -> None:
         schema = app.openapi()
         checked = 0
-        for route in app.routes:
-            if not isinstance(route, APIRoute):
-                continue
+        for route in api_routes():
             if not (
                 route.path.startswith("/api/") or route.path in {"/health", "/ready"}
             ):
@@ -163,6 +167,23 @@ class OpenApiResponseContractTests(unittest.TestCase):
             (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
         )
         self.assertEqual(committed, app.openapi())
+        # The routers are included in the order the routes always had (#796).
+        self.assertEqual(list(committed["paths"]), list(app.openapi()["paths"]))
+
+    def test_every_route_is_reachable_and_the_spa_fallback_matches_last(self) -> None:
+        routes = api_routes()
+        # No router is included twice and none is left out of the document.
+        self.assertEqual(len({(route.path, *sorted(route.methods)) for route in routes}), len(routes))
+        documented = {route.path_format for route in routes if route.include_in_schema}
+        self.assertEqual(documented, set(app.openapi()["paths"]))
+        self.assertEqual(
+            [(route.name, route.path) for route in routes[-3:]],
+            [
+                ("spa_asset", "/assets/{asset_path:path}"),
+                ("spa_fallback", "/{full_path:path}"),
+                ("unknown_route", "/{full_path:path}"),
+            ],
+        )
 
     def test_notifications_list_documents_status_before_id_and_limit_query_params(
         self,
@@ -212,8 +233,8 @@ class OpenApiResponseContractTests(unittest.TestCase):
         )
 
     def test_all_api_response_models_are_nonfiltering_contracts(self) -> None:
-        for route in app.routes:
-            if not isinstance(route, APIRoute) or route.path in RAW_RESPONSE_EXCEPTIONS:
+        for route in api_routes():
+            if route.path in RAW_RESPONSE_EXCEPTIONS:
                 continue
             if route.path.startswith("/api/") or route.path in {"/health", "/ready"}:
                 self.assertIsNotNone(route.response_model, route.path)

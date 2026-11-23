@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app import main
+from app.routes import jobs
 from app.services import job_admission, notifications, recovery_approval
 from tests import test_restore_guardrails as guardrails
 from tests.fixtures import override_settings
@@ -22,7 +22,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
             connection.execute("UPDATE restore_requests SET approval_deadline='2000-01-01T00:00:00+00:00'")
 
     def _approve(self, group):
-        return main.approve_recover(main.RecoverApproveAction(group_id=group), {"id": 1}, {"id": 2})
+        return jobs.approve_recover(jobs.RecoverApproveAction(group_id=group), {"id": 1}, {"id": 2})
 
     def test_expiry_cancels_whole_request_with_localized_reason_and_no_cloud_calls(self):
         _, queued = self._queue_and_estimate(self._runtime())
@@ -76,7 +76,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
                 self.assertEqual(error.status_code, 409)
         def cancel():
             try:
-                main.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
+                jobs.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
             except HTTPException as error:
                 self.assertEqual(error.status_code, 409)
         def expire():
@@ -97,7 +97,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
             except HTTPException as error:
                 self.assertEqual(error.status_code, 409)
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(approve), pool.submit(main.cancel_job_group, queued["group_id"], "recover", {"id": 2}, 1)]
+            futures = [pool.submit(approve), pool.submit(jobs.cancel_job_group, queued["group_id"], "recover", {"id": 2}, 1)]
             for future in futures:
                 future.result(timeout=20)
         self.assertEqual({j["status"] for j in self._jobs().values()}, {"cancelled"})
@@ -107,7 +107,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
         _, queued = self._queue_and_estimate(self._runtime())
         deadline = datetime.now(timezone.utc) + timedelta(hours=1)
         entered_lock = Event()
-        original_db = main.db
+        original_db = jobs.db
 
         class LockObserver:
             def __init__(self, connection):
@@ -122,7 +122,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
             with original_db() as connection:
                 yield LockObserver(connection)
 
-        with patch("app.main.db", observed_db), patch("app.main.datetime") as clock, ThreadPoolExecutor(max_workers=1) as pool:
+        with patch("app.routes.jobs.db", observed_db), patch("app.routes.jobs.datetime") as clock, ThreadPoolExecutor(max_workers=1) as pool:
             clock.now.return_value = deadline
             with self.database.connect() as connection:
                 connection.execute("SELECT id FROM vaults WHERE id=2 FOR UPDATE")
@@ -163,7 +163,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
         with override_settings(**self._runtime()):
             estimate = job_admission.estimate_recovery(2, selection=selection)
             queued = job_admission.queue_jobs("", "recover", 2, recovery_selection=selection)
-            cancelled = main.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
+            cancelled = jobs.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
         self.assertEqual(queued["item_count"], self.COLD_FILES + 1)
         self.assertEqual(cancelled["cancelled_count"], queued["item_count"])
         self.assertAlmostEqual(estimate["estimate"]["estimated_cost_eur"], queued["estimated_cost_eur"], places=6)

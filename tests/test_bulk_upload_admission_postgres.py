@@ -11,7 +11,7 @@ import time
 import uuid
 from unittest.mock import patch
 
-from app import main
+from app.routes.jobs import PendingUploadCancelAction, cancel_job_group, cancel_pending_uploads
 from app.catalog import ArchiveCatalog
 from app.services import bulk_upload_admission as bulk, protection_stop, vault_relocation
 from app.services.operation_policies import OperationPolicy, set_policy
@@ -238,8 +238,8 @@ class BulkAdmissionPostgresTests(QueueFixture):
                 group = self.create()["group_id"]
                 if after_batch:
                     self.step(group)
-                with patch.object(main, "db", self.db):
-                    result = main.cancel_job_group(group, "upload", self.vaults[2], 1)
+                with patch("app.routes.jobs.db", self.db):
+                    result = cancel_job_group(group, "upload", self.vaults[2], 1)
                 self.assertEqual(result["stopped_admissions"], 1)
                 count = len(self.jobs())
                 self.assertFalse(self.step(group))
@@ -252,8 +252,8 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.step(group, size=1)
         # The cursor walks File ids: the first batch may already hold a foo/ Job.
         admitted = {j["path"] for j in self.jobs()}
-        with patch.object(main, "db", self.db):
-            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(path="foo"), self.request(), {"id": 1}, self.vaults[2])
+        with patch("app.routes.jobs.db", self.db):
+            result = cancel_pending_uploads(PendingUploadCancelAction(path="foo"), self.request(), {"id": 1}, self.vaults[2])
         self.assertEqual(result["cancelled_count"], len(admitted & {"foo/a.jpg", "foo/sub/b.jpg"}))
         self.assertEqual(self.finish(group)["admitted_count"], 3 + result["cancelled_count"])
         self.assertEqual({j["path"] for j in self.jobs() if j["status"] != "cancelled"},
@@ -265,8 +265,8 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.step(group)
         jobs = self.jobs()
         self.add_intent(jobs[0]["id"], send_started=True)
-        with patch.object(main, "db", self.db):
-            result = main.cancel_pending_uploads(main.PendingUploadCancelAction(), self.request(), {"id": 1}, self.vaults[2])
+        with patch("app.routes.jobs.db", self.db):
+            result = cancel_pending_uploads(PendingUploadCancelAction(), self.request(), {"id": 1}, self.vaults[2])
         self.assertEqual((result["cancelled_count"], result["stopped_admissions"]), (1, 1))
         self.assertFalse(self.step(group))
         self.assertEqual([j["status"] for j in self.jobs()], ["queued", "cancelled"])

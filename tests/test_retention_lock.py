@@ -204,7 +204,7 @@ class VaultDeletionPageTests(unittest.TestCase):
 
 class CreationApiTests(unittest.TestCase):
     def test_only_the_offered_durations_or_none(self) -> None:
-        from app.main import VaultSelfServiceCreate
+        from app.routes.vaults import VaultSelfServiceCreate
 
         self.assertIsNone(VaultSelfServiceCreate(name="Photos").retention_lock_days)
         for days in (30, 90, 180, 365):

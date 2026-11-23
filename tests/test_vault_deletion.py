@@ -372,7 +372,7 @@ class VaultDeletionHttpTests(VaultDeletionFixture):
 
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(patch("app.main.s3_client", return_value=self.provider))
+        self.enterContext(patch("app.routes.vaults.s3_client", return_value=self.provider))
         self.client = self.http_client()
         self.headers = self.sign_in().csrf_headers
         self.payload = {"confirmation": "Docs", "reason": "test vault no longer needed"}

@@ -16,6 +16,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import diagnostics, main
+from app.routes.deps import current_user
 from tests.fixtures import override_settings
 from tests.spa_fixture import write_spa_dist
 
@@ -37,7 +38,8 @@ class DiagnosticsHttpTests(unittest.TestCase):
         ))
         # Any unexpected Session lookup or application DB access fails the test.
         self.database = self.enterContext(patch("app.main.db", side_effect=AssertionError("No DB expected")))
-        self.render = self.enterContext(patch("app.main.metrics_service.render_prometheus", return_value=METRIC_TEXT))
+        self.enterContext(patch("app.routes.deps.db", self.database))
+        self.render = self.enterContext(patch("app.routes.ops.metrics_service.render_prometheus", return_value=METRIC_TEXT))
         # No context-manager lifespan: never initialize DB, workers or cloud SDK.
         self.client = TestClient(main.app, base_url="http://vault.example")
         self.addCleanup(self.client.close)
@@ -91,8 +93,8 @@ class DiagnosticsHttpTests(unittest.TestCase):
             self.assert_closed(self.client.get("/metrics", headers={"Authorization": "Bearer test-only"}), 401)
 
     def test_session_and_query_string_are_not_scraper_authentication(self) -> None:
-        main.app.dependency_overrides[main.current_user] = lambda: {"id": 1}
-        self.addCleanup(main.app.dependency_overrides.pop, main.current_user)
+        main.app.dependency_overrides[current_user] = lambda: {"id": 1}
+        self.addCleanup(main.app.dependency_overrides.pop, current_user)
         self.assert_closed(self.client.get("/metrics", headers={
             "Cookie": "frostvault_session=test-only-session",
         }), 401)
@@ -156,7 +158,7 @@ class DiagnosticsHttpTests(unittest.TestCase):
                 "queue": {"stalled": True, "queued": 789, "seconds_without_progress": 9999},
                 "future_internal_diagnostic": "not public",
             }
-            with self.subTest(failed=failed), patch("app.main.health_service.readiness_report", return_value=report):
+            with self.subTest(failed=failed), patch("app.routes.ops.health_service.readiness_report", return_value=report):
                 response = self.client.get("/ready")
                 self.assertEqual(response.status_code, 200 if failed is None else 503)
                 self.assertEqual(response.json(), {"status": status, "checks": current})
@@ -182,7 +184,7 @@ class DocsAndExporterTests(unittest.TestCase):
             enabled = sys.argv[2] == "true"
             assert main.settings.api_docs_enabled == enabled
             assert not main.settings.metrics_token
-            with override_settings(frontend_dist_dir=str(write_spa_dist(directory))), patch("app.main.db", side_effect=AssertionError("No DB")):
+            with override_settings(frontend_dist_dir=str(write_spa_dist(directory))), patch("app.main.db", side_effect=AssertionError("No DB")), patch("app.routes.deps.db", side_effect=AssertionError("No DB")):
                 client = TestClient(main.app)
                 for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
                     response = client.get(path)

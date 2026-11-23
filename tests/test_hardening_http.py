@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from app.main import _safe_return_to
+from app.routes.sign_in import _safe_return_to
 from app.sessions import is_reauth_recent
 from tests.fixtures import FrostVaultTestCase, seed_vault
 

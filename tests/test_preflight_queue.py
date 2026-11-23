@@ -26,7 +26,8 @@ from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 from botocore.exceptions import ClientError
-from app import main, storage
+from app import storage
+from app.routes.jobs import retry_failed_uploads
 from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.services import cloud_preflight_gate as gate, vault_relocation
@@ -389,7 +390,7 @@ class PreflightQueueTests(FrostVaultTestCase):
     def test_concurrent_global_retry_admits_one_job_per_file(self):
         self.fail_uploads()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda _: main.retry_failed_uploads(vault_id=None, _={'id': 1}), range(2)))
+            results = list(pool.map(lambda _: retry_failed_uploads(vault_id=None, _={'id': 1}), range(2)))
         self.assertEqual(sum(r['item_count'] for r in results), 4)
         with self.db() as c:
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='queued'").fetchone()['n'], 4)
