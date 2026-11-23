@@ -17,7 +17,7 @@ What an operation does with its Job (Upload, Recovery, cleanup…) stays with th
 worker; routes read Jobs from ``job_queries``.
 
 The catalog and most services read the vocabulary from here, so this Module
-loads only leaves of the application; what it asks of a Module that reads it
+imports none of them when it loads; what it asks of a Module that reads it
 (the catalog, directory aggregates, Upload Remediation) is imported where it is
 used.
 """
@@ -1182,14 +1182,14 @@ class JobQueue:
         """The members of a cloud-purge group left ``cleaning`` with no live lease."""
         return self.connection.execute(
             """
-            SELECT j.id FROM jobs j
-            WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
-              AND j.status='cleaning'
-              AND NOT EXISTS (
-                  SELECT 1 FROM job_leases l
-                  WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
-              )
-            """,
+                        SELECT j.id FROM jobs j
+                        WHERE j.vault_id=%s AND j.group_id=%s AND j.action='cloud-purge'
+                          AND j.status='cleaning'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM job_leases l
+                              WHERE l.job_id = j.id AND l.expires_at > %s::timestamptz
+                          )
+                        """,
             (vault_id, group_id, now),
         ).fetchall()
 
@@ -1817,7 +1817,7 @@ class QueueRunner:
         """
         connection.execute(
             """UPDATE jobs SET message=%s, message_key=%s, message_params=NULL, updated_at=%s
-               WHERE id=%s AND status IN ('uploading', 'verifying')""",
+           WHERE id=%s AND status IN ('uploading', 'verifying')""",
             (translate(message_key, locale=DEFAULT_LOCALE), message_key, self._now_iso(), job_id),
         )
 
