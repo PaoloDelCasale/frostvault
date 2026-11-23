@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchBillingExport, type BillingExportStatus } from "@/api";
+import { apiQueryKeys, fetchBillingExport, type BillingExportStatus } from "@/api";
 import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, BillingSetupSteps, billedMoney } from "@/components/BilledCost";
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n";
@@ -8,7 +8,6 @@ import { errorMessage } from "@/lib/errorMessage";
 import { formatMonth } from "@/pages/archive/format";
 import { vaultSettingsUrl } from "@/router";
 
-const BILLING_EXPORT_QUERY_KEY = ["billing-export"] as const;
 
 type Period = BillingExportStatus["periods"][number];
 
@@ -40,7 +39,7 @@ export function BillingExportSection() {
   const { t } = useI18n();
   const translateRef = useRef(t);
   translateRef.current = t;
-  const query = useQuery({ queryKey: BILLING_EXPORT_QUERY_KEY, queryFn: fetchBillingExport, retry: false });
+  const query = useQuery({ queryKey: apiQueryKeys.billingExport, queryFn: fetchBillingExport, retry: false });
   const data = query.data;
   // A Vault page link opens on #billing-export: scroll there once it renders.
   useEffect(() => {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowUpFromLine } from "lucide-react";
-import { uploadBacklog, useUploadActivity, vaultApi, type UploadActivitySummary } from "@/api";
+import { apiQueryKeys, uploadBacklog, useUploadActivity, vaultApi, type UploadActivitySummary } from "@/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Popover } from "@/components/Popover";
@@ -71,7 +71,7 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
     try {
       const result = await vaultApi(vaultId).cancelPendingUploads();
       setNotice(t("activity.cancel_pending_done", { count: result.cancelled_count }));
-      await client.invalidateQueries({ queryKey: ["upload-activity"] });
+      await client.invalidateQueries({ queryKey: apiQueryKeys.uploadActivity });
     } catch (error) { setNotice(errorMessage(error, t)); }
     finally { setCancelling(false); setConfirm(false); setOpen(true); }
   }

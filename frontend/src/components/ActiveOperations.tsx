@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { vaultApi } from "@/api";
+import { apiQueryKeys, vaultApi } from "@/api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { recoveryTimeline } from "@/pages/archive/recoveryLabel";
@@ -22,7 +22,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
   const api = vaultApi(vaultId);
   const [pages, setPages] = useState<number[]>([]);
   const beforeId = pages.at(-1);
-  const query = useQuery({ queryKey: ["jobs", vaultId, moves, beforeId], queryFn: () => api.jobs({ actions: moves ? ["storage-class"] : ["recover", "free-space"], activeOnly: true, groupsBeforeId: beforeId }), refetchInterval: 3_000 });
+  const query = useQuery({ queryKey: apiQueryKeys.activeJobs(vaultId, moves, beforeId), queryFn: () => api.jobs({ actions: moves ? ["storage-class"] : ["recover", "free-space"], activeOnly: true, groupsBeforeId: beforeId }), refetchInterval: 3_000 });
   const jobs = query.data?.groups?.filter((job) => !["completed", "cancelled", "failed"].includes(job.status) && (moves ? job.action === "storage-class" : ["recover", "free-space"].includes(job.action))) ?? [];
   async function mutate(group: string, action: string, approve = false, stoppedWaiting = false) {
     if (busy) return;
@@ -31,7 +31,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
       await (approve ? api.approveRecover(group) : api.cancelJobGroup(group, action));
       // Only a stopped wait leaves AWS working: before AWS accepted, cancelling stops everything.
       if (stoppedWaiting) setMessage(t("ui.operation_not_cancellable"));
-      await Promise.all([client.invalidateQueries({ queryKey: ["jobs", vaultId] }), client.invalidateQueries({ queryKey: ["files"] })]);
+      await Promise.all([client.invalidateQueries({ queryKey: apiQueryKeys.vaultJobs(vaultId) }), client.invalidateQueries({ queryKey: apiQueryKeys.files })]);
     } catch (error) { setMessage(errorMessage(error, t)); }
     finally { setBusy(null); }
   }

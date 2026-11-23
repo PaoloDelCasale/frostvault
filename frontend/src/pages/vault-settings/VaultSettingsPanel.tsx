@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchGeneralVaults, vaultApi } from "@/api";
+import { apiQueryKeys, fetchGeneralVaults, vaultApi } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { notify } from "@/components/toastQueue";
@@ -51,7 +51,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   const [minimumOpened, setMinimumOpened] = useState(false);
   const [autoSaved, flashAutoSaved] = useSavedFlash();
   const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
-  const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
+  const vaults = useQuery({ queryKey: apiQueryKeys.generalVaults, queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
   const stopped = vault?.lifecycle === "stopping" || vault?.lifecycle === "tombstone";
   // A link such as «Controlla protezione» names its section (`#protection`):
@@ -147,7 +147,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
       </div>
     </SettingsSection>
     <ReconnectVaultDialog open={reconnect} onOpenChange={setReconnect} vault={vault} onNotice={show}
-      onCompleted={async () => { await client.invalidateQueries({ queryKey: ["general-vaults"] }); }} />
+      onCompleted={async () => { await client.invalidateQueries({ queryKey: apiQueryKeys.generalVaults }); }} />
     <StopProtectionDialog open={stop} onOpenChange={setStop} vaultId={vaultId} vaultName={vaultName} onCompleted={onStopped} />
   </div>;
 }

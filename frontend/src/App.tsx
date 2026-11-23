@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchMe, fetchOverview, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
+import { apiQueryKeys, fetchMe, fetchOverview, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { VaultHeader } from "@/layout/VaultHeader";
@@ -38,8 +38,8 @@ export default function App() {
     return () => document.removeEventListener("click", interceptLinkClick);
   }, []);
   const signedIn = route.name !== "login";
-  const overview = useQuery({ queryKey: ["general", locale], queryFn: fetchOverview, enabled: Boolean(me) && !leaving, refetchInterval: 30_000 });
-  const refresh = useCallback(() => { void client.invalidateQueries({ queryKey: ["general"] }); }, [client]);
+  const overview = useQuery({ queryKey: apiQueryKeys.overview(locale), queryFn: fetchOverview, enabled: Boolean(me) && !leaving, refetchInterval: 30_000 });
+  const refresh = useCallback(() => { void client.invalidateQueries({ queryKey: apiQueryKeys.general }); }, [client]);
   const loadVaults = useCallback(async () => { setVaults((await fetchVaults()).items); }, []);
   useEffect(() => {
     if (!signedIn) return;

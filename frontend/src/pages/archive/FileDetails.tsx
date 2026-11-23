@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { vaultApi, type CloudDeletionPreview, type CloudDeletionSettings, type FileVersionsResponse } from "@/api";
+import { apiQueryKeys, vaultApi, type CloudDeletionPreview, type CloudDeletionSettings, type FileVersionsResponse } from "@/api";
 import { Sheet } from "@/components/Sheet";
 import { Badge } from "@/components/Badge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -33,10 +33,10 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   const [historyOpen, setHistoryOpen] = useState(false);
   const [beforeId, setBeforeId] = useState<number>();
   const [jobId, setJobId] = useState<number>();
-  const history = useQuery({ queryKey: ["file-job-history", target.vaultId, target.item.path, beforeId, revision], enabled: historyOpen, queryFn: () => api.fileJobs(target.item.path, beforeId) });
-  const linkedJob = useQuery({ queryKey: ["linked-job", target.vaultId, jobId, revision], enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
+  const history = useQuery({ queryKey: apiQueryKeys.fileJobHistory(target.vaultId, target.item.path, beforeId, revision), enabled: historyOpen, queryFn: () => api.fileJobs(target.item.path, beforeId) });
+  const linkedJob = useQuery({ queryKey: apiQueryKeys.linkedJob(target.vaultId, jobId, revision), enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
   const [deletion, setDeletion] = useState<{ settings: CloudDeletionSettings; preview: CloudDeletionPreview } | null>(null);
-  const data = useQuery({ queryKey: ["details", target.vaultId, target.item.path, revision], queryFn: async () => {
+  const data = useQuery({ queryKey: apiQueryKeys.fileSheet(target.vaultId, target.item.path, revision), queryFn: async () => {
     const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs({ actions: ["cloud-purge"], activeOnly: true, path: target.item.path })]);
     return { item, versions, jobs };
   } });

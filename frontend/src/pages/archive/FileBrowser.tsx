@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, EyeOff, File as FileIcon, Folder, FolderX, Search, X } from "lucide-react";
-import { ApiError, searchFiles, useVaultStats, vaultApi, type ArchiveListItem, type CloudDeletionPreview, type CloudDeletionSettings, type DiskListingEntry, type ExcludedFolder } from "@/api";
+import { apiQueryKeys, ApiError, searchFiles, useVaultStats, vaultApi, type ArchiveListItem, type CloudDeletionPreview, type CloudDeletionSettings, type DiskListingEntry, type ExcludedFolder } from "@/api";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
 import { Button } from "@/components/ui/button";
@@ -87,16 +87,16 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     const pop = () => { const next = new URLSearchParams(window.location.search); setParams(next); setInput(next.get("q") ?? ""); setSelected([]); setDetails(null); };
     window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop);
   }, []);
-  const query = useQuery({ queryKey: ["files", vaultId, q, state, directory, page, global, revision], queryFn: () => {
+  const query = useQuery({ queryKey: apiQueryKeys.fileList(vaultId, { q, state, directory, page, global }, revision), queryFn: () => {
     const search = new URLSearchParams({ q, state, directory: q ? "" : directory, page: String(page), page_size: String(PAGE_SIZE) });
     return global ? searchFiles(search) : scope.files(search);
   }, refetchInterval: 15_000 });
   const focusPath = params.get("file");
-  const focus = useQuery({ queryKey: ["file-detail", vaultId, focusPath, revision], queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
+  const focus = useQuery({ queryKey: apiQueryKeys.focusedFile(vaultId, focusPath, revision), queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
   /** Excluded Folders are not observed (ADR-0044): one disk read of this level shows them (#754). */
   const diskLevel = !global && !q && (state === "" || state === "excluded") && page === 1;
-  const disk = useQuery({ queryKey: ["excluded-folders", vaultId, directory, revision], queryFn: () => scope.excludedFolders(directory), enabled: diskLevel, retry: false });
-  const policy = useQuery({ queryKey: ["operation-policy", vaultId, revision], queryFn: () => scope.policy(), enabled: !global, retry: false });
+  const disk = useQuery({ queryKey: apiQueryKeys.excludedFolders(vaultId, directory, revision), queryFn: () => scope.excludedFolders(directory), enabled: diskLevel, retry: false });
+  const policy = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId, revision), queryFn: () => scope.policy(), enabled: !global, retry: false });
   const excludedBy = diskLevel ? disk.data?.excluded_by ?? null : null;
   const excludedFolders = new Map<string, ExcludedFolder>((diskLevel ? disk.data?.folders ?? [] : []).map((folder) => [folder.path, folder]));
   const items = [...(query.data?.items ?? [])];

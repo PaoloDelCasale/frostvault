@@ -82,11 +82,11 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "state", ascending: true });
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
   const [deleting, setDeleting] = useState<GeneralVault | null>(null);
-  const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
+  const general = useQuery({ queryKey: apiQueryKeys.generalVaults, queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
   // What AWS billed for the Vault Buckets in the newest month, when the
   // billing export is read (#738): never the whole AWS bill. Its setup steps
   // live on the System page only.
-  const billing = useQuery({ queryKey: ["billing-export"], queryFn: fetchBillingExport, retry: false });
+  const billing = useQuery({ queryKey: apiQueryKeys.billingExport, queryFn: fetchBillingExport, retry: false });
   const billed = billing.data?.state === "ok" ? billing.data.periods[0] : undefined;
   const queryClient = useQueryClient();
   const [retrying, setRetrying] = useState<number | null>(null);

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DropdownMenu } from "radix-ui";
 import { MoreHorizontal } from "lucide-react";
-import { vaultApi, type VaultInclusionPreview } from "@/api";
+import { apiQueryKeys, vaultApi, type VaultInclusionPreview } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
@@ -78,7 +78,7 @@ export function IncludeDialog({ vaultId, target, t, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const preview = useQuery({
-    queryKey: ["inclusion-preview", vaultId, target.path, target.isDirectory],
+    queryKey: apiQueryKeys.inclusionPreview(vaultId, target.path, target.isDirectory),
     queryFn: () => vaultApi(vaultId).inclusionPreview(target.path, target.isDirectory),
     retry: false, gcTime: 0,
   });

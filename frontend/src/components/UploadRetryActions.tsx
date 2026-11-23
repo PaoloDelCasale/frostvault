@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { retryFailedUploads, vaultApi } from "@/api";
+import { apiQueryKeys, retryFailedUploads, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
@@ -23,7 +23,7 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
   const pendingRequest = useRef<{ vaultId: number; requestId: string } | null>(null);
   const [accepted, setAccepted] = useState<{ vaultId: number; groupId: string } | null>(null);
   const admission = useQuery({
-    queryKey: ["bulk-upload-admission", accepted?.vaultId, accepted?.groupId],
+    queryKey: apiQueryKeys.bulkUploadAdmission(accepted?.vaultId, accepted?.groupId),
     enabled: accepted !== null && accepted.vaultId === vaultId,
     staleTime: 0,
     queryFn: () => {
@@ -47,12 +47,12 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
         }
         const result = await vaultApi(vaultId).upload({ path: "", is_directory: true, request_id: pendingRequest.current.requestId });
         if (result.admission) {
-          client.setQueryData(["bulk-upload-admission", vaultId, result.admission.group_id], result.admission);
+          client.setQueryData(apiQueryKeys.bulkUploadAdmission(vaultId, result.admission.group_id), result.admission);
           setAccepted({ vaultId, groupId: result.admission.group_id });
         }
         pendingRequest.current = null;
         setNotice(t("uploads.whole_started"));
-        await client.invalidateQueries({ queryKey: ["upload-activity"] });
+        await client.invalidateQueries({ queryKey: apiQueryKeys.uploadActivity });
       } else {
         const result = await (vaultId === undefined ? retryFailedUploads() : vaultApi(vaultId).retryFailedUploads());
         setNotice(t("uploads.retry_result", { count: result.item_count }));
