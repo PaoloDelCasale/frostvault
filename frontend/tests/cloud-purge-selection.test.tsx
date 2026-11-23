@@ -32,17 +32,17 @@ function setup(items: unknown[], total = items.length, search = "") {
   configureApiClient({ fetch: vi.fn(async (input, init?: RequestInit) => {
     const url = String(input);
     if (init?.method === "POST") posts.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
-    if (url.startsWith("/api/cloud-deletion/preview")) {
+    if (/^\/api\/vaults\/\d+\/cloud-deletion\/preview/.test(url)) {
       const body = posts.at(-1)!.body;
       return jsonResponse(preview(body.duplicates_only ? {} : { object_count: 2163, duplicates_only: false }));
     }
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
-    if (url.startsWith("/api/cloud-purge")) {
+    if (/^\/api\/vaults\/\d+\/cloud-purge/.test(url)) {
       if (purgeStatus === 409) { purgeStatus = 202; return jsonResponse({ detail: "changed", message: "changed", message_key: "api.cloud_purge_selection_changed" }, 409); }
       return jsonResponse({ group_id: "g", job_ids: [1], status: "pending_delay" }, 202);
     }
     if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: {}, storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
-    if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+    if (/^\/api\/vaults\/\d+\/jobs/.test(url)) return jsonResponse({ groups: [] });
     return jsonResponse({ items, total, aggregate_status: "ready" });
   }) });
   renderWithQueryClient(<FileBrowser vaultId={1} vaultName="Immich" t={t} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
@@ -67,7 +67,7 @@ describe("Delete from cloud on a selection (#723)", () => {
     expect(screen.getByTestId("cloud-purge-excluded")).toHaveTextContent('ui.cloud_purge_no_local_copy {"count":14}');
     expect(screen.getByTestId("cloud-purge-scope")).toHaveTextContent("a.jpg, library/, b.jpg");
     expect(screen.getByTestId("cloud-purge-duplicates-only")).toBeChecked();
-    expect(posts.at(-1)).toEqual({ url: expect.stringContaining("/api/cloud-deletion/preview"), body: { paths: ["a.jpg", "b.jpg"], directories: ["library"], duplicates_only: true } });
+    expect(posts.at(-1)).toEqual({ url: "/api/vaults/1/cloud-deletion/preview", body: { paths: ["a.jpg", "b.jpg"], directories: ["library"], duplicates_only: true } });
 
     await user.click(screen.getByTestId("cloud-purge-duplicates-only"));
     await waitFor(() => expect(posts.at(-1)!.body.duplicates_only).toBe(false));
@@ -79,8 +79,8 @@ describe("Delete from cloud on a selection (#723)", () => {
     await user.type(screen.getByTestId("cloud-purge-reason"), "moved by Immich");
     await user.type(screen.getByTestId("cloud-purge-confirmation"), "Immich");
     await user.click(screen.getByTestId("cloud-purge-submit"));
-    await waitFor(() => expect(posts.some(({ url }) => url.startsWith("/api/cloud-purge"))).toBe(true));
-    expect(posts.find(({ url }) => url.startsWith("/api/cloud-purge"))!.body).toEqual({
+    await waitFor(() => expect(posts.some(({ url }) => /^\/api\/vaults\/\d+\/cloud-purge/.test(url))).toBe(true));
+    expect(posts.find(({ url }) => /^\/api\/vaults\/\d+\/cloud-purge/.test(url))!.body).toEqual({
       paths: ["a.jpg", "b.jpg"], directories: ["library"], duplicates_only: true,
       fingerprint: "a".repeat(64), reason: "moved by Immich", confirmation: "Immich",
     });
@@ -105,7 +105,7 @@ describe("Delete from cloud on a selection (#723)", () => {
     await user.click(screen.getByTestId("cloud-purge-submit"));
     // A changed selection shows why and loads a new preview to confirm.
     expect(await screen.findByTestId("cloud-purge-error")).toHaveTextContent("api.cloud_purge_selection_changed");
-    await waitFor(() => expect(posts.at(-1)!.url).toContain("/api/cloud-deletion/preview"));
+    await waitFor(() => expect(posts.at(-1)!.url).toBe("/api/vaults/1/cloud-deletion/preview"));
     await screen.findByTestId("cloud-purge-preview");
   });
 

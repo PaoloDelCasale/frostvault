@@ -13,8 +13,8 @@ function setup(items: unknown[] = [file], search = "") {
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
     if (/^\/api\/vaults\/\d+\/files\/detail\?/.test(url)) return jsonResponse(file);
-    if (url.startsWith("/api/files/versions")) return jsonResponse({ items: [] });
-    if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+    if (/^\/api\/vaults\/\d+\/files\/versions/.test(url)) return jsonResponse({ items: [] });
+    if (/^\/api\/vaults\/\d+\/jobs/.test(url)) return jsonResponse({ groups: [] });
     if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: { protected: 1180, cloud_only: 3, pending: 2 }, protection_state: "pending", storage: {}, active_jobs: 0, runtime: {}, source_volume: {}, delete_enabled: true });
     return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
   }) });
@@ -99,7 +99,7 @@ describe("essential file browser", () => {
     const notice = screen.getByTestId("stopped-uploads");
     expect(notice).toHaveTextContent("files.stopped_notice");
     await userEvent.setup().click(within(notice).getByRole("button", { name: "essential.upload_now" }));
-    await waitFor(() => expect(calls.filter((url) => url === "/api/upload?vault_id=1")).toHaveLength(2));
+    await waitFor(() => expect(calls.filter((url) => url === "/api/vaults/1/upload")).toHaveLength(2));
     expect(within(screen.getByTestId("state-filter")).getByRole("button", { name: /files.chip_stopped/ })).toBeInTheDocument();
   });
   it("shows no Stopped Upload notice without one", async () => {
@@ -140,11 +140,11 @@ describe("essential file browser", () => {
     const posted: string[] = [];
     configureApiClient({ fetch: vi.fn(async (input, init) => {
       const url = String(input);
-      if (url.startsWith("/api/free-space")) {
+      if (/^\/api\/vaults\/\d+\/free-space/.test(url)) {
         const body = JSON.parse(String(init?.body)) as { path: string }; posted.push(body.path);
         return body.path === "2026/f3.jpg" ? jsonResponse({ detail: "Archive Version not verified" }, 409) : jsonResponse({ ok: true });
       }
-      if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
+      if (/^\/api\/vaults\/\d+\/jobs/.test(url)) return jsonResponse({ groups: [] });
       if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: {}, storage: {}, runtime: {}, source_volume: {} });
       return jsonResponse({ items, total: items.length, aggregate_status: "ready" });
     }) });

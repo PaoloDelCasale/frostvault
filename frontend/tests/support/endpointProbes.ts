@@ -14,7 +14,7 @@ export function estimateGeneralStorageCost(
 }
 
 export function requestScan(): Promise<ScanResponse> {
-  return apiRequest<ScanResponse>("/api/scan", {
+  return apiRequest<ScanResponse>("/api/vaults/1/scan", {
     method: "POST",
   });
 }

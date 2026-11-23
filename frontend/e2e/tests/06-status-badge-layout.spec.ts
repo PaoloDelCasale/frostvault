@@ -28,7 +28,7 @@ for (const width of [375, 390, 1400]) {
         // overlays "unconfirmed" plus the last evidence, as above.
         { type: "file", name: "symlink", path: "symlink", state: "problem" },
       ], total: 4, aggregate_status: "ready" };
-      else if (pathname === "/api/jobs") json = { groups: [] };
+      else if (pathname === "/api/vaults/1/jobs") json = { groups: [] };
       else if (pathname === "/api/notifications") json = { items: [], unread_count: 0 };
       await route.fulfill({ json });
     });

@@ -1375,7 +1375,6 @@
   "api.invalid_session": "Invalid session",
   "api.reauth_required": "Reauthentication required",
   "api.protected_vault_not_found": "Protected Vault not found",
-  "api.no_vault": "No vault exists yet",
   "api.session_changed": "Session changed; retry the request",
   "api.invalid_folder": "Invalid folder",
   "api.unsupported_locale": "Unsupported locale",

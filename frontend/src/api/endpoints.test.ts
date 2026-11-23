@@ -51,7 +51,7 @@ describe("foundation endpoint helpers", () => {
     await fetchMe();
     document.cookie = "frostvault_csrf=cookie-should-not-win";
     const { apiRequest } = await import("./client");
-    await apiRequest("/api/scan", { method: "POST", body: "{}" });
+    await apiRequest("/api/vaults/1/scan", { method: "POST", body: "{}" });
 
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("X-CSRF-Token")).toBe(
       "from-me",
@@ -136,7 +136,7 @@ describe("foundation endpoint helpers", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scan",
+      "/api/vaults/1/scan",
       expect.objectContaining({ method: "POST" }),
     );
   });

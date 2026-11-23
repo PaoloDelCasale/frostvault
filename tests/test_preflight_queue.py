@@ -85,7 +85,7 @@ class PreflightQueueTests(FrostVaultTestCase):
                     c.execute("UPDATE jobs SET status='failed' WHERE id=%s", (id,))
 
     def retry(self, vault_id=None):
-        response = self.client.post('/api/upload/retry-failed' + (f'?vault_id={vault_id}' if vault_id else ''), headers=self.headers)
+        response = self.client.post(f'/api/vaults/{vault_id}/upload/retry-failed' if vault_id else '/api/upload/retry-failed', headers=self.headers)
         self.assertEqual(response.status_code, 202, response.text)
         return response.json()['item_count']
 
@@ -390,7 +390,7 @@ class PreflightQueueTests(FrostVaultTestCase):
     def test_concurrent_global_retry_admits_one_job_per_file(self):
         self.fail_uploads()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda _: retry_failed_uploads(vault_id=None, _={'id': 1}), range(2)))
+            results = list(pool.map(lambda _: retry_failed_uploads(_={'id': 1}), range(2)))
         self.assertEqual(sum(r['item_count'] for r in results), 4)
         with self.db() as c:
             self.assertEqual(c.execute("SELECT count(*) AS n FROM jobs WHERE status='queued'").fetchone()['n'], 4)
@@ -472,7 +472,7 @@ class PreflightQueueTests(FrostVaultTestCase):
             self.assertEqual(c.execute("SELECT count(*) AS n FROM notifications WHERE event='cloud_preflight_blocked'").fetchone()['n'], 1)
 
     def test_whole_upload_root_is_narrow_and_auth_csrf_preserved(self):
-        response = self.client.post('/api/upload?vault_id=1', json={'path': '', 'is_directory': True}, headers=self.headers)
+        response = self.client.post('/api/vaults/1/upload', json={'path': '', 'is_directory': True}, headers=self.headers)
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()['item_count'], 0)
         self.assertEqual(response.json()['admission']['selected_count'], 2)
@@ -482,10 +482,10 @@ class PreflightQueueTests(FrostVaultTestCase):
         with self.db() as c:
             self.assertEqual(bulk_upload_admission.get(c, vault_id=1, group_id=response.json()['group_id'])['admitted_count'], 2)
         for path in ('', '.', '..', '/', '../outside', 'nested/../../outside'):
-            response = self.client.post('/api/upload?vault_id=2', json={'path': path}, headers=self.headers)
+            response = self.client.post('/api/vaults/2/upload', json={'path': path}, headers=self.headers)
             self.assertIn(response.status_code, (400, 422), response.text)
         for action in ('recover', 'free-space'):
-            response = self.client.post('/api/' + action + '?vault_id=2', json={'path': '', 'is_directory': True}, headers=self.headers)
+            response = self.client.post('/api/vaults/2/' + action, json={'path': '', 'is_directory': True}, headers=self.headers)
             self.assertIn(response.status_code, (400, 422), response.text)
         self.assertEqual(self.client.post('/api/upload/retry-failed').status_code, 403)
         self.client.cookies.clear()

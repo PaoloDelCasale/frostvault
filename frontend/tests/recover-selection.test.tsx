@@ -15,7 +15,7 @@ describe("essential recovery", () => {
       const url = String(input); const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       if (init?.method === "POST") bodies.push({ url, body });
       if (/^\/api\/vaults\/\d+\/operation-policy$/.test(url)) return jsonResponse({ local_release_after_days: 180 });
-      if (url.startsWith("/api/recover/estimate")) return jsonResponse({ archive_version_id: "exact-snapshot", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: body.restore_tier, days: 3 } });
+      if (/^\/api\/vaults\/\d+\/recover\/estimate/.test(url)) return jsonResponse({ archive_version_id: "exact-snapshot", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: body.restore_tier, days: 3 } });
       return jsonResponse({});
     }) });
     const done = vi.fn(); renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={done} />);
@@ -26,7 +26,7 @@ describe("essential recovery", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "ui.row_action_recover" }));
     await waitFor(() => expect(done).toHaveBeenCalled());
-    expect(bodies.at(-1)).toEqual({ url: "/api/recover?vault_id=2", body: { path: "same.jpg", is_directory: false, restore_tier: "Standard", archive_version_id: "exact-snapshot", restore_days: 3 } });
+    expect(bodies.at(-1)).toEqual({ url: "/api/vaults/2/recover", body: { path: "same.jpg", is_directory: false, restore_tier: "Standard", archive_version_id: "exact-snapshot", restore_days: 3 } });
   });
   it("hides cold tier choices for immediate recovery", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: false }) : jsonResponse({ local_release_after_days: null })) });
@@ -62,13 +62,13 @@ describe("essential recovery", () => {
     await screen.findByTestId("recover-approval-notice");
     const estimates = calls.filter((call) => call.url.includes("estimate"));
     expect(estimates).toHaveLength(2);
-    expect(estimates[0]).toEqual({ url: "/api/recover/estimate?vault_id=2", body: { path: "", selection: [{ path: "same.jpg", is_directory: false }, { path: "other.jpg", is_directory: false }], restore_tier: "Bulk" } });
+    expect(estimates[0]).toEqual({ url: "/api/vaults/2/recover/estimate", body: { path: "", selection: [{ path: "same.jpg", is_directory: false }, { path: "other.jpg", is_directory: false }], restore_tier: "Bulk" } });
     await userEvent.setup().click(screen.getByRole("button", { name: "ui.row_action_recover" }));
     await waitFor(() => expect(done).toHaveBeenCalledOnce());
     const recoveries = calls.filter((call) => !call.url.includes("estimate"));
     expect(recoveries).toHaveLength(2);
     expect(recoveries[0].body.selection).toEqual(estimates[0].body.selection);
-    expect(recoveries.map((call) => call.url)).toEqual(["/api/recover?vault_id=2", "/api/recover?vault_id=3"]);
+    expect(recoveries.map((call) => call.url)).toEqual(["/api/vaults/2/recover", "/api/vaults/3/recover"]);
   });
   it("keeps many items in a bounded, scrolling body with the actions always outside it (#522)", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 3.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });

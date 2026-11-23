@@ -947,7 +947,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/jobs": {
+    "/api/vaults/{vault_id}/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -962,7 +962,7 @@ export interface paths {
          *     their summaries still account for every member in this Vault. The cursor
          *     pages summaries only; individual members use the group-detail endpoint.
          */
-        get: operations["jobs_api_jobs_get"];
+        get: operations["jobs_api_vaults__vault_id__jobs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -971,7 +971,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/job-groups/{group_id}/jobs": {
+    "/api/vaults/{vault_id}/job-groups/{group_id}/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -982,7 +982,7 @@ export interface paths {
          * Job Group Detail
          * @description Newest-first keyset page of one group's Jobs, scoped to this Vault.
          */
-        get: operations["job_group_detail_api_job_groups__group_id__jobs_get"];
+        get: operations["job_group_detail_api_vaults__vault_id__job_groups__group_id__jobs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -991,7 +991,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/jobs/{job_id}": {
+    "/api/vaults/{vault_id}/jobs/{job_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -999,7 +999,7 @@ export interface paths {
             cookie?: never;
         };
         /** Job Detail */
-        get: operations["job_detail_api_jobs__job_id__get"];
+        get: operations["job_detail_api_vaults__vault_id__jobs__job_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1008,7 +1008,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/jobs": {
+    "/api/vaults/{vault_id}/files/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -1016,7 +1016,7 @@ export interface paths {
             cookie?: never;
         };
         /** File Job History */
-        get: operations["file_job_history_api_files_jobs_get"];
+        get: operations["file_job_history_api_vaults__vault_id__files_jobs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1025,7 +1025,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/scan": {
+    "/api/vaults/{vault_id}/scan": {
         parameters: {
             query?: never;
             header?: never;
@@ -1035,14 +1035,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Start Scan */
-        post: operations["start_scan_api_scan_post"];
+        post: operations["start_scan_api_vaults__vault_id__scan_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/catalog/revision": {
+    "/api/vaults/{vault_id}/catalog/revision": {
         parameters: {
             query?: never;
             header?: never;
@@ -1053,7 +1053,7 @@ export interface paths {
          * Catalog Revision Snapshot
          * @description One-shot catch-up for focus/online recovery without holding a stream.
          */
-        get: operations["catalog_revision_snapshot_api_catalog_revision_get"];
+        get: operations["catalog_revision_snapshot_api_vaults__vault_id__catalog_revision_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1062,7 +1062,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/catalog/events": {
+    "/api/vaults/{vault_id}/catalog/events": {
         parameters: {
             query?: never;
             header?: never;
@@ -1082,7 +1082,7 @@ export interface paths {
          *     Documented like ``/metrics`` as a non-JSON success body (SSE text stream);
          *     it is excluded from the JsonObjectResponse OpenAPI contract suite.
          */
-        get: operations["catalog_events_stream_api_catalog_events_get"];
+        get: operations["catalog_events_stream_api_vaults__vault_id__catalog_events_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1091,7 +1091,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/versions": {
+    "/api/vaults/{vault_id}/files/versions": {
         parameters: {
             query?: never;
             header?: never;
@@ -1099,7 +1099,7 @@ export interface paths {
             cookie?: never;
         };
         /** File Versions */
-        get: operations["file_versions_api_files_versions_get"];
+        get: operations["file_versions_api_vaults__vault_id__files_versions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1108,7 +1108,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/recover/estimate": {
+    "/api/vaults/{vault_id}/recover/estimate": {
         parameters: {
             query?: never;
             header?: never;
@@ -1118,14 +1118,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Recover Estimate */
-        post: operations["recover_estimate_api_recover_estimate_post"];
+        post: operations["recover_estimate_api_vaults__vault_id__recover_estimate_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/upload": {
+    "/api/vaults/{vault_id}/upload": {
         parameters: {
             query?: never;
             header?: never;
@@ -1135,14 +1135,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Upload */
-        post: operations["upload_api_upload_post"];
+        post: operations["upload_api_vaults__vault_id__upload_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/upload/admissions/{group_id}": {
+    "/api/vaults/{vault_id}/upload/admissions/{group_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1150,7 +1150,7 @@ export interface paths {
             cookie?: never;
         };
         /** Upload Admission Status */
-        get: operations["upload_admission_status_api_upload_admissions__group_id__get"];
+        get: operations["upload_admission_status_api_vaults__vault_id__upload_admissions__group_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1159,7 +1159,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/upload/reconcile": {
+    "/api/vaults/{vault_id}/upload/reconcile": {
         parameters: {
             query?: never;
             header?: never;
@@ -1176,7 +1176,7 @@ export interface paths {
          *     never PUTs by itself: the Job may send only when S3 positively proves the
          *     earlier send never landed (ADR-0025), and never on a path with paused protection.
          */
-        post: operations["reconcile_upload_api_upload_reconcile_post"];
+        post: operations["reconcile_upload_api_vaults__vault_id__upload_reconcile_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
         put?: never;
         /**
          * Retry Failed Uploads
-         * @description Explicit scope: omitted Vault means installation, never Session choice.
+         * @description Every Vault of the installation, never the Session's choice.
          */
         post: operations["retry_failed_uploads_api_upload_retry_failed_post"];
         delete?: never;
@@ -1203,7 +1203,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/cloud-only-conflict/replace": {
+    "/api/vaults/{vault_id}/upload/retry-failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Failed Vault Uploads
+         * @description One Vault's failed Uploads; any existing Vault, operational or not.
+         */
+        post: operations["retry_failed_vault_uploads_api_vaults__vault_id__upload_retry_failed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/vaults/{vault_id}/files/cloud-only-conflict/replace": {
         parameters: {
             query?: never;
             header?: never;
@@ -1216,14 +1236,14 @@ export interface paths {
          * Replace Cloud Only Copy
          * @description Confirm that new content replaces the only cloud copy at its path.
          */
-        post: operations["replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post"];
+        post: operations["replace_cloud_only_copy_api_vaults__vault_id__files_cloud_only_conflict_replace_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/upload/cancel-pending": {
+    "/api/vaults/{vault_id}/upload/cancel-pending": {
         parameters: {
             query?: never;
             header?: never;
@@ -1234,7 +1254,7 @@ export interface paths {
         put?: never;
         /**
          * Cancel Pending Uploads
-         * @description Cancel the uploads of the selected Vault (or one folder) that have not begun.
+         * @description Cancel the uploads of the Vault (or one folder) that have not begun.
          *
          *     One call replaces thousands of per-file cancels after a burst or a moved
          *     folder (issue #493). An empty ``path`` means the whole Vault; a folder
@@ -1246,14 +1266,14 @@ export interface paths {
          *     automatic, is not re-queued automatically until the file's content changes,
          *     like a single cancel (#618).
          */
-        post: operations["cancel_pending_uploads_api_upload_cancel_pending_post"];
+        post: operations["cancel_pending_uploads_api_vaults__vault_id__upload_cancel_pending_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/jobs/cancel": {
+    "/api/vaults/{vault_id}/jobs/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -1263,14 +1283,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Cancel Job */
-        post: operations["cancel_job_api_jobs_cancel_post"];
+        post: operations["cancel_job_api_vaults__vault_id__jobs_cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/recover": {
+    "/api/vaults/{vault_id}/recover": {
         parameters: {
             query?: never;
             header?: never;
@@ -1280,14 +1300,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Recover */
-        post: operations["recover_api_recover_post"];
+        post: operations["recover_api_vaults__vault_id__recover_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/recover/approve": {
+    "/api/vaults/{vault_id}/recover/approve": {
         parameters: {
             query?: never;
             header?: never;
@@ -1297,14 +1317,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Approve Recover */
-        post: operations["approve_recover_api_recover_approve_post"];
+        post: operations["approve_recover_api_vaults__vault_id__recover_approve_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/free-space": {
+    "/api/vaults/{vault_id}/free-space": {
         parameters: {
             query?: never;
             header?: never;
@@ -1314,7 +1334,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Free Space */
-        post: operations["free_space_api_free_space_post"];
+        post: operations["free_space_api_vaults__vault_id__free_space_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1338,7 +1358,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud-deletion/preview": {
+    "/api/vaults/{vault_id}/cloud-deletion/preview": {
         parameters: {
             query?: never;
             header?: never;
@@ -1348,14 +1368,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Preview Cloud Deletion */
-        post: operations["preview_cloud_deletion_api_cloud_deletion_preview_post"];
+        post: operations["preview_cloud_deletion_api_vaults__vault_id__cloud_deletion_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cloud-purge": {
+    "/api/vaults/{vault_id}/cloud-purge": {
         parameters: {
             query?: never;
             header?: never;
@@ -1365,7 +1385,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Cloud Purge */
-        post: operations["cloud_purge_api_cloud_purge_post"];
+        post: operations["cloud_purge_api_vaults__vault_id__cloud_purge_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5347,17 +5367,18 @@ export interface operations {
             };
         };
     };
-    jobs_api_jobs_get: {
+    jobs_api_vaults__vault_id__jobs_get: {
         parameters: {
             query?: {
                 action?: string[] | null;
                 active_only?: boolean;
                 path?: string | null;
                 groups_before_id?: number | null;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5382,16 +5403,16 @@ export interface operations {
             };
         };
     };
-    job_group_detail_api_job_groups__group_id__jobs_get: {
+    job_group_detail_api_vaults__vault_id__job_groups__group_id__jobs_get: {
         parameters: {
             query?: {
                 before_id?: number | null;
                 limit?: number;
-                vault_id?: number | null;
             };
             header?: never;
             path: {
                 group_id: string;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -5417,14 +5438,13 @@ export interface operations {
             };
         };
     };
-    job_detail_api_jobs__job_id__get: {
+    job_detail_api_vaults__vault_id__jobs__job_id__get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
             path: {
                 job_id: number;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -5450,16 +5470,17 @@ export interface operations {
             };
         };
     };
-    file_job_history_api_files_jobs_get: {
+    file_job_history_api_vaults__vault_id__files_jobs_get: {
         parameters: {
             query: {
                 path: string;
                 before_id?: number | null;
                 limit?: number;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5484,13 +5505,13 @@ export interface operations {
             };
         };
     };
-    start_scan_api_scan_post: {
+    start_scan_api_vaults__vault_id__scan_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5515,14 +5536,15 @@ export interface operations {
             };
         };
     };
-    catalog_revision_snapshot_api_catalog_revision_get: {
+    catalog_revision_snapshot_api_vaults__vault_id__catalog_revision_get: {
         parameters: {
             query?: {
                 after_revision?: number;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5547,17 +5569,18 @@ export interface operations {
             };
         };
     };
-    catalog_events_stream_api_catalog_events_get: {
+    catalog_events_stream_api_vaults__vault_id__catalog_events_get: {
         parameters: {
             query?: {
                 after_revision?: number;
                 subscribe?: boolean;
-                vault_id?: number | null;
             };
             header?: {
                 "Last-Event-ID"?: string | null;
             };
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5582,14 +5605,15 @@ export interface operations {
             };
         };
     };
-    file_versions_api_files_versions_get: {
+    file_versions_api_vaults__vault_id__files_versions_get: {
         parameters: {
             query: {
                 path: string;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5614,13 +5638,13 @@ export interface operations {
             };
         };
     };
-    recover_estimate_api_recover_estimate_post: {
+    recover_estimate_api_vaults__vault_id__recover_estimate_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5658,13 +5682,13 @@ export interface operations {
             };
         };
     };
-    upload_api_upload_post: {
+    upload_api_vaults__vault_id__upload_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5693,14 +5717,13 @@ export interface operations {
             };
         };
     };
-    upload_admission_status_api_upload_admissions__group_id__get: {
+    upload_admission_status_api_vaults__vault_id__upload_admissions__group_id__get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
             path: {
                 group_id: string;
+                vault_id: number;
             };
             cookie?: never;
         };
@@ -5726,13 +5749,13 @@ export interface operations {
             };
         };
     };
-    reconcile_upload_api_upload_reconcile_post: {
+    reconcile_upload_api_vaults__vault_id__upload_reconcile_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5763,11 +5786,31 @@ export interface operations {
     };
     retry_failed_uploads_api_upload_retry_failed_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryFailedUploadsResponse"];
+                };
+            };
+        };
+    };
+    retry_failed_vault_uploads_api_vaults__vault_id__upload_retry_failed_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5792,13 +5835,13 @@ export interface operations {
             };
         };
     };
-    replace_cloud_only_copy_api_files_cloud_only_conflict_replace_post: {
+    replace_cloud_only_copy_api_vaults__vault_id__files_cloud_only_conflict_replace_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5827,13 +5870,13 @@ export interface operations {
             };
         };
     };
-    cancel_pending_uploads_api_upload_cancel_pending_post: {
+    cancel_pending_uploads_api_vaults__vault_id__upload_cancel_pending_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5862,13 +5905,13 @@ export interface operations {
             };
         };
     };
-    cancel_job_api_jobs_cancel_post: {
+    cancel_job_api_vaults__vault_id__jobs_cancel_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5897,13 +5940,13 @@ export interface operations {
             };
         };
     };
-    recover_api_recover_post: {
+    recover_api_vaults__vault_id__recover_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5932,13 +5975,13 @@ export interface operations {
             };
         };
     };
-    approve_recover_api_recover_approve_post: {
+    approve_recover_api_vaults__vault_id__recover_approve_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5967,13 +6010,13 @@ export interface operations {
             };
         };
     };
-    free_space_api_free_space_post: {
+    free_space_api_vaults__vault_id__free_space_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6022,13 +6065,13 @@ export interface operations {
             };
         };
     };
-    preview_cloud_deletion_api_cloud_deletion_preview_post: {
+    preview_cloud_deletion_api_vaults__vault_id__cloud_deletion_preview_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6057,13 +6100,13 @@ export interface operations {
             };
         };
     };
-    cloud_purge_api_cloud_purge_post: {
+    cloud_purge_api_vaults__vault_id__cloud_purge_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {

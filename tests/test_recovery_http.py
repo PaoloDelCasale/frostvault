@@ -58,7 +58,7 @@ class RecoveryHttpTests(FrostVaultTestCase):
     def test_versions_and_estimate_expose_irreversible_restore_boundary(self) -> None:
         self.sign_in()
         versions = self.client.get(
-            "/api/files/versions",
+            f"/api/vaults/{self.vault_id}/files/versions",
             params={"path": "docs/note.txt"},
         )
         self.assertEqual(versions.status_code, 200, versions.text)
@@ -67,7 +67,7 @@ class RecoveryHttpTests(FrostVaultTestCase):
         self.assertEqual(body["default_archive_version_id"], self.version_id)
 
         estimate = self.client.post(
-            "/api/recover/estimate",
+            f"/api/vaults/{self.vault_id}/recover/estimate",
             headers=self.signed_in.csrf_headers,
             json={
                 "path": "docs/note.txt",
@@ -95,15 +95,15 @@ class RecoveryHttpTests(FrostVaultTestCase):
                 self.file_id, archive_version_id=newest, plaintext_sha256=_sha(b"newer"),
                 verified_at="2026-11-03T00:00:00+00:00", local_generation=generation)
         self.sign_in()
-        response = self.client.get("/api/files/versions", params={"path": "docs/note.txt"})
+        response = self.client.get(f"/api/vaults/{self.vault_id}/files/versions", params={"path": "docs/note.txt"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([row["id"] for row in response.json()["items"]], [newest])
-        for endpoint in ("/api/recover/estimate", "/api/recover"):
+        for endpoint in (f"/api/vaults/{self.vault_id}/recover/estimate", f"/api/vaults/{self.vault_id}/recover"):
             rejected = self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={
                 "path": "docs/note.txt", "archive_version_id": self.version_id,
             })
             self.assertEqual(rejected.status_code, 409, rejected.text)
-        queued = self.client.post("/api/recover", headers=self.signed_in.csrf_headers, json={"path": "docs/note.txt"})
+        queued = self.client.post(f"/api/vaults/{self.vault_id}/recover", headers=self.signed_in.csrf_headers, json={"path": "docs/note.txt"})
         self.assertEqual(queued.status_code, 202, queued.text)
         with self.database.connect() as connection:
             # No implicit cloud purge on read/recovery: the superseded copy waits
@@ -114,23 +114,23 @@ class RecoveryHttpTests(FrostVaultTestCase):
 
     def test_selection_recovery_preserves_csrf_vault_scope_and_bulk_decision(self) -> None:
         selection = {"selection": [{"path": "docs", "is_directory": True}, {"path": "docs/note.txt"}]}
-        self.assertIn(self.client.post("/api/recover", json=selection).status_code, {401, 403})
+        self.assertIn(self.client.post(f"/api/vaults/{self.vault_id}/recover", json=selection).status_code, {401, 403})
         self.sign_in()
-        self.assertEqual(self.client.post("/api/recover", json=selection).status_code, 403)
+        self.assertEqual(self.client.post(f"/api/vaults/{self.vault_id}/recover", json=selection).status_code, 403)
         with self.database.connect() as connection:
             connection.execute("UPDATE archive_versions SET size=%s", (100 * 1024**3,))
-        for endpoint in ("/api/recover/estimate", "/api/recover"):
-            self.assertEqual(self.client.post(endpoint + "?vault_id=999999", headers=self.signed_in.csrf_headers, json=selection).status_code, 404)
+        for endpoint in (f"/api/vaults/{self.vault_id}/recover/estimate", f"/api/vaults/{self.vault_id}/recover"):
+            self.assertEqual(self.client.post(endpoint.replace(f"/vaults/{self.vault_id}/", "/vaults/999999/"), headers=self.signed_in.csrf_headers, json=selection).status_code, 404)
             self.assertEqual(self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={"selection": [{"path": "../other"}]}).status_code, 422)
             self.assertEqual(self.client.post(endpoint, headers=self.signed_in.csrf_headers, json={**selection, "path": "docs/note.txt"}).status_code, 422)
-        estimate = self.client.post(f"/api/recover/estimate?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json=selection)
+        estimate = self.client.post(f"/api/vaults/{self.vault_id}/recover/estimate", headers=self.signed_in.csrf_headers, json=selection)
         self.assertEqual(estimate.status_code, 200, estimate.text)
         self.assertTrue(estimate.json()["high_impact"])
-        queued = self.client.post(f"/api/recover?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json=selection)
+        queued = self.client.post(f"/api/vaults/{self.vault_id}/recover", headers=self.signed_in.csrf_headers, json=selection)
         self.assertEqual(queued.status_code, 202, queued.text)
         self.assertEqual(queued.json()["item_count"], 1, "folder/file overlap deduplicated")
         self.assertTrue(queued.json()["approval_required"])
-        approved = self.client.post(f"/api/recover/approve?vault_id={self.vault_id}", headers=self.signed_in.csrf_headers, json={"group_id": queued.json()["group_id"]})
+        approved = self.client.post(f"/api/vaults/{self.vault_id}/recover/approve", headers=self.signed_in.csrf_headers, json={"group_id": queued.json()["group_id"]})
         self.assertEqual(approved.status_code, 202, approved.text)
         self.assertEqual(approved.json()["job_ids"], queued.json()["job_ids"])
 
@@ -142,7 +142,7 @@ class RecoveryHttpTests(FrostVaultTestCase):
             )
         self.sign_in()
         queued = self.client.post(
-            "/api/recover",
+            f"/api/vaults/{self.vault_id}/recover",
             headers=self.signed_in.csrf_headers,
             json={"path": "docs/note.txt", "archive_version_id": self.version_id},
         )
@@ -154,7 +154,7 @@ class RecoveryHttpTests(FrostVaultTestCase):
         ):
             process_jobs_once()
         approved = self.client.post(
-            "/api/recover/approve",
+            f"/api/vaults/{self.vault_id}/recover/approve",
             headers=self.signed_in.csrf_headers,
             json={"group_id": group_id},
         )

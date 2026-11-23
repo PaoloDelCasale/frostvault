@@ -37,7 +37,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
     def test_active_group_does_not_expand_poll_items_or_projection_work(self):
         self.seed_group()
         with patch("app.services.job_queries.project_jobs", wraps=project_jobs) as projection:
-            response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
+            response = self.client.get(f"/api/vaults/{self.vault_id}/jobs")
         self.assertEqual(response.status_code,200,response.text)
         body = response.json()
         self.assertLessEqual(len(body["items"]),50,"active group leaked into bounded recent items")
@@ -50,7 +50,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
 
     def test_large_group_has_the_same_bounded_response_and_complete_sql_totals(self):
         self.seed_group(30_001)
-        response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/jobs")
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(len(response.json()["items"]),50)
         group = next(group for group in response.json()["groups"] if group["id"] == BULK)
@@ -62,7 +62,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         ids = []
         cursor = None
         while True:
-            response = self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}&limit=17" +
+            response = self.client.get(f"/api/vaults/{self.vault_id}/job-groups/{BULK}/jobs?limit=17" +
                                        (f"&before_id={cursor}" if cursor else ""))
             self.assertEqual(response.status_code,200,response.text)
             body = response.json()
@@ -74,10 +74,10 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         self.assertEqual(len(ids),121)
         self.assertEqual(len(set(ids)),121)
         self.assertEqual(ids,sorted(ids,reverse=True))
-        self.assertEqual(self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}&limit=51").status_code,422)
-        self.assertEqual(self.client.get("/api/job-groups/{BULK}/jobs?vault_id=999999").status_code,404)
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/job-groups/{BULK}/jobs?limit=51").status_code,422)
+        self.assertEqual(self.client.get("/api/vaults/999999/job-groups/{BULK}/jobs").status_code,404)
         self.client.cookies.clear()
-        self.assertEqual(self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}").status_code,401)
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/job-groups/{BULK}/jobs").status_code,401)
 
     def test_filters_precede_summary_window_and_old_file_deletion_is_not_hidden(self):
         self.seed_group(active=False)
@@ -88,12 +88,12 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
                 SELECT vault_id,file_id,'cloud-purge','pending_delay',
                     '2000-01-01','2000-01-01',%s,'2099-01-01T00:00:00+00:00'
                 FROM jobs ORDER BY id LIMIT 1""", (OLD_DELETION,))
-        body = self.client.get(f"/api/jobs?vault_id={self.vault_id}&action=cloud-purge&active_only=true&path=a.txt").json()
+        body = self.client.get(f"/api/vaults/{self.vault_id}/jobs?action=cloud-purge&active_only=true&path=a.txt").json()
         self.assertEqual([row["id"] for row in body["groups"]],[OLD_DELETION])
         self.assertTrue(str(body["groups"][0]["pending_until"]).startswith("2099-01-01"))
         self.assertEqual(len(body["items"]),1)
-        self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}&path=other.txt").json()["groups"],[])
-        self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}&path=../private").status_code,422)
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/jobs?path=other.txt").json()["groups"],[])
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/jobs?path=../private").status_code,422)
 
     def test_matching_group_identity_in_another_vault_never_leaks_members_or_totals(self):
         from app.catalog import ArchiveCatalog
@@ -110,11 +110,11 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
             connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
                 requested_at,updated_at,group_id,total_bytes)
                 VALUES (%s,%s,'upload','queued','2026-11-11','2026-11-11',%s,999)""",(other,secret,BULK))
-        response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/jobs")
         self.assertEqual(response.status_code,200,response.text)
         group = next(group for group in response.json()["groups"] if group["id"] == BULK)
         self.assertEqual((group["item_count"],group["total_bytes"]),(3,300))
-        detail = self.client.get(f"/api/job-groups/{BULK}/jobs?vault_id={self.vault_id}").json()
+        detail = self.client.get(f"/api/vaults/{self.vault_id}/job-groups/{BULK}/jobs").json()
         self.assertEqual(len(detail["items"]),3)
         self.assertNotIn("secret.txt",[row["path"] for row in detail["items"]])
 
@@ -131,8 +131,8 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         ids = []
         cursor = None
         while True:
-            response = self.client.get(f"/api/jobs?vault_id={self.vault_id}" +
-                                       (f"&groups_before_id={cursor}" if cursor else ""))
+            response = self.client.get(f"/api/vaults/{self.vault_id}/jobs" +
+                                       (f"?groups_before_id={cursor}" if cursor else ""))
             self.assertEqual(response.status_code,200,response.text)
             body = response.json()
             self.assertLessEqual(len(body["groups"]),50)
@@ -160,7 +160,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
                     (self.vault_id,)).fetchone()["id"]
                 connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,group_id,total_bytes)
                     VALUES (%s,%s,'upload','queued',%s,100)""",(self.vault_id,file_id,group))
-        first = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true")
+        first = self.client.get(f"/api/vaults/{self.vault_id}/jobs?active_only=true")
         self.assertEqual(first.status_code,200,first.text)
         first = first.json()
         first_ids = {row["id"] for row in first["groups"]}
@@ -169,7 +169,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         self.assertIsNotNone(cursor)
         with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed' WHERE id=(SELECT max(id) FROM jobs)")
-        second = self.client.get(f"/api/jobs?vault_id={self.vault_id}&active_only=true&groups_before_id={cursor}")
+        second = self.client.get(f"/api/vaults/{self.vault_id}/jobs?active_only=true&groups_before_id={cursor}")
         self.assertEqual(second.status_code,200,second.text)
         second_ids = {row["id"] for row in second.json()["groups"]}
         self.assertTrue(second_ids)
@@ -191,7 +191,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
             rows = connection.execute(f"WITH {JOB_ROWS} SELECT {JOB_COLUMNS} FROM job_rows "
                                       "ORDER BY requested_at DESC,id DESC").fetchall()
             expected = build_job_groups(project_jobs(connection,rows))[0]
-        response = self.client.get(f"/api/jobs?vault_id={self.vault_id}")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/jobs")
         self.assertEqual(response.status_code,200,response.text)
         actual = response.json()["groups"][0]
         for field in ("status","item_count","completed_count","failed_count","cancelled_count",
@@ -199,7 +199,7 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
             self.assertEqual(actual[field],expected[field],field)
         with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed' WHERE status='queued'")
-        self.assertEqual(self.client.get(f"/api/jobs?vault_id={self.vault_id}").json()["groups"][0]["status"],"failed")
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/jobs").json()["groups"][0]["status"],"failed")
 
 
 class RemediatedGroupSqlTests(unittest.TestCase):

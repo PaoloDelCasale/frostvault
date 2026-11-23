@@ -1,7 +1,7 @@
 # Catalog event stream (#227)
 
-Authenticated browsers subscribe to `GET /api/catalog/events` (SSE) and may
-call `GET /api/catalog/revision` for one-shot catch-up after focus/online.
+Authenticated browsers subscribe to `GET /api/vaults/{vault_id}/catalog/events` (SSE) and may
+call `GET /api/vaults/{vault_id}/catalog/revision` for one-shot catch-up after focus/online.
 
 ## Source of truth
 

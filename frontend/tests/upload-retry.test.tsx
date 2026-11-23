@@ -17,7 +17,7 @@ describe("explicit failed upload retry", () => {
       const url = String(input);
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages: loadCatalog() });
       calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-      if (url.includes("/api/upload/admissions/") && admission) return jsonResponse(admission);
+      if (url.includes("/upload/admissions/") && admission) return jsonResponse(admission);
       return failure ? jsonResponse({ detail: "Protection is suspended" }, 409) : jsonResponse({ item_count: 3, ...(admission ? { admission } : {}) });
     }) });
     renderWithQueryClient(<I18nProvider><UploadRetryActions vaultId={vaultId} /></I18nProvider>);
@@ -36,7 +36,7 @@ describe("explicit failed upload retry", () => {
     await screen.findByText("New upload Jobs queued: 3");
     await userEvent.click(screen.getByRole("button", { name: "Upload whole Vault" }));
     await screen.findByText(loadCatalog()["uploads.whole_started"]);
-    expect(calls).toEqual([{ url: "/api/upload/retry-failed?vault_id=7", body: null }, { url: "/api/upload?vault_id=7", body: { path: "", is_directory: true, request_id: expect.any(String) } }]);
+    expect(calls).toEqual([{ url: "/api/vaults/7/upload/retry-failed", body: null }, { url: "/api/vaults/7/upload", body: { path: "", is_directory: true, request_id: expect.any(String) } }]);
   });
   it.each(["pending", "completed", "cancelled", "invalidated"] as const)("shows durable %s admission progress separately from transfers", async (status) => {
     const admission: BulkUploadAdmissionResponse = {
@@ -48,7 +48,7 @@ describe("explicit failed upload retry", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Upload whole Vault" }));
     const label = translate(loadCatalog(), `uploads.admission.${status}`, { selected: 200, processed: 100, admitted: 90 });
     expect(await screen.findByText(label)).toBeVisible();
-    await waitFor(() => expect(calls.some((call) => call.url === `/api/upload/admissions/${admission.group_id}?vault_id=7`)).toBe(true));
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/vaults/7/upload/admissions/${admission.group_id}`)).toBe(true));
     if (status === "pending") expect(screen.getByRole("button", { name: "Upload whole Vault" })).toBeDisabled();
   });
   it("creates a stable UUID on plain-HTTP LAN contexts without crypto.randomUUID", async () => {

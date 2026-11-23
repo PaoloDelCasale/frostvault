@@ -1375,7 +1375,6 @@
   "api.invalid_session": "Sessione non valida",
   "api.reauth_required": "È richiesta una nuova autenticazione",
   "api.protected_vault_not_found": "Vault protetto non trovato",
-  "api.no_vault": "Non esiste ancora nessun Vault",
   "api.session_changed": "La sessione è cambiata; ripeti la richiesta",
   "api.invalid_folder": "Cartella non valida",
   "api.unsupported_locale": "Lingua non supportata",

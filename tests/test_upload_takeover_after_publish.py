@@ -96,7 +96,7 @@ class UploadTakeoverAfterPublishTests(fixtures.UploadProvenanceWorkerCase):
                              "a blocked file keeps its Problems open")
 
         client = self.http_client()
-        response = client.post("/api/upload/retry-failed?vault_id=2")
+        response = client.post("/api/vaults/2/upload/retry-failed")
         self.assertEqual((response.status_code, response.json()), (202, {"item_count": 1}))
         with self.db() as connection:
             retried = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
@@ -117,7 +117,7 @@ class UploadTakeoverAfterPublishTests(fixtures.UploadProvenanceWorkerCase):
             self.assertEqual(connection.execute(
                 "SELECT event, problem_status FROM notifications WHERE problem_status='open'").fetchall(),
                 [], "no Problem is left open")
-        self.assertEqual(client.post("/api/upload/retry-failed?vault_id=2").json(), {"item_count": 0})
+        self.assertEqual(client.post("/api/vaults/2/upload/retry-failed").json(), {"item_count": 0})
 
 
 if __name__ == "__main__":

@@ -5,15 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, Path, Query, Request, Response
+from fastapi import Depends, Path, Request, Response
 
 from ..config import settings
-from ..errors import Conflict, Forbidden, Invalid, NotFound, ReauthRequired, Unauthenticated
+from ..errors import Invalid, NotFound, ReauthRequired, Unauthenticated
 from ..i18n import DEFAULT_LOCALE, LOCALE_COOKIE_NAME, normalize_locale, resolve_locale, translate
 from ..database import db
 from ..proxy import parse_networks, resolve_client_ip
 from ..services.vaults import VAULT_ROW_SQL
-from ..sessions import is_reauth_recent, resolve_session, session_actor, set_session_vault
+from ..sessions import is_reauth_recent, resolve_session, session_actor
 from ..services.vault_paths import InvalidLogicalPath, safe_relative_path
 
 
@@ -161,13 +161,6 @@ def _actor(request: Request) -> str:
     return session_actor(getattr(request.state, "session", None))
 
 
-class NoVault(Forbidden):
-    """No operational Vault exists yet: the Session has nothing to look at."""
-
-    def __init__(self) -> None:
-        super().__init__("api.no_vault")
-
-
 def require_recent_reauth(
     request: Request, user: dict[str, Any] = Depends(current_user)
 ) -> dict[str, Any]:
@@ -183,54 +176,6 @@ def require_recent_reauth(
 
 
 _OPERATIONAL_VAULT = "v.lifecycle IN ('active', 'reconnect_required')"
-
-
-def current_vault(
-    request: Request, user: dict[str, Any] = Depends(current_user),
-    vault_id: int | None = Query(default=None, ge=1),
-) -> dict[str, Any]:
-    """Resolve an explicitly pinned Vault, or the Session's home Vault.
-
-    Every Vault belongs to the single owner (#412); the selection only picks
-    which one the UI is looking at.
-    """
-    del user  # authentication gate only
-    session = request.state.session
-    explicit = isinstance(vault_id, int)
-    requested_id = vault_id if explicit else session.get("vault_id")
-    with db() as connection:
-        vault = None
-        if requested_id:
-            vault = connection.execute(
-                f"{VAULT_ROW_SQL} WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
-                (requested_id,),
-            ).fetchone()
-        if not vault and explicit:
-            raise NotFound("api.protected_vault_not_found")
-        if not vault:
-            vault = connection.execute(
-                f"""
-                {VAULT_ROW_SQL} WHERE {_OPERATIONAL_VAULT}
-                ORDER BY v.name
-                LIMIT 1
-                """
-            ).fetchone()
-        if not vault:
-            raise NoVault()
-        if not explicit and session.get("vault_id") != vault["id"]:
-            updated = set_session_vault(
-                connection,
-                session["id"],
-                vault["id"],
-                expected_version=session["transition_version"],
-            )
-            if not updated:
-                # A concurrent logout, OIDC rotation, expiry, or Vault choice
-                # won after current_user resolved this request. Do not let this
-                # older process overwrite the newer persisted transition.
-                raise Conflict("api.session_changed")
-            session.update(updated)
-    return vault
 
 
 def vault_in_path(

@@ -25,37 +25,37 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
 
     def test_recent_reauthentication_and_exact_name_required(self):
         self.reauth(False)
-        denied = self.client.post("/api/cloud-purge",json=self.payload,headers=self.headers)
+        denied = self.client.post("/api/vaults/2/cloud-purge",json=self.payload,headers=self.headers)
         self.assertEqual(denied.status_code,403,denied.text)
         self.assertEqual(denied.json()["code"],"reauth_required")
         self.reauth(True)
-        denied = self.client.post("/api/cloud-purge",json={**self.payload,"confirmation":"wrong"},headers=self.headers)
+        denied = self.client.post("/api/vaults/2/cloud-purge",json={**self.payload,"confirmation":"wrong"},headers=self.headers)
         self.assertEqual(denied.status_code,422,denied.text)
-        denied = self.client.post("/api/cloud-purge",json={**self.payload,"generated_phrase":"echo-me"},headers=self.headers)
+        denied = self.client.post("/api/vaults/2/cloud-purge",json={**self.payload,"generated_phrase":"echo-me"},headers=self.headers)
         self.assertEqual(denied.status_code,422,denied.text)
         with self.db() as connection:
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM jobs WHERE action='cloud-purge'").fetchone()["n"],0)
 
     def test_preview_schedule_and_cancel_exact_seven_day_delay(self):
         self.reauth(True)
-        preview = self.client.post("/api/cloud-deletion/preview",json={"path":"report.txt"},headers=self.headers)
+        preview = self.client.post("/api/vaults/2/cloud-deletion/preview",json={"path":"report.txt"},headers=self.headers)
         self.assertEqual(preview.status_code,200,preview.text)
         self.assertEqual(preview.json()["version_count"],1)
         self.assertEqual(self.client.get("/api/cloud-deletion").json(),{"purge_delay_seconds":604800})
-        scheduled = self.client.post("/api/cloud-purge",json=self.payload,headers=self.headers)
+        scheduled = self.client.post("/api/vaults/2/cloud-purge",json=self.payload,headers=self.headers)
         self.assertEqual(scheduled.status_code,202,scheduled.text)
         with self.db() as connection:
             row = connection.execute("SELECT requested_at,run_after FROM jobs WHERE action='cloud-purge'").fetchone()
         self.assertEqual((row["run_after"]-row["requested_at"]).total_seconds(),604800)
         self.reauth(False)  # Cancellation never requires step-up.
-        cancelled = self.client.post("/api/jobs/cancel",json={"group_id":scheduled.json()["group_id"],"action":"cloud-purge"},headers=self.headers)
+        cancelled = self.client.post("/api/vaults/2/jobs/cancel",json={"group_id":scheduled.json()["group_id"],"action":"cloud-purge"},headers=self.headers)
         self.assertEqual(cancelled.status_code,200,cancelled.text)
         self.assertEqual(cancelled.json()["cancelled_count"],1)
 
     def test_actual_present_file_is_never_deletable(self):
         self.reauth(True)
         self.file.write_bytes(b"not yet seen by watcher")
-        for path, body in (("/api/cloud-purge",self.payload),("/api/cloud-deletion/preview",{"path":"report.txt"})):
+        for path, body in (("/api/vaults/2/cloud-purge",self.payload),("/api/vaults/2/cloud-deletion/preview",{"path":"report.txt"})):
             response = self.client.post(path,json=body,headers=self.headers)
             self.assertEqual(response.status_code,409,response.text)
 
@@ -84,8 +84,8 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
         self.assertTrue(cancelled.json()["root_released"])
 
     def test_csrf_and_authentication_still_gate_deletion(self):
-        response = self.client.post("/api/cloud-purge",json=self.payload)
+        response = self.client.post("/api/vaults/2/cloud-purge",json=self.payload)
         self.assertEqual(response.status_code,403)
         self.client.cookies.clear()
-        response = self.client.post("/api/cloud-purge",json=self.payload)
+        response = self.client.post("/api/vaults/2/cloud-purge",json=self.payload)
         self.assertIn(response.status_code,(401,403))

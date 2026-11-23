@@ -248,7 +248,7 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         self.assertEqual(presence["presence"], "present")
 
     def test_sse_requires_authentication(self) -> None:
-        response = self.client.get("/api/catalog/events")
+        response = self.client.get("/api/vaults/1/catalog/events")
         self.assertIn(response.status_code, {401, 403})
 
     def test_sse_hello_and_catchup_are_vault_scoped(self) -> None:
@@ -267,12 +267,12 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         client = self._client_for(self.owner_token)
         try:
             response = client.get(
-                "/api/catalog/events?after_revision=0&subscribe=false"
+                "/api/vaults/1/catalog/events?after_revision=0&subscribe=false"
             )
             self.assertEqual(response.status_code, 200)
             self.assertIn("text/event-stream", response.headers["content-type"])
             body = response.text
-            snapshot = client.get("/api/catalog/revision?after_revision=0")
+            snapshot = client.get("/api/vaults/1/catalog/revision?after_revision=0")
         finally:
             client.close()
 
@@ -308,10 +308,10 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         client = self._client_for(self.owner_token)
         try:
             response = client.get(
-                "/api/catalog/events?after_revision=2&subscribe=false"
+                "/api/vaults/1/catalog/events?after_revision=2&subscribe=false"
             )
             body = response.text
-            snapshot = client.get("/api/catalog/revision?after_revision=2")
+            snapshot = client.get("/api/vaults/1/catalog/revision?after_revision=2")
         finally:
             client.close()
         events = self._parse_sse(body)
@@ -430,7 +430,7 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
                 transport=transport, base_url="http://test", timeout=5.0
             ) as client:
                 response = await client.get(
-                    "/api/catalog/events?subscribe=false",
+                    "/api/vaults/1/catalog/events?subscribe=false",
                     cookies={
                         self.settings.session_cookie_name: self.owner_token
                     },

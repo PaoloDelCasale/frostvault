@@ -39,7 +39,7 @@ This page explains the model behind FrostVault: the single Owner, Vaults, protec
   file kept only in the cloud, and an immediate notification (in-app, plus
   email when SMTP is configured) explains it. Rename the new file to protect
   it at its new path, or confirm the replacement with
-  `POST /api/files/cloud-only-conflict/replace`: the new
+  `POST /api/vaults/{vault_id}/files/cloud-only-conflict/replace`: the new
   content is uploaded and verified before the previous cloud copy is deleted.
   Identical content is never a conflict; it becomes the Local Copy again
   without an upload.
@@ -121,7 +121,7 @@ inventory scans, shared Storage Plan synchronization and provider lifecycle
 transitions continue: this is not a zero-S3-call maintenance switch. No data is
 deleted, no protection is stopped, and resume does not create duplicate Jobs.
 See [ADR-0033](adr/0033-manual-vault-pause-at-the-claim-boundary.md) for the exact scope.
-Bulk cancellation remains the existing `POST /api/upload/cancel-pending` (empty
+Bulk cancellation remains the existing `POST /api/vaults/{vault_id}/upload/cancel-pending` (empty
 `path` for the entire Vault), not pause/resume.
 
 **Upload whole Vault** and manual directory uploads return HTTP 202 after
@@ -130,8 +130,8 @@ DB-only producer creates at most 100 candidates per transaction, releasing the
 Vault lock between batches. Upload activity shows paths considered and Jobs
 admitted separately from transfer progress. The accepted response includes
 `admission` and a stable `group_id`; read durable progress with
-`GET /api/upload/admissions/{group_id}?vault_id=…`. Optional UUID `request_id` on
-`POST /api/upload` makes retries return the same request, including terminal
+`GET /api/vaults/{vault_id}/upload/admissions/{group_id}`. Optional UUID `request_id` on
+`POST /api/vaults/{vault_id}/upload` makes retries return the same request, including terminal
 requests; reuse for a different scope is rejected. Acceptance is catalog-only, not
 a confirmation of mount availability: transfer workers retain Source Volume checks
 and wait safely when unavailable. Single-file behavior is unchanged.
@@ -250,8 +250,8 @@ arbitrary deletion or automatic RestoreObject action is offered.
 
 File Details exposes **Retry exact reconciliation** independently of the normal
 upload action (including already protected files for which upload returns 409).
-`POST /api/upload/reconcile` admits one stable Vault File into a claim-fenced,
-reconcile-only Job incapable of PUT; `/api/files/versions` exposes pending,
+`POST /api/vaults/{vault_id}/upload/reconcile` admits one stable Vault File into a claim-fenced,
+reconcile-only Job incapable of PUT; `/api/vaults/{vault_id}/files/versions` exposes pending,
 can_resume, bounded reason and remedy. Cancelled attempts retain facts and cannot
 be automatically resurrected. New writers, path/owner/source changes, missing
 keepers and Delete Markers block cleanup; only exact authorized IDs may be deleted,

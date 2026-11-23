@@ -662,7 +662,7 @@ class GlacierRestoreWorkflowTests(FrostVaultTestCase):
 
         Seam: ``cancel_job_group`` for action ``recover``, observed through Job
         status and Archive Version ``restore_state`` / ``restore_expiry`` on a
-        real PostgreSQL catalog (same cancel path as ``/api/jobs/cancel``).
+        real PostgreSQL catalog (same cancel path as ``/api/vaults/{vault_id}/jobs/cancel``).
 
         After RestoreObject has been accepted, cancel must stop the Job but
         retain restore polling/expiry context for a later recover.

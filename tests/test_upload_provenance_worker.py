@@ -118,12 +118,12 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
     def http_client(self):
         from fastapi.testclient import TestClient
         from app.main import app
-        from app.routes.deps import current_user, current_vault
+        from app.routes.deps import current_user, vault_in_path
         with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
         previous = dict(app.dependency_overrides)
         app.dependency_overrides[current_user] = lambda: {"id":1}
-        app.dependency_overrides[current_vault] = lambda: vault
+        app.dependency_overrides[vault_in_path] = lambda: vault
         def restore():
             app.dependency_overrides.clear()
             app.dependency_overrides.update(previous)
@@ -410,9 +410,9 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         self.provider.hook = lambda *args, **kwargs: None
         client = self.http_client()
         with patch("app.main._allowed_hosts",return_value=[]):
-            ordinary = client.post("/api/upload?vault_id=2",json={"path":"report.txt"})
+            ordinary = client.post("/api/vaults/2/upload",json={"path":"report.txt"})
             self.assertEqual(ordinary.status_code,409,ordinary.text)
-            resumed = client.post("/api/upload/reconcile?vault_id=2",json={"path":"report.txt"})
+            resumed = client.post("/api/vaults/2/upload/reconcile",json={"path":"report.txt"})
         self.assertEqual(resumed.status_code,202,resumed.text)
         job_id = resumed.json()["job_id"]
         with self.database.connect() as connection:

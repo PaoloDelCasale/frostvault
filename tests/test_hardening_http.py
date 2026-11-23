@@ -114,10 +114,9 @@ class ReauthTests(HardeningHttpTestCase):
     def _delete_from_cloud(self, csrf: str):
         """«Elimina dal cloud» is one of the two re-authenticated actions."""
         with self.database.connect() as connection:
-            if not connection.execute("SELECT id FROM vaults").fetchone():
-                seed_vault(connection)
+            vault = connection.execute("SELECT id FROM vaults").fetchone() or seed_vault(connection)
         return self.client.post(
-            "/api/cloud-purge",
+            f"/api/vaults/{vault['id']}/cloud-purge",
             headers={"X-CSRF-Token": csrf},
             json={"path": "report.txt", "confirmation": "Docs", "reason": "test", "generated_phrase": "test-phrase"},
         )

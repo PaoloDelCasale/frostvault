@@ -89,10 +89,10 @@ describe("request cadence (#800)", () => {
     await settle();
     expect(sorted(calls)).toEqual([
       "GET /api/general/vaults",
-      "GET /api/jobs?action=storage-class&active_only=true&vault_id=1",
       "GET /api/vaults/1/billed-cost",
       "GET /api/vaults/1/cloud-usage",
       "GET /api/vaults/1/duplicate-cleanup",
+      "GET /api/vaults/1/jobs?action=storage-class&active_only=true",
       "GET /api/vaults/1/lifecycle",
       "GET /api/vaults/1/mirror-cleanup",
       "GET /api/vaults/1/move",
@@ -175,7 +175,7 @@ describe("request cadence (#800)", () => {
       "/api/general/vaults": { items: [] },
       "/api/vaults/1/files": { items: [], total: 0 },
       "/api/notifications": { items: [], unread_count: 0 },
-      "/api/jobs": { groups: [] },
+      "/api/vaults/1/jobs": { groups: [] },
     });
     const client = createTestQueryClient();
     renderWithQueryClient(<I18nProvider><ThemeProvider><App /></ThemeProvider></I18nProvider>, { client });
@@ -184,13 +184,13 @@ describe("request cadence (#800)", () => {
     expect(sorted(calls)).toEqual([
       "GET /api/general",
       "GET /api/general/vaults",
-      "GET /api/jobs?action=recover&action=free-space&active_only=true&vault_id=1",
       "GET /api/me",
       "GET /api/notifications?limit=50&status=unread",
       "GET /api/upload-activity",
       "GET /api/vaults",
       "GET /api/vaults/1/excluded-folders?directory=",
       "GET /api/vaults/1/files?q=&state=&directory=&page=1&page_size=100",
+      "GET /api/vaults/1/jobs?action=recover&action=free-space&active_only=true",
       "GET /api/vaults/1/operation-policy",
       "GET /api/vaults/1/stats",
     ]);
@@ -210,16 +210,16 @@ describe("request cadence (#800)", () => {
     const target: Target = { vaultId: 2, vaultName: "Second", item: { type: "file", name: "same.jpg", path: "same.jpg", state: "cloud_only" } };
     const calls = record({
       "/api/vaults/2/operation-policy": { local_release_after_days: 180 },
-      "/api/recover/estimate": { archive_version_id: "v", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: "Bulk", days: 3 } },
+      "/api/vaults/2/recover/estimate": { archive_version_id: "v", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: "Bulk", days: 3 } },
     });
     const t = (key: string) => key;
     renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     const speed = await screen.findByRole("combobox");
-    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/recover/estimate?vault_id=2"]);
+    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/vaults/2/recover/estimate"]);
     calls.length = 0;
     fireEvent.change(speed, { target: { value: "Standard" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled());
-    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/recover/estimate?vault_id=2"]);
+    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/vaults/2/recover/estimate"]);
   });
 
   it("Source directory browser: mount, a folder, back to the root", async () => {
