@@ -38,7 +38,7 @@ from ..database import INTEGRITY_ERRORS, db
 from . import source_directories, vault_buckets
 from .bucket_provisioning import RetentionLock
 from .retention_lock import CHOICES as RETENTION_LOCK_CHOICES
-from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX, object_prefix
+from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
 from .source_layout import ensure_managed_directory, managed_vault_path
 from .vault_relocation import enroll_vault_root_identity
 
@@ -65,11 +65,6 @@ VAULT_ROW_SQL = f"""
     SELECT v.*, {TARGET_COLUMNS_SQL}
     FROM vaults v JOIN vault_targets t ON t.id = v.target_id
 """
-
-
-def vault_object_prefix(vault: Any) -> str:
-    """``object_prefix`` of a row from ``VAULT_ROW_SQL`` (or with ``s3_key_layout``)."""
-    return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
 class VaultCreationError(DomainError):

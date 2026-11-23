@@ -21,7 +21,7 @@ from . import s3
 from .s3 import restore_header_state
 from .s3_copy import S3_SINGLE_COPY_MAX_BYTES
 from .job_queue import open_job_sql
-from .vault_paths import object_prefix
+from .vault_paths import vault_object_prefix
 
 MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
                 "GLACIER": 90, "DEEP_ARCHIVE": 180}
@@ -80,11 +80,6 @@ def _with_bucket(connection: Any, vault: dict[str, Any]) -> dict[str, Any]:
     return {**vault, "s3_bucket": target["bucket"], "s3_key_layout": target["key_layout"]}
 
 
-def _namespace(vault: dict[str, Any]) -> str:
-    """The Vault Target's prefix: ``''`` in a Vault Bucket, else ``vaults/<uuid>/``."""
-    return object_prefix(vault["s3_key_layout"], vault["uuid"])
-
-
 def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     """Observe an explicit external/recovery restore, never request one.
 
@@ -98,7 +93,7 @@ def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> N
         if row.get("storage_class") != "GLACIER" or eligibility({**row, "restore_state": "available"}, "DEEP_ARCHIVE"):
             continue
         try:
-            if not str(row.get("object_key") or "").startswith(_namespace(vault)):
+            if not str(row.get("object_key") or "").startswith(vault_object_prefix(vault)):
                 raise MoveBlocked("api.vault_move.source_outside")
             if client is None:
                 client = s3.s3_client()
@@ -156,7 +151,8 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
         refresh_cold_sources(_with_bucket(connection, vault), rows)
     result = estimate(rows, target)
     eligible = [row for row in rows if eligibility(row, target) is None]
-    if any(not str(row["object_key"]).startswith(_namespace(vault)) for row in eligible):
+    if any(not str(row["object_key"]).startswith(vault_object_prefix(vault))
+           for row in eligible):
         raise MoveBlocked("api.vault_move.source_outside")
     group_id = str(uuid.uuid4())
     ids: list[int] = []

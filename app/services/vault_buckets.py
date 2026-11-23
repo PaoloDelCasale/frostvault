@@ -51,6 +51,8 @@ from . import s3
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .notifications import ProblemFamily, set_problem
 from .s3_lifecycle_rules import vault_bucket_lifecycle_rules
+from .vault_catalog_removal import remove_vault_catalog
+from .vault_paths import TAG_VAULT
 
 KEY_LAYOUT = "bucket_root"
 SLUG_MAX_LENGTH = 40
@@ -75,7 +77,6 @@ VERSIONING_SETTLE_SECONDS = 15 * 60
 _logger = logging.getLogger(__name__)
 # Characters AWS accepts in a tag value besides letters, digits and spaces.
 _TAG_PUNCTUATION = frozenset("+-=._:/@")
-TAG_VAULT = "frostvault:vault"
 TAG_NAME = "frostvault:name"
 
 _locks_guard = threading.Lock()
@@ -539,7 +540,6 @@ def cancel_creation(vault_id: int, *, actor: str = "owner",
     """
     from .audit_events import record_audit_event
     from .source_layout import managed_vault_path
-    from .vault_deletion import _remove_catalog
 
     database = database or _database()
     lock = _vault_lock(vault_id)
@@ -556,7 +556,7 @@ def cancel_creation(vault_id: int, *, actor: str = "owner",
             left = _bucket_left(row)
             # A provisioning Vault has no uploads or Jobs; any local catalog
             # row goes in foreign-key order, like a Vault deletion's.
-            _remove_catalog(connection, int(vault_id))
+            remove_vault_catalog(connection, int(vault_id))
             connection.execute("DELETE FROM vaults WHERE id=%s", (vault_id,))
             record_audit_event(
                 connection, event="vault.creation_cancelled", actor=actor,

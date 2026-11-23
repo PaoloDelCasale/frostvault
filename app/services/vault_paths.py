@@ -105,6 +105,8 @@ def object_key_to_path(
 
 KEY_LAYOUT_VAULT_PREFIX = "vault_prefix"
 KEY_LAYOUT_BUCKET_ROOT = "bucket_root"
+# The tag of a dedicated Vault Bucket that names its Vault's UUID (ADR-0049).
+TAG_VAULT = "frostvault:vault"
 
 
 def object_prefix(key_layout: Any, vault_uuid: Any) -> str:
@@ -135,3 +137,8 @@ def is_restore_temporary_name(name: str) -> bool:
         or CLEANUP_TEMPORARY_RE.fullmatch(name) is not None
         or VERIFY_TEMPORARY_RE.fullmatch(name) is not None
     )
+
+
+def vault_object_prefix(vault: Any) -> str:
+    """``object_prefix`` of a Vault row that carries ``s3_key_layout`` and ``uuid``."""
+    return object_prefix(vault["s3_key_layout"], vault["uuid"])

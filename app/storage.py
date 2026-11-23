@@ -79,6 +79,7 @@ from .services.vault_paths import (
     object_key_to_path,
     expected_cloud_key,
     object_prefix,
+    vault_object_prefix,
     is_restore_temporary_name,
 )
 from .services.database_retry import (
@@ -1209,8 +1210,6 @@ def scan_cloud(
     Provider listings stay outside write transactions. Returns the number of
     known versions the listing showed.
     """
-    from .services.vaults import vault_object_prefix
-
     validate_cloud_vault(vault)
     client = s3_client()
     paginator = client.get_paginator("list_object_versions")
