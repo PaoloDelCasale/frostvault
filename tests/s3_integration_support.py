@@ -1,8 +1,6 @@
 """Helpers for plaintext S3-compatible integrity proofs (CI-only buckets)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
 from pathlib import Path
 
@@ -10,7 +8,7 @@ from app.catalog import ArchiveCatalog
 
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import s3_client
-from tests.test_database import run_alembic
+from tests.fixtures import Database, seed_vault
 
 
 def require_s3_env() -> dict[str, str]:
@@ -62,40 +60,30 @@ def ensure_versioned_bucket(bucket: str) -> None:
 
 
 def prepare_plain_vault(
-    root: Path, *, relative_path: str, payload: bytes, bucket: str,
-) -> tuple[Path, Path, str]:
-    """A migrated catalog with the Owner, one Vault (id 2) and its Local Copy.
+    database: Database, root: Path, *, relative_path: str, payload: bytes, bucket: str,
+) -> tuple[Path, str]:
+    """One Vault (id 2) and its Local Copy in ``database``, which holds the Owner.
 
-    Returns the source root, the database identity and the Vault namespace
-    ``vaults/<uuid>`` its objects live under (ADR-0035: no custom prefixes).
+    Returns the source root and the Vault namespace ``vaults/<uuid>`` its
+    objects live under (ADR-0035: no custom prefixes).
     """
     source = root / "source"
     source.mkdir()
     target = source / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
-    assert migrated.returncode == 0, migrated.stderr
-    with PostgresConnection(str(database_path)) as connection:
-        connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-        target_id = connection.execute(
-            "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-            "VALUES ('s3', %s, %s, 'vault_prefix') RETURNING id",
-            (bucket, region),
-        ).fetchone()["id"]
-        vault_uuid = connection.execute(
-            "INSERT INTO vaults(id, target_id, name, source_root) VALUES (2, %s, 'CI', %s) RETURNING uuid",
-            (target_id, str(source)),
-        ).fetchone()["uuid"]
+    with database.connect() as connection:
+        vault_uuid = seed_vault(
+            connection, id=2, name="CI", source_root=str(source), bucket=bucket,
+            target={"region": os.getenv("AWS_DEFAULT_REGION", "us-east-1")},
+        )["uuid"]
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=len(payload),
             mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",
         )
-    return source, database_path, f"vaults/{vault_uuid}"
+    return source, f"vaults/{vault_uuid}"
 
 
 def force_cleanup(bucket: str, prefix: str) -> None:
