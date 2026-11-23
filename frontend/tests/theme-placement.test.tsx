@@ -6,10 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  ApiQueryProvider,
-  resetApiClientForTests,
-} from "@/api";
+import { ApiQueryProvider, resetApiClientForTests } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { AppShell } from "@/layout/AppShell";

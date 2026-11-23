@@ -1,10 +1,10 @@
-import type { StatsResponse } from "@/api/types";
+import type { StatsResponse } from "@/api";
 import { ProgressBar } from "@/components/ProgressBar";
 import type { Adoption } from "@/lib/adoption";
 import { formatRemaining } from "@/lib/remaining";
 import { cn } from "@/lib/utils";
 import { sinceMoment } from "@/lib/throughput";
-import { formatBytes, formatDateTime, formatNumber } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 
 type Params = Record<string, string | number>;
 type Runtime = StatsResponse["runtime"];

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { cancelCloudDeletionGroup, fetchMirrorCleanup, updateMirrorCleanup, type MirrorCleanupStatus } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi, type MirrorCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
@@ -8,7 +9,7 @@ import { useSavedFlash } from "@/components/useSavedFlash";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDate, formatDateTime } from "@/pages/archive/format";
+import { formatBytes, formatDate, formatDateTime } from "@/lib/format";
 import { GIB, numberFormat, parseAmount, whole } from "./cleanupAmounts";
 
 type Draft = { grace: string; files: string; gib: string; folders: string };
@@ -29,24 +30,20 @@ const foldersOf = (text: string) => text.split("\n").map((line) => line.trim()).
  */
 export function MirrorCleanupPanel({ vaultId, paused, onNotice }: { vaultId: number; paused?: boolean; onNotice: (message: string, error?: boolean) => void }) {
   const { t, locale } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [status, setStatus] = useState<MirrorCleanupStatus | null>(null);
   const [draft, setDraft] = useState<Draft>({ grace: "", files: "", gib: "", folders: "" });
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [enabledSaved, flashEnabledSaved] = useSavedFlash();
   const [minimumSaved, flashMinimumSaved] = useSavedFlash();
   const localeRef = useRef(locale);
   localeRef.current = locale;
   function accept(next: MirrorCleanupStatus) { setStatus(next); setDraft(draftOf(next, localeRef.current)); }
+  const loaded = useQuery({ queryKey: apiQueryKeys.mirrorCleanup(vaultId), queryFn: () => vaultApi(vaultId).mirrorCleanup(), ...readOnMount });
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
   useEffect(() => {
-    let live = true;
-    setStatus(null); setLoadError("");
-    void fetchMirrorCleanup(vaultId).then((data) => { if (live) accept(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+    if (loaded.data) accept(loaded.data);
+    else setStatus(null);
+  }, [loaded.data]);
   const statusRef = useRef(status);
   statusRef.current = status;
   useEffect(() => { if (statusRef.current) setDraft(draftOf(statusRef.current, locale)); }, [locale]);
@@ -69,15 +66,15 @@ export function MirrorCleanupPanel({ vaultId, paused, onNotice }: { vaultId: num
     } catch (error) { onNotice(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
-  const toggle = () => status && void run(() => updateMirrorCleanup(vaultId, { enabled: !status.enabled }), flashEnabledSaved);
-  const toggleMinimum = () => status && void run(() => updateMirrorCleanup(vaultId, { beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
+  const toggle = () => status && void run(() => vaultApi(vaultId).updateMirrorCleanup({ enabled: !status.enabled }), flashEnabledSaved);
+  const toggleMinimum = () => status && void run(() => vaultApi(vaultId).updateMirrorCleanup({ beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
   const save = () => valid && dirty && void run(
-    () => updateMirrorCleanup(vaultId, { grace_days: grace, cap_files: files, cap_bytes: capBytes, folders }),
+    () => vaultApi(vaultId).updateMirrorCleanup({ grace_days: grace, cap_files: files, cap_bytes: capBytes, folders }),
     () => onNotice(t("mirror_cleanup.saved")));
   const cancel = (groupId: string) => void run(async () => {
-    await cancelCloudDeletionGroup(vaultId, groupId);
+    await vaultApi(vaultId).cancelJobGroup(groupId, "cloud-purge");
     onNotice(t("mirror_cleanup.cancelled"));
-    return fetchMirrorCleanup(vaultId);
+    return vaultApi(vaultId).mirrorCleanup();
   });
 
   const outcome = status?.last_outcome;

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { ApiError, loginWithPassword } from "@/api/client";
-import { fetchLoginOptions } from "@/api/endpoints";
+import { apiQueryKeys, readOnMount, ApiError, fetchLoginOptions, loginWithPassword } from "@/api";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -31,15 +31,10 @@ export function LoginPage({ onNavigate = defaultNavigate }: LoginPageProps) {
   const [submitting, setSubmitting] = useState(false);
   const [redirectingOidc, setRedirectingOidc] = useState(false);
   // null while loading; `oidc: null` when the options could not be read.
-  const [options, setOptions] = useState<{ oidc: boolean | null; name: string | null } | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    void fetchLoginOptions()
-      .then((data) => { if (live) setOptions({ oidc: data.oidc_enabled, name: data.oidc_provider_name ?? null }); })
-      .catch(() => { if (live) setOptions({ oidc: null, name: null }); });
-    return () => { live = false; };
-  }, []);
+  const loaded = useQuery({ queryKey: apiQueryKeys.loginOptions, queryFn: fetchLoginOptions, ...readOnMount });
+  const options: { oidc: boolean | null; name: string | null } | null = loaded.data
+    ? { oidc: loaded.data.oidc_enabled, name: loaded.data.oidc_provider_name ?? null }
+    : loaded.isError ? { oidc: null, name: null } : null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

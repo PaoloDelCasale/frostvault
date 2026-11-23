@@ -6,97 +6,32 @@ import {
 } from "./client";
 import type { ApiDownload } from "./client";
 import type {
-  DuplicateCleanupStatus,
-  DuplicateCleanupUpdate,
-  MirrorCleanupStatus,
-  MirrorCleanupUpdate,
-  GeneralVaultReconnectPayload,
-  GeneralVaultReconnectResponse,
-  MetadataBackupVerification,
-  MinimumStorageSummary,
   BillingExportStatus,
-  VaultBilledCost,
-  RecoveryKitStatus,
-  VaultCloudUsage,
-  RetentionLockStatus,
-  StopProtectionPayload,
-  StopProtectionStatus,
-  VaultDeletionPreview,
-  VaultDeletionRequest,
-  VaultDeletionStatus,
-  GeneralVaultsResponse,
-  SourceVolumeInventoryResponse,
-  SourceDirectoryBrowseResponse,
-  FilesQuery,
   FilesResponse,
-  FileVersionsResponse,
+  GeneralOverview,
+  GeneralVaultsResponse,
   I18nCatalogResponse,
-  LoginOptionsResponse,
-  JobCancelResponse,
-  JobsResponse,
-  LifecycleProfileSelection,
-  LifecycleResponse,
   LocaleUpdateResponse,
-  MetadataBackupRunAction,
+  LoginOptionsResponse,
   MeResponse,
-  OperationPolicy,
-  VaultBucketStatus,
+  MetadataBackupRunAction,
+  MetadataBackupVerification,
+  NotificationItem,
+  NotificationsResponse,
+  RecoveryKitStatus,
+  RetryFailedUploadsResponse,
+  SourceDirectoryBrowseResponse,
+  SourceVolumeInventoryResponse,
+  UploadActivityResponse,
   VaultCreateRequest,
-  VaultCreationCancelled,
   VaultCreateResponse,
   VaultSelectRequest,
   VaultSelectResponse,
   VaultsResponse,
-  VaultMoveRequest,
-  VaultMovePreview,
-  VaultMoveResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
 
-export function fetchVaultMove(vaultId?: number): Promise<VaultMovePreview> {
-  return apiRequest<VaultMovePreview>(scoped("/api/vault/move", vaultId));
-}
-
-export function startVaultMove(payload: VaultMoveRequest): Promise<VaultMoveResponse> {
-  return apiRequest<VaultMoveResponse>(scoped("/api/vault/move", payload.vault_id), { method: "POST", body: JSON.stringify(payload) });
-}
-
-const DEFAULT_PAGE_SIZE = 100;
-
-/** Inbox extension fields stay optional for compatible older/demo payloads.
- * The canonical current response is also documented in OpenAPI. */
-export type NotificationItem = {
-  id: number;
-  user_id: number;
-  vault_id: number | null;
-  job_id: number | null;
-  event: string;
-  title: string;
-  body: string;
-  title_key: string | null;
-  body_key: string | null;
-  message_params: Record<string, unknown>;
-  in_app_enabled: boolean;
-  dedupe_key: string | null;
-  created_at: string;
-  read: boolean;
-  read_at: string | null;
-  problem_status?: "open" | "resolved" | null;
-  resolved_at?: string | null;
-  /** The running operation that can close this problem by itself (#711). */
-  resolving?: "scan" | null;
-};
-
 export type NotificationListStatus = "unread" | "read" | "all";
-
-export type NotificationsResponse = {
-  items: NotificationItem[];
-  unread_count: number;
-  open_problem_count?: number;
-  email_configured?: boolean;
-  /** True when another bounded page is available via ``before_id``. */
-  has_more?: boolean;
-};
 
 export type FetchNotificationsParams = {
   limit?: number;
@@ -109,7 +44,13 @@ export type MarkAllNotificationsReadResponse = {
   unread_count: number;
 };
 
-/** Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted. */
+/**
+ * The metadata-backup, mark-read and sign-out routes below answer with an
+ * untyped JSON object in the OpenAPI document, so their shapes are written
+ * here; every other response type comes from the generated schema.
+ *
+ * Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted.
+ */
 export type MetadataBackupRun = {
   id: number;
   created_at: string;
@@ -206,28 +147,6 @@ function safeMetadataBackupResult(
   return withoutMetadataBackupPaths(result) as MetadataBackupRunResult;
 }
 
-export function fetchFiles(
-  query: FilesQuery = {},
-  options?: RequestInit,
-): Promise<FilesResponse> {
-  const params = new URLSearchParams();
-  params.set("q", query.q ?? "");
-  params.set("state", query.state ?? "");
-  if (typeof query.storage === "string" && query.storage) {
-    params.set("storage", query.storage);
-  }
-  params.set("directory", query.directory ?? "");
-  params.set("page", String(query.page ?? 1));
-  params.set("page_size", String(query.page_size ?? DEFAULT_PAGE_SIZE));
-  if (typeof query.sort === "string" && query.sort) {
-    params.set("sort", query.sort);
-  }
-  if (typeof query.order === "string" && query.order) {
-    params.set("order", query.order);
-  }
-  return apiRequest<FilesResponse>(`/api/files?${params.toString()}`, options);
-}
-
 export function fetchMe(): Promise<MeResponse> {
   return apiRequest<MeResponse>("/api/me").then((me) => {
     setCsrfToken(me.csrf_token);
@@ -247,19 +166,6 @@ export function createVault(
     method: "POST",
     body: JSON.stringify(payload),
   });
-}
-
-export function retryVaultBucket(vaultId: number): Promise<VaultBucketStatus> {
-  return apiRequest<VaultBucketStatus>(`/api/vaults/${vaultId}/bucket/retry`, { method: "POST" });
-}
-
-export function fetchVaultBucket(vaultId: number): Promise<VaultBucketStatus> {
-  return apiRequest<VaultBucketStatus>(`/api/vaults/${vaultId}/bucket`);
-}
-
-/** Cancel a Vault still being created (#735); a destructive action behind reauthentication. */
-export function cancelVaultCreation(vaultId: number): Promise<VaultCreationCancelled> {
-  return apiRequest<VaultCreationCancelled>(`/api/vaults/${vaultId}/creation/cancel`, { method: "POST" });
 }
 
 export function selectVault(
@@ -292,38 +198,6 @@ export function updateLocale(locale: string): Promise<LocaleUpdateResponse> {
   return apiRequest<LocaleUpdateResponse>("/api/locale", {
     method: "PUT",
     body: JSON.stringify({ locale }),
-  });
-}
-
-function scoped(path: string, vaultId?: number): string {
-  return vaultId === undefined ? path : `${path}?vault_id=${vaultId}`;
-}
-
-export function fetchOperationPolicy(vaultId?: number): Promise<OperationPolicy> {
-  return apiRequest<OperationPolicy>(scoped("/api/vault/operation-policy", vaultId));
-}
-
-export function updateOperationPolicy(
-  policy: Partial<OperationPolicy>, vaultId?: number,
-): Promise<OperationPolicy> {
-  return apiRequest<OperationPolicy>(scoped("/api/vault/operation-policy", vaultId), {
-    method: "PUT",
-    body: JSON.stringify(policy),
-  });
-}
-
-export function fetchLifecycle(vaultId?: number): Promise<LifecycleResponse> {
-  return apiRequest<LifecycleResponse>(scoped("/api/vault/lifecycle", vaultId));
-}
-
-export function updateLifecycleDefault(
-  selection: string | LifecycleProfileSelection, vaultId?: number,
-): Promise<LifecycleResponse> {
-  const payload =
-    typeof selection === "string" ? { guided_profile: selection } : selection;
-  return apiRequest<LifecycleResponse>(scoped("/api/vault/lifecycle", vaultId), {
-    method: "PUT",
-    body: JSON.stringify(payload),
   });
 }
 
@@ -422,125 +296,39 @@ export function acknowledgeRecoveryKit(fingerprint: string): Promise<RecoveryKit
   });
 }
 
+/** The installation at a glance: every Vault's estimate and open Problems. */
+export function fetchOverview(): Promise<GeneralOverview> {
+  return apiRequest<GeneralOverview>("/api/general");
+}
+
+/** One page of open Problems across every Vault. */
+export function fetchProblems(page: number): Promise<NotificationsResponse> {
+  return apiRequest<NotificationsResponse>(`/api/problems?page=${page}`);
+}
+
+/** Files by name across every Vault the Owner can see; a Vault's own list is `vaultApi(id).files`. */
+export function searchFiles(params: URLSearchParams): Promise<FilesResponse> {
+  return apiRequest<FilesResponse>(`/api/files/search?${params}`);
+}
+
+/** Installation-wide upload activity. */
+export function fetchUploadActivity(): Promise<UploadActivityResponse> {
+  return apiRequest<UploadActivityResponse>("/api/upload-activity");
+}
+
+/** Retries the failed Uploads of every Vault; one Vault's are `vaultApi(id).retryFailedUploads`. */
+export function retryFailedUploads(): Promise<RetryFailedUploadsResponse> {
+  return apiRequest<RetryFailedUploadsResponse>("/api/upload/retry-failed", { method: "POST" });
+}
+
 export function fetchGeneralVaults(): Promise<GeneralVaultsResponse> {
   return apiRequest<GeneralVaultsResponse>("/api/general/vaults");
-}
-
-export function reconnectGeneralVault(
-  vaultId: number,
-  payload: GeneralVaultReconnectPayload,
-): Promise<GeneralVaultReconnectResponse> {
-  return apiRequest<GeneralVaultReconnectResponse>(
-    `/api/vaults/${vaultId}/reconnect`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
-}
-
-export function fetchStopProtection(vaultId: number): Promise<StopProtectionStatus> {
-  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`);
-}
-
-export function stopProtection(vaultId: number, payload: StopProtectionPayload): Promise<StopProtectionStatus> {
-  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection`, {
-    method: "POST", body: JSON.stringify(payload),
-  });
-}
-
-export function cancelStoppedFolderDeletion(vaultId: number): Promise<StopProtectionStatus> {
-  return apiRequest<StopProtectionStatus>(`/api/vaults/${vaultId}/stop-protection/cancel-deletion`, { method: "POST", body: "{}" });
-}
-
-/** Automatic Duplicate Cleanup of one Vault (#726, ADR-0048). */
-export function fetchDuplicateCleanup(vaultId: number): Promise<DuplicateCleanupStatus> {
-  return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`);
-}
-
-/** Turning it on or changing its wait and caps needs a fresh authentication. */
-export function updateDuplicateCleanup(vaultId: number, payload: DuplicateCleanupUpdate): Promise<DuplicateCleanupStatus> {
-  return apiRequest<DuplicateCleanupStatus>(`/api/vaults/${vaultId}/duplicate-cleanup`, {
-    method: "PUT", body: JSON.stringify(payload),
-  });
-}
-
-/** Mirror Cleanup of one Vault (#771, ADR-0052). */
-export function fetchMirrorCleanup(vaultId: number): Promise<MirrorCleanupStatus> {
-  return apiRequest<MirrorCleanupStatus>(`/api/vaults/${vaultId}/mirror-cleanup`);
-}
-
-/** Turning it on or making it delete more needs a fresh authentication. */
-export function updateMirrorCleanup(vaultId: number, payload: MirrorCleanupUpdate): Promise<MirrorCleanupStatus> {
-  return apiRequest<MirrorCleanupStatus>(`/api/vaults/${vaultId}/mirror-cleanup`, {
-    method: "PUT", body: JSON.stringify(payload),
-  });
-}
-
-/** Minimum Storage Duration of the Vault's versions (#731): a list-price estimate. */
-export function fetchMinimumStorage(vaultId: number): Promise<MinimumStorageSummary> {
-  return apiRequest<MinimumStorageSummary>(`/api/vaults/${vaultId}/minimum-storage`);
-}
-
-/** The catalog's Cost Estimate next to the CloudWatch sizes of the Vault Bucket (#737). */
-export function fetchVaultCloudUsage(vaultId: number): Promise<VaultCloudUsage> {
-  return apiRequest<VaultCloudUsage>(`/api/vaults/${vaultId}/cloud-usage`);
-}
-
-/** The Vault's Billed Cost from the AWS billing export (#738), never a Cost Estimate. */
-export function fetchVaultBilledCost(vaultId: number): Promise<VaultBilledCost> {
-  return apiRequest<VaultBilledCost>(`/api/vaults/${vaultId}/billed-cost`);
 }
 
 /** The billing export's status and every known bucket's Billed Cost (#738). */
 export function fetchBillingExport(): Promise<BillingExportStatus> {
   return apiRequest<BillingExportStatus>("/api/billing-export");
 }
-
-/** The Vault's Retention Lock and the versions it still holds back (#736). */
-export function fetchRetentionLock(vaultId: number): Promise<RetentionLockStatus> {
-  return apiRequest<RetentionLockStatus>(`/api/vaults/${vaultId}/retention-lock`);
-}
-
-/** Cancel one pending Delayed Cloud Deletion group of this Vault before it starts. */
-export function cancelCloudDeletionGroup(vaultId: number, groupId: string): Promise<JobCancelResponse> {
-  return apiRequest<JobCancelResponse>(scoped("/api/jobs/cancel", vaultId), {
-    method: "POST", body: JSON.stringify({ group_id: groupId, action: "cloud-purge" }),
-  });
-}
-
-/** Vault Deletion of a Tombstone (#717, ADR-0047). */
-export function fetchVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
-  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion`);
-}
-
-/** A live listing of the Vault's whole prefix; fails when the listing fails. */
-export function previewVaultDeletion(vaultId: number): Promise<VaultDeletionPreview> {
-  return apiRequest<VaultDeletionPreview>(`/api/vaults/${vaultId}/vault-deletion/preview`);
-}
-
-export function requestVaultDeletion(vaultId: number, payload: VaultDeletionRequest): Promise<VaultDeletionStatus> {
-  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion`, {
-    method: "POST", body: JSON.stringify(payload),
-  });
-}
-
-export function cancelVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
-  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion/cancel`, { method: "POST", body: "{}" });
-}
-
-export function retryVaultDeletion(vaultId: number): Promise<VaultDeletionStatus> {
-  return apiRequest<VaultDeletionStatus>(`/api/vaults/${vaultId}/vault-deletion/retry`, { method: "POST", body: "{}" });
-}
-
-export function fetchJobs(): Promise<JobsResponse> {
-  return apiRequest<JobsResponse>("/api/jobs");
-}
-
-export function fetchFileVersions(path: string): Promise<FileVersionsResponse> {
-  return apiRequest<FileVersionsResponse>(
-    `/api/files/versions?path=${encodeURIComponent(path)}`,
-  );
-}
-
-export { DEFAULT_PAGE_SIZE };
 
 export function logout(): Promise<{ message: string; message_key: string }> {
   return apiRequest<{ message: string; message_key: string }>("/api/logout", {

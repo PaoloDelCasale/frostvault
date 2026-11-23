@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchRetentionLock, type RetentionLockStatus } from "@/api";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
+import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/lib/format";
 
 /**
  * The Vault's Governance Retention Lock (#736, ADR-0050): read-only, fixed
@@ -12,19 +12,10 @@ import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "
  */
 export function RetentionLockPanel({ vaultId }: { vaultId: number }) {
   const { t, locale } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
-  const [state, setState] = useState<RetentionLockStatus | null>(null);
-  const [loadError, setLoadError] = useState("");
-  useEffect(() => {
-    let live = true;
-    setState(null); setLoadError("");
-    void fetchRetentionLock(vaultId).then((data) => { if (live) setState(data); })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+  const loaded = useQuery({ queryKey: apiQueryKeys.retentionLock(vaultId), queryFn: () => vaultApi(vaultId).retentionLock(), ...readOnMount });
+  const state = loaded.data;
 
-  if (loadError) return <p role="alert" className="text-sm text-destructive">{loadError}</p>;
+  if (loaded.error) return <p role="alert" className="text-sm text-destructive">{errorMessage(loaded.error, t)}</p>;
   if (!state) return <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>;
   if (!state.days) return <p className="text-sm" data-testid="retention-lock-none">{t("retention_lock.none")}</p>;
   const retained = state.retained;

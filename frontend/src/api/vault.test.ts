@@ -20,7 +20,7 @@ describe("immutable Vault request scope", () => {
       if (String(url).startsWith("/api/cloud-purge") && sent++ === 0) return json({ error: "reauth_required" }, 403);
       return json({});
     }) });
-    await vaultApi(2).post("/api/cloud-purge", { path: "same.jpg", confirmation: "Second", reason: "test" });
+    await vaultApi(2).cloudPurge({ path: "same.jpg", confirmation: "Second", reason: "test" });
     expect(calls).toEqual([{ url: "/api/cloud-purge?vault_id=2", csrf: "csrf" }, { url: "/api/reauth", csrf: "csrf" }, { url: "/api/cloud-purge?vault_id=2", csrf: "csrf" }]);
   });
 });

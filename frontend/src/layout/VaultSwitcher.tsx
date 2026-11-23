@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Check, ChevronsUpDown, Plus, Vault } from "lucide-react";
 
-import type { VaultListItem } from "@/api/types";
+import type { VaultListItem } from "@/api";
 import { Popover } from "@/components/Popover";
 import { ProblemCount } from "@/components/ProblemCount";
 import { cn } from "@/lib/utils";

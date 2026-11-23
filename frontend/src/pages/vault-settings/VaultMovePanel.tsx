@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { fetchVaultMove, startVaultMove, type VaultMovePreview } from "@/api";
+import { apiQueryKeys, readOnMount, vaultApi, type VaultMovePreview } from "@/api";
 import { MenuSelect } from "@/components/MenuSelect";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
-import { formatBytes, formatDate, formatEur } from "@/pages/archive/format";
+import { formatBytes, formatDate, formatEur } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 /** "≈ 0.27 €"; a sub-cent "< 0.01 €" is already a bound, so it gets no "≈". */
@@ -20,28 +21,31 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
   const [error, setError] = useState("");
   // A failed preview (#718) is reported inline; the panel stays usable.
   const [previewError, setPreviewError] = useState("");
+  const translateRef = useRef(t);
+  translateRef.current = t;
+  const loaded = useQuery({ queryKey: apiQueryKeys.vaultMove(vaultId), queryFn: () => vaultApi(vaultId).move(), ...readOnMount });
   useEffect(() => {
-    let live = true;
-    void fetchVaultMove(vaultId).then((next) => {
-      if (live) {
-        if (next.vault_id !== vaultId) {
-          setError(t("move.vault_changed"));
-          return;
-        }
-        setPreviewError("");
-        setPreview(next);
-        setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
-      }
-    }).catch((cause: unknown) => { if (live) setPreviewError(errorMessage(cause, t)); });
-    return () => { live = false; };
-  }, [vaultId, t]);
+    const next = loaded.data;
+    if (!next) return;
+    if (next.vault_id !== vaultId) {
+      setError(translateRef.current("move.vault_changed"));
+      return;
+    }
+    // An answer that is not a preview is reported like a read that failed.
+    try {
+      setPreviewError("");
+      setPreview(next);
+      setTarget(next.targets.find((item) => item.eligible_count > 0)?.target_class ?? "");
+    } catch (cause) { setPreviewError(errorMessage(cause, translateRef.current)); }
+  }, [loaded.data, vaultId]);
+  useEffect(() => { if (loaded.error) setPreviewError(errorMessage(loaded.error, translateRef.current)); }, [loaded.error]);
   const estimate = preview?.targets.find((item) => item.target_class === target);
   async function move() {
     if (!target || !acknowledged) return;
     setBusy(true);
     setError("");
     try {
-      const result = await startVaultMove({ vault_id: vaultId, target_class: target, acknowledge_costs: true });
+      const result = await vaultApi(vaultId).startMove({ target_class: target, acknowledge_costs: true });
       onNotice(t("move.queued", { count: result.item_count }));
       setAcknowledged(false);
     } catch (cause) {
@@ -50,7 +54,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       return;
     }
     try {
-      const next = await fetchVaultMove(vaultId);
+      const next = await vaultApi(vaultId).move();
       if (next.vault_id !== vaultId) {
         setPreview(null);
         setError(t("move.vault_changed"));

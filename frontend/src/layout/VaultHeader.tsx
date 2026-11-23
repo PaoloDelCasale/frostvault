@@ -1,15 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchGeneralVaults } from "@/api";
-import { useVaultStats } from "@/api/useVaultStats";
+import { apiQueryKeys, fetchGeneralVaults, uploadBacklog, useUploadActivity, useVaultStats, type StatsResponse } from "@/api";
 type Params = Record<string, string | number>;
 import { ScanStatus } from "@/components/ScanStatus";
-import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
-import type { StatsResponse } from "@/api/types";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
 import { expectedFinishText, phaseSpeeds, stoppedText } from "@/lib/throughput";
 import { adoptionOf } from "@/lib/adoption";
-import { formatBytes, formatNumber } from "@/pages/archive/format";
+import { formatBytes, formatNumber } from "@/lib/format";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
@@ -58,7 +55,7 @@ export function VaultHeader({ vaultId, vaultName, active, t }: {
   vaultId: number; vaultName: string; active: "files" | "settings"; t: (key: string, params?: Params) => string;
 }) {
   const stats = useVaultStats(vaultId);
-  const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false, enabled: active === "files" });
+  const general = useQuery({ queryKey: apiQueryKeys.generalVaults, queryFn: fetchGeneralVaults, retry: false, enabled: active === "files" });
   const vault = general.data?.items?.find((item) => item.id === vaultId);
   // Settings has its own pause section; an archived Vault has no cloud work to pause.
   const pause = active === "files" && vault && vault.lifecycle !== "stopping" && vault.lifecycle !== "tombstone";

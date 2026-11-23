@@ -1,14 +1,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  configureApiClient,
-  resetApiClientForTests,
-} from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { LoginPage } from "@/pages/login/LoginPage";
@@ -18,6 +15,7 @@ import {
   themeStorageKey,
 } from "@/theme/theme";
 import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -65,7 +63,7 @@ describe("LoginPage local sign-in", () => {
       setLocale: vi.fn(async () => undefined),
       ...i18nOverrides,
     };
-    return render(
+    return renderWithQueryClient(
       <I18nContext.Provider value={value}>
         <ThemeProvider>
           <LoginPage onNavigate={navigate} />
@@ -210,7 +208,7 @@ describe("LoginPage local sign-in", () => {
       );
     }
 
-    render(<LocaleHarness />);
+    renderWithQueryClient(<LocaleHarness />);
 
     fireEvent.change(await screen.findByLabelText(en["login.password"]), {
       target: { value: "typed-pass" },

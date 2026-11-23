@@ -1,16 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CircleAlert, CirclePause, EyeOff, File as FileIcon, Folder, FolderX, Search, X } from "lucide-react";
-import { ApiError, apiRequest } from "@/api/client";
-import type { ArchiveListItem, CloudDeletionPreview, CloudDeletionSettings, DiskListingEntry, ExcludedFolder, FilesResponse } from "@/api/types";
-import { vaultApi } from "@/api/vault";
+import { apiQueryKeys, ApiError, searchFiles, useVaultStats, vaultApi, type ArchiveListItem, type CloudDeletionPreview, type CloudDeletionSettings, type DiskListingEntry, type ExcludedFolder } from "@/api";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { itemStateBadge } from "./protectionLabel";
 import { Button } from "@/components/ui/button";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { VaultHeader } from "@/layout/VaultHeader";
-import { useVaultStats } from "@/api/useVaultStats";
 import { cn } from "@/lib/utils";
 import { navigate, vaultFilesUrl, vaultSettingsUrl } from "@/router";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
@@ -18,14 +15,14 @@ import { FileDetails } from "./FileDetails";
 import { ExcludeDialog, ExclusionMenu, IncludeDialog, type ExclusionTarget } from "./ExclusionActions";
 import { EXCLUSIONS_SECTION, ownRule } from "./exclusionRules";
 import { RecoverSelection, type Target } from "./RecoverSelection";
-import { formatBytes, formatDateTime, formatNumber } from "./format";
+import { formatBytes, formatDateTime, formatNumber } from "@/lib/format";
 import { errorMessage } from "@/lib/errorMessage";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 export type FileBrowserProps = { t: Translate; vaultId: number; vaultName: string; capabilities: { delete_enabled: boolean; cloud_deletion_enabled: boolean }; problemCount?: number; onRefresh?: () => void };
 const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 100;
-/** List filters; "" is every file. Counts come from the Vault-wide `/api/stats`. */
+/** List filters; "" is every file. Counts come from the Vault-wide stats. */
 const FILTERS = [["", "files.chip_all"], ["cloud_only", "files.chip_cloud_only"], ["pending", "files.chip_pending"], ["stopped", "files.chip_stopped"], ["excluded", "files.chip_excluded"], ["unsupported", "files.chip_unsupported"], ["problem", "files.chip_problem"]] as const;
 /** The «Selection:» line of «Delete from cloud?» (#725): a folder, a few names, or a count. */
 function purgeScopeLabel(items: { path: string; type?: string }[], t: Translate): string {
@@ -90,16 +87,16 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     const pop = () => { const next = new URLSearchParams(window.location.search); setParams(next); setInput(next.get("q") ?? ""); setSelected([]); setDetails(null); };
     window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop);
   }, []);
-  const query = useQuery({ queryKey: ["files", vaultId, q, state, directory, page, global, revision], queryFn: () => {
+  const query = useQuery({ queryKey: apiQueryKeys.fileList(vaultId, { q, state, directory, page, global }, revision), queryFn: () => {
     const search = new URLSearchParams({ q, state, directory: q ? "" : directory, page: String(page), page_size: String(PAGE_SIZE) });
-    return global ? apiRequest<FilesResponse>(`/api/files/search?${search}`) : scope.files(search);
+    return global ? searchFiles(search) : scope.files(search);
   }, refetchInterval: 15_000 });
   const focusPath = params.get("file");
-  const focus = useQuery({ queryKey: ["file-detail", vaultId, focusPath, revision], queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
+  const focus = useQuery({ queryKey: apiQueryKeys.focusedFile(vaultId, focusPath, revision), queryFn: () => scope.details(focusPath!), enabled: Boolean(focusPath) && !global });
   /** Excluded Folders are not observed (ADR-0044): one disk read of this level shows them (#754). */
   const diskLevel = !global && !q && (state === "" || state === "excluded") && page === 1;
-  const disk = useQuery({ queryKey: ["excluded-folders", vaultId, directory, revision], queryFn: () => scope.excludedFolders(directory), enabled: diskLevel, retry: false });
-  const policy = useQuery({ queryKey: ["operation-policy", vaultId, revision], queryFn: () => scope.policy(), enabled: !global, retry: false });
+  const disk = useQuery({ queryKey: apiQueryKeys.excludedFolders(vaultId, directory, revision), queryFn: () => scope.excludedFolders(directory), enabled: diskLevel, retry: false });
+  const policy = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId, revision), queryFn: () => scope.policy(), enabled: !global, retry: false });
   const excludedBy = diskLevel ? disk.data?.excluded_by ?? null : null;
   const excludedFolders = new Map<string, ExcludedFolder>((diskLevel ? disk.data?.folders ?? [] : []).map((folder) => [folder.path, folder]));
   const items = [...(query.data?.items ?? [])];
@@ -143,7 +140,7 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
   async function uploadStopped() {
     if (busy) return;
     setBusy(true); setMessage("");
-    try { for (const target of stoppedTargets) await vaultApi(target.vaultId).post("/api/upload", { path: target.item.path, is_directory: target.item.type === "directory" }); refresh(); }
+    try { for (const target of stoppedTargets) await vaultApi(target.vaultId).upload({ path: target.item.path, is_directory: target.item.type === "directory" }); refresh(); }
     catch (error) { setMessage(errorMessage(error, t)); }
     finally { setBusy(false); }
   }
@@ -153,8 +150,8 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     setPurge((current) => ({ request, settings: current?.settings ?? null, preview: null, previewing: true, busy: false, error }));
     try {
       const [settings, preview] = await Promise.all([
-        scope.request<CloudDeletionSettings>("/api/cloud-deletion"),
-        scope.post<CloudDeletionPreview>("/api/cloud-deletion/preview", { ...request.body, duplicates_only: onlyDuplicates }),
+        scope.cloudDeletionSettings(),
+        scope.previewCloudDeletion({ ...request.body, duplicates_only: onlyDuplicates }),
       ]);
       if (id === purgeRequestId.current) setPurge((current) => current && { ...current, settings, preview, previewing: false });
     } catch (cause) {
@@ -176,7 +173,7 @@ export function FileBrowser({ t, vaultId, vaultName, capabilities, problemCount 
     const { request, preview } = purge;
     setPurge({ ...purge, busy: true, error: "" });
     try {
-      await scope.post("/api/cloud-purge", { ...request.body, duplicates_only: duplicatesOnly, fingerprint: preview.fingerprint, ...payload });
+      await scope.cloudPurge({ ...request.body, duplicates_only: duplicatesOnly, fingerprint: preview.fingerprint, ...payload });
       setPurge(null); refresh();
     } catch (cause) {
       const message = errorMessage(cause, t);

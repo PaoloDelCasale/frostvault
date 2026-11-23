@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import type { SourceDirectoryBrowseResponse, SourceDirectoryEntry } from "@/api";
+import { apiQueryKeys, readOnMount, type SourceDirectoryBrowseResponse, type SourceDirectoryEntry } from "@/api";
 import { useI18n } from "@/i18n/useI18n";
 import { errorMessage } from "@/lib/errorMessage";
 
@@ -33,36 +34,15 @@ export function SourceDirectoryBrowser({
   onSelect,
 }: SourceDirectoryBrowserProps) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [path, setPath] = useState("");
-  const [listing, setListing] = useState<SourceDirectoryBrowseResponse | null>(
-    null,
-  );
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-    void browse(volumeAlias, path)
-      .then((response) => {
-        if (!cancelled) setListing(response);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(errorMessage(reason, translateRef.current));
-          setListing(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [browse, path, volumeAlias]);
+  const loaded = useQuery({
+    queryKey: apiQueryKeys.sourceDirectory(volumeAlias, path),
+    queryFn: () => browse(volumeAlias, path),
+    ...readOnMount,
+  });
+  const loading = loaded.isFetching;
+  const listing = loaded.data ?? null;
+  const error = loaded.error ? errorMessage(loaded.error, t) : "";
 
   const crumbs = path ? path.split("/") : [];
 

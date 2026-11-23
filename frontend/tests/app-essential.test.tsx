@@ -113,7 +113,7 @@ describe("Owner app routing and shell (#512)", () => {
     show(); await screen.findByRole("heading", { level: 1, name: "Overview" });
     const user = userEvent.setup();
     const navigation = screen.getByRole("navigation", { name: "Main navigation" });
-    await user.click(within(navigation).getByRole("link", { name: "Problems: 1 open" }));
+    await user.click(await within(navigation).findByRole("link", { name: "Problems: 1 open" }));
     expect(location()).toBe("/problems");
     expect(await screen.findByRole("heading", { level: 1, name: "Problems" })).toBeInTheDocument();
     await user.click(within(navigation).getByRole("link", { name: "System" }));

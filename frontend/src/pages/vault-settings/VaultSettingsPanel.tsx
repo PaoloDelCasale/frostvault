@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from "@/api";
+import { readOnMount, apiQueryKeys, fetchGeneralVaults, vaultApi } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { notify } from "@/components/toastQueue";
@@ -40,18 +40,15 @@ function SettingsSection({ id, title, summary, more, danger, highlighted, childr
 
 export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId: number; vaultName: string; onStopped: () => void }) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const client = useQueryClient();
   const [auto, setAuto] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [stop, setStop] = useState(false);
   const [reconnect, setReconnect] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [minimumOpened, setMinimumOpened] = useState(false);
   const [autoSaved, flashAutoSaved] = useSavedFlash();
   const show = useCallback((message: string, error = false) => notify(message, error ? "error" : "success"), []);
-  const vaults = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, retry: false });
+  const vaults = useQuery({ queryKey: apiQueryKeys.generalVaults, queryFn: fetchGeneralVaults, retry: false });
   const vault = vaults.data?.items.find((item) => item.id === vaultId) ?? null;
   const stopped = vault?.lifecycle === "stopping" || vault?.lifecycle === "tombstone";
   // A link such as «Controlla protezione» names its section (`#protection`):
@@ -66,17 +63,15 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
     const timer = window.setTimeout(() => setHighlight(""), 4000);
     return () => window.clearTimeout(timer);
   }, [vaultId]);
-  useEffect(() => {
-    let live = true;
-    setLoadError("");
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+  // One read of the policy serves this toggle and the sections below.
+  const policy = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId), queryFn: () => vaultApi(vaultId).policy(), ...readOnMount });
+  const loadError = policy.error ? errorMessage(policy.error, t) : "";
+  useEffect(() => { if (policy.data) setAuto(policy.data.auto_upload); }, [policy.data]);
   async function toggle() {
     if (auto === null) return;
     setBusy(true);
     try {
-      const next = (await updateOperationPolicy({ auto_upload: !auto }, vaultId)).auto_upload;
+      const next = (await vaultApi(vaultId).updatePolicy({ auto_upload: !auto })).auto_upload;
       // A checkbox saves on change and confirms beside itself, not with a toast (#658).
       setAuto(next); flashAutoSaved();
     } catch (error) { show(errorMessage(error, t), true); }
@@ -147,7 +142,7 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
       </div>
     </SettingsSection>
     <ReconnectVaultDialog open={reconnect} onOpenChange={setReconnect} vault={vault} onNotice={show}
-      onCompleted={async () => { await client.invalidateQueries({ queryKey: ["general-vaults"] }); }} />
+      onCompleted={async () => { await client.invalidateQueries({ queryKey: apiQueryKeys.generalVaults }); }} />
     <StopProtectionDialog open={stop} onOpenChange={setStop} vaultId={vaultId} vaultName={vaultName} onCompleted={onStopped} />
   </div>;
 }

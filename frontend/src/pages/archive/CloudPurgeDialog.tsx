@@ -1,13 +1,13 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 
-import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api/types";
+import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
 import { Button } from "@/components/ui/button";
 
-import { formatBytes, pickDurationUnit } from "./format";
+import { formatBytes, pickDurationUnit } from "@/lib/format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 

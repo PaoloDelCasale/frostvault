@@ -8,7 +8,7 @@ import {
   type CatalogRevisionSignal,
   normalizeDomains,
 } from "./catalogEvents";
-import { apiQueryKeys } from "./query";
+import { apiQueryKeys, catalogRefreshedKeys } from "./query";
 
 /** Leading + trailing throttle, never a debounce: continuous writes cannot starve refresh. */
 export const CATALOG_REFRESH_MS = 5_000;
@@ -55,7 +55,7 @@ function invalidateForSignal(
   if (domains.includes("files") || signal.has_gap) {
     tasks.push(
       invalidate({
-        queryKey: ["files"],
+        queryKey: apiQueryKeys.files,
         refetchType: "active",
         predicate: (query) => typeof query.queryKey[1] !== "number" ||
           query.queryKey[1] === signal.vault_id || Boolean(query.queryKey[2]),
@@ -73,8 +73,8 @@ function invalidateForSignal(
     );
   }
   if (essentialShell && (domains.includes("files") || signal.has_gap)) {
-    for (const prefix of ["general", "details", "file-detail", "file-job-history", "linked-job", "problems", "notifications"]) {
-      tasks.push(invalidate({ queryKey: [prefix], refetchType: "active" }));
+    for (const queryKey of catalogRefreshedKeys) {
+      tasks.push(invalidate({ queryKey, refetchType: "active" }));
     }
   }
   void Promise.all(tasks);

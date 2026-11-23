@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- shared Billed Cost helpers live with their components. */
 import type { BillingExportStatus, VaultBilledCost } from "@/api";
 import { useI18n } from "@/i18n";
-import { formatDate, formatDateTime, formatMoney } from "@/pages/archive/format";
+import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 
 /** The categories of a Billed Cost, in the order the UI lists them (#738). */
 const BILLED_CATEGORIES = ["storage", "requests", "transitions", "retrievals", "data_transfer", "other", "credits"] as const;

@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchVaultBilledCost, fetchVaultCloudUsage, type VaultCloudUsage } from "@/api";
+import { apiQueryKeys, vaultApi, type VaultCloudUsage } from "@/api";
 import { BilledCategoryList, BilledDataDate, BilledStale, BillingExportState, billedMoney } from "@/components/BilledCost";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount, formatMonth } from "@/pages/archive/format";
+import { formatApproxMoney, formatBytes, formatDate, formatDateTime, formatGroupedCount, formatMonth } from "@/lib/format";
 import { systemUrl } from "@/router";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -150,7 +150,7 @@ function MeasuredBlock({ measured }: { measured: Measured }) {
  */
 function BilledCostBlock({ vaultId }: { vaultId: number }) {
   const { t, locale } = useI18n();
-  const billed = useQuery({ queryKey: ["billed-cost", vaultId], queryFn: () => fetchVaultBilledCost(vaultId), retry: false });
+  const billed = useQuery({ queryKey: apiQueryKeys.billedCost(vaultId), queryFn: () => vaultApi(vaultId).billedCost(), retry: false });
   const data = billed.data;
   const link = (key: string) => <a className="w-fit text-sm font-semibold text-ink underline" href={systemUrl("billing-export")} data-testid="billed-cost-setup-link">{t(key)}</a>;
   return <CloudUsageBlock id="billed" title={t("billed_cost.billed_title")} help={t("billed_cost.billed_help")}>
@@ -184,7 +184,7 @@ function BilledCostBlock({ vaultId }: { vaultId: number }) {
  */
 export function CloudUsagePanel({ vaultId }: { vaultId: number }) {
   const { t } = useI18n();
-  const usage = useQuery({ queryKey: ["cloud-usage", vaultId], queryFn: () => fetchVaultCloudUsage(vaultId), retry: false });
+  const usage = useQuery({ queryKey: apiQueryKeys.cloudUsage(vaultId), queryFn: () => vaultApi(vaultId).cloudUsage(), retry: false });
   if (usage.error) return <p role="alert" className="text-sm text-destructive">{errorMessage(usage.error, t)}</p>;
   if (!usage.data?.estimate || !usage.data.measured) return <p role="status" className="text-sm text-muted">{t("ui.loading")}</p>;
   return <div className="grid min-w-0 gap-3 lg:grid-cols-2 xl:grid-cols-3" data-testid="cloud-usage">

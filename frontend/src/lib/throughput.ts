@@ -1,5 +1,5 @@
-import type { ExpectedFinish, UploadThroughput } from "@/api/types";
-import { formatDayMonth, formatDecimal, formatTimeOfDay } from "@/pages/archive/format";
+import type { ExpectedFinish, UploadThroughput } from "@/api";
+import { formatDayMonth, formatDecimal, formatTimeOfDay } from "@/lib/format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 export type Phase = "upload" | "verification";

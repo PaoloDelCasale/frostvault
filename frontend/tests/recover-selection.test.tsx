@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureApiClient, resetApiClientForTests } from "@/api";
 import { RecoverSelection, type Target } from "@/pages/archive/RecoverSelection";
 import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 const target: Target = { vaultId: 2, vaultName: "Second", item: { type: "file", name: "same.jpg", path: "same.jpg", state: "cloud_only" } };
 const t = (key: string, params?: Record<string, string | number>) => `${key}${params ? JSON.stringify(params) : ""}`;
 afterEach(resetApiClientForTests);
@@ -17,7 +18,7 @@ describe("essential recovery", () => {
       if (url.startsWith("/api/recover/estimate")) return jsonResponse({ archive_version_id: "exact-snapshot", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: body.restore_tier, days: 3 } });
       return jsonResponse({});
     }) });
-    const done = vi.fn(); render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={done} />);
+    const done = vi.fn(); renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={done} />);
     expect(await screen.findByRole("combobox")).toHaveValue("Bulk");
     expect(screen.getByText(/essential.return_path/)).toHaveTextContent("Second / same.jpg");
     expect(screen.getByText(/essential.recovered_retention/)).toHaveTextContent("180");
@@ -29,19 +30,19 @@ describe("essential recovery", () => {
   });
   it("hides cold tier choices for immediate recovery", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: false }) : jsonResponse({ local_release_after_days: null })) });
-    render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     await screen.findByText("essential.ready_now"); expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
   it("announces before confirming that a high-impact folder waits for Restore Approval (#533)", async () => {
     const folder: Target = { vaultId: 2, vaultName: "Second", item: { type: "directory", name: "photos", path: "photos", state: "cloud_only", item_count: 25, total_size: 128849018880, state_counts: { cloud_only: 25 } } };
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, high_impact: true, estimate: { estimated_cost_eur: 25, estimated_hours: 48, tier: "Bulk", days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
-    render(<RecoverSelection targets={[folder]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    renderWithQueryClient(<RecoverSelection targets={[folder]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     expect(await screen.findByTestId("recover-approval-notice")).toHaveTextContent("essential.recover_approval_notice");
     expect(screen.getByTestId("recover-needs-approval")).toHaveTextContent("essential.recover_needs_approval");
   });
   it("shows no approval notice below the high-impact limit", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, high_impact: false, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: "Bulk", days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
-    render(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     await screen.findByText(/essential.recover_estimate/);
     expect(screen.queryByTestId("recover-approval-notice")).not.toBeInTheDocument();
     expect(screen.queryByTestId("recover-needs-approval")).not.toBeInTheDocument();
@@ -57,7 +58,7 @@ describe("essential recovery", () => {
     const second = { ...target, item: { ...target.item, path: "other.jpg" } };
     const otherVault = { ...target, vaultId: 3, vaultName: "Third" };
     const done = vi.fn();
-    render(<RecoverSelection targets={[target, second, otherVault]} t={t} onClose={vi.fn()} onDone={done} />);
+    renderWithQueryClient(<RecoverSelection targets={[target, second, otherVault]} t={t} onClose={vi.fn()} onDone={done} />);
     await screen.findByTestId("recover-approval-notice");
     const estimates = calls.filter((call) => call.url.includes("estimate"));
     expect(estimates).toHaveLength(2);
@@ -72,7 +73,7 @@ describe("essential recovery", () => {
   it("keeps many items in a bounded, scrolling body with the actions always outside it (#522)", async () => {
     configureApiClient({ fetch: vi.fn(async (url) => String(url).includes("estimate") ? jsonResponse({ requires_restore: true, estimate: { estimated_cost_eur: 3.5, estimated_hours: 12, days: 3 } }) : jsonResponse({ local_release_after_days: null })) });
     const many = Array.from({ length: 7 }, (_, index) => ({ ...target, item: { ...target.item, name: `f${index}.jpg`, path: `f${index}.jpg` } }));
-    render(<RecoverSelection targets={many} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
+    renderWithQueryClient(<RecoverSelection targets={many} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     expect(await screen.findByTestId("recover-summary")).toHaveTextContent('essential.recover_summary_cold{"count":7,"cost":"€3.50","hours":12}');
     const dialog = screen.getByRole("dialog");
     expect(dialog.className).toMatch(/max-h-\[calc\(100dvh/);

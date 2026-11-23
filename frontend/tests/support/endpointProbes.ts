@@ -2,12 +2,7 @@
  * Endpoint wrappers no SPA screen calls: they exist so the client contract
  * tests keep covering these routes.
  */
-import { apiRequest } from "@/api/client";
-import type {
-  ScanResponse,
-  StorageEstimateRequest,
-  StorageEstimateResponse,
-} from "@/api/types";
+import { apiRequest, type ScanResponse, type StorageEstimateRequest, type StorageEstimateResponse } from "@/api";
 
 export function estimateGeneralStorageCost(
   payload: StorageEstimateRequest,

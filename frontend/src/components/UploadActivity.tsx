@@ -1,15 +1,13 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowUpFromLine } from "lucide-react";
-import { apiRequest } from "@/api/client";
+import { apiQueryKeys, uploadBacklog, useUploadActivity, vaultApi, type UploadActivitySummary } from "@/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Popover } from "@/components/Popover";
-import type { UploadActivitySummary } from "@/api/types";
-import { formatBytes } from "@/pages/archive/format";
+import { formatBytes } from "@/lib/format";
 import { vaultFilesUrl } from "@/router";
 import { errorMessage } from "@/lib/errorMessage";
-import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
 import { expectedFinishShort, expectedFinishText, instantUploadSpeed, phaseSpeeds, stoppedShort, stoppedText } from "@/lib/throughput";
 
@@ -71,9 +69,9 @@ export function UploadActivity({ t, vaultId }: { t: Translate; vaultId?: number 
     if (cancelling || !vaultId) return;
     setCancelling(true); setNotice("");
     try {
-      const result = await apiRequest<{ cancelled_count: number }>(`/api/upload/cancel-pending?vault_id=${vaultId}`, { method: "POST", body: JSON.stringify({ path: "" }) });
+      const result = await vaultApi(vaultId).cancelPendingUploads();
       setNotice(t("activity.cancel_pending_done", { count: result.cancelled_count }));
-      await client.invalidateQueries({ queryKey: ["upload-activity"] });
+      await client.invalidateQueries({ queryKey: apiQueryKeys.uploadActivity });
     } catch (error) { setNotice(errorMessage(error, t)); }
     finally { setCancelling(false); setConfirm(false); setOpen(true); }
   }

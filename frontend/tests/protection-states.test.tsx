@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { ArchiveListItem } from "@/api/types";
+import type { ArchiveListItem } from "@/api";
 import { Badge } from "@/components/Badge";
 import { itemStateBadge } from "@/pages/archive/protectionLabel";
 

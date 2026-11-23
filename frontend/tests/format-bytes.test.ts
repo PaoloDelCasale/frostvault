@@ -10,7 +10,7 @@ import {
   formatEur,
   formatMoney,
   pickDurationUnit,
-} from "@/pages/archive/format";
+} from "@/lib/format";
 import { translate } from "@/i18n/translate";
 
 describe("formatBytes", () => {

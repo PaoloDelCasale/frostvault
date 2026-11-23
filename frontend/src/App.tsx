@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchMe, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
-import { fetchOverview } from "@/api/vault";
+import { readOnMount, apiQueryKeys, fetchMe, fetchOverview, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { VaultHeader } from "@/layout/VaultHeader";
@@ -18,6 +17,8 @@ import { UploadActivity } from "@/components/UploadActivity";
 import { interceptLinkClick, legacyRedirect, navigate, parseRoute, useLocation } from "@/router";
 import { errorMessage } from "@/lib/errorMessage";
 
+type Session = { owner: MeResponse; vaults: VaultListItem[] };
+const NO_VAULTS: VaultListItem[] = [];
 const rememberedKey = (ownerId: number) => `frostvault.home.${ownerId}`;
 
 export default function App() {
@@ -26,8 +27,6 @@ export default function App() {
   translateRef.current = t;
   const { setUserId } = useTheme();
   const client = useQueryClient();
-  const [me, setMe] = useState<MeResponse | null>(null);
-  const [vaults, setVaults] = useState<VaultListItem[]>([]);
   const [error, setError] = useState("");
   const [leaving, setLeaving] = useState(false);
   const { pathname, search } = useLocation();
@@ -39,18 +38,29 @@ export default function App() {
     return () => document.removeEventListener("click", interceptLinkClick);
   }, []);
   const signedIn = route.name !== "login";
-  const overview = useQuery({ queryKey: ["general", locale], queryFn: fetchOverview, enabled: Boolean(me) && !leaving, refetchInterval: 30_000 });
-  const refresh = useCallback(() => { void client.invalidateQueries({ queryKey: ["general"] }); }, [client]);
-  const loadVaults = useCallback(async () => { setVaults((await fetchVaults()).items); }, []);
-  useEffect(() => {
-    if (!signedIn) return;
-    let live = true;
-    void Promise.all([fetchMe(), fetchVaults()]).then(([owner, listed]) => {
-      if (!live) return;
-      setUserId(owner.id); setMe(owner); setVaults(listed.items);
-    }).catch((cause: unknown) => { if (live) setError(errorMessage(cause, translateRef.current)); });
-    return () => { live = false; };
-  }, [signedIn, setUserId]);
+  // Read once per sign-in: nothing but `loadVaults` refreshes it, not even a
+  // blanket invalidation of the cache.
+  const session = useQuery({
+    queryKey: apiQueryKeys.session,
+    queryFn: async (): Promise<Session> => {
+      const [owner, listed] = await Promise.all([fetchMe(), fetchVaults()]);
+      return { owner, vaults: listed.items };
+    },
+    enabled: signedIn && !leaving,
+    ...readOnMount,
+    staleTime: "static",
+    gcTime: Infinity,
+  });
+  const me = session.data?.owner ?? null;
+  const vaults = session.data?.vaults ?? NO_VAULTS;
+  const overview = useQuery({ queryKey: apiQueryKeys.overview(locale), queryFn: fetchOverview, enabled: Boolean(me) && !leaving, refetchInterval: 30_000 });
+  const refresh = useCallback(() => { void client.invalidateQueries({ queryKey: apiQueryKeys.general }); }, [client]);
+  const loadVaults = useCallback(async () => {
+    const listed = (await fetchVaults()).items;
+    client.setQueryData<Session>(apiQueryKeys.session, (session) => session && { ...session, vaults: listed });
+  }, [client]);
+  useEffect(() => { if (me) setUserId(me.id); }, [me, setUserId]);
+  useEffect(() => { if (session.error) setError(errorMessage(session.error, translateRef.current)); }, [session.error]);
   let remembered = 0;
   try { remembered = Number(localStorage.getItem(rememberedKey(me?.id ?? 0))); } catch { /* Storage is optional. */ }
   const requested = route.name === "files" || route.name === "settings" ? route.vaultId : undefined;
@@ -86,7 +96,13 @@ export default function App() {
     handlers={{
       onNavigate: navigate,
       onLocaleChange: (next) => { void setLocale(next); },
-      onSignOut: () => { void (async () => { setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null); try { await logout(); window.location.assign("/login"); } catch (cause) { setError(errorMessage(cause, t)); setLeaving(false); } })(); },
+      onSignOut: () => { void (async () => {
+        // Sign-out empties the cache; if it fails the Owner is still signed in, so their session is put back, not read again.
+        const kept = client.getQueryData<Session>(apiQueryKeys.session);
+        setLeaving(true); await client.cancelQueries(); client.clear(); setUserId(null);
+        try { await logout(); window.location.assign("/login"); }
+        catch (cause) { client.setQueryData(apiQueryKeys.session, kept); setError(errorMessage(cause, t)); setLeaving(false); }
+      })(); },
     }}>
     {page}
   </AppShell>;

@@ -2,8 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
-import { vaultApi, type Overview } from "@/api/vault";
+import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, vaultApi, type GeneralVault, type GeneralOverview, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
@@ -16,7 +15,7 @@ import { errorMessage } from "@/lib/errorMessage";
 import { cancelledMessage, minutesLeft } from "@/lib/vaultBucket";
 import { cn } from "@/lib/utils";
 import { billedMoney } from "@/components/BilledCost";
-import { formatBytes, formatMonth, formatMoney } from "@/pages/archive/format";
+import { formatBytes, formatMonth, formatMoney } from "@/lib/format";
 import { vaultFilesUrl } from "@/router";
 
 const STATS_REFRESH_MS = 60_000;
@@ -31,14 +30,14 @@ type Row = {
   awaiting: number;
 };
 
-function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: Overview | undefined): Row {
+function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: GeneralOverview | undefined): Row {
   const states = (stats?.states ?? {}) as Record<string, number>;
   // Unconfirmed hides the state underneath; the last known one still tells
   // what waits for upload and what is already in the cloud (#711).
   const known = (stats?.last_known_states ?? states) as Record<string, number>;
   const unconfirmed = (states.unconfirmed ?? 0) > 0;
   const storage = (stats?.storage ?? {}) as { local_bytes?: number; cloud_bytes?: number };
-  const summary = overview?.vaults.find((item) => item.id === vault.id);
+  const summary = overview?.vaults?.find((item) => item.id === vault.id);
   const state = vaultState(stats);
   return {
     id: vault.id, name: vault.name, state, loaded: Boolean(stats), manual: Boolean(stats?.manual_upload),
@@ -78,16 +77,16 @@ function ProtectionBar({ protectedCount, awaiting, total, className }: {
 }
 
 /** Home: how protected is everything, and which Vault needs attention. */
-export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; overview?: Overview }) {
+export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; overview?: GeneralOverview }) {
   const { t, locale } = useI18n();
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "state", ascending: true });
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
   const [deleting, setDeleting] = useState<GeneralVault | null>(null);
-  const general = useQuery({ queryKey: ["general-vaults"], queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
+  const general = useQuery({ queryKey: apiQueryKeys.generalVaults, queryFn: fetchGeneralVaults, refetchInterval: STATS_REFRESH_MS });
   // What AWS billed for the Vault Buckets in the newest month, when the
   // billing export is read (#738): never the whole AWS bill. Its setup steps
   // live on the System page only.
-  const billing = useQuery({ queryKey: ["billing-export"], queryFn: fetchBillingExport, retry: false });
+  const billing = useQuery({ queryKey: apiQueryKeys.billingExport, queryFn: fetchBillingExport, retry: false });
   const billed = billing.data?.state === "ok" ? billing.data.periods[0] : undefined;
   const queryClient = useQueryClient();
   const [retrying, setRetrying] = useState<number | null>(null);
@@ -95,11 +94,11 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [cancelledCreation, setCancelledCreation] = useState<VaultCreationCancelled | null>(null);
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: apiQueryKeys.vaultStats(vault.id),
-    queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
+    queryFn: () => vaultApi(vault.id).stats(),
     refetchInterval: STATS_REFRESH_MS,
   })) });
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
-  const money = (value: number, signed = false) => formatMoney(value, { currency: overview?.currency, locale, signed });
+  const money = (value: number | null | undefined, signed = false) => formatMoney(value, { currency: overview?.currency, locale, signed });
   const rows = vaults.map((vault, index) => rowFor(vault, stats[index]?.data, overview));
   const sorted = [...rows].sort((a, b) => {
     const value = (row: Row) => sort.key === "name" ? row.name.toLocaleLowerCase() : sort.key === "state" ? STATE_RANK[row.state] ?? 10 : row[sort.key] ?? -1;
@@ -123,7 +122,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     setRetrying(vaultId);
     setRetryError(null);
     try {
-      const state = await retryVaultBucket(vaultId);
+      const state = await vaultApi(vaultId).retryBucket();
       // A Vault that became active joins the Vault list.
       if (state.state === "ready") await queryClient.invalidateQueries();
       else await general.refetch();

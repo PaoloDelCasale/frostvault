@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { cancelVaultCreation, type VaultCreationCancelled } from "@/api";
+import { vaultApi, type VaultCreationCancelled } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/useI18n";
@@ -31,7 +31,7 @@ export function VaultCreationCancel({ vaultId, vaultName, bucket, disabled = fal
     setBusy(true);
     setError(null);
     try {
-      const outcome = await cancelVaultCreation(vaultId);
+      const outcome = await vaultApi(vaultId).cancelCreation();
       setOpen(false);
       onCancelled(outcome);
     } catch (err) {

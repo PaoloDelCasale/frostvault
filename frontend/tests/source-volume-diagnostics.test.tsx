@@ -1,7 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SourceVolumesSection } from "@/pages/general/SourceVolumesSection";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const messages: Record<string, string> = {
   "general.sources_heading": "Source Volumes",
@@ -38,7 +39,7 @@ afterEach(cleanup);
 
 describe("Source Volume identity diagnostics", () => {
   it("distinguishes absent, inaccessible, and replaced volumes", async () => {
-    render(<SourceVolumesSection />);
+    renderWithQueryClient(<SourceVolumesSection />);
 
     expect(await screen.findByText("Absent")).toBeInTheDocument();
     expect(screen.getByText("Inaccessible")).toBeInTheDocument();
@@ -51,7 +52,7 @@ describe("Source Volume identity diagnostics", () => {
 
 describe("Source Volume health tone (#658)", () => {
   it("colours unusable volumes as a problem, not neutral", async () => {
-    render(<SourceVolumesSection />);
+    renderWithQueryClient(<SourceVolumesSection />);
     const badges = await screen.findAllByTestId("source-health");
     expect(badges.map((badge) => badge.getAttribute("data-tone"))).toEqual(["bad", "bad", "bad"]);
     expect(badges[1]).toHaveClass("bg-[var(--state-problem-bg)]");

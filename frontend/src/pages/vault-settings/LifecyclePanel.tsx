@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 
-import { fetchLifecycle, updateLifecycleDefault, type LifecycleProfile, type LifecycleResponse } from "@/api";
+import { apiQueryKeys, readOnMount, vaultApi, type LifecycleProfile, type LifecycleResponse } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MenuSelect } from "@/components/MenuSelect";
 import { Button } from "@/components/ui/button";
@@ -33,10 +34,13 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     setStored(JSON.stringify(draft));
   }
 
+  const loaded = useQuery({ queryKey: apiQueryKeys.lifecycle(vaultId), queryFn: () => vaultApi(vaultId).lifecycle(), enabled: ready, ...readOnMount });
   useEffect(() => {
-    if (!ready) return;
-    void fetchLifecycle(vaultId).then(apply).catch((cause: unknown) => setError(errorMessage(cause, translateRef.current)));
-  }, [ready, vaultId]);
+    if (!loaded.data) return;
+    // An answer that is not a plan is reported like a read that failed.
+    try { apply(loaded.data); } catch (cause) { setError(errorMessage(cause, translateRef.current)); }
+  }, [loaded.data]);
+  useEffect(() => { if (loaded.error) setError(errorMessage(loaded.error, translateRef.current)); }, [loaded.error]);
 
   // Saving is offered only for a change from the stored plan (#658).
   const dirty = data !== null && JSON.stringify(rules) !== stored;
@@ -51,7 +55,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     setError("");
     try {
       const profile: LifecycleProfile = { transitions: rules.map((rule) => ({ days: Number(rule.days), storage_class: rule.storage_class })) };
-      const next = await updateLifecycleDefault(selection === "custom" ? { profile } : selection, vaultId);
+      const next = await vaultApi(vaultId).updateLifecycle(selection === "custom" ? { profile } : selection);
       apply(next);
       onNotice(t(next.sync_pending ? "folder_settings.plan_sync_pending" : "folder_settings.plan_saved"));
     } catch (cause) {

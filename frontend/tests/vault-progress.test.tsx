@@ -1,7 +1,6 @@
 import { screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { configureApiClient, resetApiClientForTests } from "@/api";
-import type { UploadActivitySummary, UploadThroughput } from "@/api/types";
+import { configureApiClient, resetApiClientForTests, type UploadActivitySummary, type UploadThroughput } from "@/api";
 import { translate } from "@/i18n/translate";
 import { VaultHeader } from "@/layout/VaultHeader";
 import { expectedFinishText, stoppedText } from "@/lib/throughput";

@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/api/client";
-import type { NotificationsResponse } from "@/api/endpoints";
+import { apiQueryKeys, fetchProblems } from "@/api";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { problemLink } from "@/lib/problemLink";
 import { errorMessage } from "@/lib/errorMessage";
-import { formatDateTime } from "@/pages/archive/format";
+import { formatDateTime } from "@/lib/format";
 
 /** Problems per page, as returned by /api/problems. */
 const PAGE_SIZE = 100;
@@ -16,7 +15,7 @@ export function ProblemsPage({ vaults = [] }: { vaults?: readonly { id: number; 
   const { t } = useI18n();
   const [page, setPage] = useState(1);
   const vaultName = (id: number | null) => id ? vaults.find((vault) => vault.id === id)?.name ?? `#${id}` : null;
-  const query = useQuery({ queryKey: ["problems", page], queryFn: () => apiRequest<NotificationsResponse>(`/api/problems?page=${page}`), refetchInterval: 30_000 });
+  const query = useQuery({ queryKey: apiQueryKeys.problemsPage(page), queryFn: () => fetchProblems(page), refetchInterval: 30_000 });
   const total = query.data?.open_problem_count ?? query.data?.items.length ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return <section className="grid gap-4"><h1 className="text-2xl font-bold">{t("essential.problems")}</h1>

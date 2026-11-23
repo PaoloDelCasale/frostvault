@@ -5,12 +5,7 @@ import { render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { vi, type Mock } from "vitest";
 
-import {
-  ApiQueryProvider,
-  configureApiClient,
-  resetApiClientForTests,
-  type ApiFetch,
-} from "@/api";
+import { ApiQueryProvider, configureApiClient, resetApiClientForTests, type ApiFetch } from "@/api";
 import { ToastRegion } from "@/components/Toast";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";

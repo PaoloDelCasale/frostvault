@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchOperationPolicy, updateOperationPolicy, type OperationPolicy } from "@/api";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiQueryKeys, readOnMount, vaultApi, type OperationPolicy } from "@/api";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
@@ -10,25 +11,22 @@ const choiceOf = (policy: OperationPolicy | null): VerificationChoice => policy?
 /** A field, not a switch: the choice is saved with «Salva», enabled only for a change (#658). */
 export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number; onNotice: (message: string, error?: boolean) => void }) {
   const { t } = useI18n();
-  const translateRef = useRef(t);
-  translateRef.current = t;
   const [policy, setPolicy] = useState<OperationPolicy | null>(null);
   const [choice, setChoice] = useState<VerificationChoice>("inherit");
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState("");
+  // Read once with the other settings sections; a save answers with the policy it stored.
+  const loaded = useQuery({ queryKey: apiQueryKeys.operationPolicy(vaultId), queryFn: () => vaultApi(vaultId).policy(), ...readOnMount });
+  const loadError = loaded.error ? errorMessage(loaded.error, t) : "";
   useEffect(() => {
-    let live = true;
-    setPolicy(null); setLoadError("");
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) { setPolicy(data); setChoice(choiceOf(data)); } })
-      .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
-    return () => { live = false; };
-  }, [vaultId]);
+    setPolicy(loaded.data ?? null);
+    if (loaded.data) setChoice(choiceOf(loaded.data));
+  }, [loaded.data]);
   const dirty = policy !== null && choice !== choiceOf(policy);
   async function save() {
     if (!dirty) return;
     setBusy(true);
     try {
-      const next = await updateOperationPolicy({ upload_verification: choice === "inherit" ? null : choice }, vaultId);
+      const next = await vaultApi(vaultId).updatePolicy({ upload_verification: choice === "inherit" ? null : choice });
       setPolicy(next); setChoice(choiceOf(next));
       onNotice(t("settings.verification_saved"));
     } catch (error) { onNotice(errorMessage(error, t), true); }

@@ -1,9 +1,8 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configureApiClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests, type GeneralOverview } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import type { Overview } from "@/api/vault";
 import { BillingExportSection } from "@/pages/general/BillingExportSection";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
 import { createVaultAccessFetch, defaultBillingExport, defaultVaultBilledCost, renderVaultAccess } from "./vault-settings-harness";
@@ -141,7 +140,7 @@ describe("Billing export on the System page", () => {
 
 describe("Billed Cost on the Overview", () => {
   const overview = { vaults: [{ id: 1, uuid: "u1", name: "Foto", lifecycle: "active", monthly_estimate: 1.2, open_problem_count: 0 }],
-    open_problem_count: 0, month: "2026-11", monthly_estimate: 1.2, previous_month_delta: null, currency: "EUR" } as unknown as Overview;
+    open_problem_count: 0, month: "2026-11", monthly_estimate: 1.2, previous_month_delta: null, currency: "EUR" } as unknown as GeneralOverview;
   let billingAnswered = false;
   function renderOverview(body: unknown) {
     resetApiClientForTests();

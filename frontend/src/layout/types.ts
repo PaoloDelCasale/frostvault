@@ -1,4 +1,4 @@
-import type { VaultListItem } from "@/api/types";
+import type { VaultListItem } from "@/api";
 
 /** The sidebar destination a page belongs to. */
 export type ShellSection = "overview" | "files" | "settings" | "problems" | "system";

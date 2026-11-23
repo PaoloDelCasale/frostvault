@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { CloudDeletionPreview, CloudDeletionSettings, FileVersionsResponse } from "@/api/types";
-import { vaultApi } from "@/api/vault";
+import { apiQueryKeys, vaultApi, type CloudDeletionPreview, type CloudDeletionSettings, type FileVersionsResponse } from "@/api";
 import { Sheet } from "@/components/Sheet";
 import { Badge } from "@/components/Badge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -10,7 +9,7 @@ import { StorageBadge } from "@/components/StorageBadge";
 import { CloudPurgeDialog } from "./CloudPurgeDialog";
 import { VerificationEvidence } from "./VerificationEvidence";
 import { itemStateBadge } from "./protectionLabel";
-import { formatBytes, formatDateTime, formatUtcDate, recoveryTimeKey } from "./format";
+import { formatBytes, formatDateTime, formatUtcDate, recoveryTimeKey } from "@/lib/format";
 import { recoveryTimeline } from "./recoveryLabel";
 import type { Target } from "./RecoverSelection";
 import { errorMessage } from "@/lib/errorMessage";
@@ -34,10 +33,10 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
   const [historyOpen, setHistoryOpen] = useState(false);
   const [beforeId, setBeforeId] = useState<number>();
   const [jobId, setJobId] = useState<number>();
-  const history = useQuery({ queryKey: ["file-job-history", target.vaultId, target.item.path, beforeId, revision], enabled: historyOpen, queryFn: () => api.fileJobs(target.item.path, beforeId) });
-  const linkedJob = useQuery({ queryKey: ["linked-job", target.vaultId, jobId, revision], enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
+  const history = useQuery({ queryKey: apiQueryKeys.fileJobHistory(target.vaultId, target.item.path, beforeId, revision), enabled: historyOpen, queryFn: () => api.fileJobs(target.item.path, beforeId) });
+  const linkedJob = useQuery({ queryKey: apiQueryKeys.linkedJob(target.vaultId, jobId, revision), enabled: jobId !== undefined, queryFn: () => api.job(jobId!) });
   const [deletion, setDeletion] = useState<{ settings: CloudDeletionSettings; preview: CloudDeletionPreview } | null>(null);
-  const data = useQuery({ queryKey: ["details", target.vaultId, target.item.path, revision], queryFn: async () => {
+  const data = useQuery({ queryKey: apiQueryKeys.fileSheet(target.vaultId, target.item.path, revision), queryFn: async () => {
     const [item, versions, jobs] = await Promise.all([api.details(target.item.path), api.versions(target.item.path), api.jobs({ actions: ["cloud-purge"], activeOnly: true, path: target.item.path })]);
     return { item, versions, jobs };
   } });
@@ -95,15 +94,15 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
               </>}
           </section>
           {item.state === "stopped" && <section role="note" className="grid justify-items-start gap-3 rounded-card border border-line p-3" data-testid="stopped-help"><p>{t("essential.stopped_help")}</p>
-            {item.upload_eligible && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.upload_now")}</Button>}
+            {item.upload_eligible && <Button disabled={busy} onClick={() => void perform(() => api.upload({ path: item.path }))}>{t("essential.upload_now")}</Button>}
           </section>}
           {item.state === "excluded" && <p role="note" className="rounded-card border border-line p-3">{t("essential.excluded_help")}</p>}
           {item.in_excluded_folder && <p role="note" className="rounded-card border border-line p-3" data-testid="excluded-folder-help">{t("essential.excluded_folder_help")} <a className="font-semibold text-ink underline" href={vaultSettingsUrl(target.vaultId, "exclusions")}>{t("exclusions.open_panel")}</a></p>}
           {item.state === "unsupported" && <p role="note" className="rounded-card border border-line p-3" data-testid="unsupported-help">{t(item.local_file_type === "symlink" ? "essential.unsupported_symlink_help" : "essential.unsupported_other_help")}</p>}
           {item.state === "problem" && <section className="grid gap-3 rounded-card border border-[var(--state-problem-bg)] bg-red-soft/50 p-3"><h2 className="font-bold">{t("essential.open_problem")}</h2><p>{t(item.cloud_only_conflict ? "essential.conflict_help" : "essential.problem_help")}</p>
-            {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload", { path: item.path }))}>{t("essential.retry")}</Button> : null}
+            {item.cloud_only_conflict ? <Button disabled={busy} variant="danger" onClick={() => setReplace(true)}>{t("essential.replace_cloud")}</Button> : item.upload_eligible ? <Button disabled={busy} onClick={() => void perform(() => api.upload({ path: item.path }))}>{t("essential.retry")}</Button> : null}
           </section>}
-          {reconciliation?.pending && <section className="grid gap-3 rounded-card border border-line p-3"><h2 className="font-bold">{t("reconciliation.title")}</h2><p>{t("reconciliation.help")}</p><p>{t(`reconciliation.reason.${reconciliation.reason ?? "proof_unavailable"}`)}</p>{reconciliation.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path }))}>{t("reconciliation.resume")}</Button>}</section>}
+          {reconciliation?.pending && <section className="grid gap-3 rounded-card border border-line p-3"><h2 className="font-bold">{t("reconciliation.title")}</h2><p>{t("reconciliation.help")}</p><p>{t(`reconciliation.reason.${reconciliation.reason ?? "proof_unavailable"}`)}</p>{reconciliation.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.reconcileUpload({ path: item.path }))}>{t("reconciliation.resume")}</Button>}</section>}
           {data.data?.versions.remediations?.map((resume) => <section key={resume.id} className="grid gap-2 rounded-card border border-line p-3">
             <h2 className="font-bold">{t("remediation.title")}: {t(`remediation.state.${resume.state}`)}</h2>
             <p>{t("remediation.phase")}: {t(`remediation.phase.${resume.phase}`)}</p>
@@ -113,7 +112,7 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {resume.state === "retrying" && <p>{t("remediation.retry", { count: resume.retry_count, at: formatDateTime(resume.due_at) })}</p>}
             {resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.resolved_by_job_id!)}>{t("remediation.resolved_by", { id: resume.resolved_by_job_id })}</Button>}
             {resume.current_job_id && !resume.resolved_by_job_id && <Button variant="secondary" onClick={() => setJobId(resume.current_job_id!)}>{t("remediation.job", { id: resume.current_job_id })}</Button>}
-            {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.post("/api/upload/reconcile", { path: item.path, remediation_id: resume.id }))}>{t("reconciliation.resume")}</Button>}
+            {resume.can_resume && <Button disabled={busy} onClick={() => void perform(() => api.reconcileUpload({ path: item.path, remediation_id: resume.id }))}>{t("reconciliation.resume")}</Button>}
           </section>)}
           <details className="border-t border-line"><summary className="min-h-11 cursor-pointer py-3 font-semibold">{t("details.technical")}</summary>
             <dl className="grid gap-3 pb-2 text-sm">
@@ -141,15 +140,15 @@ export function FileDetails({ target, t, onClose, onRecover, onRefresh }: { targ
             {linkedJob.data.remediation?.original_job_ids.map((id) => <Button key={id} variant="secondary" onClick={() => setJobId(id)}>{t("remediation.original", { id })}</Button>)}
             {linkedJob.data.remediation?.current_job_id && <Button variant="secondary" onClick={() => setJobId(linkedJob.data!.remediation!.current_job_id!)}>{t("remediation.job", { id: linkedJob.data.remediation.current_job_id })}</Button>}
           </section>}
-          {pending.map((job) => <div key={job.id}><p>{t("essential.deletion_pending")}</p><Button disabled={busy} variant="secondary" onClick={() => void perform(() => api.post("/api/jobs/cancel", { group_id: job.id, action: "cloud-purge" }))}>{t("essential.cancel_deletion")}</Button></div>)}
+          {pending.map((job) => <div key={job.id}><p>{t("essential.deletion_pending")}</p><Button disabled={busy} variant="secondary" onClick={() => void perform(() => api.cancelJobGroup(job.id, "cloud-purge"))}>{t("essential.cancel_deletion")}</Button></div>)}
           {item.type === "file" && item.state === "cloud_only" && !item.local_exists && !pending.length && <details className="border-t border-line"><summary className="min-h-11 cursor-pointer py-3 font-semibold text-destructive">{t("essential.danger_zone")}</summary><p className="mb-3 text-sm">{t("ui.cloud_purge_local_note")}</p><Button disabled={busy} variant="danger" onClick={() => void perform(async () => {
-            const [settings, preview] = await Promise.all([api.request<CloudDeletionSettings>("/api/cloud-deletion"), api.post<CloudDeletionPreview>("/api/cloud-deletion/preview", { path: item.path })]); setDeletion({ settings, preview });
+            const [settings, preview] = await Promise.all([api.cloudDeletionSettings(), api.previewCloudDeletion({ path: item.path })]); setDeletion({ settings, preview });
           })}>{t("ui.cloud_purge_title")}</Button></details>}
         </>}
         {error && <p role="alert">{error}</p>}
       </div>
     </Sheet>
-    <ConfirmDialog open={replace} onOpenChange={setReplace} title={t("essential.replace_cloud")} description={t("essential.replace_warning")} confirmLabel={t("essential.replace_cloud")} cancelLabel={t("ui.cancel")} tone="danger" onConfirm={() => { setReplace(false); void perform(() => api.post("/api/files/cloud-only-conflict/replace", { path: target.item.path })); }} />
-    <CloudPurgeDialog open={Boolean(deletion)} onOpenChange={(open) => { if (!open && !busy) { setDeletion(null); setError(""); } }} path={target.item.path} vaultName={target.vaultName} settings={deletion?.settings ?? null} preview={deletion?.preview ?? null} t={t} busy={busy} error={deletion ? error : ""} onConfirm={(payload) => { if (!busy) void perform(async () => { await api.post("/api/cloud-purge", { path: target.item.path, ...payload }); setDeletion(null); }); }} />
+    <ConfirmDialog open={replace} onOpenChange={setReplace} title={t("essential.replace_cloud")} description={t("essential.replace_warning")} confirmLabel={t("essential.replace_cloud")} cancelLabel={t("ui.cancel")} tone="danger" onConfirm={() => { setReplace(false); void perform(() => api.replaceCloudOnlyConflict(target.item.path)); }} />
+    <CloudPurgeDialog open={Boolean(deletion)} onOpenChange={(open) => { if (!open && !busy) { setDeletion(null); setError(""); } }} path={target.item.path} vaultName={target.vaultName} settings={deletion?.settings ?? null} preview={deletion?.preview ?? null} t={t} busy={busy} error={deletion ? error : ""} onConfirm={(payload) => { if (!busy) void perform(async () => { await api.cloudPurge({ path: target.item.path, ...payload }); setDeletion(null); }); }} />
   </>;
 }

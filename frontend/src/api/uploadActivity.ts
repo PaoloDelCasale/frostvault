@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/api/client";
-import type { UploadActivityResponse, UploadActivitySummary } from "@/api/types";
-import { CATALOG_REFRESH_MS } from "@/api/useCatalogEvents";
+import { fetchUploadActivity } from "./endpoints";
+import { apiQueryKeys } from "./query";
+import type { UploadActivitySummary } from "./types";
+import { CATALOG_REFRESH_MS } from "./useCatalogEvents";
 
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
 
@@ -16,8 +17,8 @@ export function uploadBacklog(activity: UploadActivitySummary): { files: number;
 /** The one installation-wide activity query, shared by the header and the Vault page. */
 export function useUploadActivity() {
   return useQuery({
-    queryKey: ["upload-activity"],
-    queryFn: () => apiRequest<UploadActivityResponse>("/api/upload-activity"),
+    queryKey: apiQueryKeys.uploadActivity,
+    queryFn: fetchUploadActivity,
     staleTime: CATALOG_REFRESH_MS,
     refetchInterval: CATALOG_REFRESH_MS,
   });
