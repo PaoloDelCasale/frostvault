@@ -9449,28 +9449,33 @@
         ]
       },
       "VaultPauseResponse": {
-        "additionalProperties": false,
-        "type": "object",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "title": "Id"
           },
           "paused": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Paused"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "title": "Message"
           },
           "message_key": {
-            "type": "string"
+            "type": "string",
+            "title": "Message Key"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "id",
           "paused",
           "message",
           "message_key"
-        ]
+        ],
+        "title": "VaultPauseResponse"
       },
       "VaultReconnect": {
         "properties": {
@@ -9857,26 +9862,6 @@
         ],
         "type": "object"
       },
-      "GeneralVaultReconnectPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "reason": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "volume_alias": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "volume_alias",
-          "relative_path",
-          "reason"
-        ],
-        "type": "object"
-      },
       "ApiErrorResponse": {
         "additionalProperties": false,
         "properties": {
@@ -10065,29 +10050,6 @@
           "null"
         ]
       },
-      "CloudPurgePayload": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmation": {
-            "type": "string"
-          },
-          "is_directory": {
-            "type": "boolean"
-          },
-          "path": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "confirmation",
-          "reason"
-        ],
-        "type": "object"
-      },
       "DirectoryListItem": {
         "additionalProperties": true,
         "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
@@ -10172,30 +10134,6 @@
           "rename"
         ],
         "type": "string"
-      },
-      "FileOperationPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "archive_version_id": {
-            "type": "string"
-          },
-          "is_directory": {
-            "type": "boolean"
-          },
-          "path": {
-            "type": "string"
-          },
-          "restore_days": {
-            "type": "number"
-          },
-          "restore_tier": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "type": "object"
       },
       "FileOperationResponse": {
         "additionalProperties": {},
@@ -10375,43 +10313,6 @@
           "reason",
           "remedy"
         ]
-      },
-      "FilesQuery": {
-        "additionalProperties": true,
-        "properties": {
-          "directory": {
-            "type": "string"
-          },
-          "page": {
-            "type": "number"
-          },
-          "page_size": {
-            "type": "number"
-          },
-          "q": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "JobCancelPayload": {
-        "additionalProperties": true,
-        "properties": {
-          "action": {
-            "type": "string"
-          },
-          "group_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "group_id",
-          "action"
-        ],
-        "type": "object"
       },
       "JobGroup": {
         "additionalProperties": true,
@@ -10743,41 +10644,6 @@
         ],
         "type": "object"
       },
-      "VaultCreateRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "creation_mode": {
-            "$ref": "#/components/schemas/VaultCreationMode"
-          },
-          "name": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "volume_alias": {
-            "type": "string"
-          },
-          "retention_lock_days": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "enum": [
-              30,
-              90,
-              180,
-              365,
-              null
-            ],
-            "description": "The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards."
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
       "VaultCreationMode": {
         "enum": [
           "empty",
@@ -11016,18 +10882,6 @@
         ],
         "type": "object"
       },
-      "VaultSelectRequest": {
-        "additionalProperties": true,
-        "properties": {
-          "vault_id": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "vault_id"
-        ],
-        "type": "object"
-      },
       "MeStoppedVault": {
         "additionalProperties": true,
         "properties": {
@@ -11066,30 +10920,6 @@
           "root_released"
         ],
         "type": "object"
-      },
-      "StopProtectionPayload": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "cloud_disposition": {
-            "type": "string",
-            "enum": [
-              "keep",
-              "delete"
-            ]
-          },
-          "confirmation": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "cloud_disposition",
-          "confirmation",
-          "reason"
-        ]
       },
       "BulkUploadAdmissionActivity": {
         "type": "object",

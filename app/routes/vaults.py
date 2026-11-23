@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..api_models import response_model
+from ..api_models import passthrough, response_model
 from ..database import db
 from ..errors import Conflict, NotFound, VaultNotFound
 from ..services.source_layout import source_volume_inventory
@@ -120,12 +120,20 @@ class MirrorCleanupUpdate(BaseModel):
     beyond_minimum: bool | None = None
 
 
-@router.post("/api/vaults/{vault_id}/pause", response_model=response_model("VaultPauseResponse"))
+class VaultPauseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    paused: bool
+    message: str
+    message_key: str
+
+
+@router.post("/api/vaults/{vault_id}/pause", response_model=passthrough(VaultPauseResponse))
 def pause_vault(vault_id: int, request: Request, user: dict[str, Any] = Depends(current_user)):
     return _set_vault_pause(vault_id, True, request, user)
 
 
-@router.post("/api/vaults/{vault_id}/resume", response_model=response_model("VaultPauseResponse"))
+@router.post("/api/vaults/{vault_id}/resume", response_model=passthrough(VaultPauseResponse))
 def resume_vault(vault_id: int, request: Request, user: dict[str, Any] = Depends(current_user)):
     return _set_vault_pause(vault_id, False, request, user)
 

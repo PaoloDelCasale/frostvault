@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import re
 import unittest
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, ConfigDict
 from starlette.routing import Route
 
-from app.api_models import JsonObjectResponse, response_model
+from app.api_models import JsonObjectResponse, documented_schemas, passthrough, response_model
 from app.main import app, lifespan
+from tests import fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,15 +163,20 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertFalse(any(name in {"RecoveryExport", "RecoveryCustody", "EncryptionMode"} for name in schema["components"]["schemas"]))
         self.assertIn("/api/recovery-kit/download", schema["paths"])
         self.assertNotIn("/api/vaults/{vault_id}/relocate", schema["paths"])
-        for name in ("VaultSelfServiceCreate", "VaultCreateRequest", "VaultCreateResponse", "GeneralVault"):
+        for name in ("VaultSelfServiceCreate", "VaultCreateResponse", "GeneralVault"):
             properties = schema["components"]["schemas"][name]["properties"]
             self.assertFalse(any("encryption" in key or "custody" in key or "recovery_export" in key for key in properties))
 
     def test_committed_openapi_document_matches_the_application(self) -> None:
-        committed = json.loads(
-            (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
-        )
+        text = (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
+        committed = json.loads(text)
         self.assertEqual(committed, app.openapi())
+        # scripts/export_openapi.py is the file's only writer: byte for byte.
+        spec = importlib.util.spec_from_file_location(
+            "export_openapi", ROOT / "scripts" / "export_openapi.py")
+        exporter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(exporter)
+        self.assertEqual(exporter.document(), text)
         # The routers are registered in the order the routes always had (#796).
         self.assertEqual(list(committed["paths"]), list(app.openapi()["paths"]))
 
@@ -248,6 +258,134 @@ class OpenApiResponseContractTests(unittest.TestCase):
                     issubclass(route.response_model, JsonObjectResponse),
                     route.path,
                 )
+
+    def test_every_hand_written_schema_documents_a_route(self) -> None:
+        # Until the last schema moves next to its route (ADR-0056), the
+        # hand-written file may only hold what the document really uses.
+        document = app.openapi()
+        components = document["components"]["schemas"]
+
+        def references(node: Any) -> set[str]:
+            return set(re.findall(r'"#/components/schemas/([^"]+)"', json.dumps(node)))
+
+        reachable: set[str] = set()
+        pending = list(references(document["paths"]))
+        while pending:
+            name = pending.pop()
+            if name not in reachable:
+                reachable.add(name)
+                pending.extend(references(components[name]))
+        hand_written = documented_schemas()
+        # The frontend types the untyped answers of ``recover`` and
+        # ``free-space`` with it; it goes when those routes declare their model.
+        self.assertEqual(set(components) - reachable, {"FileOperationResponse"})
+        # None is dead text under a Pydantic model of the same name.
+        self.assertEqual(
+            [name for name, schema in hand_written.items() if components[name] != schema], [])
+
+
+class Probe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    name: str | None
+
+
+class OpenProbe(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: int
+
+
+class PassthroughResponseModelTests(unittest.TestCase):
+    """A declared model documents a route and is checked only by the tests (ADR-0056)."""
+
+    BODIES = {
+        "valid": {"id": 1, "name": None},
+        "missing": {"id": 1},
+        "wrong-type": {"id": "1", "name": None},
+        "undeclared": {"id": 1, "name": "a", "extension": [{"future": "kept"}]},
+    }
+
+    def probe(self, declared: Any) -> FastAPI:
+        probe = FastAPI()
+
+        @probe.get("/probe/{case}", response_model=declared)
+        def answer(case: str):
+            return self.BODIES[case]
+
+        return probe
+
+    def test_the_model_never_validates_or_filters_the_answer(self) -> None:
+        declared = passthrough(Probe)
+        # The same validator and serializer as the open response of before.
+        self.assertTrue(issubclass(declared, JsonObjectResponse))
+        self.assertEqual(
+            declared.__pydantic_core_schema__["schema"],
+            JsonObjectResponse.__pydantic_core_schema__["schema"],
+        )
+        self.assertIs(declared, passthrough(Probe))
+        before = TestClient(self.probe(response_model("Probe")))
+        after = TestClient(self.probe(declared))
+        for case, body in self.BODIES.items():
+            with self.subTest(case):
+                response = after.get(f"/probe/{case}")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), body)
+                self.assertEqual(response.content, before.get(f"/probe/{case}").content)
+                self.assertEqual(response.headers, before.get(f"/probe/{case}").headers)
+
+    def test_the_document_references_the_model_itself(self) -> None:
+        document = self.probe(passthrough(Probe)).openapi()
+        operation = document["paths"]["/probe/{case}"]["get"]
+        self.assertEqual(
+            operation["responses"]["200"]["content"]["application/json"]["schema"],
+            {"$ref": "#/components/schemas/Probe"},
+        )
+        self.assertEqual(
+            document["components"]["schemas"]["Probe"], Probe.model_json_schema())
+        self.assertEqual(
+            set(document["components"]["schemas"]),
+            {"Probe", "HTTPValidationError", "ValidationError"},
+        )
+
+    def test_the_shared_test_client_checks_json_success_bodies(self) -> None:
+        client = fixtures._contract_checking_client()(self.probe(passthrough(Probe)))
+        self.assertEqual(client.get("/probe/valid").json(), self.BODIES["valid"])
+        for case, problem in (
+            ("missing", "Field required"),
+            ("wrong-type", "valid integer"),
+            ("undeclared", "Extra inputs are not permitted"),
+        ):
+            with self.subTest(case), self.assertRaises(AssertionError) as raised:
+                client.get(f"/probe/{case}")
+            self.assertIn("GET /probe/{case}", str(raised.exception))
+            self.assertIn("Probe", str(raised.exception))
+            self.assertIn(problem, str(raised.exception))
+        # An error is not a success body of the model.
+        self.assertEqual(client.get("/nowhere").status_code, 404)
+
+    def test_an_open_model_is_checked_on_its_declared_fields_only(self) -> None:
+        client = fixtures._contract_checking_client()(self.probe(passthrough(OpenProbe)))
+        self.assertEqual(client.get("/probe/undeclared").json(), self.BODIES["undeclared"])
+        with self.assertRaises(AssertionError):
+            client.get("/probe/wrong-type")
+
+    def test_the_report_lists_the_operations_no_test_called(self) -> None:
+        probe = self.probe(passthrough(Probe))
+        client = fixtures._contract_checking_client()(probe)
+        fixtures._CONTRACTS_SEEN.discard("GET /probe/{case}")
+        self.assertEqual(fixtures.response_contract_report(probe), ["unseen\tGET /probe/{case}"])
+        client.get("/probe/valid")
+        self.assertEqual(fixtures.response_contract_report(probe), ["seen\tGET /probe/{case}"])
+
+    def test_the_application_client_is_the_checking_one(self) -> None:
+        client = fixtures.http_client()
+        self.assertIsInstance(client, fixtures._contract_checking_client())
+        self.assertIs(client.app, app)
+        declared = [line.partition("\t")[2] for line in fixtures.response_contract_report(app)]
+        self.assertEqual(
+            declared,
+            ["POST /api/vaults/{vault_id}/pause", "POST /api/vaults/{vault_id}/resume"],
+        )
 
 
 if __name__ == "__main__":

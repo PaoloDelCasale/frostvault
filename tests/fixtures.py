@@ -9,6 +9,8 @@ Everything a test needs before its first assertion lives here, once:
 - ``create_owner()``, ``seed_vault()``, ``seed_job()``: the Owner row, a Vault
   with its Vault Target, a Job on a Vault File.
 - ``sign_in()``: the Owner's Session on an HTTP test client.
+- ``http_client()``: the HTTP test client; it checks every JSON success body
+  against the model its route declares (ADR-0056).
 - ``FrostVaultTestCase``: fresh database, Owner and Settings in one setUp.
 
 ``TEST_POSTGRES_URL`` must name a *test server* with a CREATEDB role. Every
@@ -417,11 +419,93 @@ def sign_in(
 
 
 def http_client(**options: Any) -> Any:
-    """A test client of the application, calling from loopback."""
-    from fastapi.testclient import TestClient
+    """A test client of the application, calling from loopback.
+
+    It checks every JSON success body against the model its route declares.
+    """
     from app.main import app
     options.setdefault("client", ("127.0.0.1", 50000))
-    return TestClient(app, **options)
+    return _contract_checking_client()(app, **options)
+
+
+# -- The response contract (ADR-0056) -------------------------------------------
+#
+# Production passes a route's dictionary through unvalidated. The model a route
+# declares with ``passthrough(Model)`` is therefore checked here, on every
+# answer the tests receive through ``http_client``.
+
+_CONTRACT_REPORT_ENV = "FROSTVAULT_RESPONSE_CONTRACT_REPORT"
+_CONTRACTS_SEEN: set[str] = set()
+
+
+def _response_contract(route: Any) -> Any:
+    return getattr(getattr(route, "response_model", None), "__contract__", None)
+
+
+def check_response_contract(app: Any, response: Any) -> None:
+    """Fail when a JSON success body is not what its route declares.
+
+    A missing field, a wrong type and an undeclared field of a closed model all
+    fail; an open model is checked on its declared fields only.
+    """
+    from pydantic import ValidationError
+    from starlette.routing import Match
+
+    content_type = response.headers.get("content-type", "").partition(";")[0]
+    if not response.is_success or content_type != "application/json" or not response.content:
+        return
+    request = response.request
+    scope = {"type": "http", "method": request.method, "path": request.url.path}
+    route = next(
+        (route for route in app.router.routes if route.matches(scope)[0] is Match.FULL), None)
+    contract = _response_contract(route)
+    if contract is None:
+        return
+    _CONTRACTS_SEEN.add(f"{request.method} {route.path}")
+    try:
+        contract.model_validate_json(response.content, strict=True)
+    except ValidationError as error:
+        raise AssertionError(
+            f"{request.method} {route.path} answered {response.status_code} with a body "
+            f"that is not the {contract.__name__} it declares:\n{error}"
+        ) from None
+
+
+@functools.cache
+def _contract_checking_client() -> type:
+    from fastapi.testclient import TestClient
+
+    class ContractCheckingClient(TestClient):
+        def request(self, *args: Any, **kwargs: Any) -> Any:
+            response = super().request(*args, **kwargs)
+            check_response_contract(self.app, response)
+            return response
+
+    return ContractCheckingClient
+
+
+def response_contract_report(app: Any) -> list[str]:
+    """One line per operation that declares a model: ``seen`` or ``unseen`` by this process."""
+    lines = []
+    for route in app.router.routes:
+        if _response_contract(route) is None:
+            continue
+        for method in sorted(route.methods):
+            operation = f"{method} {route.path}"
+            lines.append(f"{'seen' if operation in _CONTRACTS_SEEN else 'unseen'}\t{operation}")
+    return sorted(lines)
+
+
+@atexit.register
+def _write_response_contract_report() -> None:
+    # An operation no test calls is documented but unverified: CI collects these
+    # files from every shard and lists the operations none of them saw.
+    target = os.getenv(_CONTRACT_REPORT_ENV)
+    main = sys.modules.get("app.main")
+    if target and main is not None:
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_text(
+            "".join(line + "\n" for line in response_contract_report(main.app)), encoding="utf-8")
 
 
 # -- The common setUp -----------------------------------------------------------

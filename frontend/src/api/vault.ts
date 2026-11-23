@@ -7,12 +7,11 @@ import type {
   DuplicateCleanupStatus,
   DuplicateCleanupUpdate,
   ExcludedFolderListing,
+  FileAction,
   FileJobHistoryResponse,
-  FileOperationPayload,
   FileOperationResponse,
   FileVersionsResponse,
   FilesResponse,
-  GeneralVaultReconnectPayload,
   GeneralVaultReconnectResponse,
   GlobPreviewRequest,
   GlobPreviewResponse,
@@ -28,10 +27,11 @@ import type {
   OperationPolicy,
   OperationPolicyGlobEdit,
   RecoverEstimateResponse,
+  RecoverRequest,
   RetentionLockStatus,
   RetryFailedUploadsResponse,
   StatsResponse,
-  StopProtectionPayload,
+  StopProtectionRequest,
   StopProtectionStatus,
   UploadReconciliationResponse,
   VaultBilledCost,
@@ -46,6 +46,7 @@ import type {
   VaultMoveRequest,
   VaultMoveResponse,
   VaultPauseResponse,
+  VaultReconnect,
 } from "./types";
 
 /**
@@ -107,7 +108,7 @@ export function vaultApi(vaultId: number) {
     approveRecover: (groupId: string) => send<JsonObjectResponse>("POST", owned("recover/approve"), { group_id: groupId }),
 
     estimate: (payload: unknown) => send<RecoverEstimateResponse>("POST", owned("recover/estimate"), payload),
-    action: (action: "recover" | "free-space", payload: FileOperationPayload) => send<FileOperationResponse>("POST", owned(action), payload),
+    action: (action: "recover" | "free-space", payload: RecoverRequest | FileAction) => send<FileOperationResponse>("POST", owned(action), payload),
 
     /** Upload one item, or the whole Vault with `path: ""`; `request_id` makes a retry idempotent. */
     upload: (payload: { path: string; is_directory?: boolean; request_id?: string }) =>
@@ -126,12 +127,12 @@ export function vaultApi(vaultId: number) {
     retryBucket: () => send<VaultBucketStatus>("POST", owned("bucket/retry")),
     /** Cancel a Vault still being created (#735); a destructive action behind reauthentication. */
     cancelCreation: () => send<VaultCreationCancelled>("POST", owned("creation/cancel")),
-    reconnect: (payload: GeneralVaultReconnectPayload) => send<GeneralVaultReconnectResponse>("POST", owned("reconnect"), payload),
+    reconnect: (payload: VaultReconnect) => send<GeneralVaultReconnectResponse>("POST", owned("reconnect"), payload),
     /** A hold on the Vault's work, independent of its protection state. */
     setPaused: (paused: boolean) => send<VaultPauseResponse>("POST", owned(paused ? "pause" : "resume")),
 
     stopProtection: () => get<StopProtectionStatus>(owned("stop-protection")),
-    stop: (payload: StopProtectionPayload) => send<StopProtectionStatus>("POST", owned("stop-protection"), payload),
+    stop: (payload: StopProtectionRequest) => send<StopProtectionStatus>("POST", owned("stop-protection"), payload),
     cancelStoppedDeletion: () => sendEmpty<StopProtectionStatus>(owned("stop-protection/cancel-deletion")),
 
     /** Automatic Duplicate Cleanup (#726, ADR-0048). */
