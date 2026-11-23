@@ -5,9 +5,7 @@ themselves, and Problems that say a running scan can close them.
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from app import storage
@@ -15,10 +13,7 @@ from app.services import notifications, worker_errors
 from app.services.operation_policies import SOURCE_SCAN_INCOMPLETE, SOURCE_WATCHER_DENIED
 from app.services import scan_causes
 from app.services.scan_causes import source_error_cause
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 CAUSES = tuple(code for code, _ in scan_causes._CAUSES)
 
@@ -122,19 +117,11 @@ class BackgroundLoopRecoveryTests(unittest.TestCase):
         healthy.assert_called_once_with("directory_aggregates")
 
 
-class ProblemTextTests(unittest.TestCase):
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = Path(tmp.name) / "problems.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
+class ProblemTextTests(FrostVaultTestCase):
     def test_internal_error_names_its_type_and_closes_by_itself(self) -> None:
         class DiskFull(Exception):
             sqlstate = "53100"
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
+        with self.database.connect() as connection:
             worker_errors.record_worker_error(connection, component="background_loop",
                                               exc=DiskFull("SECRET /dev/shm"), log=False)
             italian = notifications.list_in_app_notifications(connection, locale="it")[0]
@@ -145,8 +132,7 @@ class ProblemTextTests(unittest.TestCase):
         self.assertNotIn("SECRET", str(italian) + str(english))
 
     def test_blocked_protection_says_its_cause_or_keeps_the_generic_advice(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
+        with self.database.connect() as connection:
             notifications.set_problem(
                 connection, key="blocked:1:source", event="protection_blocked", vault_id=None, active=True,
                 params={"component": "source",
@@ -162,15 +148,14 @@ class ProblemTextTests(unittest.TestCase):
 
     def test_a_failed_source_scan_records_its_cause(self) -> None:
         def connect():
-            return PostgresConnection(str(self.path))
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            seed_vault(connection, vault_id=7, name="Seven", source_root="/seven")
+            return self.database.connect()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=7, name="Seven", source_root="/seven")
         with patch.object(storage, "db", side_effect=connect):
             storage._record_scan_component_health(
                 7, "source", ok=False,
                 error="Source scan blocked: Visited directory changed during traversal: a")
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT message_params FROM notifications WHERE dedupe_key='blocked:7:source'").fetchone()
         self.assertEqual(row["message_params"]["cause_key"],

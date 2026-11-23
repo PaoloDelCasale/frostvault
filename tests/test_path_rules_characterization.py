@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +36,7 @@ from app.services.path_rules import (
     path_matches, sql_glob_match, sql_path_regex, validate_glob,
 )
 from app.services.upload_path_rules import eligibility_sql, inline_eligibility_sql
+from tests.fixtures import empty_database
 
 GOLDEN = Path(__file__).parent / "fixtures" / "path_rules_golden.json"
 
@@ -301,10 +301,8 @@ class PostgresCharacterizationTests(_Characterization):
 
     @classmethod
     def setUpClass(cls):
-        from tests.postgres import PostgresConnection
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(cls.tmp.cleanup)
-        cls.connection = PostgresConnection(str(Path(cls.tmp.name) / "path_rules.db"))
+        database = cls.enterClassContext(empty_database())
+        cls.connection = database.connect()
         cls.addClassCleanup(cls.connection.close)
         cls.observed = sql_results(cls.connection)
 
@@ -339,9 +337,8 @@ class PostgresCharacterizationTests(_Characterization):
 
 
 def _record() -> None:  # pragma: no cover - maintenance entry point
-    from tests.postgres import PostgresConnection
-    with tempfile.TemporaryDirectory() as tmp:
-        connection = PostgresConnection(str(Path(tmp) / "path_rules.db"))
+    with empty_database() as database:
+        connection = database.connect()
         try:
             data = {"patterns": PATTERNS, "paths": PATHS, **python_results(), **sql_results(connection)}
         finally:

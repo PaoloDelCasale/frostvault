@@ -10,9 +10,7 @@ own database-free tests (``test_upload_provenance``).
 from __future__ import annotations
 
 import os
-import tempfile
 import unittest
-from pathlib import Path
 
 import psycopg
 
@@ -23,8 +21,7 @@ from app.services.upload_snapshot import (
     DEFAULT_PART_SIZE, MULTIPART_THRESHOLD, UploadSnapshot, prepare_upload_snapshot,
 )
 from tests import service_probes
-from tests.catalog_support import seed_vault
-from tests.postgres import PostgresConnection, run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 T0 = "2026-07-21T10:00:00+00:00"
 T1 = "2026-07-21T11:00:00+00:00"
@@ -34,17 +31,15 @@ EMPTY = {"versions": [], "markers": []}
 MTIME_NS = 1_750_000_000_123_456_789
 
 
-class _Fixture(unittest.TestCase):
+class _Fixture(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        self.database_path = self.root / "proofs.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.database_path))
+        super().setUp()
+        self.root = self.tmp_path
+        self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
-        seed_vault(self.connection)
+        seed_vault(self.connection, id=2, source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
         self.snapshot = self.hashed(b"content-a")
         self.file_id = self.catalog.observe_local_copy(
@@ -94,7 +89,7 @@ class _Fixture(unittest.TestCase):
         return attempt
 
     def db(self):
-        return PostgresConnection(str(self.database_path))
+        return self.database.connect()
 
     def count(self, table: str, where: str = "true", params: tuple = ()) -> int:
         return self.connection.execute(f"SELECT count(*) AS n FROM {table} WHERE {where}",

@@ -6,20 +6,18 @@ boundary are checked against live rows, never against caches or generations.
 """
 from __future__ import annotations
 
-import tempfile
 import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import psycopg
 
 from app.catalog import ArchiveCatalog
 from app.services import job_admission, recovery_approval, vault_pause
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.postgres import PostgresConnection, run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 START = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 
@@ -32,23 +30,21 @@ def token() -> str:
     return str(uuid.uuid4())
 
 
-class JobCoreFixture(unittest.TestCase):
+class JobCoreFixture(FrostVaultTestCase):
     """Two Vaults with regular Local Copies and nothing else."""
+
+    owner = None
 
     vault_ids = (10, 20)
     files_per_vault = 4
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "jobs"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        super().setUp()
         self.file_ids: dict[tuple[int, str], str] = {}
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
             for vault_id in self.vault_ids:
-                seed_vault(connection, vault_id=vault_id, source_root=f"/source/{vault_id}",
+                seed_vault(connection, id=vault_id, source_root=f"/source/{vault_id}",
                            name=f"Vault {vault_id}")
                 for index in range(self.files_per_vault):
                     name = f"f{index}.txt"
@@ -57,8 +53,8 @@ class JobCoreFixture(unittest.TestCase):
                         mtime_ns=1, observed_at=stamp(-3600),
                     )
 
-    def db(self) -> PostgresConnection:
-        return PostgresConnection(str(self.path))
+    def db(self) -> psycopg.Connection:
+        return self.database.connect()
 
     def queue(self, vault_id: int = 10, path: str = "f0.txt", *, action: str = "upload",
               origin: str = "manual", seconds: float = 0, group_id: str | None = None,
@@ -275,7 +271,7 @@ class ClaimLeaseTests(JobCoreFixture):
         [job_id] = self.queue()
         lease = token()
         self.claim(job_id, claim_token=lease, lease=60)
-        renewing = PostgresConnection(str(self.path))
+        renewing = self.database.connect()
         try:
             # The renewal (its clock still before expiry) holds the lease row.
             renewing.execute(

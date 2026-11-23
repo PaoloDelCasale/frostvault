@@ -9,20 +9,14 @@ uptime instead of to when the task really last ran.
 
 from __future__ import annotations
 
-from tests.owner_fixtures import insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-
 import math
-import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 from app import storage
-
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 class InitialMarksTests(unittest.TestCase):
@@ -93,19 +87,17 @@ class MaintenanceSubmissionTests(unittest.TestCase):
         self.assertEqual(calls, [1])
 
 
-class PersistedAgesTests(unittest.TestCase):
+class PersistedAgesTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "schedule.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        super().setUp()
         self.now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 
     def _ages(self) -> dict[str, float | None]:
         with patch(
             "app.storage.db",
-            side_effect=lambda: PostgresConnection(str(self.path)),
+            side_effect=lambda: self.database.connect(),
         ):
             return storage.persisted_maintenance_ages(now=self.now)
 
@@ -116,9 +108,9 @@ class PersistedAgesTests(unittest.TestCase):
         )
 
     def test_ages_come_from_durable_records_and_the_scan_is_always_due(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for vault_id in (1, 2):
-                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
+                seed_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(
@@ -158,9 +150,9 @@ class PersistedAgesTests(unittest.TestCase):
         self.assertEqual(ages["backup_verify"], 6 * 60 * 60)
 
     def test_one_vault_without_an_audit_record_makes_the_audit_due(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for vault_id in (1, 2):
-                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
+                seed_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(
@@ -174,9 +166,9 @@ class PersistedAgesTests(unittest.TestCase):
     def test_a_failed_audit_is_due_at_startup_whatever_its_last_attempt(self) -> None:
         # #620: a failure is not a run. The Vault it left unconfirmed is audited
         # again at startup, not one interval after the failed attempt.
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for vault_id in (1, 2):
-                insert_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
+                seed_vault(connection, id=vault_id, name=f"V{vault_id}", source_root=f"/source/{vault_id}")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(
@@ -191,8 +183,8 @@ class PersistedAgesTests(unittest.TestCase):
         self.assertIsNone(self._ages()["audit"])
 
     def test_audit_age_counts_from_the_last_success_not_the_last_attempt(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
-            insert_vault(connection, id=1, name="V1", source_root="/source/1")
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, name="V1", source_root="/source/1")
             connection.execute(
                 """
                 INSERT INTO vault_component_health(

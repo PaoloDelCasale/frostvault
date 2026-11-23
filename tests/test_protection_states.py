@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import uuid
 import unittest
 from collections import Counter
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.main import list_files, stats
 from app.services import directory_aggregates as aggregates
 from app.services.protection_states import (
@@ -19,8 +16,9 @@ from app.services.protection_states import (
 )
 from app.services.upload_path_rules import inline_eligibility_sql
 from app.services.source_layout import VaultLocalAccess
-from tests.catalog_support import fingerprint, protect, seed_vault
+from tests.catalog_support import fingerprint, protect
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 T = '2026-11-03T10:00:00+00:00'
 
@@ -141,21 +139,16 @@ class ProtectionProjectionTests(unittest.TestCase):
         self.assertFalse(observation_is_unconfirmed({'policy': {'last_error': 'blocked'}}))
 
 
-class ProtectionStatePostgresTests(unittest.TestCase):
+class ProtectionStateFixture(FrostVaultTestCase):
+    """Vault 9 on one open connection, and ``seed`` for a Vault File in a given state."""
+
+    owner = None
+
     def setUp(self):
-        from tests.postgres import PostgresConnection, database_dsn
-        from tests.test_database import run_alembic
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / 'protection.db'
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.path))
-        self.connection.__enter__()
-        self.addCleanup(self.connection.__exit__, None, None, None)
-        seed_vault(self.connection, vault_id=9, name='Files')
+        super().setUp()
+        self.connection = self.enterContext(self.database.connect())
+        seed_vault(self.connection, id=9, name='Files', source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
-        self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
@@ -180,6 +173,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
             self.catalog.mark_local_copy_missing(file_id, observed_at=T)
         return file_id, version_id
 
+class ProtectionStatePostgresTests(ProtectionStateFixture):
     def test_every_state_browse_search_folder_rebuild_and_stats_agree(self):
         self.seed('pending')
         self.seed('protected', archive=True, verified=True)
@@ -232,7 +226,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         page = self.catalog.list_files_page(9, directory='photos', state='protected')
         self.assertEqual(page['total'], 1)
         self.assertEqual(self.catalog.list_files_page(9, search='ds_store', state='excluded')['total'], 1)
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'protected')
@@ -263,7 +257,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual([item['type'] for item in page['items']], ['directory', 'file'])
         self.assertEqual(page['items'][1]['state'], 'unsupported')
         self.assertFalse(page['items'][1]['upload_eligible'])
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'protected')
@@ -345,7 +339,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual((stopped['state'], stopped['last_known_state']), ('stopped', 'stopped'))
         # A manual upload stays possible.
         self.assertTrue(stopped['upload_eligible'])
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'stopped')
@@ -422,7 +416,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['total'], 1)
 
     def test_global_maintenance_skips_a_failing_vault_and_keeps_its_marks(self):
-        seed_vault(self.connection, vault_id=10, source_root='/other', name='Other')
+        seed_vault(self.connection, id=10, source_root='/other', name='Other')
         for vault_id in (9, 10):
             aggregates.request_vault_rebuild(self.connection, vault_id)
         real = aggregates.flush_directory_aggregates
@@ -443,7 +437,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.seed('cloud', local=False, archive=True, verified=True)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(False, True, 'photos', 'absent')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(False, True, 'photos', 'absent')):
             result = list_files(directory='photos', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
             summary = stats({'id': 9, 'source_root': '/source'})
             root = list_files(directory='', state='unconfirmed', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
@@ -465,7 +459,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.seed('protected', archive=True, verified=True)
         set_policy(self.connection, 9, replace(get_policy(self.connection, 9), auto_upload=False))
         self.connection.commit()
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             summary = stats({'id': 9, 'source_root': '/source'})
         self.assertTrue(summary['manual_upload'])
         self.assertEqual(summary['protection_state'], 'protected')
@@ -477,7 +471,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         self.seed('missing', local=False, archive=True, verified=True, availability='missing')
         record_component_health(self.connection, vault_id=9, component='cloud', ok=False, error='offline')
         self.connection.commit()
-        with patch('app.database.settings', self.cfg), patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             self.assertEqual(stats({'id': 9, 'source_root': '/source'})['states'], {'unconfirmed': 2})
             record_component_health(self.connection, vault_id=9, component='cloud', ok=True)
             self.connection.commit()
@@ -489,8 +483,7 @@ class ProtectionStatePostgresTests(unittest.TestCase):
         job = self.connection.execute("INSERT INTO jobs(vault_id, file_id, action, status) VALUES (9, %s, 'upload', 'queued') RETURNING id", (file_id,)).fetchone()['id']
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
-        with patch('app.database.settings', self.cfg):
-            self.assertTrue(set_job(job, 'failed'))
+        self.assertTrue(set_job(job, 'failed'))
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
         self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
         self.catalog.queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)

@@ -22,31 +22,21 @@ per file; superseded versions are removed exactly after verification):
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 import uuid
-from pathlib import Path
 
 from app.catalog import ArchiveCatalog
 from app.services import directory_aggregates as aggregates
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection
-from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class ChangedContentAdmissionTests(unittest.TestCase):
+class ChangedContentAdmissionTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        database_path = Path(tmp.name) / "catalog.db"
-        self.assertEqual(run_alembic(database_path).returncode, 0)
-        self.connection = PostgresConnection(str(database_path))
-        self.connection.__enter__()
-        self.addCleanup(self.connection.__exit__, None, None, None)
-        insert_owner(self.connection)
-        seed_vault(self.connection, source_root=str(Path(tmp.name) / "source"))
+        super().setUp()
+        self.connection = self.enterContext(self.database.connect())
+        seed_vault(self.connection, source_root=str(self.tmp_path / "source"), id=2)
         self.catalog = ArchiveCatalog(self.connection)
 
     def observe(self, path: str, size: int, mtime_ns: int) -> str:

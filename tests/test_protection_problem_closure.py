@@ -6,8 +6,6 @@ protection is the explicit Current/matched pair on that row, cloud work is an
 ``files.pending_since``.
 """
 from contextlib import contextmanager
-from pathlib import Path
-import tempfile
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -21,8 +19,7 @@ from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.cost_estimates import estimate_restore_cost, list_prices
 from tests.catalog_support import fingerprint, protect as protect_current, sha256_hex
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.test_protection_notifications import NOW, ONLINE, monitor_vault
 
 
@@ -79,18 +76,13 @@ class RecoveryApprovalCostTests(unittest.TestCase):
         self.assertGreater(impact["estimated_cost_eur"], 0)
 
 
-class ProtectionProblemClosureTests(unittest.TestCase):
+class ProtectionProblemClosureTests(FrostVaultTestCase):
     DIGEST = sha256_hex(b"a")
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "closure.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
         with self.connect() as c:
-            insert_owner(c)
-            self.vault_id = insert_vault(c)["id"]
+            self.vault_id = seed_vault(c)["id"]
             ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="a.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=(NOW-timedelta(hours=25)).isoformat())
             self.file_id = str(self.file_of(c, "a.txt"))
@@ -99,7 +91,7 @@ class ProtectionProblemClosureTests(unittest.TestCase):
             inbox.enqueue_job_terminal_notification(c, job_id=self.job_id)
 
     def connect(self):
-        return PostgresConnection(str(self.path))
+        return self.database.connect()
 
     @contextmanager
     def db(self):

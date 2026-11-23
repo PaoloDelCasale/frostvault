@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -13,9 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from app import backoff
+import psycopg
 
-from tests.test_database import run_alembic
+from app import backoff
+from tests.fixtures import FrostVaultTestCase
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
@@ -24,7 +22,7 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 class _LegacyReadBarrierConnection:
     """Force the old read-then-write implementation into its lost-update race."""
 
-    def __init__(self, connection: PostgresConnection, barrier: threading.Barrier):
+    def __init__(self, connection: psycopg.Connection, barrier: threading.Barrier):
         self._connection = connection
         self._barrier = barrier
 
@@ -34,16 +32,11 @@ class _LegacyReadBarrierConnection:
         return self._connection.execute(sql, params)
 
 
-class BackoffTestBase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "backoff.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+class BackoffTestBase(FrostVaultTestCase):
+    owner = None
 
-    def connect(self) -> PostgresConnection:
-        return PostgresConnection(str(self.database_path))
+    def connect(self) -> psycopg.Connection:
+        return self.database.connect()
 
     def _fail(self, times: int, *, scope: str = "ip", key: str = "k") -> None:
         with self.connect() as connection:
@@ -134,7 +127,7 @@ class BackoffTests(BackoffTestBase):
         legacy_read = threading.Barrier(attempts, timeout=60)
         connections = [self.connect() for _ in range(attempts)]
 
-        def record(connection: PostgresConnection) -> None:
+        def record(connection: psycopg.Connection) -> None:
             with connection:
                 start.wait()
                 backoff.record_failure(
@@ -159,7 +152,7 @@ class BackoffTests(BackoffTestBase):
         start = threading.Barrier(attempts, timeout=60)
         connections = [self.connect() for _ in range(attempts)]
 
-        def record(connection: PostgresConnection) -> tuple[int, str | None]:
+        def record(connection: psycopg.Connection) -> tuple[int, str | None]:
             with connection:
                 start.wait()
                 return backoff.record_failure(
@@ -211,7 +204,7 @@ raise SystemExit(1)
         result = subprocess.run(
             [sys.executable, "-c", check],
             cwd=REPOSITORY_ROOT,
-            env={**os.environ, "DATABASE_URL": database_dsn(self.database_path)},
+            env={**os.environ, "DATABASE_URL": self.database.dsn},
             capture_output=True,
             text=True,
             check=False,

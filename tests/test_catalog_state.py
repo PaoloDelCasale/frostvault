@@ -1,32 +1,26 @@
 """Durable catalog revision/event persistence seams."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
+import psycopg
 
 from app.services.catalog_events import CatalogEventStore
-from tests.catalog_support import seed_vault
-from tests.test_database import run_alembic
 from tests import catalog_event_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class CatalogStatePersistenceTests(unittest.TestCase):
+class CatalogStatePersistenceTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "catalog-state.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=2, name="Docs")
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, name="Docs", source_root="/source")
 
     def test_catalog_mutation_and_publication_commit_as_one_transaction(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             published = catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                 2,
                 lambda conn: conn.execute(
@@ -38,7 +32,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 created_at="2026-08-01T10:00:00+00:00",
             )
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(
                 "SELECT name FROM vaults WHERE id=2"
             ).fetchone()
@@ -62,7 +56,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
     def test_outer_transaction_can_roll_back_a_successful_publication(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "outer failure"):
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     lambda conn: conn.execute(
@@ -74,7 +68,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                 )
                 raise RuntimeError("outer failure")
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT name FROM vaults WHERE id=2").fetchone()["name"],
                 "Docs",
@@ -91,7 +85,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             connection.execute("UPDATE vaults SET name='Helper mutation' WHERE id=2")
             raise RuntimeError("helper failure")
 
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET name='Outer mutation' WHERE id=2")
             with self.assertRaisesRegex(RuntimeError, "helper failure"):
                 catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
@@ -100,7 +94,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             self.assertEqual(connection.execute(
                 "SELECT name FROM vaults WHERE id=2"
             ).fetchone()["name"], "Outer mutation")
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(
                 "SELECT name FROM vaults WHERE id=2"
             ).fetchone()["name"], "Outer mutation")
@@ -109,13 +103,13 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             ).fetchone()["n"], 0)
 
     def test_autocommit_caller_gets_one_atomic_publication(self) -> None:
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             connection.autocommit = True
             catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                 2, lambda conn: conn.execute("UPDATE vaults SET name='Autocommit' WHERE id=2"),
                 domain="files", scope="root", payload={},
             )
-        with PostgresConnection(self.path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(
                 "SELECT name FROM vaults WHERE id=2"
             ).fetchone()["name"], "Autocommit")
@@ -124,12 +118,12 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             ).fetchone()["n"], 1)
 
     def test_failed_canonical_mutation_rolls_back_revision_and_event(self) -> None:
-        def fail(connection: PostgresConnection) -> None:
+        def fail(connection: psycopg.Connection) -> None:
             connection.execute("UPDATE vaults SET name='Not durable' WHERE id=2")
             raise RuntimeError("simulated catalog failure")
 
         with self.assertRaisesRegex(RuntimeError, "simulated"):
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     fail,
@@ -138,7 +132,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                     payload={"operation": "failed"},
                 )
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(
                 "SELECT name FROM vaults WHERE id=2"
             ).fetchone()
@@ -155,7 +149,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
 
     def test_concurrent_mutations_serialize_per_vault_revisions(self) -> None:
         def publish(index: int) -> int:
-            with PostgresConnection(str(self.path)) as connection:
+            with self.database.connect() as connection:
                 publication = catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
                     lambda _connection: index,
@@ -169,7 +163,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             revisions = list(executor.map(publish, range(8)))
 
         self.assertEqual(sorted(revisions), list(range(1, 9)))
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(catalog_event_probe.current_revision(CatalogEventStore(connection), 2), 8)
             self.assertEqual(
                 connection.execute(
@@ -179,7 +173,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
             )
 
     def test_event_retention_reports_a_gap_without_reusing_revisions(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             store = CatalogEventStore(connection)
             for revision in range(3):
                 store.append_event(
@@ -202,11 +196,11 @@ class CatalogStatePersistenceTests(unittest.TestCase):
     def test_invalid_publication_is_validated_before_canonical_mutation(self) -> None:
         called = False
 
-        def mutation(_connection: PostgresConnection) -> None:
+        def mutation(_connection: psycopg.Connection) -> None:
             nonlocal called
             called = True
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             with self.assertRaises(ValueError):
                 catalog_event_probe.mutate_and_publish(CatalogEventStore(connection), 
                     2,
@@ -217,7 +211,7 @@ class CatalogStatePersistenceTests(unittest.TestCase):
         self.assertFalse(called)
 
     def test_event_domain_and_payload_are_bounded_before_any_write(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             store = CatalogEventStore(connection)
             with self.assertRaises(ValueError):
                 store.append_event(vault_id=2, domain="not a domain")
@@ -228,7 +222,6 @@ class CatalogStatePersistenceTests(unittest.TestCase):
                     payload={"large": "x" * 5000},
                 )
             self.assertEqual(catalog_event_probe.current_revision(store, 2), 0)
-
 
 
 if __name__ == "__main__":

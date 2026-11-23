@@ -12,7 +12,6 @@ import gzip
 import hashlib
 import io
 import json
-import tempfile
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -28,6 +27,7 @@ from app.services import billed_cost as bc
 from app.services import system_bucket
 from app.services.system_bucket import SystemBucket
 from tests.fake_bucket_s3 import FakeBucketS3
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 FIXTURE = Path(__file__).with_name("fixtures") / "billing" / "cur2-2026-11.csv"
 SYSTEM = "frostvault-system-k3x9q0ab"
@@ -804,30 +804,22 @@ class SystemBucketPolicyTests(unittest.TestCase):
         self.assertTrue(system_bucket.verify_created(s3, reservation).ok)
 
 
-class DatabaseStoreTests(unittest.TestCase):
+class DatabaseStoreTests(FrostVaultTestCase):
     """``billing_export_status`` and ``billed_costs`` of migration 0012 (PostgreSQL)."""
 
-    def setUp(self):
-        from tests.postgres import PostgresConnection
-        from tests.test_database import run_alembic
+    owner = None
 
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.path = Path(directory.name) / "billed-cost.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connect = lambda: PostgresConnection(str(self.path))
+    def setUp(self):
+        super().setUp()
+        self.connect = lambda: self.database.connect()
         self.store = bc.DatabaseStore(self.connect)
         with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO vault_targets(id, provider, bucket, region, key_layout) VALUES "
-                f"(1, 's3', '{VAULT_1}', 'eu-south-1', 'bucket_root'), "
-                f"(2, 's3', '{VAULT_2}', 'eu-south-1', 'bucket_root'), "
-                f"(3, 's3', '{SHARED}', 'eu-south-1', 'vault_prefix')")
-            connection.execute(
-                "INSERT INTO vaults(id, target_id, name, source_root) VALUES "
-                "(1, 1, 'Foto', '/sources/foto'), (2, 2, 'Documenti', '/sources/documenti'), "
-                "(3, 3, 'Vecchio', '/sources/vecchio')")
+            seed_vault(connection, id=1, name="Foto", source_root="/sources/foto", bucket=VAULT_1,
+                       target={"id": 1, "key_layout": "bucket_root"})
+            seed_vault(connection, id=2, name="Documenti", source_root="/sources/documenti",
+                       bucket=VAULT_2, target={"id": 2, "key_layout": "bucket_root"})
+            seed_vault(connection, id=3, name="Vecchio", source_root="/sources/vecchio", bucket=SHARED,
+                       target={"id": 3})
             connection.execute(
                 "INSERT INTO system_bucket(id, name, region, reserved_at, ready_at) "
                 f"VALUES (1, '{SYSTEM}', 'eu-south-1', now(), now())")

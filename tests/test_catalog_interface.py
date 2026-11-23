@@ -6,25 +6,19 @@ replacement pointers.
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
-from tests.catalog_support import seed_vault
-from tests.postgres import PostgresConnection, run_alembic
 from tests import catalog_probe
+from tests.fixtures import fresh_database, seed_vault
 
 
 class CatalogInterfaceTests(unittest.TestCase):
     def test_catalog_observes_a_new_local_file_through_one_interface(self) -> None:
         from app.catalog import ArchiveCatalog
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "catalog.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                seed_vault(connection)
+        with fresh_database() as database:
+            with database.connect() as connection:
+                seed_vault(connection, id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
                 file_id = catalog.observe_local_copy(
                     vault_id=2,
@@ -45,12 +39,9 @@ class CatalogInterfaceTests(unittest.TestCase):
     def test_confirmed_rename_preserves_identity_and_path_history(self) -> None:
         from app.catalog import ArchiveCatalog
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "rename.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                seed_vault(connection, name="Photos")
+        with fresh_database() as database:
+            with database.connect() as connection:
+                seed_vault(connection, name="Photos", id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
                 file_id = catalog.observe_local_copy(
                     vault_id=2,
@@ -82,12 +73,9 @@ class CatalogInterfaceTests(unittest.TestCase):
     def test_stale_cloud_scan_does_not_hide_a_concurrent_upload(self) -> None:
         from app.catalog import ArchiveCatalog
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "concurrent-upload.db"
-            migrated = run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(path)) as connection:
-                seed_vault(connection)
+        with fresh_database() as database:
+            with database.connect() as connection:
+                seed_vault(connection, id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
                 ids = {}
                 for name in ("old.txt", "new.txt"):

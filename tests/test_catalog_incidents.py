@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import Mock
 
 for _flag, _value in (
@@ -27,24 +23,18 @@ from app.services.component_health import (
     runtime_fields_from_health,
 )
 from app.services import notifications
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class CatalogIncidentTests(unittest.TestCase):
+class CatalogIncidentTests(FrostVaultTestCase):
     """Missing-version problems are notifications derived from availability (#593)."""
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "incidents.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            seed_vault(connection, vault_id=1)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, source_root="/source")
             self.vault = dict(connection.execute(
                 "SELECT id, uuid FROM vaults WHERE id=1"
             ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
@@ -81,7 +71,7 @@ class CatalogIncidentTests(unittest.TestCase):
 
     def test_missing_archive_audit_opens_deduped_durable_alert(self) -> None:
         client = self._empty_client()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, self.vault, client)
             notes = self._problems(connection)
         self.assertEqual(report["missing_in_cloud"], 1)
@@ -94,7 +84,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(notes[0]["problem_status"], "open")
         self.assertEqual(notes[0]["message_params"]["path"], "docs/report.pdf")
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, self.vault, client)
             self.assertEqual(notifications.count_open_problems(connection), 1)
             notes = self._problems(connection)
@@ -103,9 +93,9 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(notes[0]["problem_status"], "open")
 
     def test_incident_survives_reopen_and_resolves_when_listed(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             audit_vault_catalog(connection, self.vault, self._empty_client())
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(notifications.count_open_problems(connection), 1)
             client = Mock()
             client.get_paginator.return_value = self._paginator(
@@ -120,7 +110,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertIsNotNone(note["resolved_at"])
 
     def test_problem_closes_from_the_version_state_alone(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             audit_vault_catalog(connection, self.vault, self._empty_client())
             # A later listing (any observation) locates the exact version again.
             connection.execute(
@@ -131,7 +121,7 @@ class CatalogIncidentTests(unittest.TestCase):
             self.assertEqual(self._problems(connection)[0]["problem_status"], "resolved")
 
     def test_concurrent_upload_does_not_mark_missing_or_alert(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO jobs(
@@ -159,7 +149,7 @@ class CatalogIncidentTests(unittest.TestCase):
 
         client = Mock()
         client.get_paginator.return_value = BrokenPaginator()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             with self.assertRaisesRegex(RuntimeError, "listing truncated"):
                 audit_vault_catalog(connection, self.vault, client)
             availability = connection.execute(
@@ -171,7 +161,7 @@ class CatalogIncidentTests(unittest.TestCase):
         self.assertEqual(notes, [])
 
     def test_component_health_survives_reopen(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             record_component_health(
                 connection,
                 vault_id=1,
@@ -187,7 +177,7 @@ class CatalogIncidentTests(unittest.TestCase):
                 verified=True,
                 extra={"missing_in_cloud": 1, "healthy": 0, "command_ok": 1},
             )
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             health = load_vault_health(connection, 1)
             overlay = runtime_fields_from_health(health)
         self.assertEqual(health["cloud"]["last_error"], "Cloud scan: timeout")

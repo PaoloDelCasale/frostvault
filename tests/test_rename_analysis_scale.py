@@ -10,19 +10,15 @@ real execution plans, that the rows the statements examine grow linearly.
 """
 from __future__ import annotations
 
-import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 from app.services.operation_policies import queue_auto_uploads
-from tests.catalog_support import seed_vault
-from tests.postgres import PostgresConnection
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 VAULT_ID = 2
@@ -76,17 +72,15 @@ def _plan_nodes(node: dict[str, Any]):
         yield from _plan_nodes(child)
 
 
-class RenameAnalysisScaleTests(unittest.TestCase):
+class RenameAnalysisScaleTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.source_root = str(Path(directory.name) / "source")
-        database = Path(directory.name) / "catalog"
-        migrated = run_alembic(database)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(database)
+        super().setUp()
+        self.source_root = str(self.tmp_path / "source")
+        self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
-        seed_vault(self.connection, vault_id=VAULT_ID, source_root=self.source_root)
+        seed_vault(self.connection, id=VAULT_ID, source_root=self.source_root)
         # Half of the Vault fingerprinted, half still waiting for its digest:
         # an adoption interrupted by a restart. Nothing is missing.
         self.connection.execute(

@@ -21,16 +21,11 @@ from app.services import upload_failure_problems
 from app.services import upload_provenance as provenance
 from app.services import upload_remediation as remediation
 from tests import test_upload_worker as worker
-from tests.catalog_support import seed_vault
+from tests.fixtures import seed_vault
 
 A = worker.A
 
-_HELPERS = ("setUp", "db", "observe", "write", "queue", "claim", "run_job", "due", "abandon",
-            "job", "file_row", "rows", "version", "assert_current")
-
-
-class UploadRemediationTests(unittest.TestCase):
-    locals().update({name: getattr(worker.UploadWorkerTests, name) for name in _HELPERS})
+class UploadRemediationTests(worker.UploadWorkerCase):
 
     # -- helpers -------------------------------------------------------------
 
@@ -329,7 +324,7 @@ class UploadRemediationTests(unittest.TestCase):
         with self.db() as connection:
             other_root = self.root / "other"
             other_root.mkdir()
-            seed_vault(connection, vault_id=3, source_root=str(other_root))
+            seed_vault(connection, id=3, source_root=str(other_root))
             other = ArchiveCatalog(connection).observe_local_copy(
                 vault_id=3, path="other.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at=storage.now_iso())

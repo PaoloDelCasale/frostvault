@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 for _flag, _value in (
@@ -27,22 +23,19 @@ from app.storage import (
     schedule_upload_retry,
     set_job,
 )
-from tests.catalog_support import seed_vault
-from tests.postgres import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 DEAD_WORKER = "00000000-0000-4000-8000-00000000dead"
 
 
-class JobPrometheusCounterTests(unittest.TestCase):
+class JobPrometheusCounterTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "metrics.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
         metrics_service.reset_for_tests()
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=2)
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, source_root="/source")
             catalog = ArchiveCatalog(connection)
             self.file_id = catalog.observe_local_copy(
                 vault_id=2,
@@ -55,7 +48,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
             self.job_id = self._insert_job(connection, "upload")
         self._db = patch(
             "app.storage.db",
-            side_effect=lambda: PostgresConnection(str(self.path)),
+            side_effect=lambda: self.database.connect(),
         )
         self._db.start()
         self.addCleanup(self._db.stop)
@@ -120,7 +113,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertNotIn("jobs_failed_total", text)
 
     def test_reconcile_failed_job_increments_after_commit(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self._dead_lease(connection, self.job_id)
         with patch(
             "app.storage.source_layout.vault_local_access",
@@ -137,7 +130,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertNotIn("jobs_completed_total", text)
 
     def test_reconcile_failure_increments_failed_counter(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             # A Job never changes action: end the upload, then interrupt a recovery.
             connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (self.job_id,))
             self.job_id = self._insert_job(connection, "recover", "downloading")
@@ -154,7 +147,7 @@ class JobPrometheusCounterTests(unittest.TestCase):
         self.assertEqual(summary["failed"], 1)
         text = metrics_service.render_prometheus()
         self.assertIn('jobs_failed_total{action="recover"} 1', text)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             status = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()["status"]

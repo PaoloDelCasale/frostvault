@@ -39,8 +39,8 @@ from app.services import bucket_metrics
 from app.services.vault_buckets import TAG_VAULT
 from app.services.vaults import VAULT_ROW_SQL
 from tests import test_cloud_purge, test_duplicate_cleanup
-from tests import test_upload_worker as fixtures
-from tests.catalog_support import seed_vault
+from tests import test_upload_worker as worker
+from tests.fixtures import seed_vault
 from tests.test_upload_worker import A, B
 from tests.upload_provenance_provider import VersionedProvider
 
@@ -49,15 +49,10 @@ DAYS = 30
 PAST = (datetime.now(timezone.utc) - timedelta(days=8)).replace(microsecond=0).isoformat()
 
 
-def locked_seed(connection, *, vault_id: int = 2, source_root: str = "/source", name: str = "Docs") -> int:
+def locked_seed(connection, **columns) -> dict:
     """The Vault of the upload fixture, in a Vault Bucket with a Retention Lock."""
-    target = connection.execute(
-        """INSERT INTO vault_targets(provider, bucket, region, key_layout, retention_lock_days)
-           VALUES ('s3', %s, 'eu-south-1', 'bucket_root', %s) RETURNING id""",
-        (BUCKET, DAYS)).fetchone()
-    connection.execute("INSERT INTO vaults(id, target_id, name, source_root) VALUES (%s, %s, %s, %s)",
-                       (vault_id, target["id"], name, source_root))
-    return vault_id
+    return seed_vault(connection, bucket=BUCKET,
+                      target={"key_layout": "bucket_root", "retention_lock_days": DAYS}, **columns)
 
 
 class LockedProvider(VersionedProvider):
@@ -148,18 +143,7 @@ class LockedProvider(VersionedProvider):
         return {"Retention": {"Mode": "GOVERNANCE", "RetainUntilDate": self.until(Key, VersionId)}}
 
 
-class RetentionLockFixture(unittest.TestCase):
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
+class RetentionLockFixture(worker.UploadWorkerCase):
     cloud_only = test_cloud_purge.CloudPurgeTests.cloud_only
     schedule = test_cloud_purge.CloudPurgeTests.schedule
     claim_group = test_cloud_purge.CloudPurgeTests.claim_group
@@ -168,7 +152,7 @@ class RetentionLockFixture(unittest.TestCase):
     def setUp(self) -> None:
         with patch("tests.test_upload_worker.VersionedProvider", LockedProvider), \
                 patch("tests.test_upload_worker.seed_vault", locked_seed):
-            fixtures.UploadWorkerTests.setUp(self)
+            super().setUp()
         # A Vault Bucket: the key is the relative path.
         self.key = "report.txt"
         # Its tag names this Vault (#739).
@@ -197,7 +181,7 @@ class RetentionLockFixture(unittest.TestCase):
 class RetainedVersionTests(RetentionLockFixture):
     def test_only_a_vault_with_a_retention_lock_hands_a_version_over(self) -> None:
         with self.db() as connection:
-            seed_vault(connection, vault_id=3, source_root=str(self.root / "other"))
+            seed_vault(connection, id=3, source_root=str(self.root / "other"))
             with self.assertRaises(psycopg.errors.RestrictViolation):
                 retention_lock.hand_over(connection, vault_id=3, object_key="a.txt", version_id="v1",
                                          size=1, storage_class="STANDARD",
@@ -465,7 +449,7 @@ class RetentionLockApiTests(RetentionLockFixture):
         self.assertEqual((state["vault_id"], state["days"], state["mode"], state["retained"]["count"]),
                          (2, DAYS, "GOVERNANCE", 0))
         with self.db() as connection:
-            seed_vault(connection, vault_id=3, source_root=str(self.root / "other"))
+            seed_vault(connection, id=3, source_root=str(self.root / "other"))
         self.assertEqual(main.vault_retention_lock(3, {}),
                          {"vault_id": 3, "days": None, "mode": None, "retained": None})
         with self.db() as connection:
@@ -827,21 +811,9 @@ class AutomaticGroupTests(RetentionLockFixture):
                          sorted((v["object_key"], v["provider_version_id"]) for v in versions))
 
 
-class LegacyVaultTests(unittest.TestCase):
+class LegacyVaultTests(worker.UploadWorkerCase):
     """A shared-bucket Vault without a lock makes no extra S3 call (#749)."""
 
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
     upload = RetentionLockFixture.upload
     vault = RetentionLockFixture.vault
 
