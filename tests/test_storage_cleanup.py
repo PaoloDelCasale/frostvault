@@ -44,7 +44,8 @@ from watchfiles import Change
 from app import storage
 from app.catalog import ArchiveCatalog
 
-from app.main import FileAction, cancel_job_group, free_space, jobs, queue_jobs
+from app.main import FileAction, cancel_job_group, free_space, jobs
+from app.services.job_admission import queue_jobs
 
 
 def _fake_request() -> SimpleNamespace:
@@ -767,7 +768,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             "total_bytes": 9,
         }
         with (
-            patch("app.main.queue_jobs", return_value=queued) as queue_jobs,
+            patch("app.services.job_admission.queue_jobs", return_value=queued) as queue_jobs,
         ):
             result = free_space(
                 FileAction(path="docs/file.txt"),

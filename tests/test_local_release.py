@@ -175,18 +175,17 @@ class PathScopedLocalReleaseTests(unittest.TestCase):
         self.assertIsNone(local_release_blocking_paths(connection, 1))
 
     def test_api_refusal_names_the_blocking_path(self):
-        from app import main
-        with patch.object(main, "local_release_blocking_paths", return_value=("photos/perf2",)):
-            main._require_local_release(MagicMock(), 1, "c080/file.bin")
-            with self.assertRaises(main.LocalizedHTTPError) as raised:
-                main._require_local_release(MagicMock(), 1, "photos")
-        self.assertEqual(raised.exception.status_code, 409)
+        from app.services import job_admission
+        with patch.object(job_admission, "local_release_blocking_paths", return_value=("photos/perf2",)):
+            job_admission.require_local_release(MagicMock(), 1, "c080/file.bin")
+            with self.assertRaises(job_admission.LocalizedAdmissionRefused) as raised:
+                job_admission.require_local_release(MagicMock(), 1, "photos")
         self.assertEqual(raised.exception.message_key, "api.local_release_blocked_path")
         self.assertEqual(raised.exception.message_params, {"path": "photos/perf2"})
-        self.assertIn("photos/perf2", raised.exception.detail)
-        with patch.object(main, "local_release_blocking_paths", return_value=None):
-            with self.assertRaises(main.LocalizedHTTPError) as raised:
-                main._require_local_release(MagicMock(), 1, "c080/file.bin")
+        self.assertIn("photos/perf2", str(raised.exception))
+        with patch.object(job_admission, "local_release_blocking_paths", return_value=None):
+            with self.assertRaises(job_admission.LocalizedAdmissionRefused) as raised:
+                job_admission.require_local_release(MagicMock(), 1, "c080/file.bin")
         self.assertEqual(raised.exception.message_key, "api.local_release_unconfirmed")
 
     def test_worker_recheck_is_scoped_to_the_job_path(self):

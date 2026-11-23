@@ -16,11 +16,14 @@ from __future__ import annotations
 import os
 import unittest
 
-from fastapi import HTTPException
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.main import confirm_cloud_only_replacement, queue_jobs
+from app.services.job_admission import (
+    AdmissionRefused,
+    confirm_cloud_only_replacement,
+    queue_jobs,
+)
 from app.services import notifications as notification_service
 from app.services.email_templates import render_email
 from app.services.operation_policies import OperationPolicy, queue_auto_uploads, set_policy
@@ -86,9 +89,8 @@ class CloudOnlyPathConflictTests(worker.UploadWorkerCase):
         self.write(B)
         self.assertEqual(self.scan(), 0)
         self.assertEqual(self.file_row()["held_version_id"], self.original["id"])
-        with self.assertRaises(HTTPException) as manual:
+        with self.assertRaises(AdmissionRefused):
             queue_jobs(PATH, "upload", 2)
-        self.assertEqual(manual.exception.status_code, 409)
         self.assertEqual(self.run_queued(), [])
         self.assertEqual(self.uploads(), ["completed"], "only the original upload")
         self.assert_original_kept()
@@ -161,9 +163,9 @@ class CloudOnlyPathConflictTests(worker.UploadWorkerCase):
     def test_confirmation_requires_an_open_conflict(self) -> None:
         self.write(A)
         self.scan()
-        with self.assertRaises(HTTPException) as raised:
+        with self.assertRaises(AdmissionRefused) as raised:
             confirm_cloud_only_replacement(PATH, 2, "owner")
-        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(str(raised.exception), "No conflict with a cloud-only file at this path")
 
     def test_renaming_the_new_file_protects_it_and_keeps_the_cloud_copy(self) -> None:
         self.write(B)

@@ -169,3 +169,65 @@ def _resumed_restore_origins(connection: Any, vault_id: int, group_keys: list[st
         GROUP BY 1
         """, [vault_id, group_keys]).fetchall()
     return {row["group_key"]: row["origin"] for row in rows}
+
+
+_JOB_HISTORY_COLUMNS = "id,path,action,status,message,message_key,message_params,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,archive_version_id,upload_reconcile_only"
+
+
+def job_record(connection: Any, *, vault_id: int, job_id: int, locale: str) -> dict | None:
+    """One Job of this Vault for display, or ``None`` when it is not there."""
+    row = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE id=%s AND vault_id=%s", (job_id,vault_id)).fetchone()
+    if not row:
+        return None
+    projected = project_jobs(connection,[row])[0]
+    return {**projected,"message":present_job_message(row,locale)}
+
+
+def file_jobs(connection: Any, *, vault_id: int, path: str, locale: str,
+              before_id: int | None, limit: int) -> dict | None:
+    """Newest-first keyset page of one Vault File's Jobs; ``None`` without the file."""
+    file = connection.execute("SELECT id FROM files WHERE vault_id=%s AND path=%s",(vault_id,path)).fetchone()
+    if not file:
+        return None
+    rows = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE vault_id=%s AND file_id=%s AND id<%s ORDER BY id DESC LIMIT %s",
+        (vault_id,file["id"],before_id or 2**63-1,limit+1)).fetchall()
+    items = project_jobs(connection,rows[:limit])
+    return {"items":[{**row,"message":present_job_message(row,locale)} for row in items],
+            "next_before_id":items[-1]["id"] if len(rows)>limit else None}
+
+
+# An upload that has not begun: waiting in the queue, never admitted to the
+# upload provenance machinery, nothing linked in the cloud, not part of a
+# remediation episode. Cancelling anything else could close an ambiguous send
+# for good (ADR-0024/0025), so it stays with the single-Job cancel and Resume.
+_UNSTARTED_UPLOAD_SQL = """
+    j.vault_id=%s AND j.action='upload'
+    AND j.status IN ('queued', 'retrying')
+    AND j.archive_version_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM job_uploads b
+                    WHERE b.job_id=j.id AND (b.reconcile_only OR b.snapshot_id IS NOT NULL))
+    AND NOT EXISTS (SELECT 1 FROM upload_attempts a
+                    WHERE a.file_id=j.file_id AND a.send_started_at IS NOT NULL
+                      AND a.settled_at IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=j.id)
+    AND NOT EXISTS (SELECT 1 FROM upload_remediations r
+                    WHERE r.file_id=j.file_id AND r.closed_at IS NULL)
+"""
+
+
+def unstarted_upload_job_ids(connection: Any, *, vault_id: int, folder: str) -> list[int]:
+    """The uploads of the Vault, or of one folder and below, that have not begun.
+
+    An empty ``folder`` is the whole Vault; a folder matches itself and its
+    descendants only (``foo`` never matches ``foobar``).
+    """
+    scope_sql, scope_params = "", []
+    if folder:
+        scope_sql = "AND (f.path=%s OR starts_with(f.path, %s))"
+        scope_params = [folder, folder + "/"]
+    rows = connection.execute(
+        f"SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
+        f"WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
+        [vault_id, *scope_params],
+    ).fetchall()
+    return [int(row["id"]) for row in rows]

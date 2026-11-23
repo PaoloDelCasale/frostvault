@@ -20,7 +20,7 @@ import psycopg
 
 from app import database, storage
 from app.catalog import ArchiveCatalog
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.services import upload_pipeline as pipeline, upload_provenance as provenance
 from app.services.vault_pause import set_paused
 from app.services.vault_relocation import enroll_vault_root_identity

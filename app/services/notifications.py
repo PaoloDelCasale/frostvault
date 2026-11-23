@@ -907,6 +907,16 @@ def reconcile_problem_states(connection: Any) -> None:
     )
 
 
+def open_problems(connection: Any, *, locale: str, page: int) -> list[dict[str, Any]]:
+    """One page (100) of the open Problems, newest first."""
+    rows = connection.execute(
+        "SELECT * FROM notifications WHERE in_app_enabled "
+        "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
+        ((page - 1) * 100,),
+    ).fetchall()
+    return [_row_notification(row, locale=locale) for row in rows]
+
+
 def count_open_problems(connection: Any) -> int:
     reconcile_problem_states(connection)
     row = connection.execute(

@@ -20,15 +20,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from fastapi import HTTPException
-
-from app.main import (
-    RecoverApproveAction,
-    RecoverEstimateRequest,
-    approve_recover,
-    queue_jobs,
-    recover_estimate,
-)
+from app.main import RecoverApproveAction, approve_recover
+from app.services.job_admission import InvalidAdmission, estimate_recovery, queue_jobs
 from app.services.cost_estimates import list_prices
 from app.services.restore_estimates import (
     estimate_restore,
@@ -296,14 +289,12 @@ class DirectoryRestoreTierTests(FrostVaultTestCase):
             with (
                 override_settings(**runtime),
             ):
-                estimate = recover_estimate(
-                    RecoverEstimateRequest(
-                        path="photos",
-                        is_directory=True,
-                        restore_tier="Standard",
-                        restore_days=5,
-                    ),
-                    {"id": 2},
+                estimate = estimate_recovery(
+                    2,
+                    path="photos",
+                    is_directory=True,
+                    restore_tier="Standard",
+                    restore_days=5,
                 )
             result = self._queue(restore_tier="Standard", restore_days=5)
             jobs = self._jobs()
@@ -340,9 +331,8 @@ class DirectoryRestoreTierTests(FrostVaultTestCase):
             self._prepare_directory(Path(directory))
             for tier in ("Expedited", "Fast"):
                 with self.subTest(tier=tier):
-                    with self.assertRaises(HTTPException) as raised:
+                    with self.assertRaises(InvalidAdmission):
                         self._queue(restore_tier=tier)
-                    self.assertEqual(raised.exception.status_code, 422)
             self.assertEqual(self._jobs(), {})
 
     def test_directory_without_archived_files_echoes_no_tier(self) -> None:
@@ -469,9 +459,8 @@ class GroupRestoreFixture(FrostVaultTestCase):
         with (
             override_settings(**runtime),
         ):
-            estimate = recover_estimate(
-                RecoverEstimateRequest(path="photos", is_directory=True, restore_tier="Bulk"),
-                {"id": 2},
+            estimate = estimate_recovery(
+                2, path="photos", is_directory=True, restore_tier="Bulk",
             )
             queued = queue_jobs("photos", "recover", 2, True, restore_tier="Bulk")
         return estimate, queued

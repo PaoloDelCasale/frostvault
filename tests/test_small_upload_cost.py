@@ -2,7 +2,7 @@
 
 A bulk upload of small files is bounded by what one file costs the catalog, not
 by the network. These tests run one real upload on disposable PostgreSQL 16:
-admission through the API's ``queue_jobs``, the scheduler's claim, then
+admission through ``job_admission.queue_jobs``, the scheduler's claim, then
 ``storage.process_job`` with its S3 readiness gate, verification and the exact
 cleanup, up to the completed Job. Only the S3 transport is synthetic
 (``VersionedProvider``, as in ``tests.test_upload_worker``).
@@ -148,7 +148,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
 
     def upload(self, path: str = "report.txt", *, mode: str | None = None) -> Cost:
         """Admit, claim and run one upload of ``path``; return its whole cost."""
-        from app import main
+        from app.services import job_admission
         if mode is not None:
             with self.db() as connection:
                 connection.execute(
@@ -156,7 +156,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
                     "ON CONFLICT (vault_id) DO UPDATE SET upload_verification=EXCLUDED.upload_verification",
                     (mode,))
         with counted() as cost:
-            main.queue_jobs(path, "upload", 2)
+            job_admission.queue_jobs(path, "upload", 2)
         job_id = self.rows("SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
                            "WHERE f.path=%s AND j.status='queued'", path)[0]["id"]
         # The scheduler hands the worker the candidate row it read for the

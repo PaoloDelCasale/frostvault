@@ -613,7 +613,7 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
     def test_upload_scan_and_audit_use_the_bucket_root(self) -> None:
         from app import storage
         from app.catalog import ArchiveCatalog
-        from app.main import queue_jobs
+        from app.services.job_admission import queue_jobs
         from app.services.catalog_audit import audit_vault_catalog
         from tests.upload_support import claimed_job_row
 

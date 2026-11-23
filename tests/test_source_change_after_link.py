@@ -29,7 +29,7 @@ for _flag, _value in (
 
 from app.catalog import ArchiveCatalog
 
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
 from tests.fixtures import Database, FrostVaultTestCase, override_settings
 from tests.test_upload_verification import _observed, _prepare_plain_vault, _sha256_hex

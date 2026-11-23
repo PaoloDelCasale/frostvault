@@ -156,6 +156,11 @@ def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | 
         validate_glob(glob)
 
 
+def lock_vault_policy(connection: Any, vault_id: int) -> None:
+    """Serialize the read, change and write of one Vault's policy."""
+    connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
+
+
 def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
     row = connection.execute(
         "SELECT * FROM vault_operation_policies WHERE vault_id=%s",

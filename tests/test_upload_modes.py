@@ -6,7 +6,7 @@ from unittest.mock import patch
 from botocore.exceptions import ClientError
 
 from app.catalog import ArchiveCatalog
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.services.operation_policies import OperationPolicy, get_policy, set_policy
 from app.services.upload_snapshot import sha256_b64
 from app.services.upload_snapshot import UploadSnapshot

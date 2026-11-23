@@ -15,7 +15,7 @@ from unittest.mock import patch
 from app.catalog import ArchiveCatalog
 from tests.catalog_support import fingerprint, queue_rename_job
 
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import process_jobs_once, s3_client
 from app.services import upload_remediation, vault_moves
