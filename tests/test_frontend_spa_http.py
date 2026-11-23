@@ -55,8 +55,8 @@ class FrontendSpaHttpTests(FrostVaultTestCase):
         self.assertNotIn("/static/style.css", response.text)
 
     def test_html_routes_serve_spa(self) -> None:
-        """Seam 2: login / vaults/new / vault/access / admin serve the SPA."""
-        for path in ("/login", "/vaults/new", "/general", "/problems"):
+        """Seam 2: every client route serves the SPA, an unknown one included."""
+        for path in ("/login", "/vaults/new", "/general", "/problems", "/admin", "/vault/access"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, f"{path}: {response.text}")
             self.assertIn("spa-shell", response.text, path)

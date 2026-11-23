@@ -183,39 +183,6 @@ class SharedBucketLifecycleTests(unittest.TestCase):
         self.assertEqual(s3.mutating_calls(), [])
 
 
-class RemovedSettingsTests(unittest.TestCase):
-    """S8: VAULT_S3_BUCKET / S3_BUCKET are ignored, with one warning naming them only."""
-
-    def test_one_warning_names_the_settings_never_their_values(self) -> None:
-        from app.config import warn_removed_settings
-
-        with self.assertLogs("app.config", level="WARNING") as logs:
-            message = warn_removed_settings({"VAULT_S3_BUCKET": "secret-bucket-name",
-                                             "S3_BUCKET": "other-secret", "AWS_DEFAULT_REGION": "x"})
-        self.assertEqual(len(logs.records), 1)
-        self.assertEqual(logs.records[0].levelname, "WARNING")
-        self.assertEqual(message, "VAULT_S3_BUCKET and S3_BUCKET ignored since 0.15.0; "
-                                  "each Vault uses its own bucket")
-        self.assertNotIn("secret", logs.output[0])
-        with self.assertLogs("app.config", level="WARNING") as logs:
-            warn_removed_settings({"S3_BUCKET": "b"})
-        self.assertEqual(logs.records[0].getMessage(),
-                         "S3_BUCKET ignored since 0.15.0; each Vault uses its own bucket")
-
-    def test_nothing_is_logged_without_them(self) -> None:
-        from app.config import warn_removed_settings
-
-        with self.assertNoLogs("app.config", level="WARNING"):
-            self.assertIsNone(warn_removed_settings({"VAULT_S3_BUCKET": " ", "AWS_DEFAULT_REGION": "x"}))
-
-    def test_the_application_start_warns(self) -> None:
-        import inspect
-
-        import app.main as main
-
-        self.assertIn("warn_removed_settings()", inspect.getsource(main.lifespan))
-
-
 class FirstScanTests(unittest.TestCase):
     """S4: a Vault the loop activates is scanned on its own thread, not the maintenance pool."""
 

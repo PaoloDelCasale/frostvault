@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,26 +212,6 @@ class Settings:
 
 
 settings = Settings()
-
-
-# Settings that are read no more. A Vault created before 0.15.0 keeps its
-# bucket in its Vault Target; every new Vault gets its own bucket (#735).
-REMOVED_BUCKET_SETTINGS = ("VAULT_S3_BUCKET", "S3_BUCKET")
-
-
-def warn_removed_settings(environ: Any = None) -> str | None:
-    """Log one WARNING when a removed bucket setting is still set.
-
-    Names the settings only, never their values. Returns the message logged.
-    """
-    environ = os.environ if environ is None else environ
-    present = [name for name in REMOVED_BUCKET_SETTINGS if str(environ.get(name) or "").strip()]
-    if not present:
-        return None
-    message = (f"{' and '.join(present)} ignored since 0.15.0; "
-               "each Vault uses its own bucket")
-    logging.getLogger("app.config").warning(message)
-    return message
 
 
 def validate_settings() -> None:
