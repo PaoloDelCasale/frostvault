@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import cleanup_engine, cloud_deletion
+from .notifications import ProblemFamily
 
 
 class DuplicateCleanupError(cleanup_engine.CleanupError):
@@ -61,6 +62,13 @@ CLEANUP = cleanup_engine.Cleanup(
 POLL_SECONDS = cleanup_engine.POLL_SECONDS
 NOTICE_EVENT = CLEANUP.notice_event
 problem_key = CLEANUP.problem_key
+# A capped Automatic Duplicate Cleanup (#726) closes with the next run under
+# the cap (``duplicate_cleanup.run_vault``) or once the cleanup is off.
+PROBLEM_FAMILY = ProblemFamily(frozenset({CLEANUP.problem_event}), """
+    n.event='duplicate_cleanup_capped' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.duplicate_cleanup_enabled
+    )
+""")
 status = CLEANUP.status
 update_settings = CLEANUP.update_settings
 due_vaults = CLEANUP.due_vaults

@@ -33,6 +33,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from . import cleanup_engine, cloud_deletion
+from .notifications import ProblemFamily
 from .lifecycle_policies import load_vault_plan
 from .vault_moves import MINIMUM_DAYS
 
@@ -147,6 +148,12 @@ CLEANUP = cleanup_engine.Cleanup(
 POLL_SECONDS = cleanup_engine.POLL_SECONDS
 NOTICE_EVENT = CLEANUP.notice_event
 problem_key = CLEANUP.problem_key
+# A capped Mirror Cleanup (#771) closes the same way, once its cleanup is off.
+PROBLEM_FAMILY = ProblemFamily(frozenset({CLEANUP.problem_event}), """
+    n.event='mirror_cleanup_capped' AND NOT EXISTS (
+        SELECT 1 FROM vaults v WHERE v.id=n.vault_id AND v.mirror_cleanup_enabled
+    )
+""")
 status = CLEANUP.status
 update_settings = CLEANUP.update_settings
 due_vaults = CLEANUP.due_vaults

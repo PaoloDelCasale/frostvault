@@ -5,6 +5,7 @@ Materialized cloud writes still require the exact remediation/cleanup proof.
 Only a failure with no cloud work left to reconcile can be superseded by later
 successful protection of the same File's current Local Copy.
 """
+from .notifications import ProblemFamily
 from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL
 from .upload_remediation import CLOSED_SQL as REMEDIATION_CLOSED_SQL
 
@@ -63,3 +64,23 @@ NOTIFIED_CLOSED_SQL = """EXISTS (
 )"""
 
 CLOSED_UPLOAD_FAILURE_SQL = f"({REMEDIATION_CLOSED_SQL} OR {REMOVED_FILE_FAILURE_SQL} OR {SUPERSEDED_FAILURE_SQL} OR {NOTIFIED_CLOSED_SQL})"
+
+# The notice of one failed upload closes with that failure; the notice of a
+# burst closes once every failure it folded is closed (#499).
+JOB_FAILED_FAMILY = ProblemFamily(frozenset({"job_failed"}), f"""
+    n.event='job_failed' AND EXISTS (
+        SELECT 1 FROM jobs original WHERE original.id=n.job_id AND {CLOSED_UPLOAD_FAILURE_SQL}
+    )
+""")
+JOB_FAILED_GROUP_FAMILY = ProblemFamily(frozenset({"job_failed_group"}), f"""
+    n.event='job_failed_group' AND NOT EXISTS (
+        SELECT 1 FROM jobs original
+        WHERE original.vault_id=n.vault_id AND original.action='upload'
+          AND original.status='failed'
+          AND original.updated_at >= (n.message_params->>'since')::timestamptz
+          AND original.updated_at <= COALESCE((n.message_params->>'last')::timestamptz, 'infinity')
+          AND NOT EXISTS (SELECT 1 FROM notifications own
+                          WHERE own.job_id=original.id AND own.event='job_failed')
+          AND NOT {CLOSED_UPLOAD_FAILURE_SQL}
+    )
+""")

@@ -186,8 +186,20 @@ def fresh_database() -> Database:
     Use it as a context manager (``self.enterContext(fresh_database())``) to
     drop it at the end of the test; databases left behind are dropped at exit.
     """
+    _install_problem_families()
     with _LOCK:
         return Database(_create("db", _migrated_template()))
+
+
+def _install_problem_families() -> None:
+    """Give the inbox its Problem families, as ``app.main`` does (#804).
+
+    Only once the application is imported: importing it here would read the
+    environment before the e2e seed script has set it (see above).
+    """
+    if "app.config" in sys.modules:
+        from app.services import problem_families
+        problem_families.install()
 
 
 def empty_database() -> Database:
@@ -217,6 +229,7 @@ def override_settings(**changes: Any) -> Iterator[config.Settings]:
     state (Source Device slots, metrics, runtime status) keeps its own reset.
     """
     from app import config
+    _install_problem_families()
     unknown = sorted(set(changes) - {field.name for field in fields(config.Settings)})
     if unknown:
         raise TypeError("not a Settings field: " + ", ".join(unknown))

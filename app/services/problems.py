@@ -14,7 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .notifications import set_problem
+from .notifications import ProblemFamily, set_problem
+
+# An unreadable path closes with the next clean observation of its Vault's
+# source, or of that very path.
+FILE_UNREADABLE_FAMILY = ProblemFamily(frozenset({"file_unreadable"}), """
+    n.event='file_unreadable' AND (
+        EXISTS (SELECT 1 FROM vault_component_health h WHERE h.vault_id=n.vault_id
+                AND h.component='source' AND h.last_error IS NULL AND h.last_success_at>n.created_at)
+        OR EXISTS (SELECT 1 FROM files f
+                   WHERE f.vault_id=n.vault_id AND f.path=(n.message_params->>'path')
+                     AND f.local_observed_at>n.created_at)
+    )
+""")
 
 
 def report_problem(

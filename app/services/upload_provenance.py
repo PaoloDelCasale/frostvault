@@ -25,6 +25,7 @@ from .upload_snapshot import MODES, UploadSnapshot
 from . import s3
 from .s3 import ProviderResponseError, object_version_entries
 from .job_queue import OPEN_JOB_SQL, open_job_sql
+from .notifications import ProblemFamily
 from .vault_paths import expected_cloud_key, object_prefix
 
 TOKEN_KEY = "frostvault-upload"
@@ -40,6 +41,18 @@ WAIT_REASONS = frozenset({"vault_suspended"})
 TERMINAL_JOB_REASONS = frozenset({"owner_cancelled", "already_resolved"})
 # Refusals journaled by the SDK seam, plus the outcome proven by complete S3 reads.
 NO_WRITE_OPERATIONS = frozenset({'PutObject','CreateMultipartUpload','UploadPart','CompleteMultipartUpload',ABSENT_OPERATION})
+# A reconciliation Problem names one blocked file (#628): it closes when no
+# file under its key is blocked any more, whichever successful Job cleared the
+# block (publication, an unchanged match, a proof of absence) and even when the
+# Job that cleared it stopped before it could close the Problem itself.
+RECONCILIATION_PROBLEM_FAMILY = ProblemFamily(frozenset({"upload_reconciliation"}), """
+    n.event='upload_reconciliation' AND starts_with(n.dedupe_key, 'upload_reconciliation:')
+    AND NOT EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.reconciliation_block IS NOT NULL
+          AND 'upload_reconciliation:' || f.id::text = n.dedupe_key
+    )
+""")
 REMEDIES = {
     "upload_journal_unavailable": "The upload receipt journal is unavailable. Restore database write availability; the Job resumes automatically without spending transfer retries or repeating an uncertain send.",
     "ambiguous_send": "Keep copies and stop external S3 writers. Retry exact reconciliation after the provider outcome is known; the send restarts by itself only when S3 positively proves nothing was written.",

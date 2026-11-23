@@ -74,7 +74,8 @@ class DatabaseRetryTests(unittest.TestCase):
         self.assertEqual(events, ["begin", "mutation", "commit", "close"])
 
     def test_optional_notification_does_not_swallow_aborted_authoritative_unit(self) -> None:
-        from app.services import notifications
+        from app.services import notifications, problem_families
+        problem_families.install()
         for error in (DeadlockDetected(), SerializationFailure()):
             connection = MagicMock()
             with self.subTest(error=type(error).__name__), patch.object(

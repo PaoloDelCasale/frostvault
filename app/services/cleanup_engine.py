@@ -35,6 +35,7 @@ from . import cloud_deletion, minimum_storage
 from .audit_events import record_audit_event
 from .job_queue import open_job_sql
 from .lifecycle_policies import load_vault_plan
+from .notifications import enqueue_notification, set_problem
 
 POLL_SECONDS = 300.0
 RUN_INTERVAL = timedelta(days=1)
@@ -312,7 +313,6 @@ class Cleanup:
 
     def _set_capped_problem(self, connection: Any, vault_id: int, *, active: bool,
                             params: dict[str, Any] | None = None) -> None:
-        from .notifications import set_problem
         set_problem(connection, key=self.problem_key(vault_id), event=self.problem_event,
                     vault_id=vault_id, active=active, params=params, email=True)
 
@@ -390,7 +390,6 @@ class Cleanup:
         scheduled = cloud_deletion.schedule_automatic_duplicates(
             connection, vault=vault, files=files, preview=preview, requested_at=now.isoformat(),
             reason=translate(f"{self.name}.reason", locale=DEFAULT_LOCALE), mirror=self.mirror)
-        from .notifications import enqueue_notification
         notice = self.notice_event
         enqueue_notification(
             connection, vault_id=vault_id, event=notice, title="",

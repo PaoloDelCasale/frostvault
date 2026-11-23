@@ -65,6 +65,7 @@ from .minimum_storage import class_entry, remaining_cost
 from .vault_moves import MINIMUM_DAYS
 from .vault_buckets import TAG_VAULT
 from .job_queue import OPEN_JOB_SQL
+from .notifications import set_problem
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
 from .vaults import VAULT_ROW_SQL
 
@@ -489,7 +490,6 @@ def _bucket_plan(vault: dict[str, Any], delete_bucket: bool) -> str:
 
 
 def _close_problem(connection: Any, vault_id: int) -> None:
-    from .notifications import set_problem
     set_problem(connection, key=f"vault_deletion:{vault_id}", event=PROBLEM_EVENT,
                 vault_id=vault_id, active=False)
 
@@ -715,7 +715,6 @@ def _failure_detail(exc: BaseException) -> dict[str, Any]:
 
 def _record_failure(database: Database, *, vault_id: int, failure: dict[str, Any],
                     progress: _Progress) -> None:
-    from .notifications import set_problem
     failure = {**failure, "deleted_versions": progress.versions,
                "deleted_markers": progress.markers, "aborted_uploads": progress.uploads}
     with database() as connection:
@@ -745,7 +744,6 @@ def _record_deferral(database: Database, *, vault_id: int, progress: _Progress) 
     RetainUntilDate, at most once a day, and says until when the last version
     stays locked. The Tombstone and its catalog stay until the bucket is empty.
     """
-    from .notifications import set_problem
     first = min(progress.locked.values())
     last = max(progress.locked.values())
     run_after = max(first, datetime.now(timezone.utc) + timedelta(seconds=DEFERRED_RETRY_SECONDS))

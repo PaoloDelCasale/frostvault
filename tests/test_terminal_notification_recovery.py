@@ -36,8 +36,6 @@ class TerminalNotificationRecoveryTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, id=2)
             self.job_id = seed_job(connection, vault_id=2, status="uploading")
-        self.enterContext(patch(
-            "app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"))
 
     def test_terminal_notification_insert_failure_is_retried(self) -> None:
         with patch(

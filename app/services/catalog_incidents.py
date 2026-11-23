@@ -23,6 +23,22 @@ from . import notifications as notification_service
 INCIDENT_KIND_MISSING = "archive_version_missing"
 INCIDENT_KIND_CLOUD_ONLY_CONFLICT = "cloud_only_conflict"
 MISSING_KEY_PREFIX = "missing:"
+# A missing-version problem closes once a listing locates that exact version
+# again (or the version is gone through an authorized cleanup); a Cloud-only
+# Conflict closes once its file no longer holds that version (#593).
+PROBLEM_FAMILY = notification_service.ProblemFamily(frozenset({INCIDENT_KIND_MISSING, INCIDENT_KIND_CLOUD_ONLY_CONFLICT}), """
+    (n.event='archive_version_missing' AND starts_with(n.dedupe_key, 'missing:')
+     AND NOT EXISTS (
+        SELECT 1 FROM archive_versions av
+        WHERE av.id::text=substr(n.dedupe_key, 9) AND av.availability='missing'
+    ))
+    OR (n.event='cloud_only_conflict' AND starts_with(n.dedupe_key, 'conflict:')
+     AND NOT EXISTS (
+        SELECT 1 FROM files f
+        WHERE 'conflict:' || f.id::text || ':' || f.held_version_id::text = n.dedupe_key
+          AND f.local_presence='present'
+    ))
+""")
 
 
 def missing_key(version_id: Any) -> str:
