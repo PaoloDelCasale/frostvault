@@ -38,9 +38,9 @@ from app.services import upload_remediation
 from app.services.vault_relocation import enroll_vault_root_identity
 from app.services.vaults import VAULT_ROW_SQL
 from app.services.upload_snapshot import UploadSnapshot
-from tests.catalog_support import queue_rename_job, seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.catalog_support import queue_rename_job
+from tests.fixtures import create_owner, fresh_database, override_settings, seed_vault
+from tests.postgres import path_alias
 from tests.upload_provenance_provider import VersionedProvider
 from tests.upload_support import claimed_job_row, job_row
 
@@ -56,7 +56,7 @@ def prepare_unsent(case, job_id):
     two units can. Keep exercising its refresh and closure with real facts.
     """
     snapshot, _ = storage.prepare_upload_snapshot(case.file, lambda: None)
-    with PostgresConnection(case.db_path) as connection:
+    with case.database.connect() as connection:
         job = job_row(connection, job_id)
         pinned = provenance.target(connection, job,
             key=f"vaults/{job['vault_uuid']}/{job['path']}",
@@ -70,6 +70,8 @@ def prepare_unsent(case, job_id):
 
 
 class UploadProvenanceWorkerTests(unittest.TestCase):
+    # Classes that are not subclasses borrow this setUp and these methods, so
+    # they use the fixture functions rather than FrostVaultTestCase.
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -78,19 +80,19 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.source.mkdir()
         self.file = self.source / "report.txt"
         self.file.write_bytes(A)
-        self.db_path = self.root / "catalog"
-        result = run_alembic(self.db_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.database = self.enterContext(fresh_database())
+        # Borrowers not migrated yet open the database by this path (#801).
+        self.db_path = path_alias(self.database, self.root)
         self.provider = VersionedProvider()
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertTrue(connection.execute("SHOW server_version_num").fetchone()["server_version_num"].startswith("16"))
-            insert_owner(connection)
-            seed_vault(connection, vault_id=2, source_root=str(self.source))
+            create_owner(connection)
+            seed_vault(connection, id=2, source_root=str(self.source))
             enroll_vault_root_identity(connection, 2, str(self.source))
             self.file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(A), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
             self.uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
         self.key = f"vaults/{self.uuid}/report.txt"
-        self.enterContext(patch("app.database.settings", SimpleNamespace(database_dsn=database_dsn(self.db_path))))
+        self.enterContext(override_settings(database_dsn=self.database.dsn))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
@@ -98,23 +100,23 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def queue(self):
         queued = queue_jobs("report.txt", "upload", 2)
         self.assertEqual(queued["item_count"], 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
 
     def run_job(self, job_id):
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             claimed = ArchiveCatalog(connection).claim_job(job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(), claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(), restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed)
             job = claimed_job_row(connection, job_id, claimed)
         return storage.process_job(job)
 
     def row(self, job_id):
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM jobs WHERE id=%s", (job_id,)).fetchone()
 
     def resume(self):
         self.provider.hook = lambda *args, **kwargs: None
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
             result = upload_remediation.schedule_resume(connection, vault=vault, path="report.txt", user_id=1, timestamp=storage.now_iso())
         self.run_job(result["job_id"])
@@ -123,7 +125,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def http_client(self):
         from fastapi.testclient import TestClient
         from app.main import app, current_user, current_vault
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
         previous = dict(app.dependency_overrides)
         app.dependency_overrides[current_user] = lambda: {"id":1}
@@ -139,7 +141,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def assert_keeper(self, job_id):
         row = self.row(job_id)
         self.assertEqual(row["status"], "completed", row["message"])
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             version = connection.execute("SELECT * FROM archive_versions WHERE id=%s", (row["archive_version_id"],)).fetchone()
         self.assertEqual((version["integrity"], version["availability"]), ("verified", "available"))
         self.assertIn((version["object_key"], version["provider_version_id"]), self.provider.objects)
@@ -156,7 +158,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.file.rename(renamed)
         # A later Local Copy observation is not the archived timestamp.
         os.utime(renamed, ns=(original + 1000, original + 1000))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             timestamp = storage.now_iso()
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=timestamp, vault_id=2)
@@ -168,11 +170,11 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                 mtime_ns=renamed.stat().st_mtime_ns, match_current=True))
         def process(action):
             if action == "rename":
-                with PostgresConnection(self.db_path) as connection:
+                with self.database.connect() as connection:
                     queue_rename_job(connection, 2, "renamed.txt")
             else:
                 queue_jobs("renamed.txt", action, 2)
-            with PostgresConnection(self.db_path) as connection:
+            with self.database.connect() as connection:
                 queued = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
             self.run_job(queued)
             row = self.row(queued)
@@ -191,7 +193,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def test_module_run_accepts_a_claimed_job_and_returns_its_durable_outcome(self):
         from app.services.upload_execution import UploadExecution
         job_id = self.queue()
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
                 claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
                 claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
@@ -209,7 +211,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def test_committed_intent_send_snapshot_and_token_precede_provider_mutation(self):
         def inspect(stage, **kwargs):
             if stage == "before_put":
-                with PostgresConnection(self.db_path) as connection:
+                with self.database.connect() as connection:
                     attempt = connection.execute("SELECT * FROM upload_attempts").fetchone()
                     snapshot = connection.execute("SELECT * FROM upload_snapshots WHERE id=%s",
                                                   (attempt["snapshot_id"],)).fetchone()
@@ -248,14 +250,14 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(len(attempts),2,'Replay only the refused-result DB publication, never the PUT')
         first = self.row(job)
         self.assertEqual((first['status'],first['retry_count']),('queued',0))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             refused_attempt = connection.execute('SELECT * FROM upload_attempts WHERE job_id=%s', (job,)).fetchone()
             self.assertEqual((refused_attempt['outcome'], refused_attempt['no_write_operation']), ('no_write', 'PutObject'))
             self.assertIsNone(provenance.receipt(connection, str(refused_attempt['id'])))
         self.run_job(job)
         self.assert_keeper(job)
         self.assertEqual(self.provider.puts,1,'One successful object, no blind replay of ambiguous PUT')
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             rows = connection.execute('SELECT * FROM upload_attempts WHERE job_id=%s ORDER BY created_at', (job,)).fetchall()
         # The same snapshot is sent again by a new attempt with its own token.
         self.assertEqual([row['outcome'] for row in rows], ['no_write', 'landed'])
@@ -272,7 +274,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertFalse(self.run_job(job))
         self.assertEqual(self.row(job)['status'],'queued')
         self.assertEqual(self.provider.puts,1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection,job)
             self.assertTrue(intent.send_started)
             self.assertEqual(connection.execute('SELECT count(*) n FROM upload_receipts').fetchone()['n'],0)
@@ -289,7 +291,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             self.run_job(job)
         self.assertEqual(self.provider.puts, 0)
         self.assertEqual(self.provider.objects, {})
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertIsNone(provenance.load_for_job(connection, job),
                 "Prepare and send-started roll back together before any PUT")
 
@@ -331,12 +333,12 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         # unknown commit; a later Job reconciles this one exact provider write.
         self.assertEqual(len(appends), 2)
         self.assertEqual(self.provider.puts, 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
             self.assertEqual(connection.execute("SELECT count(*) n FROM upload_receipts").fetchone()["n"], 1)
         self.assertEqual(self.row(job)["status"], "retrying")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (job,))
         self.run_job(job)
         self.assert_keeper(job)
@@ -347,7 +349,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         original = self.queue()
         self.run_job(original)
         self.assertEqual(self.row(original)["status"], "failed")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM upload_receipts").fetchone()["n"], 0)
         resumed = self.resume()
         self.assert_keeper(resumed)
@@ -359,19 +361,19 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         original = self.queue()
         self.run_job(original)
         self.assertIsNone(self.row(original)["archive_version_id"])
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             receipt = provenance.receipt(connection, connection.execute("SELECT id FROM upload_attempts").fetchone()["id"])
             self.assertIn((self.key, receipt["VersionId"]), self.provider.objects)
         # Source B and changed requested mode must not redefine A's expected proof.
         self.observe_content(B)
         from app.services.operation_policies import OperationPolicy, set_policy
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             set_policy(connection, 2, OperationPolicy(upload_verification="read_back"))
         resumed = self.resume()
         keeper = self.assert_keeper(resumed)
         self.assertEqual(bytes(keeper["plaintext_sha256"]), hashlib.sha256(A).digest())
         self.assertEqual(keeper["verification_method"], "s3_checksum")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             local = connection.execute("SELECT * FROM files WHERE id=%s", (self.file_id,)).fetchone()
         self.assertNotEqual(local["matched_version_id"], keeper["id"])
         self.assertEqual(self.provider.puts, 1)
@@ -390,7 +392,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         # exhausted) leaves an exact reconciliation; an ordinary upload is 409.
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("lost response")) if stage == "accepted" else None
         original = self.queue()
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET retry_count=%s WHERE id=%s", (storage.UPLOAD_RETRY_MAX_ATTEMPTS, original))
         self.run_job(original)
         self.assertEqual(self.row(original)["status"],"failed")
@@ -402,7 +404,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             resumed = client.post("/api/upload/reconcile?vault_id=2",json={"path":"report.txt"})
         self.assertEqual(resumed.status_code,202,resumed.text)
         job_id = resumed.json()["job_id"]
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertTrue(connection.execute("SELECT reconcile_only FROM job_uploads WHERE job_id=%s", (job_id,)).fetchone()["reconcile_only"])
         self.run_job(job_id)
         self.assert_keeper(job_id)
@@ -421,7 +423,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.file.write_bytes(payload)
         if mtime_ns is not None:
             os.utime(self.file, ns=(mtime_ns, mtime_ns))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
 
     def test_linked_resume_cannot_ignore_contradictory_receipt_after_publication_crash(self):
@@ -442,7 +444,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.row(original)["status"], "failed")
         resumed = self.resume()
         self.assertEqual(self.row(resumed)["status"], "failed")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             # The receipt contradicting the frozen snapshot blocks reconciliation.
             self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "ambiguous_receipt")
             current = connection.execute("SELECT current_version_id FROM files WHERE id=%s", (self.file_id,)).fetchone()
@@ -468,7 +470,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertNotEqual(str(current["id"]), keeper)
         self.assertEqual(bytes(current["plaintext_sha256"]), hashlib.sha256(B).digest())
         self.scan()
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             versions = connection.execute("SELECT id FROM archive_versions").fetchall()
         # The exact new app write became Current; the superseded keeper was
         # deleted by its exact VersionId, never demoted by the scan.
@@ -493,7 +495,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
         original = self.queue(); self.run_job(original)
         self.assertEqual(self.row(original)["status"], "failed")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE status NOT IN ('completed','failed','cancelled')").fetchone()["n"], 0)
             rows = vault_moves.candidates(connection, 2)
             self.assertTrue(rows[0]["busy"])
@@ -511,7 +513,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.hook = cancel
         self.run_job(job)
         self.assertEqual(self.row(job)["status"], "cancelled")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
             self.assertFalse(provenance.describe(connection, vault_id=2, path="report.txt")["can_resume"])
@@ -522,11 +524,11 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         job = self.queue()
         def takeover(stage, **kwargs):
             if stage == "accepted":
-                with PostgresConnection(self.db_path) as connection:
+                with self.database.connect() as connection:
                     connection.execute("UPDATE job_leases SET token=gen_random_uuid() WHERE job_id=%s", (job,))
         self.provider.hook = takeover
         self.run_job(job)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertIsNotNone(provenance.receipt(connection, intent.id))
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions").fetchone()["n"], 0)
@@ -543,7 +545,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         resumed = self.resume()
         self.assertEqual(self.row(resumed)["status"], "failed")
         self.assertEqual((self.provider.puts, self.provider.deletes), (0, 0))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, resumed)
             self.assertTrue(intent.send_started)
             self.assertIsNone(intent.outcome)
@@ -553,7 +555,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("lost response")) if stage == "accepted" else None
         job = self.queue()
         self.run_job(job)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
         self.provider.add(self.key, A, {provenance.TOKEN_KEY: intent.token}, version="second-token")
         before = dict(self.provider.objects)
@@ -572,7 +574,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual((self.provider.gets, self.provider.deletes), (0, 0))
         self.assertIn((self.key, "old-orphan"), self.provider.objects)
         self.assertEqual(len(self.provider.objects), 2)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(provenance.describe(connection, vault_id=2, path="report.txt")["reason"], "inventory_changed")
 
     def test_historical_different_or_unreadable_preserves_keeper_with_actionable_resume(self):
@@ -580,7 +582,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         job = self.queue()
         self.run_job(job)
         self.assertEqual(self.row(job)["status"], "failed")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             state = provenance.describe(connection, vault_id=2, path="report.txt")
             versions = connection.execute("SELECT * FROM archive_versions").fetchall()
         self.assertEqual(state["reason"], "inventory_changed")
@@ -595,10 +597,10 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def test_process_death_after_acceptance_reconciles_persistent_provider_state(self):
         job = self.queue()
         state = self.root / "provider-state.json"
-        result = subprocess.run([sys.executable, "-m", "tests.upload_provenance_crash_worker"], input=json.dumps({"dsn": database_dsn(self.db_path), "job_id": job, "state_path": str(state)}), text=True, capture_output=True, timeout=40)
+        result = subprocess.run([sys.executable, "-m", "tests.upload_provenance_crash_worker"], input=json.dumps({"dsn": self.database.dsn, "job_id": job, "state_path": str(state)}), text=True, capture_output=True, timeout=40)
         self.assertEqual(result.returncode, 31, result.stderr)
         self.provider.load(state)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             self.assertTrue(intent.send_started)
             self.assertIsNone(provenance.receipt(connection, intent.id))
@@ -611,7 +613,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def test_incompatible_receipts_append_never_overwrite_or_publish(self):
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
         job = self.queue(); self.run_job(job)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             intent = provenance.load_for_job(connection, job)
             original = provenance.receipt(connection, intent.id)
         provenance.append_receipt(storage.db, intent.id, original, storage.now_iso())
@@ -620,7 +622,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         resumed = self.resume()
         self.assertEqual(self.row(resumed)["status"], "failed")
         self.assertEqual(self.provider.objects, before)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM upload_receipts").fetchone()["n"], 2)
         self.assertEqual((self.provider.puts,self.provider.deletes), (1,0))
 
@@ -633,7 +635,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         job = self.queue(); self.run_job(job)
         self.assertNotEqual(self.row(job)["status"], "completed")
         self.provider.hook = lambda *args, **kwargs: None
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (job,))
         if self.row(job)["status"] == "failed":
             job = self.resume()
@@ -653,7 +655,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         job = self.queue()
         with self.assertRaises(KeyboardInterrupt): self.run_job(job)
         self.provider.hook = lambda *args, **kwargs: None
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE job_leases SET expires_at=claimed_at + interval '1 microsecond' WHERE job_id=%s", (job,))
         storage.reconcile_interrupted_jobs()
         self.run_job(job)
@@ -661,7 +663,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual((self.provider.puts,self.provider.gets,self.provider.deletes), (1,0,1))
 
     def scan(self):
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
         storage.scan_cloud(vault, storage.now_iso())
 
@@ -670,7 +672,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.provider.add(self.key, B, version="different-discovered")
         self.scan(); self.scan()
         self.assertEqual(self.provider.deletes, 0)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(str(connection.execute("SELECT current_version_id FROM files WHERE id=%s", (self.file_id,)).fetchone()["current_version_id"]), keeper)
             self.assertEqual(connection.execute("SELECT count(*) AS n FROM archive_versions").fetchone()["n"], 1)
         self.observe_content(b"immutable content C")
@@ -686,14 +688,14 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.scan()
         renamed = self.source / "renamed.txt"
         self.file.rename(renamed)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
             catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(len(queue_rename_job(connection, 2, "renamed.txt")), 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             job = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
         self.run_job(job)
         self.assertEqual(self.row(job)["status"],"failed")
@@ -735,7 +737,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         keeper, keeper_version = self.seed_keeper()
         renamed = self.source / "renamed.txt"
         self.file.rename(renamed)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
             catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
@@ -743,7 +745,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         # Another file now lives at the old path with identical bytes and its
         # own landed keeper at the same key.
         self.file.write_bytes(A)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             foreign = ArchiveCatalog(connection).observe_local_copy(vault_id=2,path="report.txt",file_type="regular",size=len(A),mtime_ns=self.file.stat().st_mtime_ns,observed_at=storage.now_iso())
         self.assertNotEqual(str(foreign), str(self.file_id))
         foreign_job = self.queue_path("report.txt")
@@ -754,9 +756,9 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.provider.deletes, 0)
         foreign_writes = set(self.provider.objects) - {(self.key, keeper_version)}
         self.assertEqual(len(foreign_writes), 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(len(queue_rename_job(connection, 2, "renamed.txt")), 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             job = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
         self.run_job(job)
         # Whatever the rename does, another file's write is never deleted.
@@ -769,24 +771,24 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.assertEqual(self.row(job)["status"],"failed")
         self.assertEqual(self.provider.deletes,0)
         self.assertIn((self.key,"marker"),self.provider.markers)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(provenance.describe(connection,vault_id=2,path="report.txt")["reason"],"markers_present")
 
     def test_stop_protection_and_incompatible_deletion_exclude_resume(self):
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
         original = self.queue(); self.run_job(original)
         self.provider.hook = lambda *args, **kwargs: None
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=2")
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             with self.assertRaises(provenance.UploadBlocked):
                 upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='active' WHERE id=2")
             group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (2) RETURNING id").fetchone()["id"]
             connection.execute("INSERT INTO jobs(vault_id,file_id,group_id,action,status,run_after) VALUES (2,%s,%s,'cloud-purge','pending_delay',now() + interval '1 day')", (self.file_id, group))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             self.assertFalse(provenance.describe(connection,vault_id=2,path="report.txt")["can_resume"])
             with self.assertRaises(provenance.UploadBlocked):
                 upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
@@ -797,9 +799,9 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
         self.observe_content(B)
         self.provider.hook = lambda stage, **kwargs: (_ for _ in ()).throw(RuntimeError("after ack")) if stage == "acknowledged" else None
         job = self.queue(); self.run_job(job)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE files SET held_version_id=%s WHERE id=%s", (keeper,self.file_id))
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
             with self.assertRaises(provenance.UploadBlocked):
                 upload_remediation.schedule_resume(connection,vault=vault,path="report.txt",user_id=1,timestamp=storage.now_iso())
@@ -863,7 +865,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
             with self.subTest(sqlstate=code):
                 # Nontransactional sequence survives the failed COMMIT, unlike a
                 # row-based counter which would fail forever after rollback.
-                with PostgresConnection(self.db_path) as connection:
+                with self.database.connect() as connection:
                     connection.execute(f"CREATE SEQUENCE fail_{code}")
                     connection.execute(f"""CREATE FUNCTION fail_receipt_{code}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('fail_{code}')=1 THEN RAISE EXCEPTION 'commit fault' USING ERRCODE='{code}'; END IF; RETURN NEW; END $$""")
                     connection.execute(f"CREATE CONSTRAINT TRIGGER receipt_commit_fault AFTER INSERT ON upload_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_receipt_{code}()")
@@ -872,7 +874,7 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
                 self.run_job(job)
                 self.assert_keeper(job)
                 self.assertEqual(self.provider.puts - puts_before, 1)
-                with PostgresConnection(self.db_path) as connection:
+                with self.database.connect() as connection:
                     connection.execute("DROP TRIGGER receipt_commit_fault ON upload_receipts")
                     # A fresh local generation earns ordinary upload admission.
                     self.file.write_bytes(B if code == "40P01" else A)
@@ -881,5 +883,5 @@ class UploadProvenanceWorkerTests(unittest.TestCase):
     def queue_path(self, path):
         queued = queue_jobs(path, "upload", 2)
         self.assertEqual(queued["item_count"], 1)
-        with PostgresConnection(self.db_path) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]

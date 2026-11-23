@@ -8,8 +8,6 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 
 import os
@@ -18,7 +16,6 @@ import unittest
 import uuid
 from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
-from types import SimpleNamespace
 from unittest.mock import patch
 
 # Windows test hosts lack the Linux open flags imported by vault decommission.
@@ -34,12 +31,13 @@ from app.catalog import ArchiveCatalog
 
 from app.main import queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
+from tests.fixtures import Database, FrostVaultTestCase, override_settings
 from tests.test_upload_verification import _observed, _prepare_plain_vault, _sha256_hex
 from tests import catalog_probe
 
 
-def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> None:
-    with PostgresConnection(str(database_path)) as connection:
+def _force_retry_due(database: Database, relative_path: str = "report.txt") -> None:
+    with database.connect() as connection:
         connection.execute(
             "UPDATE jobs SET run_after='2000-01-01T00:00:00+00:00' "
             "WHERE file_id=(SELECT id FROM files WHERE path=%s)",
@@ -47,18 +45,18 @@ def _force_retry_due(database_path: Path, relative_path: str = "report.txt") -> 
         )
 
 
-def _observe(database_path: Path, local: Path, relative_path: str = "report.txt") -> None:
+def _observe(database: Database, local: Path, relative_path: str = "report.txt") -> None:
     """The watcher's observation of a changed Local Copy: a new generation,
     which an upload publication never matches (ADR-0035)."""
-    with PostgresConnection(str(database_path)) as connection:
+    with database.connect() as connection:
         stat = local.stat()
         ArchiveCatalog(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=stat.st_size,
             mtime_ns=stat.st_mtime_ns, observed_at="2026-07-21T10:05:00+00:00")
 
 
-def _job_row(database_path: Path, relative_path: str = "report.txt"):
-    with PostgresConnection(str(database_path)) as connection:
+def _job_row(database: Database, relative_path: str = "report.txt"):
+    with database.connect() as connection:
         return connection.execute(
             """
             SELECT j.status, j.retry_count, j.archive_version_id,
@@ -73,29 +71,28 @@ def _job_row(database_path: Path, relative_path: str = "report.txt"):
         ).fetchone()
 
 
-class SourceChangeAfterLinkTests(unittest.TestCase):
+class SourceChangeAfterLinkTests(FrostVaultTestCase):
+    owner = None  # _prepare_plain_vault creates it with the Vault
+
     def _run_worker(
         self,
-        database_path: Path,
+        database: Database,
         *,
         sdk_upload,
         sdk_read,
         version_id: str,
         content_length: int,
     ) -> None:
-        database_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(database_path)),
-        )
-        worker_settings = SimpleNamespace(
+        worker_settings = dict(
             operation_concurrency=1,
             restore_poll_interval=900,
         )
         # One provider per catalog: the versions (and their metadata) it
         # stored survive between worker runs, like a real bucket.
         providers = self.__dict__.setdefault("_providers", {})
-        provider = providers.get(str(database_path))
+        provider = providers.get(database.name)
         if provider is None:
-            provider = providers[str(database_path)] = VersionedS3Stub(head_object=lambda **_: None)
+            provider = providers[database.name] = VersionedS3Stub(head_object=lambda **_: None)
         provider._head = lambda **_: {
             "VersionId": version_id, "ContentLength": content_length,
             "StorageClass": "STANDARD", "ETag": '"etag"',
@@ -115,8 +112,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             return result
 
         with (
-            patch("app.database.settings", database_settings),
-            patch("app.storage.settings", worker_settings),
+            override_settings(**worker_settings),
             patch("app.storage.validate_cloud_vault"),
             mock_sdk_upload( side_effect=sdk_upload),
             mock_sdk_read( side_effect=stream),
@@ -129,8 +125,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             root = Path(directory)
             original = b"snapshot-a"
             mutated = b"snapshot-b-after-copy"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=original
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=original
             )
             local = source / "report.txt"
             uploads: list[str] = []
@@ -141,7 +137,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 uploads.append(command[0] if command else "")
                 if command[:1] == ("upload",):
                     local.write_bytes(mutated)
-                    _observe(database_path, local)
+                    _observe(self.database, local)
 
             def fake_stream(*args, **kwargs) -> int:
                 command = tuple(str(arg) for arg in args if not callable(arg))
@@ -149,30 +145,26 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 kwargs["on_chunk"](original)
                 return len(original)
 
-            with patch(
-                "app.database.settings",
-                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-            ):
-                queue_jobs("report.txt", "upload", 2)
+            queue_jobs("report.txt", "upload", 2)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=fake_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
             for _ in range(7):
-                _force_retry_due(database_path)
+                _force_retry_due(self.database)
                 self._run_worker(
-                    database_path,
+                    self.database,
                     sdk_upload=fake_upload,
                     sdk_read=fake_stream,
                     version_id="s3-a",
                     content_length=len(original),
                 )
 
-            job = _job_row(database_path)
-            with PostgresConnection(str(database_path)) as connection:
+            job = _job_row(self.database)
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
@@ -198,8 +190,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             root = Path(directory)
             original = b"alpha-bytes"
             mutated = b"beta-bytes-are-longer"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=original
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=original
             )
             local = source / "report.txt"
             uploads: list[str] = []
@@ -220,29 +212,25 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 kwargs["on_chunk"](original)
                 return len(original)
 
-            with patch(
-                "app.database.settings",
-                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-            ):
-                queue_jobs("report.txt", "upload", 2)
+            queue_jobs("report.txt", "upload", 2)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=flaky_then_original,
                 version_id="s3-a",
                 content_length=len(original),
             )
             local.write_bytes(mutated)
-            _force_retry_due(database_path)
+            _force_retry_due(self.database)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=flaky_then_original,
                 version_id="s3-a",
                 content_length=len(original),
             )
 
-            first = _job_row(database_path)
+            first = _job_row(self.database)
             self.assertEqual(first["status"], "completed")
             self.assertEqual(uploads, ["upload"])
             self.assertEqual(streams, ["read", "read"])
@@ -257,7 +245,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 kwargs["on_chunk"](mutated)
                 return len(mutated)
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 job_ids, _, eligible = catalog.queue_jobs(
                     vault_id=2,
@@ -273,13 +261,13 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             self.assertTrue(row["upload_eligible"])
 
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=upload_b,
                 sdk_read=stream_b,
                 version_id="s3-b",
                 content_length=len(mutated),
             )
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 versions = connection.execute(
                     """
                     SELECT provider_version_id, integrity,
@@ -304,7 +292,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             self.assertEqual(versions[0]["plaintext_sha256"], _sha256_hex(mutated))
             self.assertEqual(current["provider_version_id"], "s3-b")
             self.assertTrue(all(row["integrity"] == "verified" for row in versions))
-            provider = self._providers[str(database_path)]
+            provider = self._providers[self.database.name]
             self.assertEqual([d["VersionId"] for d in provider.deleted], ["s3-a"])
             self.assertEqual([job["status"] for job in jobs], ["completed", "completed"])
             self.assertEqual(len(file_ids), 1)
@@ -315,8 +303,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             root = Path(directory)
             original = b"verify-a"
             mutated = b"mutated-during-verify"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=original
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=original
             )
             local = source / "report.txt"
             uploads: list[str] = []
@@ -327,24 +315,20 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
 
             def mutating_stream(*args, **kwargs) -> int:
                 local.write_bytes(mutated)
-                _observe(database_path, local)
+                _observe(self.database, local)
                 kwargs["on_chunk"](original)
                 return len(original)
 
-            with patch(
-                "app.database.settings",
-                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-            ):
-                queue_jobs("report.txt", "upload", 2)
+            queue_jobs("report.txt", "upload", 2)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=mutating_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
-            job = _job_row(database_path)
-            with PostgresConnection(str(database_path)) as connection:
+            job = _job_row(self.database)
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
                 local_copy = connection.execute(
                     "SELECT matched_version_id AS matched_archive_version_id FROM files"
@@ -362,8 +346,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             original = b"keep-a"
-            source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=original
+            source = _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=original
             )
             local = source / "report.txt"
             attempts = 0
@@ -381,29 +365,25 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
                 kwargs["on_chunk"](original)
                 return len(original)
 
-            with patch(
-                "app.database.settings",
-                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-            ):
-                queue_jobs("report.txt", "upload", 2)
+            queue_jobs("report.txt", "upload", 2)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=flaky_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
             local.unlink()
-            _force_retry_due(database_path)
+            _force_retry_due(self.database)
             self._run_worker(
-                database_path,
+                self.database,
                 sdk_upload=fake_upload,
                 sdk_read=flaky_stream,
                 version_id="s3-a",
                 content_length=len(original),
             )
-            job = _job_row(database_path)
-            with PostgresConnection(str(database_path)) as connection:
+            job = _job_row(self.database)
+            with self.database.connect() as connection:
                 observed = _observed(connection, "report.txt")
             self.assertEqual(job["status"], "completed")
             self.assertEqual(observed["latest_version"]["integrity"], "verified")
@@ -418,8 +398,8 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"never-stable"
-            _source, database_path = _prepare_plain_vault(
-                root, relative_path="report.txt", payload=payload
+            _prepare_plain_vault(
+                self.database, root, relative_path="report.txt", payload=payload
             )
             uploads: list[str] = []
 
@@ -429,11 +409,7 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             def fake_stream(*args, **kwargs) -> int:
                 raise AssertionError("verification must not run before linkage")
 
-            with patch(
-                "app.database.settings",
-                SimpleNamespace(database_dsn=database_dsn(str(database_path))),
-            ):
-                queue_jobs("report.txt", "upload", 2)
+            queue_jobs("report.txt", "upload", 2)
 
             with patch(
                 "app.storage.prepare_upload_snapshot",
@@ -441,16 +417,16 @@ class SourceChangeAfterLinkTests(unittest.TestCase):
             ):
                 for _ in range(UPLOAD_RETRY_MAX_ATTEMPTS + 1):
                     self._run_worker(
-                        database_path,
+                        self.database,
                         sdk_upload=fake_upload,
                         sdk_read=fake_stream,
                         version_id="s3-a",
                         content_length=len(payload),
                     )
-                    _force_retry_due(database_path)
+                    _force_retry_due(self.database)
 
-            job = _job_row(database_path)
-            with PostgresConnection(str(database_path)) as connection:
+            job = _job_row(self.database)
+            with self.database.connect() as connection:
                 versions = connection.execute(
                     "SELECT COUNT(*) AS total FROM archive_versions"
                 ).fetchone()["total"]
