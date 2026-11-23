@@ -155,6 +155,6 @@ def list_file_rows(
         params.append(f"{path_prefix}/")
     clauses.append(VISIBLE_SQL)
     rows = catalog.connection.execute(
-        catalog._file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
+        catalog.file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
     ).fetchall()
-    return catalog._materialize_file_items(vault_id, rows, name_from_path=True)
+    return catalog.materialize_file_items(vault_id, rows, name_from_path=True)

@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.file_renames import FileRenames
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint
 from tests.test_rename_sync import CopyWorkerFixture
@@ -142,8 +143,9 @@ class EssentialFileActionTests(CopyWorkerFixture):
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
             fingerprint(catalog, 2, NEW, sha(A))
-            with patch.object(catalog, "list_rename_candidates", wraps=catalog.list_rename_candidates) as recheck:
-                catalog.confirm_file_rename(
+            renames = FileRenames(connection)
+            with patch.object(renames, "list_rename_candidates", wraps=renames.list_rename_candidates) as recheck:
+                renames.confirm_file_rename(
                     vault_file_id=self.file_id, new_path=NEW, changed_at=storage.now_iso(), vault_id=2)
             recheck.assert_called_once_with(2, digest=sha(A))
 

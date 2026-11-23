@@ -66,6 +66,7 @@ from .vault_moves import MINIMUM_DAYS
 from .vault_buckets import TAG_VAULT
 from .job_queue import OPEN_JOB_SQL
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
+from .vaults import VAULT_ROW_SQL
 
 PROBLEM_EVENT = "vault_deletion_failed"
 # A running deletion refreshes its heartbeat at least once per listed page; one
@@ -332,10 +333,7 @@ def summarize(inventory: PrefixInventory, *, executes_at: datetime,
 
 def _vault_row(connection: Any, vault_id: int) -> dict[str, Any]:
     row = connection.execute(
-        """SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region,
-                  t.key_layout AS s3_key_layout,
-                  t.retention_lock_days AS s3_retention_lock_days FROM vaults v
-           JOIN vault_targets t ON t.id = v.target_id WHERE v.id=%s""", (vault_id,)).fetchone()
+        f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault_id,)).fetchone()
     if row is None:
         raise VaultNotFound("api.vault_deletion.not_found")
     return row

@@ -405,7 +405,8 @@ def queue_auto_uploads(
     committed batch are admitted, and each new Job records the generation it
     was admitted on, so a compensated observation never reaches the upload.
     """
-    from ..catalog import ArchiveCatalog, awaiting_rename_analysis_sql
+    from ..catalog import ArchiveCatalog
+    from .file_renames import awaiting_rename_analysis_sql
     from .vault_paths import safe_local_path
 
     policy = get_policy(connection, vault_id)

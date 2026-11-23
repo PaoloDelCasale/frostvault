@@ -15,13 +15,13 @@ from unittest.mock import patch
 import psycopg
 
 from app.services import cloud_deletion, duplicate_cleanup, mirror_cleanup
+from app.services.vaults import VAULT_ROW_SQL
 from tests.test_mirror_cleanup import MirrorCleanupFixture, utcnow
 
 FIRST = b"first candidate of 799"
 SECOND = b"second candidate of 799, longer"
-LOCK = ("SELECT v.*, t.bucket AS s3_bucket, t.region AS s3_region, t.key_layout AS s3_key_layout, "
-        "t.retention_lock_days AS s3_retention_lock_days FROM vaults v "
-        "JOIN vault_targets t ON t.id = v.target_id WHERE v.id=%s FOR UPDATE OF v")
+# The Vault lock reads the one Vault + Vault Target projection (#803).
+LOCK = " ".join(f"{VAULT_ROW_SQL} WHERE v.id=%s FOR UPDATE OF v".split())
 WAITS = {"waiting_count": 0, "waiting_bytes": 0, "unseen_count": 0}
 STATUS_KEYS = ["grace_days_min", "grace_days_max", "last_run_at", "next_run_at", "last_outcome",
                "current", "ready", "waiting", "unseen", "held", "minimum_storage", "retention_lock",

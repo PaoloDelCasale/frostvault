@@ -57,6 +57,7 @@ from botocore.exceptions import ClientError
 from . import retention_lock, root_pins
 from . import upload_provenance as provenance
 from .database_retry import owned_connection
+from .directory_aggregates import mark_file_id_dirty
 from .s3 import delete_version, error_code
 from .upload_provenance import UploadBlocked
 from .worker_seam import CopyWorker
@@ -358,7 +359,7 @@ def cleanup(worker: CopyWorker, job: dict[str, Any], keeper_id: str | None, clie
                WHERE id IN (SELECT archive_version_id FROM cleanup_candidates WHERE batch_id=%s)""",
             (batch["id"],))
         connection.execute("DELETE FROM cleanup_batches WHERE id=%s", (batch["id"],))
-        catalog._mark_file_aggregates_dirty(int(job["vault_id"]), str(job["file_id"]))
+        mark_file_id_dirty(connection, int(job["vault_id"]), str(job["file_id"]))
 
     w.catalog_unit(job, complete)
 
