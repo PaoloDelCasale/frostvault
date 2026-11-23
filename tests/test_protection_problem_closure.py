@@ -13,8 +13,9 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app import main, storage
+from app import storage
 from app.catalog import ArchiveCatalog
+from app.services import job_admission
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
 from app.services.cost_estimates import estimate_restore_cost, list_prices
@@ -72,7 +73,7 @@ class RecoveryApprovalCostTests(unittest.TestCase):
         estimate = estimate_restore_cost(list_prices("eu-west-1"), size_bytes=1,
                                          storage_class="DEEP_ARCHIVE", tier="Standard")
         self.assertGreater(estimate.estimated_cost_eur, 0)
-        impact = main.recovery_request_impact([{"bytes": 1, "storage_class": "DEEP_ARCHIVE"}], tier="Standard")
+        impact = job_admission.recovery_request_impact([{"bytes": 1, "storage_class": "DEEP_ARCHIVE"}], tier="Standard")
         self.assertGreater(impact["estimated_cost_eur"], 0)
 
 

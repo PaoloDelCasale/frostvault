@@ -22,7 +22,7 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         return version
 
     def test_recursive_estimate_includes_released_missing_copies_only_in_its_vault(self):
-        from app.main import recover_estimate, RecoverEstimateRequest
+        from app.services.job_admission import estimate_recovery
         stamp = '2026-11-03T10:00:00Z'
         file_id, version = self.seed('cold', archive=True, verified=True)
         self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
@@ -30,9 +30,9 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         seed_vault(self.connection, id=10, name='Second', source_root='/second')
         self._cloud_only(10, 'photos/cold.jpg', 'other', 'STANDARD', 'a' * 64)
         self.connection.commit()
-        request = RecoverEstimateRequest(path='photos', is_directory=True, restore_tier='Bulk')
-        cold = recover_estimate(request, {'id':9})
-        hot = recover_estimate(request, {'id':10})
+        request = dict(path='photos', is_directory=True, restore_tier='Bulk')
+        cold = estimate_recovery(9, **request)
+        hot = estimate_recovery(10, **request)
         self.assertTrue(cold['requires_restore'])
         self.assertEqual(cold['estimate']['tier'], 'Bulk')
         self.assertIsInstance(cold['estimate']['estimated_hours'], (int, float))

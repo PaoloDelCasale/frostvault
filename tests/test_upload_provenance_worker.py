@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.services import upload_provenance as provenance
 from app.services import upload_remediation
 from app.services.vault_relocation import enroll_vault_root_identity

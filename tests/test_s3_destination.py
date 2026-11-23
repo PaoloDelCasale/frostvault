@@ -32,7 +32,7 @@ for _flag, _value in (
 
 from app.catalog import ArchiveCatalog
 
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.storage import expected_cloud_key, process_jobs_once
 from tests.sdk_transfer_stub import mock_sdk_upload, mock_sdk_read
 

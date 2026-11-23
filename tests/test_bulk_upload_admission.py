@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from app import main
 from app.services import bulk_upload_admission as bulk
+from app.services import job_admission
 
 
 class BulkUploadApiTests(unittest.TestCase):
@@ -23,7 +24,7 @@ class BulkUploadApiTests(unittest.TestCase):
         def db():
             yield Mock()
         with patch.object(main, "db", db), patch.object(bulk, "create", return_value=admission) as create, \
-                patch.object(main, "queue_jobs", side_effect=AssertionError("synchronous catalog traversal")), \
+                patch.object(job_admission, "queue_jobs", side_effect=AssertionError("synchronous catalog traversal")), \
                 patch.object(main, "vault_local_access", side_effect=AssertionError("filesystem probe")):
             response = self.client.post("/api/upload", json={"path": "photos", "is_directory": True, "request_id": group})
         self.assertEqual(response.status_code, 202, response.text)
@@ -33,7 +34,7 @@ class BulkUploadApiTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_single_file_keeps_existing_synchronous_admission(self):
-        with patch.object(main, "queue_jobs", return_value={"group_id": "old", "item_count": 1}) as queue, \
+        with patch.object(job_admission, "queue_jobs", return_value={"group_id": "old", "item_count": 1}) as queue, \
                 patch.object(bulk, "create", side_effect=AssertionError("bulk single file")):
             response = self.client.post("/api/upload", json={"path": "photo.jpg"})
         self.assertEqual(response.status_code, 202)

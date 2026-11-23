@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.services.job_queries import list_jobs
 from app.services.recovery_progress import project_recovery
 from app.storage import process_jobs_once

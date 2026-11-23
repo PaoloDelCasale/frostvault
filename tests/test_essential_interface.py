@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app import main
 from app.catalog import ArchiveCatalog
+from app.services import job_admission
 from app.services.notification_links import notification_path, notification_url
 from app.services.operation_policies import OperationPolicy
 
@@ -70,8 +71,8 @@ class EssentialInterfaceTests(unittest.TestCase):
             {"storage_class": "DEEP_ARCHIVE", "bytes": 1024**3},
             {"storage_class": "STANDARD", "bytes": 12},
         ]
-        with patch.object(main, "db", lambda: self.connection(connection)):
-            preview = main.recover_estimate(main.RecoverEstimateRequest(path="photos", is_directory=True, restore_tier="Bulk"), {"id": 2})
+        with patch.object(job_admission, "db", lambda: self.connection(connection)):
+            preview = job_admission.estimate_recovery(2, path="photos", is_directory=True, restore_tier="Bulk")
         self.assertTrue(preview["requires_restore"])
         self.assertIsNone(preview["archive_version_id"])
         self.assertIsInstance(preview["estimate"]["estimated_hours"], (float, int))

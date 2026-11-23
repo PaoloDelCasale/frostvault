@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
-import posixpath
 import secrets
 import uuid
-from collections.abc import Iterable, Mapping
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -39,7 +38,6 @@ from .i18n import (
     catalog as locale_catalog,
     format_datetime,
     normalize_locale,
-    present_job_message,
     resolve_locale,
     translate,
 )
@@ -88,7 +86,6 @@ from .oidc_network import oidc_host_addresses
 from .proxy import parse_networks, resolve_client_ip
 from .security import DUMMY_PASSWORD_HASH, verify_password
 from .services import audit_events as audit_event_store
-from .services import catalog_incidents as catalog_incident_service
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
 from .services import recovery_kit as recovery_kit_service
@@ -100,23 +97,16 @@ from .services.catalog_event_stream import (
     coalesced_catchup_signal,
     iter_catalog_event_sse,
 )
-from .services.restore_estimates import (
-    SUPPORTED_RESTORE_TIERS,
-    estimate_restore,
-    is_high_impact_restore,
-    normalize_restore_tier,
-)
+from .services.restore_estimates import SUPPORTED_RESTORE_TIERS
 from .services.operation_policies import (
     AUTO_UPLOAD_EXCLUSIONS,
     OperationPolicy,
     get_policy,
-    blocking_path_for,
-    local_release_blocking_paths,
+    lock_vault_policy,
     preview_glob_rules,
     set_policy,
 )
 from .services.cost_estimates import (
-    estimate_restore_cost,
     estimate_storage_month,
     list_prices,
 )
@@ -134,9 +124,9 @@ from .services.lifecycle_profiles import (
     validate_lifecycle_profile,
 )
 from .services import cloud_deletion as cloud_deletion_service
+from .services import job_admission
 from .services import vault_moves
 from .services import vault_buckets as vault_buckets_service
-from .services import write_access
 from .services.bucket_provisioning import RetentionLock
 from .services.vaults import (
     VAULT_ROW_SQL,
@@ -165,7 +155,6 @@ from .services.runtime_status import (
     snapshot_runtime_status_for_stats,
     status_lock,
 )
-from .services.s3_copy import storage_class_requires_restore
 from .services.vault_paths import InvalidLogicalPath, safe_local_path, safe_relative_path
 from .storage import (
     background_loop,
@@ -1905,12 +1894,8 @@ def open_problems(request: Request, page: int = Query(1, ge=1),
                   user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         notification_service.reconcile_problem_states(connection)
-        rows = connection.execute(
-            "SELECT * FROM notifications WHERE in_app_enabled "
-            "AND problem_status='open' ORDER BY id DESC LIMIT 100 OFFSET %s",
-            ((page - 1) * 100,),
-        ).fetchall()
-        items = [notification_service._row_notification(row, locale=_request_locale(request)) for row in rows]
+        items = notification_service.open_problems(
+            connection, locale=_request_locale(request), page=page)
         return {"items": [{**item, "resolving": _problem_resolving(item)} for item in items],
                 "open_problem_count": notification_service.count_open_problems(connection)}
 
@@ -2240,36 +2225,28 @@ def job_group_detail(
                           locale=_request_locale(request), before_id=before_id, limit=limit)
 
 
-_JOB_HISTORY_COLUMNS = "id,path,action,status,message,message_key,message_params,requested_at,updated_at,group_id,group_path,total_bytes,transferred_bytes,archive_version_id,upload_reconcile_only"
-
-
 @app.get("/api/jobs/{job_id}", response_model=response_model("JobRecord"))
 def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(current_vault)):
-    from .services.job_queries import JOB_ROWS
-    from .services.upload_remediation import project_jobs
+    from .services.job_queries import job_record
     with db() as connection:
-        row = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE id=%s AND vault_id=%s", (job_id,vault["id"])).fetchone()
-        if not row:
+        record = job_record(connection, vault_id=vault["id"], job_id=job_id,
+                            locale=_request_locale(request))
+        if record is None:
             raise HTTPException(404,"Job not found in this Vault")
-        projected = project_jobs(connection,[row])[0]
-    return {**projected,"message":present_job_message(row,_request_locale(request))}
+    return record
 
 
 @app.get("/api/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def file_job_history(request: Request, path: str = Query(), before_id: int | None = Query(default=None,ge=1),
                      limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(current_vault)):
-    from .services.job_queries import JOB_ROWS
-    from .services.upload_remediation import project_jobs
+    from .services.job_queries import file_jobs
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
-        file = connection.execute("SELECT id FROM files WHERE vault_id=%s AND path=%s",(vault["id"],logical_path)).fetchone()
-        if not file:
+        history = file_jobs(connection, vault_id=vault["id"], path=logical_path,
+                            locale=_request_locale(request), before_id=before_id, limit=limit)
+        if history is None:
             raise HTTPException(404,"Vault File not found")
-        rows = connection.execute(f"WITH {JOB_ROWS} SELECT {_JOB_HISTORY_COLUMNS} FROM job_rows WHERE vault_id=%s AND file_id=%s AND id<%s ORDER BY id DESC LIMIT %s",
-            (vault["id"],file["id"],before_id or 2**63-1,limit+1)).fetchall()
-        items = project_jobs(connection,rows[:limit])
-    return {"items":[{**row,"message":present_job_message(row,_request_locale(request))} for row in items],
-            "next_before_id":items[-1]["id"] if len(rows)>limit else None}
+    return history
 
 
 @app.post("/api/scan", status_code=202, response_model=response_model("ScanResponse"))
@@ -2388,322 +2365,24 @@ async def catalog_events_stream(
     )
 
 
-# A Vault directory may mix GLACIER and DEEP_ARCHIVE versions, so one request
-# tier must be valid for every class that needs a restore (no Expedited).
-DIRECTORY_RESTORE_TIERS = ("Standard", "Bulk")
-
-
-def resolve_directory_restore(
-    tier: str | None, days: int | None
-) -> tuple[str, int]:
-    """Resolve the tier and days one directory recovery applies to every Job.
-
-    The directory Cost Estimate and the queued Jobs share this so the dialog,
-    the estimate and the actual restore agree (#532).
-    """
-    runtime = settings
-    requested = (tier or "").strip()
-    if requested:
-        if requested not in DIRECTORY_RESTORE_TIERS:
-            raise HTTPException(422, "Choose Standard or Bulk")
-        resolved_tier = requested
-    else:
-        resolved_tier = normalize_restore_tier(
-            runtime.restore_tier, storage_class="DEEP_ARCHIVE"
-        )
-    resolved_days = int(days if days is not None else runtime.restore_days)
-    return resolved_tier, resolved_days
-
-
-# A version whose cloud restore is already requested or done costs nothing more
-# to recover, so it never counts toward a Restore Approval (#534).
-_RESTORE_ALREADY_REQUESTED = frozenset({"restoring", "available"})
-
-
-def recovery_request_impact(
-    rows: Iterable[Mapping[str, Any]],
-    *,
-    tier: str | None = None,
-    days: int | None = None,
-) -> dict[str, Any]:
-    """Price one whole recovery request and decide if it needs Restore Approval.
-
-    ``rows`` carry ``bytes``, ``storage_class`` and ``restore_state`` (one per
-    file or aggregated per class), optionally with their own ``restore_tier``
-    and ``restore_days``. The thresholds apply to the request's total, so a
-    folder of many small archived files is held like one large file (#533).
-    The directory Cost Estimate and queueing share this so the dialog and the
-    queued Jobs agree on ``high_impact``.
-    """
-    runtime = settings
-    prices = list_prices(runtime.aws_region)
-    size_bytes = 0
-    cost = 0.0
-    hours = 0.0
-    priced = False
-    for row in rows:
-        storage_class = row.get("storage_class")
-        if not storage_class_requires_restore(storage_class):
-            continue
-        if (row.get("restore_state") or "") in _RESTORE_ALREADY_REQUESTED:
-            continue
-        estimate = estimate_restore_cost(
-            prices,
-            size_bytes=int(row.get("bytes") or 0),
-            storage_class=str(storage_class),
-            tier=str(row.get("restore_tier") or tier or runtime.restore_tier or "Bulk"),
-            days=int(row.get("restore_days") or days or runtime.restore_days or 3),
-        )
-        priced = True
-        size_bytes += estimate.size_bytes
-        cost += estimate.estimated_cost_eur
-        hours = max(hours, float(estimate.estimated_hours or 0))
-    return {
-        "requires_restore": priced,
-        "size_bytes": size_bytes,
-        "estimated_cost_eur": cost,
-        "estimated_hours": hours,
-        "high_impact": priced and is_high_impact_restore(
-            size_bytes=size_bytes,
-            estimated_cost_eur=cost,
-            size_threshold_gib=runtime.restore_high_impact_gib,
-            cost_threshold_eur=runtime.restore_high_impact_eur,
-        ),
-    }
-
-
-HIGH_IMPACT_RESTORE_HELD_MESSAGE = (
-    "High-impact Glacier restore held for primary-owner approval; "
-    "RestoreObject cannot be cancelled after AWS accepts it"
+_ADMISSION_ERROR_STATUS = (
+    (job_admission.InvalidAdmission, 422),
+    (job_admission.AdmissionTargetNotFound, 404),
+    (job_admission.LocalStorageUnavailable, 503),
 )
 
 
-def _hold_high_impact_recovery(
-    connection: Any, job_ids: list[int], group_id: str,
-) -> dict[str, Any]:
-    """Evaluate Restore Approval once, at queue time, for a whole group.
-
-    Runs in the queueing transaction, so no worker can claim a Job before the
-    group is either released as ``queued`` or held as ``pending_approval``.
-    The worker never re-evaluates the thresholds (#534): one approval per
-    ``group_id`` releases every Job.
-    """
-    rows = connection.execute(
-        """
-        SELECT av.storage_class, av.restore_state, r.tier AS restore_tier,
-               r.days AS restore_days, sum(j.total_bytes) AS bytes
-        FROM jobs j JOIN archive_versions av ON av.id=j.archive_version_id
-        LEFT JOIN job_restores r ON r.job_id=j.id
-        WHERE j.id=ANY(%s)
-        GROUP BY av.storage_class, av.restore_state, r.tier, r.days
-        """,
-        (job_ids,),
-    ).fetchall()
-    impact = recovery_request_impact(rows)
-    if not impact["requires_restore"]:
-        return impact
-    timestamp = now_iso()
-    from .services import recovery_approval
-    # The request carries one Cost Estimate, which the group shows.
-    recovery_approval.record_estimate(
-        connection, group_id=group_id,
-        estimated_cost_eur=impact["estimated_cost_eur"],
-        estimated_hours=impact["estimated_hours"],
-    )
-    if impact["high_impact"]:
-        hold_seconds = int(settings.restore_approval_hold_seconds)
-        deadline = (
-            datetime.now(timezone.utc) + timedelta(seconds=hold_seconds)
-        ).isoformat()
-        recovery_approval.hold(
-            connection, group_id=group_id, job_ids=job_ids, deadline=deadline,
-            message=HIGH_IMPACT_RESTORE_HELD_MESSAGE, now=timestamp,
-        )
-        notification_service.enqueue_recovery_approval_best_effort(connection, job_ids=job_ids)
-    return impact
-
-
-def _require_local_release(connection: Any, vault_id: int, path: str) -> None:
-    """Refuse a local release the gate does not confirm, naming the path (#681)."""
-    blocking = local_release_blocking_paths(connection, vault_id)
-    if blocking is None:
-        raise LocalizedHTTPError(409, "api.local_release_unconfirmed")
-    blocked_by = blocking_path_for(path, blocking)
-    if blocked_by is not None:
-        raise LocalizedHTTPError(409, "api.local_release_blocked_path", path=blocked_by)
-
-
-def _require_writable_destinations(connection: Any, source_root: str, job_ids: list[int]) -> None:
-    """Refuse local work in a folder FrostVault may not write (#681).
-
-    Checked when the request is queued, so a Recovery never asks S3 for a
-    restore that its final step could not publish; the worker checks again.
-    """
-    rows = connection.execute(
-        "SELECT DISTINCT f.path FROM jobs j JOIN files f ON f.id=j.file_id WHERE j.id=ANY(%s)",
-        (job_ids,),
-    ).fetchall()
-    root = Path(source_root)
-    folders = {
-        write_access.nearest_existing_directory(root / parent / "entry", root)
-        for parent in {posixpath.dirname(str(row["path"])) for row in rows}
-    }
-    for folder in sorted(folders):
-        try:
-            write_access.require_writable_directory(folder)
-        except write_access.DestinationNotWritable as exc:
-            raise LocalizedHTTPError(409, exc.message_key, **exc.message_params) from exc
-
-
-def queue_jobs(
-    path: str,
-    action: str,
-    vault_id: int,
-    is_directory: bool = False,
-    *,
-    archive_version_id: str | None = None,
-    restore_tier: str | None = None,
-    restore_days: int | None = None,
-    recovery_selection: list[tuple[str, bool]] | None = None,
-) -> dict[str, Any]:
-    if recovery_selection:
-        recovery_selection = [(safe_relative_path(p).as_posix(), directory) for p, directory in recovery_selection]
-        if action != "recover" or archive_version_id:
-            raise HTTPException(422, "Invalid recovery selection")
-        logical_path = ""
-    else:
-        logical_path = safe_relative_path(path).as_posix()
-    if action not in {"upload", "recover", "free-space"}:
-        raise HTTPException(422, "Invalid operation")
-    with db() as connection:
-        vault_row = connection.execute(
-            "SELECT source_root, lifecycle FROM vaults WHERE id=%s",
-            (vault_id,),
-        ).fetchone()
-    if vault_row is None:
-        raise HTTPException(404, "Vault not found")
-    if protection_stop_service.local_work_suspended(vault_row):
-        raise HTTPException(409, "Vault is no longer protected")
-    if vault_relocation_service.local_work_suspended(vault_row):
-        raise HTTPException(409, "Local work is suspended pending reconnect scan")
-    access = vault_local_access(vault_row["source_root"])
-    if not access.local_operations_allowed:
-        raise HTTPException(
-            503,
-            "Local storage for this vault is unavailable"
-            + (f" ({access.volume_health})" if access.volume_health else ""),
-        )
-    if archive_version_id and (action != "recover" or is_directory):
-        raise HTTPException(
-            422,
-            "archive_version_id is only valid for single-file recover",
-        )
-    group_id = uuid.uuid4().hex
-    estimated_cost_eur = None
-    estimated_hours = None
-    resolved_tier = None
-    resolved_days = None
-    directory_recover = action == "recover" and (is_directory or bool(recovery_selection))
-    if directory_recover:
-        resolved_tier, resolved_days = resolve_directory_restore(
-            restore_tier, restore_days
-        )
-    with db() as connection:
-        if action == "free-space":
-            _require_local_release(connection, vault_id, logical_path)
-        catalog = ArchiveCatalog(connection)
-        if action == "recover" and not is_directory and not recovery_selection:
-            versions = catalog.list_versions(vault_id, logical_path)
-            selectable = [row for row in versions if row["recoverable"]]
-            if archive_version_id:
-                selected = next(
-                    (
-                        row
-                        for row in versions
-                        if row["id"] == archive_version_id
-                    ),
-                    None,
-                )
-                if selected is None or not selectable or selected["id"] != selectable[0]["id"]:
-                    raise HTTPException(
-                        409, "The selected Archive Version is not recoverable"
-                    )
-            elif selectable:
-                selected = selectable[0]
-                archive_version_id = selected["id"]
-            else:
-                selected = None
-            if selected is not None and storage_class_requires_restore(
-                selected.get("storage_class")
-            ):
-                resolved_days = int(
-                    restore_days
-                    if restore_days is not None
-                    else settings.restore_days
-                )
-                resolved_tier = normalize_restore_tier(
-                    restore_tier or settings.restore_tier,
-                    storage_class=str(selected.get("storage_class") or ""),
-                )
-                estimate = estimate_restore(
-                    size_bytes=int(selected.get("size") or 0),
-                    storage_class=str(selected.get("storage_class") or ""),
-                    tier=resolved_tier,
-                    days=resolved_days,
-                    pricing=list_prices(settings.aws_region).restore_rates,
-                )
-                estimated_cost_eur = estimate.estimated_cost_eur
-                estimated_hours = estimate.estimated_hours
-        job_ids, total_bytes, eligible_count = catalog.queue_jobs(
-            vault_id=vault_id,
-            path=logical_path,
-            action=action,
-            requested_at=now_iso(),
-            group_id=group_id,
-            is_directory=is_directory,
-            archive_version_id=archive_version_id,
-            restore_tier=resolved_tier,
-            restore_days=resolved_days,
-            estimated_cost_eur=estimated_cost_eur,
-            estimated_hours=estimated_hours,
-            recovery_selection=recovery_selection,
-        )
-        if action in {"recover", "free-space"} and job_ids:
-            _require_writable_destinations(connection, vault_row["source_root"], job_ids)
-        if directory_recover and not (
-            job_ids
-            and connection.execute(
-                "SELECT 1 FROM job_restores WHERE job_id=ANY(%s) LIMIT 1",
-                (job_ids,),
-            ).fetchone()
-        ):
-            # Nothing queued needs a cloud restore; echo what was persisted.
-            resolved_tier = resolved_days = None
-        approval_required = False
-        if action == "recover" and job_ids:
-            impact = _hold_high_impact_recovery(connection, job_ids, group_id)
-            approval_required = bool(impact["high_impact"])
-            if impact["requires_restore"]:
-                estimated_cost_eur = impact["estimated_cost_eur"]
-                estimated_hours = impact["estimated_hours"]
-        if not eligible_count:
-            raise HTTPException(409, "No files are eligible for this operation")
-    if not job_ids:
-        raise HTTPException(409, "An operation is already running on the selected files")
-    result = {
-        "group_id": group_id,
-        "job_ids": job_ids,
-        "item_count": len(job_ids),
-        "total_bytes": total_bytes,
-        "archive_version_id": archive_version_id,
-        "restore_tier": resolved_tier,
-        "restore_days": resolved_days,
-        "estimated_cost_eur": estimated_cost_eur,
-        "estimated_hours": estimated_hours,
-    }
-    if action == "recover":
-        result["approval_required"] = approval_required
-    return result
+@contextmanager
+def _admission_errors() -> Iterator[None]:
+    """Answer a refused Job admission with its HTTP status and text."""
+    try:
+        yield
+    except job_admission.LocalizedAdmissionRefused as exc:
+        raise LocalizedHTTPError(409, exc.message_key, **exc.message_params) from exc
+    except job_admission.AdmissionError as exc:
+        status = next(
+            (code for kind, code in _ADMISSION_ERROR_STATUS if isinstance(exc, kind)), 409)
+        raise HTTPException(status, str(exc)) from exc
 
 
 @app.get(
@@ -2747,102 +2426,16 @@ def recover_estimate(
     action: RecoverEstimateRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    selection = [(safe_relative_path(item.path).as_posix(), item.is_directory) for item in action.selection] if action.selection else None
-    logical_path = "" if selection else safe_relative_path(action.path).as_posix()
-    if action.is_directory or selection:
-        # Current only: an explicit reference, never the latest available
-        # version; its restore progress keeps a pending restore unpriced.
-        scope_sql, scope_params = ArchiveCatalog.recovery_selection_scope(
-            selection or [(logical_path, True)], column="f.path",
+    with _admission_errors():
+        return job_admission.estimate_recovery(
+            vault["id"],
+            path=action.path,
+            is_directory=action.is_directory,
+            selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
+            archive_version_id=action.archive_version_id,
+            restore_tier=action.restore_tier,
+            restore_days=action.restore_days,
         )
-        with db() as connection:
-            classes = connection.execute(
-                f"""SELECT cur.storage_class, cur.restore_state, sum(cur.size) AS bytes
-                FROM files f JOIN archive_versions cur ON cur.id=f.current_version_id
-                WHERE f.vault_id=%s AND {scope_sql}
-                  AND cur.integrity='verified' AND cur.availability='available'
-                  AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.file_id=f.id
-                      AND pending.status NOT IN ('completed','failed','cancelled'))
-                  AND coalesce(f.local_presence, 'missing')<>'present'
-                GROUP BY cur.storage_class, cur.restore_state
-                """,
-                [vault["id"], *scope_params],
-            ).fetchall()
-        tier, days = resolve_directory_restore(action.restore_tier, action.restore_days)
-        estimates = [estimate_restore_cost(list_prices(settings.aws_region), size_bytes=int(row["bytes"]),
-                     storage_class=row["storage_class"], tier=tier, days=days)
-                     for row in classes if storage_class_requires_restore(row["storage_class"])]
-        # Only new cloud restores are charged; already-requested versions must
-        # not inflate the selection's price or approval threshold (#534).
-        impact = recovery_request_impact(classes, tier=tier, days=days)
-        total_cost = impact["estimated_cost_eur"]
-        high_impact = impact["high_impact"]
-        return {"path": logical_path, "archive_version_id": None,
-                "requires_restore": bool(estimates), "restore_object_irreversible": bool(estimates), "high_impact": high_impact,
-                "estimate": {"tier": tier, "days": days,
-                             "estimated_cost_eur": total_cost,
-                             "estimated_hours": max((item.estimated_hours or 0 for item in estimates), default=0)} if estimates else None}
-    with db() as connection:
-        versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
-    selected = next((row for row in versions if row["recoverable"]), None)
-    if selected is None:
-        raise HTTPException(404, "No recoverable Archive Version found")
-    if action.archive_version_id and action.archive_version_id != selected["id"]:
-        raise HTTPException(409, "The current snapshot changed; retry recovery")
-    requires_restore = storage_class_requires_restore(selected.get("storage_class"))
-    days = int(
-        action.restore_days
-        if action.restore_days is not None
-        else settings.restore_days
-    )
-    tier = normalize_restore_tier(
-        action.restore_tier or settings.restore_tier,
-        storage_class=str(selected.get("storage_class") or ""),
-    )
-    estimate_payload = None
-    high_impact = False
-    if requires_restore:
-        priced = estimate_restore_cost(
-            list_prices(settings.aws_region),
-            size_bytes=int(selected.get("size") or 0),
-            storage_class=str(selected.get("storage_class") or ""),
-            tier=tier,
-            days=days,
-        )
-        high_impact = recovery_request_impact(
-            [{
-                "bytes": int(selected.get("size") or 0),
-                "storage_class": selected.get("storage_class"),
-                "restore_state": selected.get("restore_state"),
-            }],
-            tier=tier,
-            days=days,
-        )["high_impact"]
-        estimate_payload = {
-            "tier": priced.tier,
-            "days": days,
-            "estimated_cost_eur": priced.estimated_cost_eur,
-            "estimated_hours": priced.estimated_hours,
-            "pricing_note": str(
-                priced.assumptions.get(
-                    "disclaimer",
-                    "Estimate from AWS list prices; not an AWS Billing quote.",
-                )
-            ),
-            "region": priced.region,
-            "pricing_effective_at": priced.pricing_effective_at,
-            "assumptions": priced.assumptions,
-            "restore_object_irreversible": True,
-        }
-    return {
-        "path": logical_path,
-        "archive_version_id": selected["id"],
-        "storage_class": selected.get("storage_class"),
-        "requires_restore": requires_restore,
-        "restore_object_irreversible": requires_restore,
-        "high_impact": high_impact,
-        "estimate": estimate_payload,
-    }
 
 
 @app.post(
@@ -2870,7 +2463,8 @@ def upload(
         return {"group_id": admission["group_id"], "job_ids": [], "item_count": admission["admitted_count"],
                 "total_bytes": admission["total_bytes"], "admission": admission,
                 **_api_message(request, "api.upload_admission_started")}
-    queued = queue_jobs(action.path, "upload", vault["id"], False)
+    with _admission_errors():
+        queued = job_admission.queue_jobs(action.path, "upload", vault["id"], False)
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
@@ -2929,30 +2523,6 @@ def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
     return {"item_count": count}
 
 
-def confirm_cloud_only_replacement(
-    path: str, vault_id: int, actor: str
-) -> dict[str, Any]:
-    """Release held-back content and queue the upload that replaces the copy.
-
-    The previous Archive Version was the only cloud copy; Current Snapshot
-    deletes it only after the new upload is verified (#411, #363 D7).
-    """
-    logical_path = safe_relative_path(path).as_posix()
-    with db() as connection:
-        try:
-            catalog_incident_service.confirm_cloud_only_replacement(
-                connection,
-                vault_id=vault_id,
-                path=logical_path,
-                actor=actor,
-            )
-        except catalog_incident_service.NoCloudOnlyConflict as exc:
-            raise HTTPException(
-                409, "No conflict with a cloud-only file at this path"
-            ) from exc
-    return queue_jobs(logical_path, "upload", vault_id)
-
-
 @app.post(
     "/api/files/cloud-only-conflict/replace",
     status_code=202,
@@ -2966,8 +2536,20 @@ def replace_cloud_only_copy(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Confirm that new content replaces the only cloud copy at its path."""
-    queued = confirm_cloud_only_replacement(action.path, vault["id"], _actor(request))
+    with _admission_errors():
+        queued = job_admission.confirm_cloud_only_replacement(
+            action.path, vault["id"], _actor(request))
     return {**queued, **_api_message(request, "api.upload_started")}
+
+
+_JOB_STOPPED_MESSAGE_KEYS = {
+    "upload": "job.upload_stopped",
+    "recover": "job.recovery_stopped",
+    "free-space": "job.cleanup_stopped",
+    "rename": "job.rename_stopped",
+    "cloud-purge": "job.cloud_purge_stopped",
+    "storage-class": "job.storage_class_stopped",
+}
 
 
 def cancel_job_group(
@@ -2976,20 +2558,12 @@ def cancel_job_group(
     vault: dict[str, Any],
     actor: str,
 ):
-    message_keys = {
-        "upload": "job.upload_stopped",
-        "recover": "job.recovery_stopped",
-        "free-space": "job.cleanup_stopped",
-        "rename": "job.rename_stopped",
-        "cloud-purge": "job.cloud_purge_stopped",
-        "storage-class": "job.storage_class_stopped",
-    }
-    if job_action not in message_keys:
+    if job_action not in _JOB_STOPPED_MESSAGE_KEYS:
         raise HTTPException(422, "Invalid operation")
-    message_key = message_keys[job_action]
+    message_key = _JOB_STOPPED_MESSAGE_KEYS[job_action]
     message = translate(message_key, locale=DEFAULT_LOCALE)
     with db() as connection:
-        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        job_admission.lock_vault_decisions(connection, vault["id"])
         if job_action == "cloud-purge":
             try:
                 cancelled = cloud_deletion_service.cancel_cloud_deletion(
@@ -3049,15 +2623,7 @@ def _cancel_active_jobs(
     actor: str,
 ) -> None:
     """Cancel already-selected non-terminal Jobs; the caller holds the Vault lock."""
-    message_keys = {
-        "upload": "job.upload_stopped",
-        "recover": "job.recovery_stopped",
-        "free-space": "job.cleanup_stopped",
-        "rename": "job.rename_stopped",
-        "cloud-purge": "job.cloud_purge_stopped",
-        "storage-class": "job.storage_class_stopped",
-    }
-    message_key = message_keys[job_action]
+    message_key = _JOB_STOPPED_MESSAGE_KEYS[job_action]
     message = translate(message_key, locale=DEFAULT_LOCALE)
     automatic_cleanup_rows = []
     if job_action == "free-space":
@@ -3102,25 +2668,6 @@ class PendingUploadCancelAction(BaseModel):
     path: str = Field(default="", max_length=1024)
 
 
-# An upload that has not begun: waiting in the queue, never admitted to the
-# upload provenance machinery, nothing linked in the cloud, not part of a
-# remediation episode. Cancelling anything else could close an ambiguous send
-# for good (ADR-0024/0025), so it stays with the single-Job cancel and Resume.
-_UNSTARTED_UPLOAD_SQL = """
-    j.vault_id=%s AND j.action='upload'
-    AND j.status IN ('queued', 'retrying')
-    AND j.archive_version_id IS NULL
-    AND NOT EXISTS (SELECT 1 FROM job_uploads b
-                    WHERE b.job_id=j.id AND (b.reconcile_only OR b.snapshot_id IS NOT NULL))
-    AND NOT EXISTS (SELECT 1 FROM upload_attempts a
-                    WHERE a.file_id=j.file_id AND a.send_started_at IS NOT NULL
-                      AND a.settled_at IS NULL)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediation_jobs rj WHERE rj.job_id=j.id)
-    AND NOT EXISTS (SELECT 1 FROM upload_remediations r
-                    WHERE r.file_id=j.file_id AND r.closed_at IS NULL)
-"""
-
-
 @app.post(
     "/api/upload/cancel-pending",
     response_model=response_model("JobCancelResponse"),
@@ -3146,19 +2693,11 @@ def cancel_pending_uploads(
     """
     folder = normalize_directory(action.path, api=True)
     from .services import bulk_upload_admission
+    from .services.job_queries import unstarted_upload_job_ids
     with db() as connection:
-        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        job_admission.lock_vault_decisions(connection, vault["id"])
         stopped_admissions = bulk_upload_admission.cancel(connection, vault_id=vault["id"], path=folder)
-        scope_sql, scope_params = "", []
-        if folder:
-            scope_sql = "AND (f.path=%s OR starts_with(f.path, %s))"
-            scope_params = [folder, folder + "/"]
-        rows = connection.execute(
-            f"SELECT j.id FROM jobs j JOIN files f ON f.id=j.file_id "
-            f"WHERE {_UNSTARTED_UPLOAD_SQL} {scope_sql} ORDER BY j.id",
-            [vault["id"], *scope_params],
-        ).fetchall()
-        job_ids = [int(row["id"]) for row in rows]
+        job_ids = unstarted_upload_job_ids(connection, vault_id=vault["id"], folder=folder)
         if job_ids:
             _cancel_active_jobs(connection, vault, "upload", job_ids, _actor(request))
     return {
@@ -3190,16 +2729,17 @@ def recover(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    queued = queue_jobs(
-        action.path,
-        "recover",
-        vault["id"],
-        action.is_directory,
-        archive_version_id=action.archive_version_id,
-        restore_tier=action.restore_tier,
-        restore_days=action.restore_days,
-        recovery_selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
-    )
+    with _admission_errors():
+        queued = job_admission.queue_jobs(
+            action.path,
+            "recover",
+            vault["id"],
+            action.is_directory,
+            archive_version_id=action.archive_version_id,
+            restore_tier=action.restore_tier,
+            restore_days=action.restore_days,
+            recovery_selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
+        )
     return {**queued, **_api_message(request, "api.recovery_started")}
 
 
@@ -3212,7 +2752,7 @@ def approve_recover(
     from .services import recovery_approval
 
     with db() as connection:
-        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["id"],))
+        job_admission.lock_vault_decisions(connection, vault["id"])
         # Read the clock AFTER the lock: waiting for another decision must never
         # allow a late approval. Keep subsecond precision at the deadline.
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -3241,9 +2781,10 @@ def free_space(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    queued = queue_jobs(
-        action.path, "free-space", vault["id"], action.is_directory
-    )
+    with _admission_errors():
+        queued = job_admission.queue_jobs(
+            action.path, "free-space", vault["id"], action.is_directory
+        )
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
@@ -3489,7 +3030,7 @@ def _save_operation_policy(
         try:
             # Independent panels must never replay a stale local-release value
             # when saving upload rules. Serialize read/merge/write per Vault.
-            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault["id"],))
+            lock_vault_policy(connection, vault["id"])
             before = get_policy(connection, vault["id"])
             stored = set_policy(connection, vault["id"], change(before))
             if (before.include_globs, before.exclude_globs) != (stored.include_globs, stored.exclude_globs):

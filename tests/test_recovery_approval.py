@@ -9,7 +9,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app import main
-from app.services import notifications, recovery_approval
+from app.services import job_admission, notifications, recovery_approval
 from tests import test_restore_guardrails as guardrails
 from tests.fixtures import override_settings
 
@@ -139,16 +139,16 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
             connection.execute("UPDATE archive_versions SET restore_state='available' WHERE file_id IN (SELECT id FROM files WHERE path='photos/p00.jpg')")
         selection = [("photos", True), ("photos/p00.jpg", False)]
         with override_settings(**self._runtime()):
-            estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
+            estimate = job_admission.estimate_recovery(2, selection=selection)
+            queued = job_admission.queue_jobs("", "recover", 2, recovery_selection=selection)
         self.assertAlmostEqual(estimate["estimate"]["estimated_cost_eur"], queued["estimated_cost_eur"], places=6)
         self.assertTrue(queued["approval_required"])
 
     def test_separate_files_are_one_request_priced_on_selection_total(self):
         selection = [(f"photos/p{i:02d}.jpg", False) for i in range(self.COLD_FILES)]
         with override_settings(**self._runtime()):
-            estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p} for p, _ in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
+            estimate = job_admission.estimate_recovery(2, selection=selection)
+            queued = job_admission.queue_jobs("", "recover", 2, recovery_selection=selection)
             approved = self._approve(queued["group_id"])
         self.assertTrue(estimate["high_impact"])
         self.assertTrue(queued["approval_required"])
@@ -161,8 +161,8 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
     def test_overlapping_folders_files_deduplicate_for_estimate_queue_and_bulk_cancel(self):
         selection = [("photos", True), ("photos/p00.jpg", False), ("photos", True)]
         with override_settings(**self._runtime()):
-            estimate = main.recover_estimate(main.RecoverEstimateRequest(selection=[{"path": p, "is_directory": d} for p, d in selection]), {"id": 2})
-            queued = main.queue_jobs("", "recover", 2, recovery_selection=selection)
+            estimate = job_admission.estimate_recovery(2, selection=selection)
+            queued = job_admission.queue_jobs("", "recover", 2, recovery_selection=selection)
             cancelled = main.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
         self.assertEqual(queued["item_count"], self.COLD_FILES + 1)
         self.assertEqual(cancelled["cancelled_count"], queued["item_count"])

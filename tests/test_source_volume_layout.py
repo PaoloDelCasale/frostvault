@@ -516,14 +516,11 @@ class LocalOpsGateTests(FrostVaultTestCase):
                                          bucket="b")["id"]
 
     def test_queue_jobs_rejects_upload_when_mount_lost(self) -> None:
-        from fastapi import HTTPException
-
-        from app.main import queue_jobs
+        from app.services.job_admission import LocalStorageUnavailable, queue_jobs
 
         source_layout.note_mount_lost("photos")
-        with self.assertRaises(HTTPException) as raised:
+        with self.assertRaises(LocalStorageUnavailable):
             queue_jobs("note.txt", "upload", self.vault_id)
-        self.assertEqual(raised.exception.status_code, 503)
 
     def test_scan_tree_skips_mass_missing_when_mount_lost(self) -> None:
         from app.catalog import ArchiveCatalog

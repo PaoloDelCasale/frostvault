@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
 
-from app.main import queue_jobs
+from app.services.job_admission import queue_jobs
 from app.storage import (
     OperationCancelled,
     cancel_jobs,
