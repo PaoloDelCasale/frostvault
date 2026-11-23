@@ -40,6 +40,13 @@ def _database(identity: str | Path) -> fixtures.Database:
         return _DATABASES[key][0]
 
 
+def adopt(identity: Path, database: fixtures.Database) -> Path:
+    """Let ``identity`` name a database a fixture already created."""
+    with _LOCK:
+        _DATABASES[_key(identity)] = (database, Path(_key(identity)).parent)
+    return identity
+
+
 def database_dsn(identity: str | Path) -> str:
     """The DSN of the path's database, created empty on first use."""
     return _database(identity).dsn
