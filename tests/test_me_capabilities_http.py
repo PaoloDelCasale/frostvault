@@ -64,6 +64,22 @@ class MeCapabilitiesHttpTests(FrostVaultTestCase):
         self.assertEqual(stopped["lifecycle"], "stopping")
         self.assertFalse(stopped["root_released"])
 
+    def test_released_vault_reports_when_its_root_was_released(self) -> None:
+        released = self._create_vault(lifecycle="stopping")
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE vaults SET lifecycle='tombstone', root_released_at=%s WHERE id=%s",
+                ("2026-11-01T10:20:30.123456+00:00", released["id"]),
+            )
+        self.assertEqual(self._me()["stopped_vault"], {
+            "id": released["id"],
+            "uuid": str(released["uuid"]),
+            "name": "Docs Archive",
+            "lifecycle": "tombstone",
+            "root_released_at": "2026-11-01T10:20:30.123456Z",
+            "root_released": True,
+        })
+
     def test_me_reports_the_owner_identity(self) -> None:
         """Seam 7: identity and session fields, without multi-user flags."""
         self._create_vault()

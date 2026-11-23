@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from ..api_models import JsonObjectResponse, response_model
+from ..api_models import passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
@@ -72,12 +74,81 @@ class ReauthRequest(BaseModel):
     password: str
 
 
+# The answers of this router (ADR-0056). Every model is closed: the routes
+# below build these objects from fixed keys, and no service adds any.
+
+class SessionMessageResponse(BaseModel):
+    """What signing in and signing out answer."""
+    model_config = ConfigDict(extra="forbid")
+    message: str
+    message_key: str
+
+
+class ReauthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str
+
+
+type AuthMethod = str | None
+
+
+class MeVault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    uuid: UUID
+    name: str
+
+
+class MeStoppedVault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    uuid: UUID
+    name: str
+    lifecycle: Literal["stopping", "tombstone"]
+    root_released_at: datetime | None
+    root_released: bool
+
+
+class MeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    display_name: str
+    session_version: int
+    csrf_token: str
+    auth_method: AuthMethod
+    locale: str
+    locales: list[str]
+    vault: MeVault | None
+    stopped_vault: MeStoppedVault | None
+
+
+class LoginOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    oidc_enabled: bool
+    oidc_provider_name: str | None
+
+
+class I18nCatalogResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    locale: str
+    locales: list[str]
+    messages: dict[str, str]
+
+
+class LocaleUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    locale: str
+    message: str
+    message_key: str
+    messages: dict[str, str]
+
+
 @router.get("/login")
 def login_page():
     return _spa_index_response()
 
 
-@router.post("/api/login", response_model=JsonObjectResponse)
+@router.post("/api/login", response_model=passthrough(SessionMessageResponse))
 def login(action: LoginRequest, request: Request, response: Response):
     client_ip = _client_ip(request)
     raw_token: str | None = None
@@ -138,7 +209,7 @@ def login(action: LoginRequest, request: Request, response: Response):
     return {**_api_message(request, "api.signed_in")}
 
 
-@router.post("/api/logout", response_model=JsonObjectResponse)
+@router.post("/api/logout", response_model=passthrough(SessionMessageResponse))
 def logout(request: Request, response: Response):
     token = _read_session_cookie(request)
     if token:
@@ -150,7 +221,7 @@ def logout(request: Request, response: Response):
     return {**_api_message(request, "api.signed_out")}
 
 
-@router.post("/api/reauth", response_model=JsonObjectResponse)
+@router.post("/api/reauth", response_model=passthrough(ReauthResponse))
 def reauth(
     action: ReauthRequest,
     request: Request,
@@ -398,7 +469,7 @@ def _session_vault(request: Request) -> dict[str, Any] | None:
     return vault
 
 
-@session_router.get("/api/me", response_model=response_model("MeResponse"))
+@session_router.get("/api/me", response_model=passthrough(MeResponse))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
     _set_csrf_cookie(response, csrf_token)
@@ -442,7 +513,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     }
 
 
-@session_router.get("/api/login/options", response_model=response_model("LoginOptionsResponse"))
+@session_router.get("/api/login/options", response_model=passthrough(LoginOptionsResponse))
 def login_options():
     """Public sign-in choices for the login page: no secrets, no Session."""
     return {
@@ -451,7 +522,7 @@ def login_options():
     }
 
 
-@session_router.get("/api/i18n/catalog", response_model=response_model("I18nCatalogResponse"))
+@session_router.get("/api/i18n/catalog", response_model=passthrough(I18nCatalogResponse))
 def i18n_catalog(request: Request, locale: str | None = None):
     resolved = normalize_locale(locale) if locale else _request_locale(request)
     return {
@@ -461,7 +532,7 @@ def i18n_catalog(request: Request, locale: str | None = None):
     }
 
 
-@session_router.put("/api/locale", response_model=response_model("LocaleUpdateResponse"))
+@session_router.put("/api/locale", response_model=passthrough(LocaleUpdateResponse))
 def update_locale(
     action: LocaleUpdate,
     request: Request,

@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from fastapi.testclient import TestClient
-
-from app.main import app
-from tests.fixtures import override_settings
+from tests.fixtures import http_client, override_settings
 
 
 class LoginOptionsTests(unittest.TestCase):
@@ -13,7 +10,7 @@ class LoginOptionsTests(unittest.TestCase):
 
     def _options(self, **overrides) -> dict:
         with override_settings(**overrides):
-            response = TestClient(app).get("/api/login/options")
+            response = http_client().get("/api/login/options")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["cache-control"], "no-store")
         return response.json()

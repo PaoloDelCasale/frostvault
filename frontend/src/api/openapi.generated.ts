@@ -1801,6 +1801,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
+        AuthMethod: string | null;
         /** @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure. */
         BillingExportStatus: {
             /**
@@ -2222,14 +2223,16 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** I18nCatalogResponse */
         I18nCatalogResponse: {
+            /** Locale */
             locale: string;
+            /** Locales */
             locales: string[];
+            /** Messages */
             messages: {
                 [key: string]: string;
             };
-        } & {
-            [key: string]: unknown;
         };
         /** JobCancelAction */
         JobCancelAction: {
@@ -2321,39 +2324,81 @@ export interface components {
             /** Locale */
             locale: string;
         };
+        /** LocaleUpdateResponse */
         LocaleUpdateResponse: {
+            /** Locale */
             locale: string;
+            /** Message */
             message: string;
+            /** Message Key */
             message_key: string;
+            /** Messages */
             messages: {
                 [key: string]: string;
             };
-        } & {
-            [key: string]: unknown;
         };
+        /** LoginOptionsResponse */
         LoginOptionsResponse: {
+            /** Oidc Enabled */
             oidc_enabled: boolean;
+            /** Oidc Provider Name */
             oidc_provider_name: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /** LoginRequest */
         LoginRequest: {
             /** Password */
             password: string;
         };
+        /** MeResponse */
         MeResponse: {
-            auth_method: components["schemas"]["AuthMethod"];
-            csrf_token: string;
-            display_name: string;
+            /** Id */
             id: number;
-            locale: string;
-            locales: string[];
+            /** Display Name */
+            display_name: string;
+            /** Session Version */
             session_version: number;
+            /** Csrf Token */
+            csrf_token: string;
+            auth_method: components["schemas"]["AuthMethod"];
+            /** Locale */
+            locale: string;
+            /** Locales */
+            locales: string[];
             vault: components["schemas"]["MeVault"] | null;
-            stopped_vault?: components["schemas"]["MeStoppedVault"] | null;
-        } & {
-            [key: string]: unknown;
+            stopped_vault: components["schemas"]["MeStoppedVault"] | null;
+        };
+        /** MeStoppedVault */
+        MeStoppedVault: {
+            /** Id */
+            id: number;
+            /**
+             * Uuid
+             * Format: uuid
+             */
+            uuid: string;
+            /** Name */
+            name: string;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "stopping" | "tombstone";
+            /** Root Released At */
+            root_released_at: string | null;
+            /** Root Released */
+            root_released: boolean;
+        };
+        /** MeVault */
+        MeVault: {
+            /** Id */
+            id: number;
+            /**
+             * Uuid
+             * Format: uuid
+             */
+            uuid: string;
+            /** Name */
+            name: string;
         };
         /** MetadataBackupRunAction */
         MetadataBackupRunAction: {
@@ -2576,6 +2621,11 @@ export interface components {
             /** Password */
             password: string;
         };
+        /** ReauthResponse */
+        ReauthResponse: {
+            /** Message */
+            message: string;
+        };
         /** RecoverApproveAction */
         RecoverApproveAction: {
             /** Group Id */
@@ -2706,6 +2756,16 @@ export interface components {
             waiting_since?: string;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * SessionMessageResponse
+         * @description What signing in and signing out answer.
+         */
+        SessionMessageResponse: {
+            /** Message */
+            message: string;
+            /** Message Key */
+            message_key: string;
         };
         SourceDirectoryBrowseResponse: {
             items: components["schemas"]["SourceDirectoryEntry"][];
@@ -3366,7 +3426,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        AuthMethod: string | null;
         /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
         DirectoryListItem: {
             last_known_states?: {
@@ -3478,14 +3537,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        MeVault: {
-            id: number;
-            name: string;
-            /** Format: uuid */
-            uuid: string;
-        } & {
-            [key: string]: unknown;
-        };
         RestoreEstimate: {
             assumptions?: {
                 [key: string]: unknown;
@@ -3587,18 +3638,6 @@ export interface components {
             uuid: string;
             /** @enum {string} */
             lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-        } & {
-            [key: string]: unknown;
-        };
-        MeStoppedVault: {
-            id: number;
-            /** @enum {string} */
-            lifecycle: "stopping" | "tombstone";
-            name: string;
-            root_released: boolean;
-            root_released_at?: string | null;
-            /** Format: uuid */
-            uuid: string;
         } & {
             [key: string]: unknown;
         };
@@ -3786,7 +3825,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["SessionMessageResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3815,7 +3854,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["SessionMessageResponse"];
                 };
             };
         };
@@ -3839,7 +3878,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["ReauthResponse"];
                 };
             };
             /** @description Validation Error */

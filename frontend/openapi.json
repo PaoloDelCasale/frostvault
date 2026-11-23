@@ -41,7 +41,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/SessionMessageResponse"
                 }
               }
             }
@@ -69,7 +69,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/SessionMessageResponse"
                 }
               }
             }
@@ -98,7 +98,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/ReauthResponse"
                 }
               }
             }
@@ -4219,6 +4219,16 @@
           }
         ]
       },
+      "AuthMethod": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "BillingExportStatus": {
         "type": "object",
         "additionalProperties": false,
@@ -5803,30 +5813,34 @@
         "title": "HTTPValidationError"
       },
       "I18nCatalogResponse": {
-        "additionalProperties": true,
         "properties": {
           "locale": {
-            "type": "string"
+            "type": "string",
+            "title": "Locale"
           },
           "locales": {
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Locales"
           },
           "messages": {
             "additionalProperties": {
               "type": "string"
             },
-            "type": "object"
+            "type": "object",
+            "title": "Messages"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "locale",
           "locales",
           "messages"
         ],
-        "type": "object"
+        "title": "I18nCatalogResponse"
       },
       "JobCancelAction": {
         "properties": {
@@ -6153,50 +6167,62 @@
         "title": "LocaleUpdate"
       },
       "LocaleUpdateResponse": {
-        "additionalProperties": true,
         "properties": {
           "locale": {
-            "type": "string"
+            "type": "string",
+            "title": "Locale"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "title": "Message"
           },
           "message_key": {
-            "type": "string"
+            "type": "string",
+            "title": "Message Key"
           },
           "messages": {
             "additionalProperties": {
               "type": "string"
             },
-            "type": "object"
+            "type": "object",
+            "title": "Messages"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "locale",
           "message",
           "message_key",
           "messages"
         ],
-        "type": "object"
+        "title": "LocaleUpdateResponse"
       },
       "LoginOptionsResponse": {
-        "type": "object",
         "properties": {
           "oidc_enabled": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Oidc Enabled"
           },
           "oidc_provider_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oidc Provider Name"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "oidc_enabled",
           "oidc_provider_name"
         ],
-        "additionalProperties": true
+        "title": "LoginOptionsResponse"
       },
       "LoginRequest": {
         "properties": {
@@ -6212,31 +6238,36 @@
         "title": "LoginRequest"
       },
       "MeResponse": {
-        "additionalProperties": true,
         "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "session_version": {
+            "type": "integer",
+            "title": "Session Version"
+          },
+          "csrf_token": {
+            "type": "string",
+            "title": "Csrf Token"
+          },
           "auth_method": {
             "$ref": "#/components/schemas/AuthMethod"
           },
-          "csrf_token": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "number"
-          },
           "locale": {
-            "type": "string"
+            "type": "string",
+            "title": "Locale"
           },
           "locales": {
             "items": {
               "type": "string"
             },
-            "type": "array"
-          },
-          "session_version": {
-            "type": "number"
+            "type": "array",
+            "title": "Locales"
           },
           "vault": {
             "anyOf": [
@@ -6259,6 +6290,8 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "id",
           "display_name",
@@ -6267,9 +6300,87 @@
           "auth_method",
           "locale",
           "locales",
-          "vault"
+          "vault",
+          "stopped_vault"
         ],
-        "type": "object"
+        "title": "MeResponse"
+      },
+      "MeStoppedVault": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "stopping",
+              "tombstone"
+            ],
+            "title": "Lifecycle"
+          },
+          "root_released_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Released At"
+          },
+          "root_released": {
+            "type": "boolean",
+            "title": "Root Released"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "uuid",
+          "name",
+          "lifecycle",
+          "root_released_at",
+          "root_released"
+        ],
+        "title": "MeStoppedVault"
+      },
+      "MeVault": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "uuid",
+          "name"
+        ],
+        "title": "MeVault"
       },
       "MetadataBackupRunAction": {
         "properties": {
@@ -7137,6 +7248,20 @@
         ],
         "title": "ReauthRequest"
       },
+      "ReauthResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ReauthResponse"
+      },
       "RecoverApproveAction": {
         "properties": {
           "group_id": {
@@ -7598,6 +7723,26 @@
           "queued"
         ],
         "type": "object"
+      },
+      "SessionMessageResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "message_key": {
+            "type": "string",
+            "title": "Message Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message",
+          "message_key"
+        ],
+        "title": "SessionMessageResponse",
+        "description": "What signing in and signing out answer."
       },
       "SourceDirectoryBrowseResponse": {
         "additionalProperties": true,
@@ -10044,12 +10189,6 @@
         ],
         "type": "object"
       },
-      "AuthMethod": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "DirectoryListItem": {
         "additionalProperties": true,
         "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
@@ -10486,27 +10625,6 @@
         ],
         "type": "object"
       },
-      "MeVault": {
-        "additionalProperties": true,
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "uuid": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "uuid",
-          "name"
-        ],
-        "type": "object"
-      },
       "RestoreEstimate": {
         "additionalProperties": true,
         "properties": {
@@ -10879,45 +10997,6 @@
           "id",
           "uuid",
           "name"
-        ],
-        "type": "object"
-      },
-      "MeStoppedVault": {
-        "additionalProperties": true,
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "lifecycle": {
-            "enum": [
-              "stopping",
-              "tombstone"
-            ],
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "root_released": {
-            "type": "boolean"
-          },
-          "root_released_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "uuid": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "uuid",
-          "name",
-          "lifecycle",
-          "root_released"
         ],
         "type": "object"
       },

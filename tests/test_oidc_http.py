@@ -38,7 +38,7 @@ class OidcHttpTests(FrostVaultTestCase):
             oidc_client_id=self.provider.client_id,
             oidc_client_secret="top-secret",
         ))
-        self.client = TestClient(app=main.app, follow_redirects=False)
+        self.client = self.http_client(follow_redirects=False)
         self.cookie_name = self.settings.session_cookie_name
         resolver = patch.object(
             sign_in,
