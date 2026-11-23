@@ -1912,17 +1912,17 @@ export interface components {
              * Directory
              * @default
              */
-            directory: string;
+            directory?: string;
             /**
              * Q
              * @default
              */
-            q: string;
+            q?: string;
             /**
              * State
              * @default
              */
-            state: string;
+            state?: string;
         };
         CloudDeletionPreview: {
             byte_count: number;
@@ -1970,7 +1970,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Paths */
             paths?: string[] | null;
             /** Directories */
@@ -1980,7 +1980,7 @@ export interface components {
              * Duplicates Only
              * @default false
              */
-            duplicates_only: boolean;
+            duplicates_only?: boolean;
         };
         CloudDeletionSettings: {
             /** @constant */
@@ -1999,7 +1999,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Paths */
             paths?: string[] | null;
             /** Directories */
@@ -2009,7 +2009,7 @@ export interface components {
              * Duplicates Only
              * @default false
              */
-            duplicates_only: boolean;
+            duplicates_only?: boolean;
             /** Confirmation */
             confirmation: string;
             /** Reason */
@@ -2120,7 +2120,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Archive Version Id */
             archive_version_id?: string | null;
             /** Restore Tier */
@@ -2548,7 +2548,7 @@ export interface components {
              * Auto Upload
              * @default true
              */
-            auto_upload: boolean;
+            auto_upload?: boolean;
             /** Upload Verification */
             upload_verification?: ("s3_checksum" | "read_back") | null;
             /** Local Release After Days */
@@ -2557,7 +2557,7 @@ export interface components {
              * Stability Seconds
              * @default 300
              */
-            stability_seconds: number;
+            stability_seconds?: number;
             /** Include Globs */
             include_globs?: string[];
             /** Exclude Globs */
@@ -2569,7 +2569,7 @@ export interface components {
              * Path
              * @default
              */
-            path: string;
+            path?: string;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -2587,12 +2587,12 @@ export interface components {
              * Path
              * @default
              */
-            path: string;
+            path?: string;
             /**
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Archive Version Id */
             archive_version_id?: string | null;
             /** Restore Tier */
@@ -2619,12 +2619,12 @@ export interface components {
              * Path
              * @default
              */
-            path: string;
+            path?: string;
             /**
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Archive Version Id */
             archive_version_id?: string | null;
             /** Restore Tier */
@@ -2669,7 +2669,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
         };
         /** @description A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate. */
         RetentionLockStatus: {
@@ -2824,7 +2824,7 @@ export interface components {
              * Storage Class
              * @default STANDARD
              */
-            storage_class: string;
+            storage_class?: string;
         };
         StorageEstimateResponse: {
             assumptions: {
@@ -2851,7 +2851,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Archive Version Id */
             archive_version_id?: string | null;
             /** Restore Tier */
@@ -2882,7 +2882,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
             /** Remediation Id */
             remediation_id?: string | null;
         };
@@ -3097,7 +3097,7 @@ export interface components {
              * Delete Bucket
              * @default false
              */
-            delete_bucket: boolean;
+            delete_bucket?: boolean;
         };
         VaultDeletionStatus: {
             vault_id: number;
@@ -3165,7 +3165,7 @@ export interface components {
              * Is Directory
              * @default false
              */
-            is_directory: boolean;
+            is_directory?: boolean;
         };
         VaultItemExclusionStatus: {
             path: string;
@@ -3195,17 +3195,22 @@ export interface components {
              * Acknowledge Costs
              * @default false
              */
-            acknowledge_costs: boolean;
+            acknowledge_costs?: boolean;
         };
         VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
             group_id: string;
             job_ids: number[];
             item_count: number;
         };
+        /** VaultPauseResponse */
         VaultPauseResponse: {
+            /** Id */
             id: number;
+            /** Paused */
             paused: boolean;
+            /** Message */
             message: string;
+            /** Message Key */
             message_key: string;
         };
         /**
@@ -3219,7 +3224,7 @@ export interface components {
              * Relative Path
              * @default
              */
-            relative_path: string;
+            relative_path?: string;
             /** Reason */
             reason: string;
         };
@@ -3248,7 +3253,7 @@ export interface components {
              * Creation Mode
              * @default empty
              */
-            creation_mode: string;
+            creation_mode?: string;
             /** Volume Alias */
             volume_alias?: string | null;
             /** Relative Path */
@@ -3317,13 +3322,6 @@ export interface components {
             bucket_provisioning?: components["schemas"]["VaultBucketStatus"] | null;
             retention_lock_days?: number | null;
         };
-        GeneralVaultReconnectPayload: {
-            reason: string;
-            relative_path: string;
-            volume_alias: string;
-        } & {
-            [key: string]: unknown;
-        };
         ApiErrorResponse: {
             /** @enum {string} */
             code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
@@ -3369,12 +3367,6 @@ export interface components {
             [key: string]: unknown;
         };
         AuthMethod: string | null;
-        CloudPurgePayload: {
-            confirmation: string;
-            is_directory?: boolean;
-            path: string;
-            reason: string;
-        };
         /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
         DirectoryListItem: {
             last_known_states?: {
@@ -3406,15 +3398,6 @@ export interface components {
          * @enum {string}
          */
         FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
-        FileOperationPayload: {
-            archive_version_id?: string;
-            is_directory?: boolean;
-            path: string;
-            restore_days?: number;
-            restore_tier?: string;
-        } & {
-            [key: string]: unknown;
-        };
         FileOperationResponse: {
             archive_version_id?: string | null;
             estimated_cost_eur?: number | null;
@@ -3453,21 +3436,6 @@ export interface components {
             /** @description Bounded reconciliation reason, not an integrity outcome */
             reason: string | null;
             remedy: string | null;
-        };
-        FilesQuery: {
-            directory?: string;
-            page?: number;
-            page_size?: number;
-            q?: string;
-            state?: string;
-        } & {
-            [key: string]: unknown;
-        };
-        JobCancelPayload: {
-            action: string;
-            group_id: string;
-        } & {
-            [key: string]: unknown;
         };
         JobGroup: {
             action: components["schemas"]["FileOperationAction"] | string;
@@ -3560,17 +3528,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        VaultCreateRequest: {
-            creation_mode?: components["schemas"]["VaultCreationMode"];
-            name: string;
-            relative_path?: string;
-            volume_alias?: string;
-            /**
-             * @description The new Vault Bucket's Governance Retention Lock in days, or null for none (#736). It cannot be changed afterwards.
-             * @enum {number|null}
-             */
-            retention_lock_days?: 30 | 90 | 180 | 365 | null;
-        };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
         /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
@@ -3633,11 +3590,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        VaultSelectRequest: {
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
-        };
         MeStoppedVault: {
             id: number;
             /** @enum {string} */
@@ -3649,12 +3601,6 @@ export interface components {
             uuid: string;
         } & {
             [key: string]: unknown;
-        };
-        StopProtectionPayload: {
-            /** @enum {string} */
-            cloud_disposition: "keep" | "delete";
-            confirmation: string;
-            reason: string;
         };
         BulkUploadAdmissionActivity: {
             requests: number;

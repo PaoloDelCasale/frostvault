@@ -1,14 +1,13 @@
 """Persistent hold and Vault-first races on disposable PostgreSQL16 (#537)."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from unittest.mock import patch
-
-from fastapi.testclient import TestClient
 
 from app import main, storage
 from app.services import recovery_approval, vault_pause
@@ -252,7 +251,7 @@ class VaultPauseTests(QueueFixture):
             self.assertEqual(len(claim_group(c)), 1)
 
     def test_api_requires_owner_session_and_csrf_and_exposes_persistent_status(self):
-        client = TestClient(main.app)
+        client = self.http_client()
         self.addCleanup(client.close)
         for action in ("pause", "resume"):
             self.assertIn(client.post(f"/api/vaults/2/{action}").status_code, (401, 403))
@@ -262,6 +261,15 @@ class VaultPauseTests(QueueFixture):
             response = client.post(f"/api/vaults/2/{action}", headers={"X-CSRF-Token": csrf})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["paused"], expected)
+            # The route's dictionary, byte for byte: nothing filters or reorders it.
+            key = "vault_pause.paused_notice" if expected else "vault_pause.resumed_notice"
+            body = response.json()
+            self.assertEqual(
+                list(body.items())[:3], [("id", 2), ("paused", expected), ("message_key", key)])
+            self.assertEqual(list(body)[3:], ["message"])
+            self.assertEqual(
+                response.content,
+                json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode())
             self.assertEqual(next(v for v in client.get("/api/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
             self.assertEqual(next(v for v in client.get("/api/general/vaults").json()["items"] if v["id"] == 2)["paused"], expected)
         self.assertEqual(client.post("/api/vaults/999/pause", headers={"X-CSRF-Token": csrf}).status_code, 404)

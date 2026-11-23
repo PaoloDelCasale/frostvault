@@ -23,10 +23,10 @@ import type {
   SourceDirectoryBrowseResponse,
   SourceVolumeInventoryResponse,
   UploadActivityResponse,
-  VaultCreateRequest,
   VaultCreateResponse,
-  VaultSelectRequest,
   VaultSelectResponse,
+  VaultSelection,
+  VaultSelfServiceCreate,
   VaultsResponse,
 } from "./types";
 import { translate } from "@/i18n/translate";
@@ -160,7 +160,7 @@ export function fetchVaults(): Promise<VaultsResponse> {
 }
 
 export function createVault(
-  payload: VaultCreateRequest,
+  payload: VaultSelfServiceCreate,
 ): Promise<VaultCreateResponse> {
   return apiRequest<VaultCreateResponse>("/api/vaults", {
     method: "POST",
@@ -169,7 +169,7 @@ export function createVault(
 }
 
 export function selectVault(
-  payload: VaultSelectRequest,
+  payload: VaultSelection,
 ): Promise<VaultSelectResponse> {
   return apiRequest<VaultSelectResponse>("/api/vaults/select", {
     method: "POST",

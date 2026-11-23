@@ -271,7 +271,8 @@ class PullRequestCiContractTests(unittest.TestCase):
         self.assertIn("key=lambda path: (-path.stat().st_size, path.name)", python_runs)
         self.assertIn("assigned[target].append(path)", python_runs)
         self.assertEqual(
-            python_job["steps"][-1].get("env", {}).get("SHARD_COUNT"),
+            next(step for step in python_job["steps"] if step.get("name") == "Run PostgreSQL unit-test shard")
+            .get("env", {}).get("SHARD_COUNT"),
             "8",
         )
         self.assertIn("postgres", python_job.get("services") or {})
@@ -345,7 +346,7 @@ class PullRequestCiContractTests(unittest.TestCase):
 
         workflow = yaml.safe_load((WORKFLOWS / "migrations.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["python-unit-tests"]
-        run = job["steps"][-1]["run"]
+        run = next(step for step in job["steps"] if step.get("name") == "Run PostgreSQL unit-test shard")["run"]
         selector = run.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
         selected = []
         shards = []
