@@ -71,7 +71,7 @@ describe("ReauthPasswordGate", () => {
       requestCounts.set(url, count);
       if (url === "/api/reauth") return reauthenticationResponse;
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });
@@ -111,7 +111,7 @@ describe("ReauthPasswordGate", () => {
 
   it("rejects every waiting API caller when the password dialog is cancelled", async () => {
     fetchMock.mockImplementation(() =>
-      Promise.resolve(jsonResponse({ error: "reauth_required" }, 403)),
+      Promise.resolve(jsonResponse({ code: "reauth_required" }, 403)),
     );
     renderGate();
 
@@ -142,7 +142,7 @@ describe("ReauthPasswordGate", () => {
 
   it("rejects every waiting API caller when the password gate unmounts", async () => {
     fetchMock.mockImplementation(() =>
-      Promise.resolve(jsonResponse({ error: "reauth_required" }, 403)),
+      Promise.resolve(jsonResponse({ code: "reauth_required" }, 403)),
     );
     const view = renderGate();
 
@@ -187,7 +187,7 @@ describe("ReauthPasswordGate", () => {
         );
       }
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });

@@ -54,6 +54,7 @@ from botocore.exceptions import (
 )
 from psycopg.types.json import Jsonb
 
+from ..errors import VaultNotFound
 from . import s3
 from .cost_estimates import estimate_storage_month, list_prices
 from .s3 import ACCESS_DENIED_CODES, error_code
@@ -490,7 +491,7 @@ def vault_usage(connection: Any, vault_id: int) -> dict[str, Any]:
            FROM vaults v JOIN vault_targets t ON t.id = v.target_id WHERE v.id = %s""",
         (vault_id,)).fetchone()
     if vault is None:
-        raise LookupError("Vault not found")
+        raise VaultNotFound("api.cloud_usage.not_found")
     return {
         "vault_id": int(vault["id"]), "bucket": vault["bucket"], "region": vault["region"],
         "dedicated_bucket": vault["key_layout"] == KEY_LAYOUT_BUCKET_ROOT,

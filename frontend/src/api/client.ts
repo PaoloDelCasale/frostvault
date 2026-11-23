@@ -145,8 +145,8 @@ function isReauthRequired(status: number, data: unknown): boolean {
     status === 403 &&
     !!data &&
     typeof data === "object" &&
-    "error" in data &&
-    (data as { error: unknown }).error === "reauth_required"
+    "code" in data &&
+    (data as { code: unknown }).code === "reauth_required"
   );
 }
 
@@ -177,22 +177,23 @@ function errorMessageFromBody(data: unknown, status: number): BodyMessage {
     const params =
       (record.message_params as Record<string, unknown> | undefined) ??
       undefined;
-    if (typeof record.message_key === "string" && translate) {
-      return {
-        message: translate(record.message_key, params),
-        messageKey: record.message_key,
-        messageParams: params,
-      };
-    }
-    if (typeof record.message === "string" && record.message) {
-      return {
-        message: record.message,
-        messageKey:
-          typeof record.message_key === "string"
-            ? record.message_key
-            : undefined,
-        messageParams: params,
-      };
+    if (typeof record.message_key === "string") {
+      // The one error body of the API: a catalog message, with the server's
+      // own translation (`detail`) for before the catalog loads.
+      const translated = translate?.(record.message_key, params);
+      const message =
+        translated && translated !== record.message_key
+          ? translated
+          : typeof record.detail === "string"
+            ? record.detail
+            : "";
+      if (message) {
+        return {
+          message,
+          messageKey: record.message_key,
+          messageParams: params,
+        };
+      }
     }
     if (typeof record.detail === "string" && record.detail) {
       return { message: record.detail };
@@ -201,9 +202,6 @@ function errorMessageFromBody(data: unknown, status: number): BodyMessage {
       // FastAPI/pydantic validation text is technical English: show the
       // localized summary instead (the raw detail stays in ApiError.body).
       return catalogMessage("ui.error_validation", "Some values are not valid.");
-    }
-    if (typeof record.error === "string" && record.error !== "reauth_required") {
-      return { message: record.error };
     }
   }
   return status >= 500

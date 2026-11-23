@@ -22,7 +22,7 @@ from typing import Any
 
 from ..config import settings
 from ..database import db
-from ..i18n import DEFAULT_LOCALE, translate
+from ..errors import DomainError
 from . import catalog_incidents as catalog_incident_service
 from . import notifications as notification_service
 from . import protection_stop as protection_stop_service
@@ -72,33 +72,32 @@ def lock_vault_decisions(connection: Any, vault_id: int) -> None:
 
 # -- Admission of a request: validate, choose the version, price, hold, queue ----
 
-class AdmissionError(Exception):
+class AdmissionError(DomainError):
     """A request Job admission refuses; ``str()`` is the reason, in English."""
 
 
 class InvalidAdmission(AdmissionError):
     """The request contradicts itself or names an unknown operation."""
 
+    code = "invalid"
+
 
 class AdmissionTargetNotFound(AdmissionError):
     """The Vault or the recoverable Archive Version asked for does not exist."""
+
+    code = "not_found"
 
 
 class AdmissionRefused(AdmissionError):
     """The request is well formed, but the Vault's state does not allow it now."""
 
+    code = "conflict"
+
 
 class LocalStorageUnavailable(AdmissionError):
     """The Source Volume of the Vault cannot take local work."""
 
-
-class LocalizedAdmissionRefused(AdmissionRefused):
-    """A refusal whose reason is a catalog message with parameters."""
-
-    def __init__(self, message_key: str, **params: Any) -> None:
-        super().__init__(translate(message_key, locale=DEFAULT_LOCALE, **params))
-        self.message_key = message_key
-        self.message_params = params
+    code = "unavailable"
 
 
 # A Vault directory may mix GLACIER and DEEP_ARCHIVE versions, so one request
@@ -118,7 +117,7 @@ def resolve_directory_restore(
     requested = (tier or "").strip()
     if requested:
         if requested not in DIRECTORY_RESTORE_TIERS:
-            raise InvalidAdmission("Choose Standard or Bulk")
+            raise InvalidAdmission("api.admission.restore_tier")
         resolved_tier = requested
     else:
         resolved_tier = normalize_restore_tier(
@@ -284,9 +283,9 @@ def estimate_recovery(
         versions = ArchiveCatalog(connection).list_versions(vault_id, logical_path)
     selected = next((row for row in versions if row["recoverable"]), None)
     if selected is None:
-        raise AdmissionTargetNotFound("No recoverable Archive Version found")
+        raise AdmissionTargetNotFound("api.admission.no_recoverable_version")
     if archive_version_id and archive_version_id != selected["id"]:
-        raise AdmissionRefused("The current snapshot changed; retry recovery")
+        raise AdmissionRefused("api.admission.snapshot_changed")
     requires_restore = storage_class_requires_restore(selected.get("storage_class"))
     tier, days, priced = _price_current(
         selected, restore_tier=restore_tier, restore_days=restore_days,
@@ -381,10 +380,10 @@ def require_local_release(connection: Any, vault_id: int, path: str) -> None:
     """Refuse a local release the gate does not confirm, naming the path (#681)."""
     blocking = local_release_blocking_paths(connection, vault_id)
     if blocking is None:
-        raise LocalizedAdmissionRefused("api.local_release_unconfirmed")
+        raise AdmissionRefused("api.local_release_unconfirmed")
     blocked_by = blocking_path_for(path, blocking)
     if blocked_by is not None:
-        raise LocalizedAdmissionRefused("api.local_release_blocked_path", path=blocked_by)
+        raise AdmissionRefused("api.local_release_blocked_path", path=blocked_by)
 
 
 def require_writable_destinations(connection: Any, source_root: str, job_ids: list[int]) -> None:
@@ -406,7 +405,7 @@ def require_writable_destinations(connection: Any, source_root: str, job_ids: li
         try:
             write_access.require_writable_directory(folder)
         except write_access.DestinationNotWritable as exc:
-            raise LocalizedAdmissionRefused(exc.message_key, **exc.message_params) from exc
+            raise AdmissionRefused(exc.message_key, **exc.message_params) from exc
 
 
 def queue_jobs(
@@ -426,33 +425,30 @@ def queue_jobs(
     if recovery_selection:
         recovery_selection = [(safe_relative_path(p).as_posix(), directory) for p, directory in recovery_selection]
         if action != "recover" or archive_version_id:
-            raise InvalidAdmission("Invalid recovery selection")
+            raise InvalidAdmission("api.admission.invalid_recovery_selection")
         logical_path = ""
     else:
         logical_path = safe_relative_path(path).as_posix()
     if action not in {"upload", "recover", "free-space"}:
-        raise InvalidAdmission("Invalid operation")
+        raise InvalidAdmission("api.invalid_operation")
     with db() as connection:
         vault_row = connection.execute(
             "SELECT source_root, lifecycle FROM vaults WHERE id=%s",
             (vault_id,),
         ).fetchone()
     if vault_row is None:
-        raise AdmissionTargetNotFound("Vault not found")
+        raise AdmissionTargetNotFound("api.vault_not_found")
     if protection_stop_service.local_work_suspended(vault_row):
-        raise AdmissionRefused("Vault is no longer protected")
+        raise AdmissionRefused("api.vault_no_longer_protected")
     if vault_relocation_service.local_work_suspended(vault_row):
-        raise AdmissionRefused("Local work is suspended pending reconnect scan")
+        raise AdmissionRefused("api.admission.reconnect_scan_pending")
     access = vault_local_access(vault_row["source_root"])
     if not access.local_operations_allowed:
-        raise LocalStorageUnavailable(
-            "Local storage for this vault is unavailable"
-            + (f" ({access.volume_health})" if access.volume_health else ""),
-        )
+        if access.volume_health:
+            raise LocalStorageUnavailable("api.admission.local_storage_health", health=access.volume_health)
+        raise LocalStorageUnavailable("api.admission.local_storage_unavailable")
     if archive_version_id and (action != "recover" or is_directory):
-        raise InvalidAdmission(
-            "archive_version_id is only valid for single-file recover",
-        )
+        raise InvalidAdmission("api.admission.version_single_file")
     group_id = uuid.uuid4().hex
     estimated_cost_eur = None
     estimated_hours = None
@@ -482,9 +478,7 @@ def queue_jobs(
                     None,
                 )
                 if selected is None or not selectable or selected["id"] != selectable[0]["id"]:
-                    raise AdmissionRefused(
-                        "The selected Archive Version is not recoverable"
-                    )
+                    raise AdmissionRefused("api.admission.version_not_recoverable")
             elif selectable:
                 selected = selectable[0]
                 archive_version_id = selected["id"]
@@ -536,9 +530,9 @@ def queue_jobs(
                 estimated_cost_eur = impact["estimated_cost_eur"]
                 estimated_hours = impact["estimated_hours"]
         if not eligible_count:
-            raise AdmissionRefused("No files are eligible for this operation")
+            raise AdmissionRefused("api.admission.none_eligible")
     if not job_ids:
-        raise AdmissionRefused("An operation is already running on the selected files")
+        raise AdmissionRefused("api.admission.already_running")
     result = {
         "group_id": group_id,
         "job_ids": job_ids,
@@ -573,7 +567,5 @@ def confirm_cloud_only_replacement(
                 actor=actor,
             )
         except catalog_incident_service.NoCloudOnlyConflict as exc:
-            raise AdmissionRefused(
-                "No conflict with a cloud-only file at this path"
-            ) from exc
+            raise AdmissionRefused("api.admission.no_cloud_only_conflict") from exc
     return queue_jobs(logical_path, "upload", vault_id)

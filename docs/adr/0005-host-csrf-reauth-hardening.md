@@ -47,7 +47,8 @@ round-trip.
 **Reauthentication edge.** Sensitive actions — since ADR-0017 only the
 Recovery Kit download and deleting from the cloud — require a `reauth_at` no older than
 `REAUTH_WINDOW_SECONDS` (default 10 minutes). The `require_recent_reauth`
-dependency raises a `403 {"error": "reauth_required"}` marker that the frontend
+dependency raises a `403` whose `code` is `reauth_required` (the marker in the
+API's single error body, #797; originally `{"error": "reauth_required"}`) that the frontend
 keys on to trigger a **step-up with the user's own method**: OIDC users bounce
 through the provider with `prompt=login` (the callback refreshes `reauth_at` and
 rotates the existing Session rather than minting a new one), while the Owner on
@@ -64,5 +65,5 @@ store is removed, so there is a single source of session truth. Because CSRF is
 now mandatory on mutations, any client of the JSON API — including the bundled
 `app.js`/`admin.js` and the `no_vault.html` logout — must send the header;
 callers that do not will receive a `403`. The step-up marker is a contract with
-the frontend: back-end callers should treat `403 {"error":"reauth_required"}` as
+the frontend: back-end callers should treat a `403` with `"code": "reauth_required"` as
 "prompt for reauthentication and retry", not as a hard failure.

@@ -3307,10 +3307,13 @@ export interface components {
             [key: string]: unknown;
         };
         ApiErrorResponse: {
+            /** @enum {string} */
+            code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
             detail: string;
-            message: string;
-            /** @constant */
-            message_key: "api.invalid_path";
+            message_key: string;
+            message_params: {
+                [key: string]: unknown;
+            };
         };
         ArchiveVersionItem: {
             /** @enum {string|null} */
@@ -5641,9 +5644,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        detail: string;
-                    };
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */

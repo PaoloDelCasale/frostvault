@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..api_models import response_model
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
+from ..errors import BadRequest, Conflict, VaultNotFound
 from ..services.cost_estimates import estimate_storage_month, list_prices
 from ..services.lifecycle_policies import (
     load_vault_plan,
@@ -100,7 +101,7 @@ def storage_cost_estimate(
             if not connection.execute(
                 "SELECT id FROM vaults WHERE id=%s", (action.vault_id,)
             ).fetchone():
-                raise HTTPException(404, "Vault not found")
+                raise VaultNotFound()
             # Every Archive Version has a known size; the Vault is the file's.
             usage = connection.execute(
                 """
@@ -122,16 +123,13 @@ def _selected_lifecycle_profile(
     action: LifecycleProfileSelection,
 ) -> tuple[LifecycleProfile, str | None]:
     if action.guided_profile is not None:
-        try:
-            return guided_profile(action.guided_profile), action.guided_profile
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return guided_profile(action.guided_profile), action.guided_profile
     if action.profile is None:  # Defensive; Pydantic enforces exactly one selection.
-        raise HTTPException(status_code=400, detail="Lifecycle profile is required")
+        raise BadRequest("api.storage_plan.profile_required")
     profile = action.profile.to_profile()
     validation = validate_lifecycle_profile(profile)
     if not validation.ok:
-        raise HTTPException(status_code=400, detail="; ".join(validation.errors))
+        raise BadRequest("api.storage_plan.invalid", errors="; ".join(validation.errors))
     return profile, None
 
 
@@ -154,24 +152,18 @@ class VaultMoveRequest(BaseModel):
 
 @router.get("/api/vault/move", response_model=response_model("VaultMovePreview"))
 def preview_vault_move(vault: dict[str, Any] = Depends(current_vault)):
-    try:
-        with db() as connection:
-            return vault_moves.preview(connection, vault["id"])
-    except vault_moves.MoveBlocked as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db() as connection:
+        return vault_moves.preview(connection, vault["id"])
 
 
 @router.post("/api/vault/move", response_model=response_model("VaultMoveResponse"))
 def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(current_vault),
                user: dict[str, Any] = Depends(current_user)):
     if action.vault_id != vault["id"]:
-        raise HTTPException(409, "Selected Vault changed; refresh the move preview")
-    try:
-        with db() as connection:
-            return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,
-                user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
-    except vault_moves.MoveBlocked as exc:
-        raise HTTPException(409, str(exc)) from exc
+        raise Conflict("api.vault_move.vault_changed")
+    with db() as connection:
+        return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,
+            user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
 
 
 @router.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))

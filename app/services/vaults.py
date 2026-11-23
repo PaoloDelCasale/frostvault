@@ -32,6 +32,7 @@ import shutil
 import uuid
 from typing import Any, Callable
 
+from ..errors import DomainError
 from ..config import settings
 from ..database import INTEGRITY_ERRORS, db
 from . import source_directories, vault_buckets
@@ -71,24 +72,39 @@ def vault_object_prefix(vault: Any) -> str:
     return object_prefix(vault["s3_key_layout"], vault["uuid"])
 
 
-class VaultCreationError(Exception):
-    """Base error for self-service vault creation failures."""
+class VaultCreationError(DomainError):
+    """Base error for self-service vault creation failures; ``str()`` is internal."""
+
+    code = "conflict"
+    message_key = "ui.vault_create.failed"
+
+    def __init__(self, message: str = "") -> None:
+        Exception.__init__(self, message)
 
 
 class InvalidVaultName(VaultCreationError):
     """The supplied name or creation mode is not valid."""
 
+    code = "invalid"
+    message_key = "api.vault_name_invalid"
+
 
 class VaultProvisioningUnavailable(VaultCreationError):
     """Vault Buckets cannot be created here: no AWS region or credentials."""
+
+    code = "unavailable"
+    message_key = "api.vault_provisioning_unavailable"
 
 
 class VaultAdoptionError(VaultCreationError):
     """Adoption preflight failed; no Vault row was committed."""
 
+    code = "invalid"
+
     def __init__(self, reason: str, message: str | None = None) -> None:
-        super().__init__(message or reason)
+        Exception.__init__(self, message or reason)
         self.reason = reason
+        self.describe(f"api.vault_adoption.{reason}", fallback="api.vault_adoption.failed")
 
 
 _CREATION_MODES = frozenset({"empty", "adopt"})

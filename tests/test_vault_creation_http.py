@@ -214,7 +214,7 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
         self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(response.json()["message_key"], "api.vault_name_invalid")
-        self.assertEqual(response.json()["detail"], response.json()["message"])
+        self.assertEqual(response.json()["detail"], "Inserisci un nome per il Vault.")
 
     def test_no_new_user_is_ever_provisioned_by_creating_a_vault(self) -> None:
         self.sign_in()
@@ -300,7 +300,7 @@ class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
         url = f"/api/vaults/{body['id']}/creation/cancel"
         self._reauthenticate(datetime(2000, 1, 1, tzinfo=timezone.utc))
         refused = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
-        self.assertEqual((refused.status_code, refused.json()), (403, {"error": "reauth_required"}))
+        self.assertEqual((refused.status_code, refused.json()["code"]), (403, "reauth_required"))
         self._reauthenticate()
         cancelled = self.client.post(url, headers={"X-CSRF-Token": self._csrf()})
         self.assertEqual(cancelled.status_code, 200, cancelled.text)

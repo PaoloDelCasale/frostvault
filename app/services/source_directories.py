@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ..errors import DomainError
 from . import source_layout
 
 # Advisory lock key that serializes Vault-root allocation, relocation, and
@@ -18,15 +19,33 @@ from . import source_layout
 _VAULT_ROOT_LOCK_KEY = 0x534F555243415245  # "SOURCARE"
 
 
-class SourceDirectoryError(Exception):
+# The kind of refusal of each reason that has an Owner-facing message.
+_REASON_CODES = {
+    "volume_not_found": "not_found",
+    "volume_unavailable": "conflict",
+    "invalid_volume": "invalid",
+    "invalid_path": "invalid",
+    "path_missing": "not_found",
+    "occupied": "conflict",
+}
+
+
+class SourceDirectoryError(DomainError):
     """A recoverable failure while resolving a Source Volume directory.
 
-    ``reason`` is a short machine-readable code callers may surface safely.
+    ``reason`` is a short machine-readable code callers may surface safely;
+    ``str()`` stays the internal text.
     """
 
+    code = "bad_request"
+
     def __init__(self, reason: str, message: str | None = None) -> None:
-        super().__init__(message or reason)
+        Exception.__init__(self, message or reason)
         self.reason = reason
+        if reason in _REASON_CODES:
+            self.describe(f"api.source_directory.{reason}", code=_REASON_CODES[reason])
+        else:
+            self.describe("api.source_directory.failed")
 
 
 def paths_overlap(left: str, right: str) -> bool:

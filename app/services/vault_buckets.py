@@ -45,6 +45,7 @@ from typing import Any, Callable
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from ..errors import DomainError, VaultNotFound
 from . import bucket_provisioning as buckets
 from . import s3
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
@@ -77,12 +78,15 @@ class VaultBucketUnavailable(RuntimeError):
     """Vault Buckets cannot be created on this server (region or credentials)."""
 
 
-class CancelRefused(RuntimeError):
-    """The creation cannot be cancelled: ``code`` says why."""
+class CancelRefused(DomainError, RuntimeError):
+    """The creation cannot be cancelled: ``reason`` says why."""
 
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
+    code = "conflict"
+
+    def __init__(self, reason: str) -> None:
+        RuntimeError.__init__(self, reason)
+        self.reason = reason
+        self.describe(f"api.vault_creation_cancel.{reason}")
 
 
 def slug(name: str) -> str:
@@ -313,7 +317,7 @@ def provision(vault_id: int, *, database: Callable[[], Any] | None = None,
         with database() as connection:
             row = connection.execute(f"{_ROW_SQL} WHERE v.id=%s", (vault_id,)).fetchone()
         if row is None:
-            raise LookupError("Vault not found")
+            raise VaultNotFound()
         if row["lifecycle"] != "provisioning":
             return _public(row)
         if row["stage"] == "verified":
@@ -543,7 +547,7 @@ def cancel_creation(vault_id: int, *, actor: str = "owner",
             row = connection.execute(
                 f"{_ROW_SQL} WHERE v.id=%s FOR UPDATE OF v", (vault_id,)).fetchone()
             if row is None:
-                raise LookupError("Vault not found")
+                raise VaultNotFound("api.vault_creation_cancel.not_found")
             if row["lifecycle"] != "provisioning":
                 raise CancelRefused("not_provisioning")
             left = _bucket_left(row)

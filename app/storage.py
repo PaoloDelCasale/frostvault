@@ -5143,7 +5143,7 @@ def process_storage_class(job: dict[str, Any]) -> None:
     except copy_provenance.CopyNeedsRestore as exc:
         if colder_only:
             raise vault_moves.MoveBlocked(
-                f"Vault move never restores: the Archive Version is in {exc.storage_class}") from exc
+                "api.vault_move.never_restores", storage_class=exc.storage_class) from exc
         _request_copy_restore(job, exc)
         return
     except Exception as exc:
@@ -8311,7 +8311,7 @@ def _verify_latest_metadata_backup_once() -> None:
             work_dir=work_dir,
         )
         if not result.get("ok"):
-            raise metadata_backup_service.BackupError("Restore verification reported not ok")
+            raise metadata_backup_service.BackupError("api.metadata_backup.restore_not_ok")
         metrics_service.inc("metadata_backup_verifications_total", result="succeeded")
         with db() as connection:
             connection.execute(

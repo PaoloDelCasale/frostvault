@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
 from ..database import db
+from ..errors import BadRequest, Forbidden, NotFound, RateLimited, Unauthenticated
 from ..emergency_password import (
     REAUTHENTICATION,
     SIGN_IN,
@@ -35,6 +36,7 @@ from ..sessions import (
     rotate_session,
 )
 from .deps import (
+    NoVault,
     _api_message,
     _clear_session_cookie,
     _client_ip,
@@ -114,7 +116,7 @@ def login(action: LoginRequest, request: Request, response: Response):
                 actor="emergency",
                 ip=client_ip,
             )
-        raise HTTPException(403, "The emergency password is not accepted from this network")
+        raise Forbidden("api.sign_in.emergency_network")
     if isinstance(outcome, Throttled):
         retry_after = outcome.retry_after
         with db() as connection:
@@ -126,13 +128,9 @@ def login(action: LoginRequest, request: Request, response: Response):
                 ip=client_ip,
                 retry_after=retry_after,
             )
-        raise HTTPException(
-            429,
-            "Too many attempts; try again later",
-            headers={"Retry-After": str(retry_after)},
-        )
+        raise RateLimited("api.sign_in.too_many_attempts", retry_after=retry_after)
     if raw_token is None:
-        raise HTTPException(401, "Incorrect emergency password")
+        raise Unauthenticated("api.sign_in.incorrect_emergency_password")
     _set_session_cookie(response, raw_token)
     if csrf_token:
         _set_csrf_cookie(response, csrf_token)
@@ -208,16 +206,12 @@ def reauth(
         in_transaction=record,
     )
     if isinstance(outcome, BreakGlassDenied):
-        raise HTTPException(403, "Password reauthentication is not allowed here")
+        raise Forbidden("api.sign_in.reauth_not_allowed")
     if isinstance(outcome, Throttled):
         retry_after = outcome.retry_after
-        raise HTTPException(
-            429,
-            "Too many attempts; try again later",
-            headers={"Retry-After": str(retry_after)},
-        )
+        raise RateLimited("api.sign_in.too_many_attempts", retry_after=retry_after)
     if not isinstance(outcome, Accepted):
-        raise HTTPException(401, "Incorrect password")
+        raise Unauthenticated("api.sign_in.incorrect_password")
     return {"message": "Reauthenticated"}
 
 
@@ -256,8 +250,8 @@ def _oidc_host_addresses(hostname: str) -> list[str]:
 
 def _raise_oidc_start_error(error: OidcError) -> None:
     if error.reason == "disabled":
-        raise HTTPException(404, "OIDC login is not enabled") from error
-    raise HTTPException(400, f"OIDC login failed: {error.reason}") from error
+        raise NotFound("api.sign_in.oidc_disabled") from error
+    raise BadRequest("api.sign_in.oidc_failed", reason=error.reason) from error
 
 
 def _safe_return_to(candidate: str | None) -> str:
@@ -312,7 +306,7 @@ def oidc_callback(
                 host_addresses=_oidc_host_addresses,
             )
         except OidcError as error:
-            raise HTTPException(400, f"OIDC login failed: {error.reason}")
+            raise BadRequest("api.sign_in.oidc_failed", reason=error.reason)
         try:
             bind_owner_identity(connection, claims)
         except IdentityRejected:
@@ -332,7 +326,7 @@ def oidc_callback(
                 except SessionTransitionError as error:
                     # A concurrent logout or expiry wins over an OIDC callback;
                     # never issue a freshly rotated cookie for a dead Session.
-                    raise HTTPException(401, "Invalid session") from error
+                    raise Unauthenticated("api.invalid_session") from error
                 csrf_token = existing["csrf_token"]
             else:
                 raw_token = create_session(
@@ -351,7 +345,7 @@ def oidc_callback(
                 issuer=claims.issuer,
             )
     if rejected:
-        raise HTTPException(403, "This identity is not the owner's identity")
+        raise Forbidden("api.sign_in.not_owner_identity")
     redirect = RedirectResponse(
         _safe_return_to(claims.return_to), status_code=303
     )
@@ -367,9 +361,7 @@ def me(request: Request, response: Response, user: dict[str, Any] = Depends(curr
     _set_csrf_cookie(response, csrf_token)
     try:
         vault = current_vault(request, user)
-    except HTTPException as exc:
-        if exc.status_code != 403:
-            raise
+    except NoVault:
         vault = None
     vault_block = None
     stopped_vault_block = None
@@ -443,7 +435,7 @@ def update_locale(
         and action.locale.replace("_", "-").split("-", 1)[0].strip().lower()
         not in available_locales()
     ):
-        raise HTTPException(400, "Unsupported locale")
+        raise BadRequest("api.unsupported_locale")
     _set_locale_cookie(response, resolved)
     return {
         "locale": resolved,

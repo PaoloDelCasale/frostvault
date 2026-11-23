@@ -127,8 +127,8 @@ class SignInTests(EmergencyPasswordHttpCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(
-            response.json(),
-            {"detail": "The emergency password is not accepted from this network"},
+            response.json()["detail"],
+            "The emergency password is not accepted from this network",
         )
         self.assertEqual(statements, [AUDIT, COMMIT])
         self.assertEqual(
@@ -143,7 +143,7 @@ class SignInTests(EmergencyPasswordHttpCase):
         response, statements, _client = self.login(WRONG_PASSWORD)
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json(), {"detail": "Incorrect emergency password"})
+        self.assertEqual(response.json()["detail"], "Incorrect emergency password")
         self.assertNotIn("Retry-After", response.headers)
         self.assertEqual(
             statements,
@@ -167,7 +167,7 @@ class SignInTests(EmergencyPasswordHttpCase):
                 response, statements, _client = self.login(PASSWORD)
 
                 self.assertEqual(response.status_code, 401)
-                self.assertEqual(response.json(), {"detail": "Incorrect emergency password"})
+                self.assertEqual(response.json()["detail"], "Incorrect emergency password")
                 self.assertEqual(
                     statements,
                     [GUARD, GUARD, OWNER_ROW, FAILURE, FAILURE, AUDIT, COMMIT],
@@ -232,7 +232,7 @@ class SignInTests(EmergencyPasswordHttpCase):
         response, statements, client = self.login(PASSWORD)
 
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json(), {"detail": "Too many attempts; try again later"})
+        self.assertEqual(response.json()["detail"], "Too many attempts; try again later")
         self.assertEqual(response.headers["Retry-After"], "30")
         # The block is audited in a second transaction, after the first commit.
         self.assertEqual(statements, [GUARD, COMMIT, AUDIT, COMMIT])
@@ -305,7 +305,7 @@ class ReauthenticationTests(EmergencyPasswordHttpCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(
-            response.json(), {"detail": "Password reauthentication is not allowed here"}
+            response.json()["detail"], "Password reauthentication is not allowed here"
         )
         self.assertEqual(statements, [])
         self.assertEqual(self.audit_events(), [])
@@ -316,7 +316,7 @@ class ReauthenticationTests(EmergencyPasswordHttpCase):
         response, statements = self.reauth(WRONG_PASSWORD)
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json(), {"detail": "Incorrect password"})
+        self.assertEqual(response.json()["detail"], "Incorrect password")
         self.assertNotIn("Retry-After", response.headers)
         # After counting, both dimensions are read again for a fresh block.
         self.assertEqual(
@@ -337,7 +337,7 @@ class ReauthenticationTests(EmergencyPasswordHttpCase):
         response, statements = self.reauth(PASSWORD)
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json(), {"detail": "Incorrect password"})
+        self.assertEqual(response.json()["detail"], "Incorrect password")
         self.assertEqual(
             statements,
             [GUARD, GUARD, OWNER_ROW, FAILURE, FAILURE, GUARD, GUARD, AUDIT, COMMIT],
@@ -377,7 +377,7 @@ class ReauthenticationTests(EmergencyPasswordHttpCase):
         response, statements = self.reauth(WRONG_PASSWORD)
 
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json(), {"detail": "Too many attempts; try again later"})
+        self.assertEqual(response.json()["detail"], "Too many attempts; try again later")
         self.assertEqual(response.headers["Retry-After"], str(backoff.BASE_SECONDS))
         # The failure and the block are audited in the one transaction.
         self.assertEqual(
@@ -410,7 +410,7 @@ class ReauthenticationTests(EmergencyPasswordHttpCase):
         response, statements = self.reauth(PASSWORD)
 
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json(), {"detail": "Too many attempts; try again later"})
+        self.assertEqual(response.json()["detail"], "Too many attempts; try again later")
         self.assertEqual(response.headers["Retry-After"], "90")
         self.assertEqual(statements, [GUARD, GUARD, AUDIT, COMMIT])
         self.assertEqual(

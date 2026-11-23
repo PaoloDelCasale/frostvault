@@ -34,7 +34,10 @@ from . import cleanup_engine, cloud_deletion
 
 
 class DuplicateCleanupError(cleanup_engine.CleanupError):
-    """The settings cannot be changed: ``code`` names the Owner-facing message."""
+    """The settings cannot be changed: ``reason`` names the Owner-facing message."""
+
+    prefix = "api.duplicate_cleanup"
+    reasons = frozenset({"stopped"})
 
 
 def _candidates(connection: Any, vault: dict[str, Any],

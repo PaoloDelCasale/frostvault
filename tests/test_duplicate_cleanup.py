@@ -178,7 +178,7 @@ class SelectionTests(DuplicateCleanupFixture):
         self.assertEqual(self.count("SELECT 1 FROM jobs WHERE action='cloud-purge'"), 0)
         with self.assertRaises(duplicate_cleanup.DuplicateCleanupError) as refused:
             self.configure()
-        self.assertEqual(refused.exception.code, "stopped")
+        self.assertEqual(refused.exception.reason, "stopped")
 
 
 class CapTests(DuplicateCleanupFixture):
@@ -592,7 +592,7 @@ class HttpTests(DuplicateCleanupFixture):
             with self.subTest(body=body):
                 refused = self.client.put(self.url, json=body, headers=self.headers)
                 self.assertEqual(refused.status_code, 403, refused.text)
-                self.assertEqual(refused.json()["error"], "reauth_required")
+                self.assertEqual(refused.json()["code"], "reauth_required")
         self.reauth()
         on = self.client.put(self.url, json={"enabled": True, "grace_days": 14, "cap_bytes": 1024},
                              headers=self.headers)
@@ -621,7 +621,7 @@ class HttpTests(DuplicateCleanupFixture):
         self.assertIn("minimum_storage", on.json())
         off = self.client.put(self.url, json={"beyond_minimum": False}, headers=self.headers)
         self.assertEqual(off.status_code, 403, off.text)
-        self.assertEqual(off.json()["error"], "reauth_required")
+        self.assertEqual(off.json()["code"], "reauth_required")
         mixed = self.client.put(self.url, json={"beyond_minimum": True, "grace_days": 3}, headers=self.headers)
         self.assertEqual(mixed.status_code, 403, mixed.text)
         empty = self.client.put(self.url, json={}, headers=self.headers)

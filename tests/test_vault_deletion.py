@@ -215,7 +215,7 @@ class VaultDeletionTests(VaultDeletionFixture):
     def test_only_a_tombstone_can_be_deleted(self) -> None:
         with self.db() as connection, self.assertRaises(vault_deletion.VaultDeletionError) as refused:
             vault_deletion.deletion_target(connection, 2)
-        self.assertEqual(refused.exception.code, "not_tombstone")
+        self.assertEqual(refused.exception.reason, "not_tombstone")
         with self.db() as connection, self.assertRaises(vault_deletion.VaultDeletionError):
             vault_deletion.request_deletion(
                 connection, vault_id=2, actor="owner", confirmation="Docs", reason="x",
@@ -236,7 +236,7 @@ class VaultDeletionTests(VaultDeletionFixture):
                 connection, vault_id=2, actor="owner", confirmation="Docs",
                 reason="test vault no longer needed", preview_summary=summary,
                 requested_at=PAST, delete_bucket=True)
-        self.assertEqual(refused.exception.code, "shared_bucket")
+        self.assertEqual(refused.exception.reason, "shared_bucket")
         self.assertIsNone(self.deletion())
 
     def test_the_request_waits_seven_days_and_can_be_cancelled(self) -> None:
@@ -250,7 +250,7 @@ class VaultDeletionTests(VaultDeletionFixture):
                          cloud_deletion.DELETION_DELAY_SECONDS)
         with self.assertRaises(vault_deletion.VaultDeletionError) as again:
             self.request()
-        self.assertEqual(again.exception.code, "already_requested")
+        self.assertEqual(again.exception.reason, "already_requested")
         self.assertEqual(self.run_due(), 0)
         self.assertEqual(self.provider.deleted, [], "nothing runs before the delay")
         # The schema refuses a shorter delay.
@@ -357,7 +357,7 @@ class VaultDeletionTests(VaultDeletionFixture):
             self.assertEqual(vault_deletion.claim_due(connection, now=datetime.now(timezone.utc)), [2])
         with self.db() as connection, self.assertRaises(vault_deletion.VaultDeletionError) as refused:
             vault_deletion.cancel(connection, vault_id=2, actor="owner")
-        self.assertEqual(refused.exception.code, "running")
+        self.assertEqual(refused.exception.reason, "running")
         with self.db() as connection:
             self.assertEqual(vault_deletion.claim_due(connection, now=datetime.now(timezone.utc)), [],
                              "a live run is not claimed twice")
@@ -391,7 +391,7 @@ class VaultDeletionHttpTests(VaultDeletionFixture):
         self.stop()
         self.reauth(False)
         denied = self.client.post(url, json=self.payload, headers=self.headers)
-        self.assertEqual((denied.status_code, denied.json()), (403, {"error": "reauth_required"}))
+        self.assertEqual((denied.status_code, denied.json()["code"]), (403, "reauth_required"))
         self.reauth(True)
         preview = self.client.get(url + "/preview")
         self.assertEqual((preview.status_code, preview.json()["version_count"]), (200, 2))

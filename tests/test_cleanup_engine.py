@@ -334,7 +334,7 @@ class EngineContract:
         self.assertEqual(len(self.audit("settings_updated")), 1, "an unchanged write is not audited")
         with self.db() as connection, self.assertRaises(self.error) as unknown:
             self.module.update_settings(connection, vault_id=2, actor="owner", values={"surprise": 1})
-        self.assertEqual((str(unknown.exception), unknown.exception.code),
+        self.assertEqual((str(unknown.exception), unknown.exception.reason),
                          ("Unknown settings: ['surprise']", "invalid"))
         with self.db() as connection, self.assertRaises(cloud_deletion.CloudDeletionError):
             self.module.update_settings(connection, vault_id=999, actor="owner", values={})
@@ -348,10 +348,10 @@ class EngineContract:
                  ({"grace_days": True}, f"grace_days must be between {low} and {high}", "grace_days"),
                  ({"cap_files": 1_000_001}, "cap_files must be between 1 and 1000000", "cap_files"),
                  ({"cap_bytes": 1024 ** 5 + 1}, f"cap_bytes must be between 1 and {1024 ** 5}", "cap_bytes")]
-        for values, message, code in cases:
+        for values, message, reason in cases:
             with self.subTest(values=values), self.db() as connection, self.assertRaises(self.error) as error:
                 self.module.update_settings(connection, vault_id=2, actor="owner", values=values)
-            self.assertEqual((str(error.exception), error.exception.code), (message, code))
+            self.assertEqual((str(error.exception), error.exception.reason), (message, reason))
         self.assertEqual(self.enable(grace_days=high, cap_files=1_000_000, cap_bytes=1024 ** 5)["grace_days"], high)
 
 
@@ -374,7 +374,7 @@ class DuplicateCleanupEngineTests(EngineContract, MirrorCleanupFixture):
         with self.db() as connection, self.assertRaises(self.error) as error:
             self.module.update_settings(connection, vault_id=2, actor="owner",
                                         values={"beyond_minimum": 1, "grace_days": 0})
-        self.assertEqual(error.exception.code, "grace_days")
+        self.assertEqual(error.exception.reason, "grace_days")
 
 
 class MirrorCleanupEngineTests(EngineContract, MirrorCleanupFixture):
@@ -396,7 +396,7 @@ class MirrorCleanupEngineTests(EngineContract, MirrorCleanupFixture):
         with self.db() as connection, self.assertRaises(self.error) as error:
             self.module.update_settings(connection, vault_id=2, actor="owner",
                                         values={"beyond_minimum": 1, "grace_days": 0})
-        self.assertEqual((str(error.exception), error.exception.code),
+        self.assertEqual((str(error.exception), error.exception.reason),
                          ("beyond_minimum must be true or false", "invalid"))
 
     def test_a_loosening_change_asks_for_the_fresh_authentication_before_any_write(self) -> None:

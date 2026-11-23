@@ -174,8 +174,7 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
         self.assertEqual(self.row(job)["status"], "retrying")
         response = self.http_client().post("/api/upload/reconcile", json={"path": "report.txt", "is_directory": False})
         self.assertEqual(response.status_code, 409)
-        self.assertIn("active_operation", response.json()["detail"])
-        self.assertNotIn("identity_changed", response.json()["detail"])
+        self.assertEqual(response.json()["message_key"], "reconciliation.reason.active_operation")
         self.assertEqual(len(self.jobs()), 1)
 
     def test_reconcile_of_a_suspended_remediation_names_its_stored_reason(self):
@@ -186,8 +185,8 @@ class UploadAmbiguousSendRecoveryTests(fixtures.UploadProvenanceWorkerCase):
                 DO UPDATE SET last_error=excluded.last_error""", (storage.now_iso(),))
         response = self.http_client().post("/api/upload/reconcile", json={"path": "report.txt", "is_directory": False})
         self.assertEqual(response.status_code, 409)
-        self.assertIn("source_volume_unavailable", response.json()["detail"])
-        self.assertNotIn("identity_changed", response.json()["detail"])
+        self.assertEqual(response.json()["message_key"],
+                         "reconciliation.reason.source_volume_unavailable")
 
     def test_transient_source_check_failure_waits_instead_of_failing_with_identity_changed(self):
         # #486: a hiccup reading the enrolled root is not an identity change.

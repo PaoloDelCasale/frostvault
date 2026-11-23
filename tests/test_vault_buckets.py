@@ -531,13 +531,13 @@ class VaultBucketProvisioningTests(FrostVaultTestCase):
         active = vaults_service.create_vault("Photos")
         with self.assertRaises(vault_buckets.CancelRefused) as refused:
             vault_buckets.cancel_creation(active["id"])
-        self.assertEqual(refused.exception.code, "not_provisioning")
+        self.assertEqual(refused.exception.reason, "not_provisioning")
         self.s3.fail["create_bucket"] = "AccessDenied"
         pending = vaults_service.create_vault("Docs")
         lock = vault_buckets._vault_lock(pending["id"])
         with lock, self.assertRaises(vault_buckets.CancelRefused) as busy:
             vault_buckets.cancel_creation(pending["id"])
-        self.assertEqual(busy.exception.code, "busy")
+        self.assertEqual(busy.exception.reason, "busy")
         self.assertEqual(len(self.query("SELECT id FROM vaults")), 2)
 
     def test_a_retention_lock_is_applied_at_creation_only(self) -> None:

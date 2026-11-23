@@ -64,6 +64,7 @@ from botocore.exceptions import (
     NoCredentialsError, PartialCredentialsError, ReadTimeoutError,
 )
 
+from ..errors import VaultNotFound
 from . import system_bucket
 from . import s3
 
@@ -997,7 +998,7 @@ def vault_view(connection: Any, vault_id: int, cfg: Any = None, *,
         "JOIN vault_targets t ON t.id = v.target_id WHERE v.id = %s", (vault_id,),
     ).fetchone()
     if vault is None:
-        raise LookupError(vault_id)
+        raise VaultNotFound("api.billed_cost.not_found")
     bucket = system_bucket.location(cfg, connection=connection)
     view, periods_read = _status_fields(connection, load_status(connection), bucket, now)
     shared = vault["key_layout"] != "bucket_root"

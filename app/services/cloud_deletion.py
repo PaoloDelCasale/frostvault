@@ -52,6 +52,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from ..errors import DomainError
+from ..i18n import DEFAULT_LOCALE, translate
 from . import retention_lock, source_identity, source_layout, vault_relocation
 from .audit_events import record_audit_event
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
@@ -64,18 +66,26 @@ from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE
 DELETION_DELAY_SECONDS = 7 * 24 * 60 * 60
 
 
-class CloudDeletionError(ValueError):
+class CloudDeletionError(DomainError, ValueError):
     """The request no longer proves safe, deliberate deletion authority."""
+
+    code = "conflict"
+
+
+class VaultNotFound(CloudDeletionError):
+    """The Vault whose cloud content is asked about does not exist."""
+
+    code = "not_found"
 
 
 class ConfirmationRequired(CloudDeletionError):
-    pass
+    """The Owner did not type the exact Vault name."""
+
+    code = "invalid"
 
 
 class SelectionChanged(CloudDeletionError):
     """What a folder selection covers differs from what its preview listed (#723)."""
-
-    message_key = "api.cloud_purge_selection_changed"
 
 
 # Why a file of a folder selection is skipped (#723), in the order they are tested.
@@ -167,7 +177,7 @@ def now_iso() -> str:
 def _aware(value: Any) -> datetime:
     moment = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     if moment.tzinfo is None:
-        raise CloudDeletionError("A timezone-aware time is required")
+        raise CloudDeletionError("api.cloud_deletion.timezone_required")
     return moment
 
 
@@ -180,7 +190,7 @@ def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
            WHERE v.id=%s FOR UPDATE OF v""", (vault_id,)
     ).fetchone()
     if row is None:
-        raise CloudDeletionError("Vault not found")
+        raise VaultNotFound("api.vault_not_found")
     return row
 
 
@@ -213,13 +223,13 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
     access = source_layout.vault_local_access(vault["source_root"])
     if (not access.local_operations_allowed
             or vault.get("lifecycle") not in {"active", "stopping"}):
-        raise CloudDeletionError("Local absence cannot be confirmed: reconnect the Source Volume")
+        raise CloudDeletionError("api.cloud_deletion.absence_reconnect")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     descriptors: list[int] = []
     try:
         root_path = PurePosixPath(vault["source_root"])
         if not root_path.is_absolute():
-            raise CloudDeletionError("Vault root is not absolute")
+            raise CloudDeletionError("api.cloud_deletion.root_not_absolute")
         root = os.open("/", flags)
         descriptors.append(root)
         for part in root_path.parts[1:]:
@@ -229,13 +239,13 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
                 or not vault.get("root_identity")
                 or vault_relocation.opened_root_identity(root, vault["source_root"])
                 != vault["root_identity"]):
-            raise CloudDeletionError("Vault root identity changed")
+            raise CloudDeletionError("api.cloud_deletion.root_identity_changed")
         root_device = os.fstat(root).st_dev
         root_mount = source_layout.descriptor_mount_id(root)
         for path in paths:
             relative = PurePosixPath(path)
             if not path or relative.is_absolute() or ".." in relative.parts or str(relative) != path:
-                raise CloudDeletionError("Invalid file path")
+                raise CloudDeletionError("api.cloud_deletion.invalid_file_path")
             parent = root
             children: list[int] = []
             try:
@@ -250,7 +260,7 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
                     # most of the check (#753).
                     if (os.fstat(child).st_dev != root_device
                             or source_layout.descriptor_mount_id(child) != root_mount):
-                        raise CloudDeletionError("Nested mount prevents confirming absence")
+                        raise CloudDeletionError("api.cloud_deletion.nested_mount")
                     parent = child
                 else:
                     try:
@@ -258,7 +268,7 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
                     except FileNotFoundError:
                         continue
                     if first_only:
-                        raise CloudDeletionError("A selected file is present on the server")
+                        raise CloudDeletionError("api.cloud_deletion.present_locally")
                     present.add(path)
             finally:
                 for child in reversed(children):
@@ -267,12 +277,12 @@ def _present_paths(vault: dict[str, Any], paths: list[str], *,
         # root: the descriptor must still be the folder at the Vault path.
         if (vault_relocation.opened_root_identity(root, vault["source_root"])
                 != vault["root_identity"]):
-            raise CloudDeletionError("Vault root changed during absence check")
+            raise CloudDeletionError("api.cloud_deletion.root_changed")
         if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
-            raise CloudDeletionError("Source Volume changed during absence check")
+            raise CloudDeletionError("api.cloud_deletion.volume_changed")
     except (OSError, vault_relocation.VaultRelocationError,
             source_identity.MountIdentityError) as exc:
-        raise CloudDeletionError("Local absence cannot be confirmed") from exc
+        raise CloudDeletionError("api.cloud_deletion.absence_unconfirmed") from exc
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -306,7 +316,7 @@ _FILE_SQL = """
 def _require_paths(paths: list[str]) -> None:
     if not paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts
                         or str(PurePosixPath(p)) != p for p in paths):
-        raise CloudDeletionError("Select valid relative file paths")
+        raise CloudDeletionError("api.cloud_deletion.invalid_paths")
 
 
 def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
@@ -342,22 +352,22 @@ def _files_by_id(connection: Any, file_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _row_problem(row: dict[str, Any], prefix: str, own_group: str | None) -> str | None:
-    """Why one live file row cannot be consented, or None when it can."""
+    """Why one live file row cannot be consented (a message key), or None when it can."""
     if (row["local_presence"] not in {None, "missing"} or row["held_version_id"] is not None
             or row["current_version_id"] is None or row["replacing_version_id"] is not None
             or row["integrity"] != "verified" or row["availability"] != "available"
             or not row["path"]):
-        return "Only Cloud-only files can be deleted from the cloud"
+        return "api.cloud_deletion.cloud_only_required"
     if (row["other_versions"] or row["attempt_open"]
             or (row["batch_open"] and (own_group is None
                                        or str(row["batch_group"] or "") != str(own_group)))):
-        return "Selected file has pending cloud cleanup"
+        return "api.cloud_deletion.pending_cleanup"
     if (not row["object_key"] or not row["provider_version_id"]
             or row["provider_version_id"] == "null"
             or not str(row["object_key"]).startswith(prefix)
             or row["attempt_outcome"] != "landed"
             or row["landed_version_id"] != row["provider_version_id"]):
-        return "An exact cloud VersionId in this Vault is required"
+        return "api.cloud_deletion.exact_version_required"
     return None
 
 
@@ -377,14 +387,14 @@ def _validate_files(connection: Any, vault: dict[str, Any], files: list[dict[str
                     *, own_group: str | None = None, check_local: bool = True) -> None:
     """Every selected file is Cloud-only with exactly one consentable version."""
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
-        raise CloudDeletionError("Protection observations are not confirmed")
+        raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
     prefix = _vault_prefix(vault)
     for row in files:
         problem = _row_problem(row, prefix, own_group)
         if problem:
             raise CloudDeletionError(problem)
     if _busy_files(connection, [str(r["file_id"]) for r in files], own_group):
-        raise CloudDeletionError("Selected file has pending work")
+        raise CloudDeletionError("api.cloud_deletion.pending_work")
     if check_local:
         require_local_absence(vault, [r["path"] for r in files])
 
@@ -435,11 +445,11 @@ def _selection(*, paths: list[str], is_directory: bool, whole_vault: bool,
         _require_paths(folders)
     if listing is not None:
         if listing.state and listing.state not in STATES:
-            raise CloudDeletionError("Unknown protection state")
+            raise CloudDeletionError("api.cloud_deletion.unknown_state")
         if listing.directory:
             _require_paths([listing.directory])
     if not files and not folders and listing is None:
-        raise CloudDeletionError("Select valid relative file paths")
+        raise CloudDeletionError("api.cloud_deletion.invalid_paths")
     return _Selection(tuple(dict.fromkeys(files)), tuple(dict.fromkeys(folders)), listing)
 
 
@@ -622,16 +632,16 @@ def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
         files = _selected_files(connection, vault_id=int(vault["id"]), paths=list(selection.files),
                                 is_directory=False, whole_vault=selection.whole_vault)
         if not files:
-            raise CloudDeletionError("No Cloud-only files selected")
+            raise CloudDeletionError("api.cloud_deletion.none_selected")
         _validate_files(connection, vault, files)
         duplicates = set() if selection.whole_vault else _duplicate_ids(
             connection, vault, [str(f["file_id"]) for f in files])
         if duplicates_only and not selection.whole_vault and len(duplicates) != len(files):
-            raise CloudDeletionError("The selected file is not a Cloud Duplicate")
+            raise CloudDeletionError("api.cloud_deletion.not_duplicate")
         eligible, skipped, mode = files, {}, "exact"
     else:
         if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
-            raise CloudDeletionError("Protection observations are not confirmed")
+            raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
         where, params = _selection_sql(connection, vault, selection)
         rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
                                   [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
@@ -684,21 +694,21 @@ def schedule_cloud_purge(connection: Any, *, vault_id: int, paths: list[str],
     """
     vault = lock_vault(connection, vault_id)
     if vault["lifecycle"] != "active" or vault.get("root_released_at"):
-        raise CloudDeletionError("Folder protection has already stopped")
+        raise CloudDeletionError("api.stop_protection.already_stopped")
     if origin not in {"manual", "stop-protection"}:
-        raise CloudDeletionError("Unsupported deletion origin")
+        raise CloudDeletionError("api.cloud_deletion.unsupported_origin")
     if confirmation != vault["name"]:
-        raise ConfirmationRequired("Type the exact Vault name to confirm")
+        raise ConfirmationRequired("api.confirmation_required")
     if not (reason or "").strip() or len(reason) > 500:
-        raise CloudDeletionError("A deletion reason is required")
+        raise CloudDeletionError("api.cloud_deletion.reason_required")
     requested = _aware(requested_at)
     selection = _selection(paths=paths, is_directory=is_directory, whole_vault=whole_vault,
                            directories=directories, listing=listing)
     files, preview = _resolve(connection, vault, selection, duplicates_only=duplicates_only)
     if (fingerprint is not None or not selection.strict) and fingerprint != preview.fingerprint:
-        raise SelectionChanged("The selection changed since the preview: preview it again")
+        raise SelectionChanged("api.cloud_purge_selection_changed")
     if not files:
-        raise CloudDeletionError("No Cloud-only files selected")
+        raise CloudDeletionError("api.cloud_deletion.none_selected")
     if not selection.strict:
         # The eligible set passes the very checks of an exact selection.
         _validate_files(connection, vault, _files_by_id(connection, [str(f["file_id"]) for f in files]),
@@ -758,7 +768,7 @@ def cloud_duplicates(connection: Any,
     and the skipped counts per reason.
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
-        raise CloudDeletionError("Protection observations are not confirmed")
+        raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
     where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=where),
                               [_vault_prefix(vault), int(vault["id"]), *params]).fetchall()
@@ -798,7 +808,7 @@ def cloud_only_files(connection: Any, vault: dict[str, Any], *,
     Each row carries ``local_seen_at`` (None when never seen locally).
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
-        raise CloudDeletionError("Protection observations are not confirmed")
+        raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
     where, params = _selection_sql(connection, vault, _Selection(cloud_only=True))
     scope, scope_params = _in_folders_sql(list(folders or []))
     rows = connection.execute(_CLASSIFY_SQL.format(selection=f"{where} AND {scope}"),
@@ -915,11 +925,11 @@ def schedule_automatic_duplicates(connection: Any, *, vault: dict[str, Any],
     record say it was automatic.
     """
     if vault["lifecycle"] != "active" or vault.get("root_released_at") or vault.get("paused"):
-        raise CloudDeletionError("Automatic cleanup runs only on an active Vault")
+        raise CloudDeletionError("api.cloud_deletion.automatic_active_only")
     if not files:
-        raise CloudDeletionError("No Cloud-only files selected")
+        raise CloudDeletionError("api.cloud_deletion.none_selected")
     if not (reason or "").strip() or len(reason) > 500:
-        raise CloudDeletionError("A deletion reason is required")
+        raise CloudDeletionError("api.cloud_deletion.reason_required")
     _validate_files(connection, vault, _files_by_id(connection, [str(f["file_id"]) for f in files]),
                     check_local=False)
     return _record_consent(connection, vault_id=int(vault["id"]), files=files, preview=preview,
@@ -943,7 +953,7 @@ def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
     lock_vault(connection, vault_id)
     rows = [r for r in _group_jobs(connection, vault_id, group_id) if r["status"] not in TERMINAL_JOB_STATUSES]
     if not rows or any(r["status"] != "pending_delay" or r["leased"] for r in rows):
-        raise CloudDeletionError("Deletion has started or is no longer cancellable")
+        raise CloudDeletionError("api.cloud_deletion.not_cancellable")
     _cancel_rows(connection, rows, at=cancelled_at, actor=actor,
                  reason="Cancelled before deletion started")
     return CancelledDeletion(len(rows), group_id)
@@ -982,7 +992,7 @@ def revoke_grants(connection: Any, *, group_id: str, file_ids: list[str] | None 
     if connection.execute(
             """SELECT 1 FROM cleanup_candidates WHERE batch_id = ANY(%s::uuid[])
                  AND deleted_at IS NOT NULL LIMIT 1""", (ids,)).fetchone():
-        raise CloudDeletionError("A recorded cloud deletion is never revoked")
+        raise CloudDeletionError("api.cloud_deletion.never_revoked")
     connection.execute("DELETE FROM cleanup_candidates WHERE batch_id = ANY(%s::uuid[])", (ids,))
     connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (ids,))
 
@@ -1005,17 +1015,17 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
         "SELECT * FROM cloud_purge_requests WHERE group_id=%s", (group_id,)).fetchone()
     try:
         if not active or request is None or vault.get("root_released_at"):
-            raise CloudDeletionError("Deletion authority is no longer active")
+            raise CloudDeletionError("api.cloud_deletion.authority_inactive")
         if request["stop_protection"]:
             if vault["lifecycle"] != "stopping":
-                raise CloudDeletionError("Stopped folder deletion authority changed")
+                raise CloudDeletionError("api.cloud_deletion.stopped_authority_changed")
         elif vault["lifecycle"] != "active":
-            raise CloudDeletionError("Deletion authority is no longer active")
+            raise CloudDeletionError("api.cloud_deletion.authority_inactive")
         moment = _aware(at)
         for row in active:
             earliest = _aware(row["requested_at"]) + timedelta(seconds=DELETION_DELAY_SECONDS)
             if row["run_after"] is None or moment < earliest or moment < _aware(row["run_after"]):
-                raise CloudDeletionError("The seven-day delay has not elapsed")
+                raise CloudDeletionError("api.cloud_deletion.delay_not_elapsed")
         files = {str(f["file_id"]): f for f in _files_by_id(
             connection, [str(r["file_id"]) for r in active])}
         if request.get("automatic"):
@@ -1031,7 +1041,7 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
             live = files.get(str(row["file_id"]))
             if (live is None or row["archive_version_id"] is None
                     or str(live["current_version_id"] or "") != str(row["archive_version_id"])):
-                raise CloudDeletionError("Cloud content changed after confirmation")
+                raise CloudDeletionError("api.cloud_deletion.content_changed")
         _validate_files(connection, vault, list(files.values()), own_group=group_id)
     except CloudDeletionError as exc:
         _cancel_rows(connection, active, at=at, actor="system", reason=str(exc))
@@ -1051,7 +1061,7 @@ def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict
     cancels the group.
     """
     if observation_is_unconfirmed(load_vault_health(connection, int(vault["id"]))):
-        raise CloudDeletionError("Protection observations are not confirmed")
+        raise CloudDeletionError("api.cloud_deletion.observations_unconfirmed")
     prefix = _vault_prefix(vault)
     invalid: dict[str, str] = {}
     for row in active:
@@ -1063,7 +1073,7 @@ def _automatic_invalid(connection: Any, vault: dict[str, Any], active: list[dict
             continue
         problem = _row_problem(live, prefix, group_id)
         if problem:
-            invalid[file_id] = problem
+            invalid[file_id] = translate(problem, locale=DEFAULT_LOCALE)
     remaining = [file_id for file_id in (str(r["file_id"]) for r in active) if file_id not in invalid]
     for file_id in _busy_files(connection, remaining, group_id):
         invalid[file_id] = "Selected file has pending work"
@@ -1162,7 +1172,7 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
            WHERE archive_version_id = ANY(%s::uuid[]) AND deleted_at IS NOT NULL""",
         (versions,)).fetchone()["n"]
     if int(proven) != len(versions):
-        raise CloudDeletionError("A cloud deletion is recorded only with its grant")
+        raise CloudDeletionError("api.cloud_deletion.grant_required")
     connection.execute(
         """UPDATE files SET current_version_id=NULL, matched_version_id=NULL,
                held_version_id=NULL
@@ -1248,7 +1258,7 @@ def defer_locked(connection: Any, *, vault_id: int, group_id: str,
              AND group_id=%s AND action='cloud-purge' AND status='cleaning'""",
         (ids, vault_id, group_id)).fetchall()
     if len(rows) != len(ids):
-        raise CloudDeletionError("A deferred deletion is no longer claimed")
+        raise CloudDeletionError("api.cloud_deletion.deferred_unclaimed")
     revoke_grants(connection, group_id=group_id, file_ids=[str(r["file_id"]) for r in rows])
     # Never sooner than an hour: a date S3 still enforces is not retried in a loop.
     run_after = max(min(deferred.values()),

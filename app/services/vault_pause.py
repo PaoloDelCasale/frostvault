@@ -5,14 +5,19 @@ import logging
 from typing import Any
 
 from ..database import transaction
+from ..errors import Conflict, NotFound
 from ..i18n import DEFAULT_LOCALE, translate
 from . import notifications
 
 _logger = logging.getLogger(__name__)
 
 
-class VaultNotFound(ValueError):
-    pass
+class VaultNotFound(NotFound, ValueError):
+    """The Vault to pause or resume does not exist."""
+
+
+class NotOperational(Conflict, ValueError):
+    """Only an operational Vault is paused or resumed."""
 
 
 def set_paused(connection: Any, *, vault_id: int, paused: bool,
@@ -24,11 +29,11 @@ def set_paused(connection: Any, *, vault_id: int, paused: bool,
         (vault_id,),
     ).fetchone()
     if vault is None:
-        raise VaultNotFound("Vault not found")
+        raise VaultNotFound("api.vault_not_found")
     # Stopping or tombstoned Vaults are not operational; a Vault waiting for
     # its reconnect scan still is (the schema allows a pause only there).
     if vault["lifecycle"] not in {"active", "reconnect_required"}:
-        raise ValueError("Only an operational Vault can be paused or resumed")
+        raise NotOperational("api.vault_pause.not_operational")
     key = "vault_pause.paused_notice" if paused else "vault_pause.resumed_notice"
     if bool(vault["paused"]) != paused:
         connection.execute("UPDATE vaults SET paused=%s WHERE id=%s", (paused, vault_id))

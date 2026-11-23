@@ -123,7 +123,7 @@ class ReauthTests(HardeningHttpTestCase):
         )
 
     def _assert_not_reauth_required(self, response) -> None:
-        self.assertNotEqual(response.json(), {"error": "reauth_required"})
+        self.assertNotEqual(response.json().get("code"), "reauth_required")
 
     def test_fresh_login_counts_as_recent_reauth(self) -> None:
         self.sign_in(password=self.password)
@@ -138,7 +138,7 @@ class ReauthTests(HardeningHttpTestCase):
         response = self._delete_from_cloud(csrf)
 
         self.assertEqual(response.status_code, 403, response.text)
-        self.assertEqual(response.json(), {"error": "reauth_required"})
+        self.assertEqual(response.json()["code"], "reauth_required")
 
     def test_break_glass_password_reauth_restores_access(self) -> None:
         self.sign_in(password=self.password)

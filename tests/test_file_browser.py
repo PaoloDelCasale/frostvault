@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from fastapi import HTTPException
+from app.errors import Invalid
 
 from app.catalog import ArchiveCatalog
 
@@ -212,7 +212,7 @@ class FileBrowserTests(unittest.TestCase):
 
     def test_directory_is_normalized_and_traversal_is_rejected(self) -> None:
         self.assertEqual(normalize_directory(r"photos\2025"), "photos/2025")
-        with self.assertRaises(HTTPException):
+        with self.assertRaises(Invalid):
             normalize_directory("../segreti")
 
     def test_file_browser_reads_the_versioned_catalog(self) -> None:

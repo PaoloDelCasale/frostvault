@@ -178,13 +178,13 @@ class PathScopedLocalReleaseTests(unittest.TestCase):
         from app.services import job_admission
         with patch.object(job_admission, "local_release_blocking_paths", return_value=("photos/perf2",)):
             job_admission.require_local_release(MagicMock(), 1, "c080/file.bin")
-            with self.assertRaises(job_admission.LocalizedAdmissionRefused) as raised:
+            with self.assertRaises(job_admission.AdmissionRefused) as raised:
                 job_admission.require_local_release(MagicMock(), 1, "photos")
         self.assertEqual(raised.exception.message_key, "api.local_release_blocked_path")
         self.assertEqual(raised.exception.message_params, {"path": "photos/perf2"})
         self.assertIn("photos/perf2", str(raised.exception))
         with patch.object(job_admission, "local_release_blocking_paths", return_value=None):
-            with self.assertRaises(job_admission.LocalizedAdmissionRefused) as raised:
+            with self.assertRaises(job_admission.AdmissionRefused) as raised:
                 job_admission.require_local_release(MagicMock(), 1, "c080/file.bin")
         self.assertEqual(raised.exception.message_key, "api.local_release_unconfirmed")
 

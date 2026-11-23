@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_models import response_model
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
+from ..errors import Conflict, Invalid
 from ..services import watch_plan
 from ..services.excluded_folders import excluded_folders
 from ..services import vault_exclusions
@@ -115,27 +116,17 @@ def _save_operation_policy(
     rollups; dropping a folder rule makes the Vault look inside again.
     """
     with db() as connection:
-        try:
-            # Independent panels must never replay a stale local-release value
-            # when saving upload rules. Serialize read/merge/write per Vault.
-            lock_vault_policy(connection, vault["id"])
-            before = get_policy(connection, vault["id"])
-            stored = set_policy(connection, vault["id"], change(before))
-            if (before.include_globs, before.exclude_globs) != (stored.include_globs, stored.exclude_globs):
-                # Excluded is derived from these globs (#498); refresh the
-                # durable directory rollups, never the catalog evidence.
-                request_vault_rebuild(connection, vault["id"])
-            # The Vault may look inside folders it did not observe (ADR-0044).
-            narrowed_folders = excluded_folders(before).narrowed_by(excluded_folders(stored))
-        except vault_exclusions.RuleNotFound as exc:
-            raise HTTPException(409, "The rule is no longer in the Vault policy") from exc
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        except LookupError as exc:
-            reason = str(exc)
-            if reason == "vault_quiesced":
-                raise HTTPException(409, "Vault is no longer protected") from exc
-            raise HTTPException(404, "Vault not found") from exc
+        # Independent panels must never replay a stale local-release value
+        # when saving upload rules. Serialize read/merge/write per Vault.
+        lock_vault_policy(connection, vault["id"])
+        before = get_policy(connection, vault["id"])
+        stored = set_policy(connection, vault["id"], change(before))
+        if (before.include_globs, before.exclude_globs) != (stored.include_globs, stored.exclude_globs):
+            # Excluded is derived from these globs (#498); refresh the
+            # durable directory rollups, never the catalog evidence.
+            request_vault_rebuild(connection, vault["id"])
+        # The Vault may look inside folders it did not observe (ADR-0044).
+        narrowed_folders = excluded_folders(before).narrowed_by(excluded_folders(stored))
         audit_log(
             event,
             connection=connection,
@@ -193,18 +184,6 @@ def edit_vault_operation_glob(
     return _operation_policy_response(stored)
 
 
-_DISK_READ_ERROR_STATUS: dict[str, tuple[int, str]] = {
-    "unavailable": (409, "The Vault folder is not available on disk"),
-    "missing": (404, "Folder not found on disk"),
-    "unreadable": (409, "Folder cannot be read"),
-}
-
-
-def _disk_read_http_error(exc: vault_exclusions.DiskReadError) -> HTTPException:
-    status_code, message = _DISK_READ_ERROR_STATUS.get(exc.reason, (409, "Folder cannot be read"))
-    return HTTPException(status_code, message)
-
-
 def _vault_item_path(path: str) -> str:
     return safe_relative_path(path).as_posix().rstrip("/")
 
@@ -226,10 +205,7 @@ def vault_excluded_folders(
     directory = normalize_directory(directory, api=True)
     with db() as connection:
         policy = get_policy(connection, vault["id"])
-    try:
-        return vault_exclusions.directory_listing(vault, policy, directory)
-    except vault_exclusions.DiskReadError as exc:
-        raise _disk_read_http_error(exc) from exc
+    return vault_exclusions.directory_listing(vault, policy, directory)
 
 
 def _item_exclusion(policy: OperationPolicy, path: str, is_directory: bool) -> dict[str, Any]:
@@ -325,10 +301,10 @@ def exclude_vault_item(
     path = _vault_item_path(action.path)
     rule = vault_exclusions.own_rule(path, is_directory=action.is_directory)
     if rule is None:
-        raise HTTPException(422, "The name contains glob characters; edit the exclusion rules instead")
+        raise Invalid("api.policy.glob_characters")
     if not action.is_directory and "/" not in path:
         # A rule without "/" matches the name in every folder: not this item only.
-        raise HTTPException(422, "A file at the Vault root cannot have its own rule; edit the exclusion rules instead")
+        raise Invalid("api.policy.root_file_rule")
 
     def change(before: OperationPolicy) -> OperationPolicy:
         return vault_exclusions.edit_glob(before, "exclude_globs", "add", rule)
@@ -358,7 +334,7 @@ def include_vault_item(
     path = _vault_item_path(action.path)
     rule = vault_exclusions.own_rule(path, is_directory=action.is_directory)
     if rule is None:
-        raise HTTPException(409, "The item has no rule of its own; edit the exclusion rules instead")
+        raise Conflict("api.policy.no_own_rule")
 
     def change(before: OperationPolicy) -> OperationPolicy:
         return vault_exclusions.edit_glob(before, "exclude_globs", "remove", rule)
@@ -375,11 +351,8 @@ def preview_vault_operation_globs(
     action: GlobPreviewRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    try:
-        return preview_glob_rules(
-            paths=action.paths,
-            include_globs=action.include_globs,
-            exclude_globs=action.exclude_globs,
-        )
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    return preview_glob_rules(
+        paths=action.paths,
+        include_globs=action.include_globs,
+        exclude_globs=action.exclude_globs,
+    )

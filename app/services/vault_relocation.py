@@ -13,6 +13,7 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
+from ..errors import DomainError
 from . import bulk_upload_admission, source_directories, source_layout, source_identity, write_access
 from .directory_aggregates import request_vault_rebuild
 from .job_queue import TERMINAL_JOB_STATUSES
@@ -40,12 +41,44 @@ _ANONYMOUS_MINORS = 1 << 20
 _runtime_suspended_vaults: set[int] = set()
 
 
-class VaultRelocationError(Exception):
+# The kind of refusal of each reason that has an Owner-facing message.
+_REASON_CODES = {
+    "not_found": "not_found",
+    "reason_required": "invalid",
+    "invalid_path": "invalid",
+    "not_directory": "invalid",
+    "volume_unavailable": "conflict",
+    "managed_not_own": "conflict",
+    "managed_missing": "conflict",
+    "different_volume": "conflict",
+    "symlink": "conflict",
+    "inaccessible": "conflict",
+    "overlap": "conflict",
+    "active_jobs": "conflict",
+    "identity_ambiguous": "conflict",
+    "identity_mismatch": "conflict",
+    "protection_stopped": "conflict",
+}
+# Their message says whose folder it is and which user may not write it (#681).
+_NOT_WRITABLE_REASONS = frozenset({"volume_not_writable", "destination_not_writable"})
+
+
+class VaultRelocationError(DomainError):
+    """A Vault root cannot be accepted or read: ``reason`` says why, ``str()`` is internal."""
+
+    code = "bad_request"
+
     def __init__(self, reason: str, message: str | None = None,
                  params: dict[str, Any] | None = None) -> None:
-        super().__init__(message or reason)
+        Exception.__init__(self, message or reason)
         self.reason = reason
         self.params = dict(params or {})
+        if reason in _NOT_WRITABLE_REASONS:
+            self.describe(f"api.reconnect_{reason}", code="conflict", **self.params)
+        elif reason in _REASON_CODES:
+            self.describe(f"api.reconnect.{reason}", code=_REASON_CODES[reason])
+        else:
+            self.describe("api.reconnect.failed")
 
 
 def _not_writable(reason: str, directory: Path) -> VaultRelocationError:

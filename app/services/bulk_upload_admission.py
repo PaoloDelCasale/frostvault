@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ..errors import Conflict, VaultNotFound
 from .operation_policies import get_policy
 
 BATCH_SIZE = 100
@@ -63,6 +64,10 @@ def get(connection: Any, *, vault_id: int, group_id: str) -> dict[str, Any] | No
     return public_status(row) if row else None
 
 
+class UploadAdmissionRefused(Conflict, ValueError):
+    """The folder upload cannot be admitted: a reused request or a Vault not ready."""
+
+
 def create(connection: Any, *, vault_id: int, path: str, user_id: int,
            request_id: str | None = None) -> dict[str, Any]:
     """One short admission transaction, no per-file reads/remediation/inserts.
@@ -72,16 +77,16 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
     """
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,)).fetchone()
     if not vault:
-        raise LookupError("Vault not found")
+        raise VaultNotFound()
     group_id = str(uuid.UUID(request_id)) if request_id else str(uuid.uuid4())
     existing = connection.execute("SELECT * FROM bulk_upload_admissions WHERE group_id=%s", (group_id,)).fetchone()
     if existing:
         # One Owner (#586): the scope alone identifies a replay.
         if existing["vault_id"] != vault_id or existing["path"] != path:
-            raise ValueError("Upload request identifier already used for a different scope")
+            raise UploadAdmissionRefused("api.upload_admission.request_reused")
         return public_status(existing)
     if not _ready(vault):
-        raise ValueError("Vault is not ready for upload admission")
+        raise UploadAdmissionRefused("api.upload_admission.not_ready")
     scope, params = _scope(path)
     stamp = _now()
     # Acceptance snapshots File identities, not upload eligibility: the Files
@@ -100,7 +105,7 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
           selection["selected"], "pending" if selection["selected"] else "completed")).fetchone()
     if row is None:
         # Same key concurrently submitted under a different Vault lock.
-        raise ValueError("Upload request identifier already used for a different scope")
+        raise UploadAdmissionRefused("api.upload_admission.request_reused")
     return public_status(row)
 
 
