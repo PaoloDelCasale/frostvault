@@ -8,7 +8,7 @@ import type { ApiDownload } from "./client";
 import type {
   BillingExportStatus,
   FilesResponse,
-  GeneralVault,
+  GeneralOverview,
   GeneralVaultsResponse,
   I18nCatalogResponse,
   LocaleUpdateResponse,
@@ -16,6 +16,8 @@ import type {
   MeResponse,
   MetadataBackupRunAction,
   MetadataBackupVerification,
+  NotificationItem,
+  NotificationsResponse,
   RecoveryKitStatus,
   RetryFailedUploadsResponse,
   SourceDirectoryBrowseResponse,
@@ -29,40 +31,7 @@ import type {
 } from "./types";
 import { translate } from "@/i18n/translate";
 
-/** Inbox extension fields stay optional for compatible older/demo payloads.
- * The canonical current response is also documented in OpenAPI. */
-export type NotificationItem = {
-  id: number;
-  user_id: number;
-  vault_id: number | null;
-  job_id: number | null;
-  event: string;
-  title: string;
-  body: string;
-  title_key: string | null;
-  body_key: string | null;
-  message_params: Record<string, unknown>;
-  in_app_enabled: boolean;
-  dedupe_key: string | null;
-  created_at: string;
-  read: boolean;
-  read_at: string | null;
-  problem_status?: "open" | "resolved" | null;
-  resolved_at?: string | null;
-  /** The running operation that can close this problem by itself (#711). */
-  resolving?: "scan" | null;
-};
-
 export type NotificationListStatus = "unread" | "read" | "all";
-
-export type NotificationsResponse = {
-  items: NotificationItem[];
-  unread_count: number;
-  open_problem_count?: number;
-  email_configured?: boolean;
-  /** True when another bounded page is available via ``before_id``. */
-  has_more?: boolean;
-};
 
 export type FetchNotificationsParams = {
   limit?: number;
@@ -75,7 +44,13 @@ export type MarkAllNotificationsReadResponse = {
   unread_count: number;
 };
 
-/** Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted. */
+/**
+ * The metadata-backup, mark-read and sign-out routes below answer with an
+ * untyped JSON object in the OpenAPI document, so their shapes are written
+ * here; every other response type comes from the generated schema.
+ *
+ * Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted.
+ */
 export type MetadataBackupRun = {
   id: number;
   created_at: string;
@@ -321,19 +296,9 @@ export function acknowledgeRecoveryKit(fingerprint: string): Promise<RecoveryKit
   });
 }
 
-export type Overview = {
-  vaults: { id: number; uuid: string; name: string; lifecycle: GeneralVault["lifecycle"]; monthly_estimate: number; open_problem_count: number }[];
-  open_problem_count: number; month: string; monthly_estimate: number; previous_month_delta: number | null;
-  currency: string; pricing_effective_at: string; email_configured: boolean; last_verified_backup: string | null;
-  runs_as_root?: boolean;
-  /** Root with CAP_DAC_OVERRIDE/DAC_READ_SEARCH by explicit opt-in (#681). */
-  dac_override?: boolean;
-  cloud_preflight?: { status: "unknown" | "ready" | "blocked"; remediation: string | null; next_probe_at: string | null };
-};
-
 /** The installation at a glance: every Vault's estimate and open Problems. */
-export function fetchOverview(): Promise<Overview> {
-  return apiRequest<Overview>("/api/general");
+export function fetchOverview(): Promise<GeneralOverview> {
+  return apiRequest<GeneralOverview>("/api/general");
 }
 
 /** One page of open Problems across every Vault. */

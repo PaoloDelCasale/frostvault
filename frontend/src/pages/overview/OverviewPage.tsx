@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, vaultApi, type GeneralVault, type Overview, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
+import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, vaultApi, type GeneralVault, type GeneralOverview, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
@@ -30,14 +30,14 @@ type Row = {
   awaiting: number;
 };
 
-function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: Overview | undefined): Row {
+function rowFor(vault: VaultListItem, stats: StatsResponse | undefined, overview: GeneralOverview | undefined): Row {
   const states = (stats?.states ?? {}) as Record<string, number>;
   // Unconfirmed hides the state underneath; the last known one still tells
   // what waits for upload and what is already in the cloud (#711).
   const known = (stats?.last_known_states ?? states) as Record<string, number>;
   const unconfirmed = (states.unconfirmed ?? 0) > 0;
   const storage = (stats?.storage ?? {}) as { local_bytes?: number; cloud_bytes?: number };
-  const summary = overview?.vaults.find((item) => item.id === vault.id);
+  const summary = overview?.vaults?.find((item) => item.id === vault.id);
   const state = vaultState(stats);
   return {
     id: vault.id, name: vault.name, state, loaded: Boolean(stats), manual: Boolean(stats?.manual_upload),
@@ -77,7 +77,7 @@ function ProtectionBar({ protectedCount, awaiting, total, className }: {
 }
 
 /** Home: how protected is everything, and which Vault needs attention. */
-export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; overview?: Overview }) {
+export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; overview?: GeneralOverview }) {
   const { t, locale } = useI18n();
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "state", ascending: true });
   const [stopped, setStopped] = useState<GeneralVault | null>(null);
@@ -98,7 +98,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     refetchInterval: STATS_REFRESH_MS,
   })) });
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
-  const money = (value: number, signed = false) => formatMoney(value, { currency: overview?.currency, locale, signed });
+  const money = (value: number | null | undefined, signed = false) => formatMoney(value, { currency: overview?.currency, locale, signed });
   const rows = vaults.map((vault, index) => rowFor(vault, stats[index]?.data, overview));
   const sorted = [...rows].sort((a, b) => {
     const value = (row: Row) => sort.key === "name" ? row.name.toLocaleLowerCase() : sort.key === "state" ? STATE_RANK[row.state] ?? 10 : row[sort.key] ?? -1;

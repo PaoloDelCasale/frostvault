@@ -40,9 +40,7 @@ export {
   updateLocale,
 } from "./endpoints";
 export type {
-  NotificationItem,
   NotificationListStatus,
-  NotificationsResponse,
   FetchNotificationsParams,
   MarkAllNotificationsReadResponse,
   MetadataBackupRun,
@@ -51,7 +49,6 @@ export type {
   MetadataBackupsResponse,
   MetadataBackupDownload,
   SystemBucket,
-  Overview,
 } from "./endpoints";
 
 export { vaultApi } from "./vault";

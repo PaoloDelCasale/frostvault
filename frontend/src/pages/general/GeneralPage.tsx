@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Overview } from "@/api";
+import type { GeneralOverview } from "@/api";
 import { Panel } from "@/components/Panel";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";
@@ -20,7 +20,7 @@ function SystemSection({ id, title, summary, children }: { id: string; title: st
 }
 
 /** Installation-wide settings only: per-Vault lists and actions live in Overview and Vault settings. */
-export function GeneralPage({ overview }: { overview?: Overview }) {
+export function GeneralPage({ overview }: { overview?: GeneralOverview }) {
   const { t } = useI18n();
   return <div className="grid min-w-0 gap-8">
     <div>

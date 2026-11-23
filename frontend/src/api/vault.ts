@@ -18,6 +18,7 @@ import type {
   GlobPreviewResponse,
   JobCancelResponse,
   JobRecord,
+  JsonObjectResponse,
   JobsResponse,
   LifecycleProfileSelection,
   LifecycleResponse,
@@ -32,6 +33,7 @@ import type {
   StatsResponse,
   StopProtectionPayload,
   StopProtectionStatus,
+  UploadReconciliationResponse,
   VaultBilledCost,
   VaultBucketStatus,
   VaultCloudUsage,
@@ -70,7 +72,7 @@ export function vaultApi(vaultId: number) {
     details: (path: string) => get<ArchiveListItem>(scoped(`/api/files/detail?path=${encodeURIComponent(path)}`)),
     versions: (path: string) => get<FileVersionsResponse>(scoped(`/api/files/versions?path=${encodeURIComponent(path)}`)),
     fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(scoped(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
-    replaceCloudOnlyConflict: (path: string) => send<unknown>("POST", scoped("/api/files/cloud-only-conflict/replace"), { path }),
+    replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", scoped("/api/files/cloud-only-conflict/replace"), { path }),
 
     policy: () => get<OperationPolicy>(scoped("/api/vault/operation-policy")),
     updatePolicy: (policy: Partial<OperationPolicy>) => send<OperationPolicy>("PUT", scoped("/api/vault/operation-policy"), policy),
@@ -103,7 +105,7 @@ export function vaultApi(vaultId: number) {
     /** Cancel one group of Jobs of `action`, e.g. a pending Delayed Cloud Deletion before it starts. */
     cancelJobGroup: (groupId: string | number, action: string) => send<JobCancelResponse>("POST", scoped("/api/jobs/cancel"), { group_id: groupId, action }),
     /** Restore Approval of one held recover request (#533). */
-    approveRecover: (groupId: string) => send<unknown>("POST", scoped("/api/recover/approve"), { group_id: groupId }),
+    approveRecover: (groupId: string) => send<JsonObjectResponse>("POST", scoped("/api/recover/approve"), { group_id: groupId }),
 
     estimate: (payload: unknown) => send<RecoverEstimateResponse>("POST", scoped("/api/recover/estimate"), payload),
     action: (action: "recover" | "free-space", payload: FileOperationPayload) => send<FileOperationResponse>("POST", scoped(`/api/${action}`), payload),
@@ -112,14 +114,14 @@ export function vaultApi(vaultId: number) {
     upload: (payload: { path: string; is_directory?: boolean; request_id?: string }) =>
       send<{ admission?: BulkUploadAdmissionResponse }>("POST", scoped("/api/upload"), payload),
     uploadAdmission: (groupId: string) => get<BulkUploadAdmissionResponse>(scoped(`/api/upload/admissions/${groupId}`)),
-    reconcileUpload: (payload: { path: string; remediation_id?: string }) => send<unknown>("POST", scoped("/api/upload/reconcile"), payload),
+    reconcileUpload: (payload: { path: string; remediation_id?: string }) => send<UploadReconciliationResponse>("POST", scoped("/api/upload/reconcile"), payload),
     /** Cancels every Upload of the Vault still waiting to start. */
-    cancelPendingUploads: () => send<{ cancelled_count: number }>("POST", scoped("/api/upload/cancel-pending"), { path: "" }),
+    cancelPendingUploads: () => send<JobCancelResponse>("POST", scoped("/api/upload/cancel-pending"), { path: "" }),
     retryFailedUploads: () => send<RetryFailedUploadsResponse>("POST", scoped("/api/upload/retry-failed")),
 
     cloudDeletionSettings: () => get<CloudDeletionSettings>(scoped("/api/cloud-deletion")),
     previewCloudDeletion: (payload: Record<string, unknown>) => send<CloudDeletionPreview>("POST", scoped("/api/cloud-deletion/preview"), payload),
-    cloudPurge: (payload: Record<string, unknown>) => send<unknown>("POST", scoped("/api/cloud-purge"), payload),
+    cloudPurge: (payload: Record<string, unknown>) => send<JsonObjectResponse>("POST", scoped("/api/cloud-purge"), payload),
 
     bucket: () => get<VaultBucketStatus>(owned("bucket")),
     retryBucket: () => send<VaultBucketStatus>("POST", owned("bucket/retry")),
