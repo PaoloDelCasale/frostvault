@@ -12,7 +12,7 @@ import psycopg
 
 from app.catalog import ArchiveCatalog
 
-from app.main import list_files
+from app.routes.browse import list_files
 from app.services import directory_aggregates as aggregates
 from tests.listing_oracles import build_directory_items
 from app.services import metrics as metrics_service

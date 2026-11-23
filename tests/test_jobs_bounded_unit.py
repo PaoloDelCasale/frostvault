@@ -9,12 +9,12 @@ class JobsMaterializationTests(unittest.TestCase):
     def test_handler_preserves_direct_call_defaults_and_positional_vault(self):
         from contextlib import contextmanager
         from starlette.requests import Request
-        from app.main import jobs
+        from app.routes.jobs import jobs
         connection = Mock()
         @contextmanager
         def db():
             yield connection
-        with patch("app.main.db", db), patch("app.services.job_queries.list_jobs", return_value={"items": [], "groups": []}) as query:
+        with patch("app.routes.jobs.db", db), patch("app.services.job_queries.list_jobs", return_value={"items": [], "groups": []}) as query:
             self.assertEqual(jobs(Request({"type": "http", "headers": []}), {"id": 2})["items"], [])
         query.assert_called_once_with(connection,vault_id=2,locale="en",actions=None,
                                       active_only=False,path=None,groups_before_id=None)

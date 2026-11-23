@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from app import main
+from app.routes.deps import current_user
 from app.services.path_rules import path_matches, sql_path_regex
 from app.services.upload_activity import upload_activity
 
@@ -69,9 +70,9 @@ class UploadActivityTests(unittest.TestCase):
         @contextmanager
         def connection():
             yield Mock()
-        main.app.dependency_overrides[main.current_user] = lambda: {'id': 1}
+        main.app.dependency_overrides[current_user] = lambda: {'id': 1}
         try:
-            with patch.object(main, 'db', connection), patch('app.services.upload_activity.upload_activity', return_value=expected):
+            with patch('app.routes.browse.db', connection), patch('app.services.upload_activity.upload_activity', return_value=expected):
                 response = client.get('/api/upload-activity?vault_id=999')
             self.assertEqual(response.status_code, 200)
             # Plus the installation-wide server priority (#713).
@@ -83,4 +84,4 @@ class UploadActivityTests(unittest.TestCase):
             self.assertEqual(body, {'observed_at': '2026-11-06', 'global': {}, 'vaults': [],
                                     'server_priority': {'throttled': False, 'since': None}})
         finally:
-            main.app.dependency_overrides.pop(main.current_user, None)
+            main.app.dependency_overrides.pop(current_user, None)

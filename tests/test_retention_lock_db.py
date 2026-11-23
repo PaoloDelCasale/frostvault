@@ -442,15 +442,15 @@ class VaultBucketDeletionTests(RetentionLockFixture):
 
 class RetentionLockApiTests(RetentionLockFixture):
     def test_the_status_endpoint_and_the_vault_inventory_name_the_lock(self) -> None:
-        from app import main
+        from app.routes.vaults import vault_retention_lock
         from app.services.vaults import list_vault_inventory
 
-        state = main.vault_retention_lock(2, {})
+        state = vault_retention_lock(2, {})
         self.assertEqual((state["vault_id"], state["days"], state["mode"], state["retained"]["count"]),
                          (2, DAYS, "GOVERNANCE", 0))
         with self.db() as connection:
             seed_vault(connection, id=3, source_root=str(self.root / "other"))
-        self.assertEqual(main.vault_retention_lock(3, {}),
+        self.assertEqual(vault_retention_lock(3, {}),
                          {"vault_id": 3, "days": None, "mode": None, "retained": None})
         with self.db() as connection:
             items = {item["id"]: item for item in list_vault_inventory(connection)}

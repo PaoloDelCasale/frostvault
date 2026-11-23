@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app import main
+from app.routes import deps
 from app.catalog import ArchiveCatalog
 from app.services import job_admission
 from app.services.notification_links import notification_path, notification_url
@@ -24,8 +25,8 @@ class EssentialInterfaceTests(unittest.TestCase):
     def test_explicit_scope_ignores_session_selection_and_never_mutates_it(self):
         connection = Mock(); connection.execute.return_value.fetchone.return_value = {"id": 2, "name": "Second"}
         request = self.request()
-        with patch.object(main, "db", lambda: self.connection(connection)), patch.object(main, "set_session_vault") as select:
-            vault = main.current_vault(request, {"id": 1}, vault_id=2)
+        with patch.object(deps, "db", lambda: self.connection(connection)), patch.object(deps, "set_session_vault") as select:
+            vault = deps.current_vault(request, {"id": 1}, vault_id=2)
         self.assertEqual(vault["id"], 2)
         self.assertEqual(request.state.session["vault_id"], 1)
         select.assert_not_called()
@@ -33,9 +34,9 @@ class EssentialInterfaceTests(unittest.TestCase):
 
     def test_explicit_invalid_or_stopped_scope_does_not_fall_back_to_another_vault(self):
         connection = Mock(); connection.execute.return_value.fetchone.return_value = None
-        with patch.object(main, "db", lambda: self.connection(connection)), patch.object(main, "set_session_vault") as select:
+        with patch.object(deps, "db", lambda: self.connection(connection)), patch.object(deps, "set_session_vault") as select:
             with self.assertRaises(HTTPException) as raised:
-                main.current_vault(self.request(), {"id": 1}, vault_id=99)
+                deps.current_vault(self.request(), {"id": 1}, vault_id=99)
         self.assertEqual(raised.exception.status_code, 404)
         self.assertEqual(connection.execute.call_count, 1)
         select.assert_not_called()

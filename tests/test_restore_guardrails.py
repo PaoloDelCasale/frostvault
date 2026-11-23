@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from app.main import RecoverApproveAction, approve_recover
+from app.routes.jobs import RecoverApproveAction, approve_recover
 from app.services.job_admission import InvalidAdmission, estimate_recovery, queue_jobs
 from app.services.cost_estimates import list_prices
 from app.services.restore_estimates import (

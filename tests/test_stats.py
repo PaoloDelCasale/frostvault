@@ -5,7 +5,7 @@ import json
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.main import stats
+from app.routes.browse import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
 from app.services.source_layout import VaultLocalAccess
 from tests.catalog_support import sha256_hex
@@ -39,7 +39,7 @@ class StatsTests(FrostVaultTestCase):
         for health in ("ok", "absent", "replaced", "identity_ambiguous", "identity_unsupported"):
             with (
                 self.subTest(health=health),
-                patch("app.main.vault_local_access", return_value=VaultLocalAccess(health == "ok", True, "photos", health)),
+                patch("app.routes.browse.vault_local_access", return_value=VaultLocalAccess(health == "ok", True, "photos", health)),
                 patch("os.walk", side_effect=AssertionError("no diagnostic walker")),
                 patch("os.path.realpath", side_effect=AssertionError("no root resolution")),
             ):

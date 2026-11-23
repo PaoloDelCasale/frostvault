@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app import breakglass, main
+from app.routes import deps, sign_in
 from tests.fixtures import override_settings
 from tests.oidc_fake import FakeOidcProvider
 from tests.proxy_stack import uvicorn_proxy_app
@@ -42,19 +43,21 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
             oidc_client_secret="test-only-not-a-real-secret",
         ))
         self.connection = Mock()
-        database = patch.object(main, "db", lambda: nullcontext(self.connection))
-        database.start()
-        self.addCleanup(database.stop)
+        # The middleware, the Session lookup and the sign-in routes share one connection.
+        for module in (main, deps, sign_in):
+            database = patch.object(module, "db", lambda: nullcontext(self.connection))
+            database.start()
+            self.addCleanup(database.stop)
         provider_client = self.provider.client()
         self.addCleanup(provider_client.close)
         for target, value in (
             ("_oidc_client", lambda: provider_client),
             ("_oidc_host_addresses", lambda _: ["93.184.216.34"]),
         ):
-            patcher = patch.object(main, target, value)
+            patcher = patch.object(sign_in, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        audit = patch.object(main, "audit_log")
+        audit = patch.object(sign_in, "audit_log")
         self.audit = audit.start()
         self.addCleanup(audit.stop)
         self.observed = []
@@ -66,7 +69,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
                 self.observed.append({
                     "scheme": scope["scheme"],
                     "client": scope["client"][0],
-                    "resolved": main._client_ip(request),
+                    "resolved": deps._client_ip(request),
                     "forwarded_for": request.headers.get("x-forwarded-for"),
                 })
             await main.app(scope, receive, send)

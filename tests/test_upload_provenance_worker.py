@@ -115,7 +115,8 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
 
     def http_client(self):
         from fastapi.testclient import TestClient
-        from app.main import app, current_user, current_vault
+        from app.main import app
+        from app.routes.deps import current_user, current_vault
         with self.database.connect() as connection:
             vault = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=2").fetchone()
         previous = dict(app.dependency_overrides)

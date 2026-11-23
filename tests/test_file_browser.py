@@ -6,10 +6,8 @@ from fastapi import HTTPException
 
 from app.catalog import ArchiveCatalog
 
-from app.main import (
-    list_files,
-    normalize_directory,
-)
+from app.routes.browse import list_files
+from app.routes.deps import normalize_directory
 from tests.fixtures import fresh_database, override_settings, seed_vault
 from tests.listing_oracles import build_directory_items, build_job_groups
 

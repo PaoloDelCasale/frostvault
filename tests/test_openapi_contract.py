@@ -9,9 +9,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.routing import Route
 
 from app.api_models import JsonObjectResponse, response_model
-from app.main import app
+from app.main import app, lifespan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +164,29 @@ class OpenApiResponseContractTests(unittest.TestCase):
             (ROOT / "frontend" / "openapi.json").read_text(encoding="utf-8")
         )
         self.assertEqual(committed, app.openapi())
+        # The routers are registered in the order the routes always had (#796).
+        self.assertEqual(list(committed["paths"]), list(app.openapi()["paths"]))
+
+    def test_the_route_table_is_flat_and_the_spa_fallback_matches_last(self) -> None:
+        # Every route sits on the application itself: an included router stays
+        # nested and is resolved again at every request, and its lifespan wraps
+        # the application's (#796).
+        # (plain ``Route``: the documentation pages, when they are enabled).
+        self.assertEqual({type(route) for route in app.routes} - {Route}, {APIRoute})
+        routes = [route for route in app.routes if isinstance(route, APIRoute)]
+        self.assertIs(app.router.lifespan_context, lifespan)
+        # No router is registered twice and none is left out of the document.
+        self.assertEqual(len({(route.path, *sorted(route.methods)) for route in routes}), len(routes))
+        documented = {route.path_format for route in routes if route.include_in_schema}
+        self.assertEqual(documented, set(app.openapi()["paths"]))
+        self.assertEqual(
+            [(route.name, route.path) for route in routes[-3:]],
+            [
+                ("spa_asset", "/assets/{asset_path:path}"),
+                ("spa_fallback", "/{full_path:path}"),
+                ("unknown_route", "/{full_path:path}"),
+            ],
+        )
 
     def test_notifications_list_documents_status_before_id_and_limit_query_params(
         self,

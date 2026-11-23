@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
 
 from app import main
+from app.routes import sign_in
 
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 from tests.oidc_fake import FakeOidcProvider
@@ -40,7 +41,7 @@ class OidcHttpTests(FrostVaultTestCase):
         self.client = TestClient(app=main.app, follow_redirects=False)
         self.cookie_name = self.settings.session_cookie_name
         resolver = patch.object(
-            main,
+            sign_in,
             "_oidc_host_addresses",
             lambda _: ["93.184.216.34"],
         )
@@ -49,7 +50,7 @@ class OidcHttpTests(FrostVaultTestCase):
 
     def _use_oidc_client(self, *, id_token: str | None = None) -> None:
         patcher = patch.object(
-            main, "_oidc_client", lambda: self.provider.client(id_token=id_token)
+            sign_in, "_oidc_client", lambda: self.provider.client(id_token=id_token)
         )
         patcher.start()
         self.addCleanup(patcher.stop)

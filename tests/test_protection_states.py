@@ -9,7 +9,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.main import list_files, stats
+from app.routes.browse import list_files, stats
 from app.services import directory_aggregates as aggregates
 from app.services.protection_states import (
     STATES, aggregate_state, observation_is_unconfirmed, project_file, state_sql,
@@ -226,7 +226,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         page = self.catalog.list_files_page(9, directory='photos', state='protected')
         self.assertEqual(page['total'], 1)
         self.assertEqual(self.catalog.list_files_page(9, search='ds_store', state='excluded')['total'], 1)
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'protected')
@@ -257,7 +257,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.assertEqual([item['type'] for item in page['items']], ['directory', 'file'])
         self.assertEqual(page['items'][1]['state'], 'unsupported')
         self.assertFalse(page['items'][1]['upload_eligible'])
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'protected')
@@ -339,7 +339,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.assertEqual((stopped['state'], stopped['last_known_state']), ('stopped', 'stopped'))
         # A manual upload stays possible.
         self.assertTrue(stopped['upload_eligible'])
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
         self.assertEqual(payload['protection_state'], 'stopped')
@@ -437,7 +437,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('cloud', local=False, archive=True, verified=True)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(False, True, 'photos', 'absent')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(False, True, 'photos', 'absent')):
             result = list_files(directory='photos', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
             summary = stats({'id': 9, 'source_root': '/source'})
             root = list_files(directory='', state='unconfirmed', page=1, page_size=100, vault={'id': 9, 'source_root': '/source'})
@@ -459,7 +459,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('protected', archive=True, verified=True)
         set_policy(self.connection, 9, replace(get_policy(self.connection, 9), auto_upload=False))
         self.connection.commit()
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             summary = stats({'id': 9, 'source_root': '/source'})
         self.assertTrue(summary['manual_upload'])
         self.assertEqual(summary['protection_state'], 'protected')
@@ -471,7 +471,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('missing', local=False, archive=True, verified=True, availability='missing')
         record_component_health(self.connection, vault_id=9, component='cloud', ok=False, error='offline')
         self.connection.commit()
-        with patch('app.main.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
+        with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             self.assertEqual(stats({'id': 9, 'source_root': '/source'})['states'], {'unconfirmed': 2})
             record_component_health(self.connection, vault_id=9, component='cloud', ok=True)
             self.connection.commit()
