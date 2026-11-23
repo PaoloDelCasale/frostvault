@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app import storage
-from app.services import bulk_upload_admission, history_retention, upload_remediation
+from app.services import bulk_upload_admission, history_retention, periodic_workers, upload_remediation
 from tests.fixtures import override_settings
 
 
@@ -181,6 +181,46 @@ class WorkerStopTests(unittest.IsolatedAsyncioTestCase):
             await self.stop_during_a_pass(storage.bulk_upload_admission_loop, bulk_upload_admission, "tick",
                                           "bulk-upload-admission"),
             (False, False))
+
+
+class RunnerTests(unittest.IsolatedAsyncioTestCase):
+    """``periodic_workers`` alone, with a recording health."""
+
+    def setUp(self) -> None:
+        self.calls: list[tuple] = []
+        self.health = SimpleNamespace(
+            report_error=lambda worker, exc: self.calls.append(("error", worker, str(exc))),
+            note_ok=lambda worker: self.calls.append(("ok", worker)))
+
+    def worker(self, *steps, **differences) -> periodic_workers.PeriodicWorker:
+        return periodic_workers.PeriodicWorker("probe", steps, lambda: 0, **differences)
+
+    def fail(self) -> None:
+        raise RuntimeError("failed")
+
+    def test_one_pass_records_its_outcome_once(self) -> None:
+        periodic_workers.run_once(self.worker(lambda: None), self.health)
+        periodic_workers.run_once(self.worker(self.fail, lambda: self.calls.append(("ran",))), self.health)
+        periodic_workers.run_once(self.worker(lambda: None, notes_ok=False), self.health)
+        self.assertEqual(self.calls, [("ok", "probe"), ("error", "probe", "failed")])
+
+    def test_a_pass_that_did_not_run_leaves_the_health_as_it_was(self) -> None:
+        skipped = self.worker(lambda: periodic_workers.NOT_RUN, lambda: self.calls.append(("ran",)))
+        periodic_workers.run_once(skipped, self.health)
+        self.assertEqual(self.calls, [])
+
+    def test_a_worker_with_its_own_health_is_only_run(self) -> None:
+        periodic_workers.run_once(self.worker(lambda: None, own_health=True), self.health)
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            periodic_workers.run_once(self.worker(self.fail, own_health=True), self.health)
+        self.assertEqual(self.calls, [])
+
+    async def test_a_paced_pass_that_did_not_run_notes_nothing(self) -> None:
+        skipped = self.worker(lambda: periodic_workers.NOT_RUN, lambda: self.calls.append(("ran",)))
+        with patch.object(asyncio, "sleep", new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await periodic_workers.run_forever(skipped, self.health)
+        self.assertEqual(self.calls, [])
 
 
 SCHEDULED = ("vault_deletion", "retained_versions", "duplicate_cleanup", "mirror_cleanup",
