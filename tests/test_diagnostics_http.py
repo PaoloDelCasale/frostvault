@@ -10,14 +10,13 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app import diagnostics, main
-from app.config import settings
+from tests.fixtures import override_settings
 from tests.spa_fixture import write_spa_dist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,15 +29,12 @@ class DiagnosticsHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.config = replace(
-            settings,
+        self.config = self.enterContext(override_settings(
             metrics_token=SCRAPER_TOKEN,
             cookie_secure=False,
             allowed_hosts="vault.example",
             frontend_dist_dir=str(write_spa_dist(Path(temporary.name))),
-        )
-        for target in ("app.main.settings", "app.diagnostics.settings"):
-            self.enterContext(patch(target, self.config))
+        ))
         # Any unexpected Session lookup or application DB access fails the test.
         self.database = self.enterContext(patch("app.main.db", side_effect=AssertionError("No DB expected")))
         self.render = self.enterContext(patch("app.main.metrics_service.render_prometheus", return_value=METRIC_TEXT))
@@ -57,8 +53,8 @@ class DiagnosticsHttpTests(unittest.TestCase):
 
     def test_metrics_disabled_without_token_even_with_bearer_or_session(self) -> None:
         for configured in ("", " \t "):
-            with self.subTest(configured=bool(configured)), patch(
-                "app.diagnostics.settings", replace(self.config, metrics_token=configured)
+            with self.subTest(configured=bool(configured)), override_settings(
+                metrics_token=configured
             ):
                 for headers in ({}, {"Authorization": f"Bearer {SCRAPER_TOKEN}"},
                                 {"Cookie": "frostvault_session=test-only-session"}):
@@ -91,7 +87,7 @@ class DiagnosticsHttpTests(unittest.TestCase):
         ):
             with self.subTest(headers=headers):
                 self.assert_closed(self.client.get("/metrics", headers=headers), 401)
-        with patch("app.diagnostics.settings", replace(self.config, metrics_token="invalid-config-\u00e8")):
+        with override_settings(metrics_token="invalid-config-\u00e8"):
             self.assert_closed(self.client.get("/metrics", headers={"Authorization": "Bearer test-only"}), 401)
 
     def test_session_and_query_string_are_not_scraper_authentication(self) -> None:
@@ -176,17 +172,17 @@ class DocsAndExporterTests(unittest.TestCase):
             import json
             import subprocess
             import sys
-            from dataclasses import replace
             from pathlib import Path
             from unittest.mock import patch
             from fastapi.testclient import TestClient
             from app import main
+            from tests.fixtures import override_settings
             from tests.spa_fixture import write_spa_dist
             directory = Path(sys.argv[1])
             enabled = sys.argv[2] == "true"
             assert main.settings.api_docs_enabled == enabled
             assert not main.settings.metrics_token
-            with patch("app.main.settings", replace(main.settings, frontend_dist_dir=str(write_spa_dist(directory)))), patch("app.main.db", side_effect=AssertionError("No DB")):
+            with override_settings(frontend_dist_dir=str(write_spa_dist(directory))), patch("app.main.db", side_effect=AssertionError("No DB")):
                 client = TestClient(main.app)
                 for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
                     response = client.get(path)

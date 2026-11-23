@@ -1,16 +1,10 @@
 """Owner-only whole-Vault move HTTP contract on the rebuilt model (#595)."""
-from dataclasses import replace
 import json
 import unittest
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 from app import main
-from app.config import settings
-from app.sessions import create_session, csrf_token_for
 from tests import test_vault_moves as fixture
-from tests.owner_fixtures import insert_owner
-from tests.postgres import database_dsn
+from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 
 class VaultMoveHttpTests(fixture.CopyWorkerFixture):
@@ -21,16 +15,10 @@ class VaultMoveHttpTests(fixture.CopyWorkerFixture):
                                (json.dumps(fixture.PLAN),))
         self.current = self.protected()
         with self.db() as connection:
-            insert_owner(connection)
-        configured = replace(settings, database_dsn=database_dsn(self.db_path), cookie_secure=False)
-        for name in ('app.main.settings', 'app.database.settings', 'app.sessions.settings'):
-            self.enterContext(patch(name, configured))
-        self.client = TestClient(main.app, client=('127.0.0.1', 50000))
-        with self.db() as connection:
-            token = create_session(connection, auth_method='oidc')
-            csrf = csrf_token_for(connection, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.headers = {'X-CSRF-Token': csrf}
+            create_owner(connection)
+        self.enterContext(override_settings(cookie_secure=False))
+        self.client = http_client()
+        self.headers = sign_in(self.client, self.database).csrf_headers
         self.payload = {'vault_id': 2, 'target_class': 'DEEP_ARCHIVE', 'acknowledge_costs': True}
 
     def storage_class_jobs(self) -> int:

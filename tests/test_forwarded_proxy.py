@@ -8,7 +8,6 @@ test_oidc_http and test_breakglass_http and run in PR CI.
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import replace
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -17,7 +16,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app import breakglass, main
-from app.config import settings
+from tests.fixtures import override_settings
 from tests.oidc_fake import FakeOidcProvider
 from tests.proxy_stack import uvicorn_proxy_app
 
@@ -32,8 +31,7 @@ LAN = "192.168.1.20"
 class ForwardedProxyIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.provider = FakeOidcProvider()
-        self.configuration = replace(
-            settings,
+        self.enterContext(override_settings(
             cookie_secure=True,
             allowed_hosts=PUBLIC_HOST,
             trusted_proxies=TRUST,
@@ -42,11 +40,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
             oidc_issuer=self.provider.issuer,
             oidc_client_id=self.provider.client_id,
             oidc_client_secret="test-only-not-a-real-secret",
-        )
-        for target in ("app.main.settings", "app.oidc.settings", "app.breakglass.settings"):
-            patcher = patch(target, self.configuration)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        ))
         self.connection = Mock()
         database = patch.object(main, "db", lambda: nullcontext(self.connection))
         database.start()
@@ -147,7 +141,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
     def test_multiple_trusted_hops_strip_right_to_left_at_both_layers(self):
         chain = f"127.0.0.1, {OUTSIDE}, 172.30.0.4"
         trust = f"{TRUST},172.30.0.4/32"
-        with patch.object(main, "settings", replace(self.configuration, trusted_proxies=trust)):
+        with override_settings(trusted_proxies=trust):
             client = self._client(uvicorn_trust=trust)
             self._oidc_redirect(client, {
                 "X-Forwarded-Proto": "https", "X-Forwarded-For": chain,
@@ -159,7 +153,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
     def test_ipv6_proxy_and_client_use_the_same_trust_boundary(self):
         proxy, outside = "2001:db8:30::2", "2001:db8:99::7"
         trust = f"{proxy}/128"
-        with patch.object(main, "settings", replace(self.configuration, trusted_proxies=trust)):
+        with override_settings(trusted_proxies=trust):
             client = self._client(peer=proxy, uvicorn_trust=trust)
             self._oidc_redirect(client, {
                 "X-Forwarded-Proto": "https", "X-Forwarded-For": outside,
@@ -205,8 +199,7 @@ class ForwardedProxyIntegrationTests(unittest.TestCase):
     def test_broader_app_list_can_unsafely_reinterpret_uvicorn_client(self):
         # Deliberately BAD config in the opposite direction: do not compensate
         # for mismatches by widening either list.
-        broader = replace(self.configuration, trusted_proxies=f"{TRUST},{OUTSIDE}/32")
-        with patch.object(main, "settings", broader):
+        with override_settings(trusted_proxies=f"{TRUST},{OUTSIDE}/32"):
             self._oidc_redirect(self._client(), {
                 "X-Forwarded-Proto": "https",
                 "X-Forwarded-For": f"127.0.0.1, {OUTSIDE}",

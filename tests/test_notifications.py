@@ -7,23 +7,13 @@ Seams under test:
 """
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
-
-from fastapi.testclient import TestClient
-
-from app.config import settings
 
 from app.main import app
 from app.services import notifications
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_job, insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
+from tests.owner_fixtures import insert_job
 
 
 class _FailingSmtp:
@@ -35,21 +25,15 @@ class _FailingSmtp:
         raise RuntimeError("smtp down")
 
 
-class NotificationDeliveryTests(unittest.TestCase):
+class NotificationDeliveryTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "notify.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            self.vault_id = insert_vault(connection)["id"]
+        super().setUp()
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection)["id"]
             self.job_id = insert_job(connection, vault_id=self.vault_id)
 
     def test_enqueue_creates_retrievable_in_app_notification(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             item = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -67,8 +51,8 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertFalse(listed[0]["read"])
 
     def test_terminal_events_always_reach_the_owner_inbox_without_email(self) -> None:
-        with patch.object(notifications, "settings", replace(settings, smtp_host="")):
-            with PostgresConnection(str(self.path)) as connection:
+        with override_settings(smtp_host=""):
+            with self.database.connect() as connection:
                 for action, status, event in (
                     ("recover", "completed", "recovery_completed"), ("recover", "failed", "recovery_failed"),
                 ):
@@ -96,8 +80,8 @@ class NotificationDeliveryTests(unittest.TestCase):
                 ).fetchone()["total"], 0)
 
     def test_failed_upload_reaches_the_owner_inbox_as_an_open_problem(self) -> None:
-        with patch.object(notifications, "settings", replace(settings, smtp_host="")):
-            with PostgresConnection(str(self.path)) as connection:
+        with override_settings(smtp_host=""):
+            with self.database.connect() as connection:
                 # A terminal Job is final: the failure is a Job of its own.
                 job_id = insert_job(connection, vault_id=self.vault_id, path="b.txt", status="failed")
                 self.assertEqual(notifications.enqueue_job_terminal_notification(
@@ -113,7 +97,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(row["problem_status"], "open")
 
     def test_unread_count_ignores_limit_and_historical_email_only_rows(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for index in range(3):
                 notifications.enqueue_notification(
                     connection, vault_id=self.vault_id,
@@ -134,12 +118,11 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertNotIn("Email only", {item["title"] for item in listed})
 
     def test_terminal_notification_deduplicates_canonical_row_and_delivery(self) -> None:
-        email_settings = replace(
-            settings, smtp_host="smtp.example.test",
+        with override_settings(
+            smtp_host="smtp.example.test",
             smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
-        )
-        with patch.object(notifications, "settings", email_settings):
-            with PostgresConnection(str(self.path)) as connection:
+        ):
+            with self.database.connect() as connection:
                 job_id = insert_job(
                     connection, vault_id=self.vault_id, action="recover", status="failed",
                 )
@@ -163,7 +146,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual([row["channel"] for row in deliveries], ["email"])
 
     def test_removed_channels_are_rejected_before_writing_any_notification(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for channel in ("webhook", "push"):
                 with self.subTest(channel=channel), self.assertRaises(ValueError):
                     notifications.enqueue_notification(
@@ -175,7 +158,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             ).fetchone()["total"], 0)
 
     def test_keyed_terminal_notification_renders_italian_and_legacy_fallback(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -206,7 +189,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(historical["body"], "Historical body")
 
     def test_mark_notification_read_persists_for_visible_member(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             item = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -227,7 +210,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(stored["read_at"])
 
     def test_mark_notification_read_rejects_hidden_and_unknown_without_mutation(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             item = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -252,7 +235,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertIsNone(stored["read_at"])
 
     def test_notifications_have_no_user_and_dedupe_by_key(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             first = notifications.enqueue_notification(
                 connection, event="weekly_summary", title="Week",
                 message_params={}, dedupe_key="weekly:2026-46",
@@ -278,7 +261,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertNotIn("user_id", columns)
 
     def test_list_filters_unread_and_read_independently(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             older_unread = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -316,7 +299,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual({item["id"] for item in unread}, {older_unread["id"], newer_unread["id"]})
 
     def test_list_before_id_bounds_incremental_history(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             ids = []
             for index in range(5):
                 item = notifications.enqueue_notification(
@@ -337,7 +320,7 @@ class NotificationDeliveryTests(unittest.TestCase):
 
     def test_list_has_more_sentinel_works_at_max_public_page_size(self) -> None:
         """Public limit=200 must still detect a 201st row via internal sentinel."""
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
@@ -356,7 +339,7 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(len(fetched), 201)
 
     def test_mark_all_notifications_read_is_idempotent_and_skips_email_only(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             first = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -411,7 +394,7 @@ class NotificationDeliveryTests(unittest.TestCase):
             connection.execute("INSERT INTO missing_notification_table(id) VALUES (1)")
             return 0
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE jobs SET status='completed' WHERE id=%s", (self.job_id,)
             )
@@ -425,7 +408,7 @@ class NotificationDeliveryTests(unittest.TestCase):
                 )
             self.assertIsNone(enqueued)
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             job = connection.execute(
                 "SELECT status FROM jobs WHERE id=%s", (self.job_id,)
             ).fetchone()
@@ -437,12 +420,11 @@ class NotificationDeliveryTests(unittest.TestCase):
 
     def test_email_retries_are_bounded_and_do_not_change_job_result_or_inbox(self) -> None:
         smtp = _FailingSmtp()
-        email_settings = replace(
-            settings, smtp_host="smtp.example.test",
+        with override_settings(
+            smtp_host="smtp.example.test",
             smtp_from_address="alerts@example.com", smtp_to_address="owner@example.com",
-        )
-        with patch.object(notifications, "settings", email_settings):
-            with PostgresConnection(str(self.path)) as connection:
+        ):
+            with self.database.connect() as connection:
                 notifications.enqueue_notification(
                     connection, vault_id=self.vault_id,
                     event="upload_verified", title="Upload verified",
@@ -473,48 +455,18 @@ class NotificationDeliveryTests(unittest.TestCase):
         self.assertEqual(smtp.calls, 3)
 
 
-class NotificationReadHttpTests(unittest.TestCase):
+class NotificationReadHttpTests(FrostVaultTestCase):
     PASSWORD = "correct horse battery staple"
+    settings_overrides = {"allowed_hosts": "", "trusted_proxies": ""}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = Path(self._tmp.name) / "notifications-http.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            self.vault_id = insert_vault(connection)["id"]
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.path)),
-            cookie_secure=False,
-            allowed_hosts="",
-            trusted_proxies="",
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        with PostgresConnection(str(self.path)) as connection:
-            self.owner_token = create_session(connection, auth_method="local")
-            self.owner_csrf = csrf_token_for(connection, self.owner_token) or ""
-
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
-
-    def _authenticate(self, token: str, csrf: str) -> None:
-        self.client.cookies.set(self.test_settings.session_cookie_name, token)
-        self.client.cookies.set(self.test_settings.csrf_cookie_name, csrf)
+        super().setUp()
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection)["id"]
+        self.client = self.http_client()
 
     def _create_notification(self) -> int:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             item = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -525,7 +477,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         return int(item["id"])
 
     def test_notifications_http_count_is_independent_of_limit_and_email_only(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for index in range(3):
                 notifications.enqueue_notification(
                     connection,
@@ -540,7 +492,7 @@ class NotificationReadHttpTests(unittest.TestCase):
                 title="Email only",
                 channels=("email",),
             )
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
 
         response = self.client.get("/api/notifications?limit=1")
 
@@ -550,12 +502,12 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertNotEqual(response.json()["items"][0]["title"], "Email only")
 
     def test_problem_and_unread_counters_are_independent_and_email_status_is_safe(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             item = notifications.set_problem(connection, key='test-blocked', event='protection_blocked',
                                              vault_id=self.vault_id, active=True, params={'component':'cloud'})
             notifications.mark_notification_read(connection, notification_id=item['id'])
-        self._authenticate(self.owner_token, self.owner_csrf)
-        with patch.object(notifications, 'settings', replace(settings, smtp_host='')):
+        self.sign_in(auth_method="local")
+        with override_settings(smtp_host=''):
             response = self.client.get('/api/notifications?limit=1')
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -566,7 +518,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertNotIn('smtp_password', data)
 
     def test_removed_notification_routes_are_not_exposed(self) -> None:
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
         for path, methods in (
             ("/api/push/config", ("GET",)),
             ("/api/push/subscriptions", ("POST",)),
@@ -578,23 +530,23 @@ class NotificationReadHttpTests(unittest.TestCase):
             for method in methods:
                 with self.subTest(path=path, method=method):
                     response = self.client.request(
-                        method, path, headers={"X-CSRF-Token": self.owner_csrf}
+                        method, path, headers=self.signed_in.csrf_headers
                     )
                     self.assertEqual(response.status_code, 404, response.text)
 
     def test_mark_read_persists_through_http(self) -> None:
         notification_id = self._create_notification()
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
 
         response = self.client.post(
             "/api/notifications/read",
-            headers={"X-CSRF-Token": self.owner_csrf},
+            headers=self.signed_in.csrf_headers,
             json={"notification_id": notification_id},
         )
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["read"])
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
                 (notification_id,),
@@ -603,16 +555,16 @@ class NotificationReadHttpTests(unittest.TestCase):
 
     def test_unknown_notification_mark_read_returns_404_without_mutation(self) -> None:
         notification_id = self._create_notification()
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
 
         response = self.client.post(
             "/api/notifications/read",
-            headers={"X-CSRF-Token": self.owner_csrf},
+            headers=self.signed_in.csrf_headers,
             json={"notification_id": notification_id + 100},
         )
 
         self.assertEqual(response.status_code, 404, response.text)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT read_at FROM notifications WHERE id=%s",
                 (notification_id,),
@@ -630,7 +582,7 @@ class NotificationReadHttpTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 401, response.text)
 
     def test_notifications_http_has_more_at_max_limit(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             for index in range(201):
                 notifications.enqueue_notification(
                     connection,
@@ -638,7 +590,7 @@ class NotificationReadHttpTests(unittest.TestCase):
                     event="upload_verified",
                     title=f"Max page {index}",
                 )
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
 
         response = self.client.get("/api/notifications?status=unread&limit=200")
         self.assertEqual(response.status_code, 200, response.text)
@@ -648,7 +600,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(body["unread_count"], 201)
 
     def test_notifications_http_filters_status_and_reports_has_more(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             older = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -671,7 +623,7 @@ class NotificationReadHttpTests(unittest.TestCase):
                 connection,
                 notification_id=middle["id"],
             )
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
 
         unread = self.client.get("/api/notifications?status=unread&limit=1")
         self.assertEqual(unread.status_code, 200, unread.text)
@@ -697,7 +649,7 @@ class NotificationReadHttpTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 422, invalid.text)
 
     def test_mark_all_read_http_is_idempotent_and_skips_email_only(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             first = notifications.enqueue_notification(
                 connection,
                 vault_id=self.vault_id,
@@ -718,10 +670,10 @@ class NotificationReadHttpTests(unittest.TestCase):
                 channels=("email",),
             )
 
-        self._authenticate(self.owner_token, self.owner_csrf)
+        self.sign_in(auth_method="local")
         first_response = self.client.post(
             "/api/notifications/read-all",
-            headers={"X-CSRF-Token": self.owner_csrf},
+            headers=self.signed_in.csrf_headers,
         )
         self.assertEqual(first_response.status_code, 200, first_response.text)
         self.assertEqual(first_response.json()["marked_count"], 2)
@@ -729,13 +681,13 @@ class NotificationReadHttpTests(unittest.TestCase):
 
         second_response = self.client.post(
             "/api/notifications/read-all",
-            headers={"X-CSRF-Token": self.owner_csrf},
+            headers=self.signed_in.csrf_headers,
         )
         self.assertEqual(second_response.status_code, 200, second_response.text)
         self.assertEqual(second_response.json()["marked_count"], 0)
         self.assertEqual(second_response.json()["unread_count"], 0)
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             rows = {
                 row["id"]: row["read_at"]
                 for row in connection.execute("SELECT id, read_at FROM notifications").fetchall()

@@ -1,38 +1,27 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from app import main, oidc
-from app.config import settings
+from app import main
 
+from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 from tests.oidc_fake import FakeOidcProvider
-from tests.owner_fixtures import insert_owner, insert_vault
 from tests.proxy_stack import uvicorn_proxy_app
-from tests.test_database import run_alembic
 
 
-class OidcHttpTests(unittest.TestCase):
+class OidcHttpTests(FrostVaultTestCase):
+    owner = {"display_name": "Alice"}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
+        super().setUp()
         self.provider = FakeOidcProvider()
         self.subject = "subject-123"
-        with PostgresConnection(str(database_path)) as connection:
-            insert_owner(connection, display_name="Alice")
+        with self.database.connect() as connection:
             connection.execute(
                 """
                 UPDATE owner SET oidc_issuer=%s, oidc_subject=%s,
@@ -42,28 +31,14 @@ class OidcHttpTests(unittest.TestCase):
                 (self.provider.issuer, self.subject),
             )
 
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(database_path)),
-            cookie_secure=False,
+        self.enterContext(override_settings(
             oidc_enabled=True,
             oidc_issuer=self.provider.issuer,
             oidc_client_id=self.provider.client_id,
             oidc_client_secret="top-secret",
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.oidc.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.database_path = database_path
+        ))
         self.client = TestClient(app=main.app, follow_redirects=False)
-        self.cookie_name = self.test_settings.session_cookie_name
+        self.cookie_name = self.settings.session_cookie_name
         resolver = patch.object(
             main,
             "_oidc_host_addresses",
@@ -80,14 +55,14 @@ class OidcHttpTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _latest_login(self) -> dict:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT state, nonce FROM oidc_login ORDER BY created_at DESC, state DESC LIMIT 1"
             ).fetchone()
 
     def _add_vault(self) -> int:
-        with PostgresConnection(str(self.database_path)) as connection:
-            vault_id = insert_vault(connection, name="OIDC Cache Vault")["id"]
+        with self.database.connect() as connection:
+            vault_id = seed_vault(connection, name="OIDC Cache Vault")["id"]
         return vault_id
 
     def test_login_endpoint_redirects_to_provider_and_persists_state(self) -> None:
@@ -100,8 +75,7 @@ class OidcHttpTests(unittest.TestCase):
 
     def test_trusted_proxy_https_login_and_callback_use_same_redirect_uri(self) -> None:
         self._use_oidc_client()
-        proxy_settings = replace(
-            self.test_settings,
+        proxy_settings = override_settings(
             cookie_secure=True,
             allowed_hosts="frostvault.example.com",
             trusted_proxies="172.30.0.2/32",
@@ -116,7 +90,7 @@ class OidcHttpTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.addCleanup(client.close)
-        with patch.object(main, "settings", proxy_settings):
+        with proxy_settings:
             started = client.get("/auth/oidc/login", headers=headers)
             self.assertEqual(started.status_code, 303, started.text)
             query = parse_qs(urlparse(started.headers["location"]).query)
@@ -136,14 +110,13 @@ class OidcHttpTests(unittest.TestCase):
         self.assertEqual(self.provider.token_requests[-1]["redirect_uri"], expected_uri)
         self.assertTrue(client.cookies.get(self.cookie_name))
         self.assertIn("Secure", callback.headers["set-cookie"])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             session = connection.execute("SELECT ip FROM sessions").fetchone()
         self.assertEqual(session["ip"], "203.0.113.7")
 
     def test_untrusted_peer_cannot_force_https_oidc_redirect(self) -> None:
         self._use_oidc_client()
-        proxy_settings = replace(
-            self.test_settings,
+        proxy_settings = override_settings(
             cookie_secure=True,
             allowed_hosts="frostvault.example.com",
             trusted_proxies="172.30.0.2/32",
@@ -155,7 +128,7 @@ class OidcHttpTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.addCleanup(client.close)
-        with patch.object(main, "settings", proxy_settings):
+        with proxy_settings:
             response = client.get("/auth/oidc/login", headers={
                 "X-Forwarded-Proto": "https", "X-Forwarded-For": "127.0.0.1",
             })
@@ -198,7 +171,7 @@ class OidcHttpTests(unittest.TestCase):
         )
 
     def test_first_login_binds_the_owner_identity(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE owner SET oidc_issuer=NULL, oidc_subject=NULL, oidc_bound_at=NULL"
             )
@@ -206,7 +179,7 @@ class OidcHttpTests(unittest.TestCase):
         first = self._complete_login("first-subject")
         self.assertEqual(first.status_code, 303, first.text)
         self.assertEqual(self.client.get("/api/me").json()["auth_method"], "oidc")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             owner = connection.execute(
                 "SELECT oidc_issuer, oidc_subject FROM owner"
             ).fetchall()
@@ -219,7 +192,7 @@ class OidcHttpTests(unittest.TestCase):
         other = self._complete_login("second-subject")
         self.assertEqual(other.status_code, 403, other.text)
         self.assertIsNone(self.client.cookies.get(self.cookie_name))
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             rejected = connection.execute(
                 "SELECT actor FROM audit_events WHERE event='oidc_identity_rejected'"
             ).fetchall()
@@ -275,14 +248,14 @@ class OidcHttpTests(unittest.TestCase):
         self.assertEqual(callback.status_code, 303)
 
     def _reauth_at(self) -> datetime | None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT reauth_at FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1"
             ).fetchone()["reauth_at"]
 
     def test_step_up_reauth_refreshes_the_reauth_window(self) -> None:
         self._sign_in()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE sessions SET reauth_at=%s", ("2000-01-01T00:00:00+00:00",)
             )

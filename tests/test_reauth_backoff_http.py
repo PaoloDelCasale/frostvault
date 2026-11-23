@@ -1,77 +1,37 @@
 """HTTP security seams for Local Reauthentication backoff (issue #191)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
+import psycopg
 
-from app import backoff, main
+from app import backoff
 from app.backoff import OWNER_ACCOUNT_KEY, reauth_account_key, reauth_ip_key
-from app.config import settings
-
-from app.sessions import create_session, csrf_token_for
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase
 
 
-class ReauthBackoffHttpTests(unittest.TestCase):
+class ReauthBackoffHttpTests(FrostVaultTestCase):
     PASSWORD = "correct-horse-battery"
     WRONG_PASSWORD = "not-the-local-password"
     CLIENT_IP = "127.0.0.1"
     STALE_REAUTH_AT = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    owner = {"display_name": "Alice", "password": PASSWORD}
+    settings_overrides = {"break_glass_allowed_cidrs": ""}
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Alice", password=self.PASSWORD)
-
-        self.settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            break_glass_allowed_cidrs="",
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.breakglass.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            self.raw_token = create_session(
-                connection,
-                auth_method="local",
-                ip=self.CLIENT_IP,
-            )
-            self.csrf_token = csrf_token_for(connection, self.raw_token)
-            session = connection.execute("SELECT id FROM sessions").fetchone()
-            self.session_id = session["id"]
-            connection.execute(
-                "UPDATE sessions SET reauth_at=%s WHERE id=%s",
-                (self.STALE_REAUTH_AT, self.session_id),
-            )
+        super().setUp()
+        self.client = self.http_client(client=(self.CLIENT_IP, 50000))
+        self.sign_in(auth_method="local", reauthenticated_until=self.STALE_REAUTH_AT.isoformat())
+        self.csrf_token = self.signed_in.csrf_token
+        with self.database.connect() as connection:
+            self.session_id = connection.execute(
+                "UPDATE sessions SET ip=%s RETURNING id", (self.CLIENT_IP,)
+            ).fetchone()["id"]
 
         self.ip_counter_key = reauth_ip_key(self.CLIENT_IP)
         self.account_counter_key = reauth_account_key()
-        self.client = TestClient(main.app, client=(self.CLIENT_IP, 50000))
-        self.client.cookies.set(self.settings.session_cookie_name, self.raw_token)
-        self.client.cookies.set(self.settings.csrf_cookie_name, self.csrf_token)
 
     def _reauth(self, password: str):
         return self.client.post(
@@ -81,14 +41,14 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         )
 
     def _session_reauth_at(self) -> str | None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT reauth_at FROM sessions WHERE id=%s", (self.session_id,)
             ).fetchone()["reauth_at"]
 
     def _insert_counter(
         self,
-        connection: PostgresConnection,
+        connection: psycopg.Connection,
         *,
         scope: str,
         key: str,
@@ -121,7 +81,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertIn("Retry-After", blocked.headers)
         self.assertEqual(self._session_reauth_at(), self.STALE_REAUTH_AT)
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             counters = connection.execute(
                 """
                 SELECT scope, key, failure_count
@@ -165,7 +125,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
     def test_success_clears_only_reauth_counters(self) -> None:
         """A Local Reauthentication must not reset Local Sign-in counters."""
         now = datetime.now(timezone.utc)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             # Existing Local Sign-in counters deliberately use the unprefixed
             # keys and must remain untouched by the reauth success below.
             self._insert_counter(
@@ -201,7 +161,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(self._session_reauth_at(), self.STALE_REAUTH_AT)
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             retained = connection.execute(
                 """
                 SELECT scope, key FROM auth_backoff
@@ -244,7 +204,7 @@ class ReauthBackoffHttpTests(unittest.TestCase):
     def test_retry_after_uses_the_longest_active_reauth_dimension(self) -> None:
         """A shorter IP delay must not understate a longer account delay."""
         now = datetime(2030, 1, 1, tzinfo=timezone.utc)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self._insert_counter(
                 connection,
                 scope="ip",

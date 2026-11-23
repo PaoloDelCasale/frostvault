@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection
-
-import tempfile
 import threading
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from app import oidc, oidc_network
-from app.config import Settings
+import psycopg
 
-from tests.oidc_fake import FakeOidcProvider, at_hash_for
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from app import oidc, oidc_network
+
+from tests.fixtures import FrostVaultTestCase, override_settings
+from tests.oidc_fake import FakeOidcProvider
 
 
 REDIRECT_URI = "https://app.example/auth/oidc/callback"
@@ -65,28 +59,21 @@ class PinnedNetworkBackendTests(unittest.TestCase):
             backend.connect_tcp("identity.example", 443)
 
 
-class OidcTestBase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "oidc.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+class OidcTestBase(FrostVaultTestCase):
+    owner = None
 
+    def setUp(self) -> None:
+        super().setUp()
         self.provider = FakeOidcProvider()
-        self.settings = replace(
-            Settings(),
+        self.enterContext(override_settings(
             oidc_enabled=True,
             oidc_issuer=self.provider.issuer,
             oidc_client_id=self.provider.client_id,
             oidc_client_secret="top-secret",
-        )
-        patcher = patch.object(oidc, "settings", self.settings)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        ))
 
-    def connect(self) -> PostgresConnection:
-        return PostgresConnection(str(self.database_path))
+    def connect(self) -> psycopg.Connection:
+        return self.database.connect()
 
     def _rows(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -286,10 +273,7 @@ def _claims(subject: str, issuer: str = "https://idp.example") -> oidc.OidcClaim
 class OwnerIdentityBindingTests(OidcTestBase):
     """The first OIDC login binds the Owner's Identity (ADR-0003, ADR-0010)."""
 
-    def setUp(self) -> None:
-        super().setUp()
-        with self.connect() as connection:
-            insert_owner(connection)
+    owner = {}
 
     def _owner(self) -> dict[str, Any]:
         with self.connect() as connection:

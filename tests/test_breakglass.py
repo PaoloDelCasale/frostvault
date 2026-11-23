@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
-from unittest.mock import patch
 
 from app import breakglass
-from app.config import settings
+from tests.fixtures import override_settings
 
 
 class BreakGlassNetworkTests(unittest.TestCase):
     def _with_cidrs(self, raw: str) -> None:
-        patched = replace(settings, break_glass_allowed_cidrs=raw)
-        patcher = patch("app.breakglass.settings", patched)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(override_settings(break_glass_allowed_cidrs=raw))
 
     def test_loopback_is_allowed_when_no_cidrs_configured(self) -> None:
         self._with_cidrs("")

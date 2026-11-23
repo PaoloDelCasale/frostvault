@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection
-
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 for _flag, _value in (
@@ -20,8 +16,8 @@ for _flag, _value in (
 
 from app.services import notifications as notification_service
 from app.storage import set_job
-from tests.owner_fixtures import insert_job, insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
+from tests.owner_fixtures import insert_job
 
 
 # Ending a Job queues its outcome in ``job_terminal_notifications`` (#589): a
@@ -35,16 +31,11 @@ JOB_NOTIFICATION_SQL = """
 """
 
 
-class TerminalNotificationRecoveryTests(unittest.TestCase):
+class TerminalNotificationRecoveryTests(FrostVaultTestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "notify.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            insert_vault(connection, id=2)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2)
             self.job_id = insert_job(connection, vault_id=2, status="uploading")
         self.enterContext(patch(
             "app.services.upload_failure_problems.CLOSED_UPLOAD_FAILURE_SQL", "FALSE"))
@@ -52,14 +43,14 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
     def test_terminal_notification_insert_failure_is_retried(self) -> None:
         with patch(
             "app.storage.db",
-            side_effect=lambda: PostgresConnection(str(self.path)),
+            side_effect=lambda: self.database.connect(),
         ), patch(
             "app.services.notifications.enqueue_job_terminal_notification",
             side_effect=RuntimeError("savepoint boom"),
         ):
             self.assertTrue(set_job(self.job_id, "failed", "AccessDenied"))
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             job = connection.execute(
                 JOB_NOTIFICATION_SQL,
                 (self.job_id,),
@@ -72,7 +63,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(job["terminal_notification_status"], "pending")
         self.assertEqual(notifications, [])
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             recovered = notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
@@ -93,7 +84,7 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["event"], "job_failed")
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             again = notification_service.reconcile_pending_terminal_notifications(
                 connection
             )
@@ -107,10 +98,10 @@ class TerminalNotificationRecoveryTests(unittest.TestCase):
     def test_successful_terminal_transition_marks_notification_done(self) -> None:
         with patch(
             "app.storage.db",
-            side_effect=lambda: PostgresConnection(str(self.path)),
+            side_effect=lambda: self.database.connect(),
         ):
             self.assertTrue(set_job(self.job_id, "completed", "ok"))
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             job = connection.execute(
                 JOB_NOTIFICATION_SQL,
                 (self.job_id,),

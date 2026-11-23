@@ -1,23 +1,15 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app import main
-from app.config import settings
-
 from app.security import DUMMY_PASSWORD_HASH
-from tests.owner_fixtures import insert_owner
+from tests.fixtures import FrostVaultTestCase, override_settings
 from tests.spa_fixture import write_spa_dist
 from tests.proxy_stack import uvicorn_proxy_app
-from tests.test_database import run_alembic
 
 
 ADMIN_PASSWORD = "correct-horse-battery"
@@ -26,47 +18,29 @@ OUTSIDE = ("203.0.113.7", 40000)
 LAN = ("192.168.1.20", 40000)
 
 
-class BreakGlassHttpTests(unittest.TestCase):
+class BreakGlassHttpTests(FrostVaultTestCase):
+    # FrostVault has a single Owner and no username (#412, #586).
+    owner = {"display_name": "Admin", "password": ADMIN_PASSWORD}
+    settings_overrides = {
+        "oidc_enabled": True,
+        "oidc_issuer": "https://issuer.example",
+        "oidc_client_id": "client",
+        "oidc_client_secret": "top-secret",
+        "break_glass_allowed_cidrs": "",
+    }
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-
-        # FrostVault has a single Owner and no username (#412, #586).
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Admin", password=ADMIN_PASSWORD)
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-            oidc_enabled=True,
-            oidc_issuer="https://issuer.example",
-            oidc_client_id="client",
-            oidc_client_secret="top-secret",
-            break_glass_allowed_cidrs="",
-            frontend_dist_dir=str(write_spa_dist(Path(self._tmp.name))),
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.oidc.settings",
-            "app.breakglass.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        self.cookie_name = self.test_settings.session_cookie_name
+        super().setUp()
+        self.enterContext(override_settings(
+            frontend_dist_dir=str(write_spa_dist(self.tmp_path)),
+        ))
+        self.cookie_name = self.settings.session_cookie_name
 
     def _client(self, peer: tuple[str, int]) -> TestClient:
         return TestClient(app=main.app, client=peer, follow_redirects=False)
 
     def _backoff_rows(self) -> int:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT COUNT(*) AS total FROM auth_backoff"
             ).fetchone()["total"]
@@ -119,11 +93,8 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertNotIn("is_admin", me.json())
 
     def test_emergency_password_is_accepted_from_a_configured_lan_cidr(self) -> None:
-        allowed_settings = replace(
-            self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24"
-        )
         client = self._client(LAN)
-        with patch("app.breakglass.settings", allowed_settings):
+        with override_settings(break_glass_allowed_cidrs="192.168.1.0/24"):
             response = client.post(
                 "/api/login",
                 json={"username": "admin", "password": ADMIN_PASSWORD},
@@ -132,20 +103,17 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertTrue(client.cookies.get(self.cookie_name))
 
     def test_emergency_password_is_refused_outside_the_configured_lan(self) -> None:
-        allowed_settings = replace(
-            self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24"
-        )
         for peer in (OUTSIDE, ("192.168.2.20", 40000)):
             with self.subTest(peer=peer[0]):
                 client = self._client(peer)
-                with patch("app.breakglass.settings", allowed_settings):
+                with override_settings(break_glass_allowed_cidrs="192.168.1.0/24"):
                     response = client.post(
                         "/api/login",
                         json={"username": "admin", "password": ADMIN_PASSWORD},
                     )
                 self.assertEqual(response.status_code, 403, response.text)
                 self.assertIsNone(client.cookies.get(self.cookie_name))
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             denied = connection.execute(
                 "SELECT actor FROM audit_events WHERE event='break_glass_denied'"
             ).fetchall()
@@ -171,8 +139,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         return client
 
     def _proxy_settings(self):
-        return replace(
-            self.test_settings,
+        return override_settings(
             cookie_secure=True,
             allowed_hosts="frostvault.example.com",
             trusted_proxies="172.30.0.2/32",
@@ -180,11 +147,8 @@ class BreakGlassHttpTests(unittest.TestCase):
         )
 
     def test_uvicorn_trusted_proxy_admits_real_lan_client_and_records_ip(self) -> None:
-        proxy_settings = self._proxy_settings()
         client = self._proxy_client(("172.30.0.2", 40000))
-        with patch.object(main, "settings", proxy_settings), patch(
-            "app.breakglass.settings", proxy_settings
-        ):
+        with self._proxy_settings():
             response = client.post(
                 "/api/login",
                 headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": LAN[0]},
@@ -193,12 +157,11 @@ class BreakGlassHttpTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(client.get("/api/me").json()["auth_method"], "local")
         self.assertIn("Secure", response.headers["set-cookie"])
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             session = connection.execute("SELECT ip FROM sessions").fetchone()
         self.assertEqual(session["ip"], LAN[0])
 
     def test_uvicorn_stack_denies_spoofed_password_networks_and_audits_real_ip(self) -> None:
-        proxy_settings = self._proxy_settings()
         attempts = (
             (OUTSIDE, "127.0.0.1"),
             (OUTSIDE, LAN[0]),
@@ -206,9 +169,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             (("172.30.0.2", 40000), f"127.0.0.1, {OUTSIDE[0]}"),
             (("172.30.0.2", 40000), f"{LAN[0]}, {OUTSIDE[0]}"),
         )
-        with patch.object(main, "settings", proxy_settings), patch(
-            "app.breakglass.settings", proxy_settings
-        ):
+        with self._proxy_settings():
             for peer, claimed in attempts:
                 with self.subTest(peer=peer, claimed=claimed):
                     client = self._proxy_client(peer)
@@ -219,7 +180,7 @@ class BreakGlassHttpTests(unittest.TestCase):
                     )
                     self.assertEqual(response.status_code, 403, response.text)
                     self.assertIsNone(client.cookies.get(self.cookie_name))
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS total FROM sessions"
             ).fetchone()["total"], 0)
@@ -232,11 +193,8 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertEqual(self._backoff_rows(), 0)
 
     def test_uvicorn_stack_cannot_spoof_network_for_password_reauthentication(self) -> None:
-        proxy_settings = self._proxy_settings()
         allowed = self._proxy_client(("172.30.0.2", 40000))
-        with patch.object(main, "settings", proxy_settings), patch(
-            "app.breakglass.settings", proxy_settings
-        ):
+        with self._proxy_settings():
             login = allowed.post(
                 "/api/login",
                 headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": LAN[0]},
@@ -256,7 +214,7 @@ class BreakGlassHttpTests(unittest.TestCase):
                         headers={
                             "X-Forwarded-Proto": "https",
                             "X-Forwarded-For": claimed,
-                            "X-CSRF-Token": allowed.cookies.get(proxy_settings.csrf_cookie_name),
+                            "X-CSRF-Token": allowed.cookies.get(self.settings.csrf_cookie_name),
                         },
                         json={"password": ADMIN_PASSWORD},
                     )
@@ -280,7 +238,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             (wrong.status_code, wrong.json().get("detail")),
             (401, "Incorrect emergency password"),
         )
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             failed = connection.execute(
                 "SELECT actor, detail FROM audit_events WHERE event='break_glass_failed'"
             ).fetchall()
@@ -288,7 +246,7 @@ class BreakGlassHttpTests(unittest.TestCase):
         self.assertNotIn("wrong-password", str(failed))
 
     def test_wrong_password_verifies_once_against_the_real_hash(self) -> None:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             password_hash = connection.execute(
                 "SELECT password_hash FROM owner WHERE id=1"
             ).fetchone()["password_hash"]
@@ -312,7 +270,7 @@ class BreakGlassHttpTests(unittest.TestCase):
             "DELETE FROM owner",
         ):
             with self.subTest(change=change):
-                with PostgresConnection(str(self.database_path)) as connection:
+                with self.database.connect() as connection:
                     connection.execute(change)
                 client = self._client(LOOPBACK)
                 # Returning True here proves that the dummy verification result
@@ -343,8 +301,7 @@ class BreakGlassHttpTests(unittest.TestCase):
 
     def test_changing_the_submitted_username_does_not_evade_backoff(self) -> None:
         """Every sign-in attempt counts against the single Owner account."""
-        lan_settings = replace(self.test_settings, break_glass_allowed_cidrs="192.168.1.0/24")
-        with patch("app.breakglass.settings", lan_settings):
+        with override_settings(break_glass_allowed_cidrs="192.168.1.0/24"):
             for index in range(5):
                 client = self._client((f"192.168.1.{index + 30}", 40000))
                 failed = client.post(

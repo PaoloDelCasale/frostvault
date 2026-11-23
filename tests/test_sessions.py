@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection
-
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
+import psycopg
 
 from app.sessions import (
     SessionTransitionError,
@@ -19,28 +16,23 @@ from app.sessions import (
     session_actor,
     set_session_vault,
 )
-from tests.owner_fixtures import bump_session_version, insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, create_owner, seed_vault
+from tests.owner_fixtures import bump_session_version
 
 
 def _past() -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=1)
 
 
-class SessionStoreTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self._directory.cleanup)
-        self.database_path = Path(self._directory.name) / "sessions.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+class SessionStoreTests(FrostVaultTestCase):
+    owner = None
 
-    def _connect(self) -> PostgresConnection:
-        return PostgresConnection(str(self.database_path))
+    def _connect(self) -> psycopg.Connection:
+        return self.database.connect()
 
     def test_created_session_resolves_to_the_owner(self) -> None:
         with self._connect() as connection:
-            insert_owner(connection, display_name="Paola")
+            create_owner(connection, display_name="Paola")
             token = create_session(
                 connection,
                 auth_method="local",
@@ -71,7 +63,7 @@ class SessionStoreTests(unittest.TestCase):
 
     def test_unknown_auth_method_is_refused(self) -> None:
         with self._connect() as connection:
-            insert_owner(connection)
+            create_owner(connection)
             with self.assertRaises(ValueError):
                 create_session(connection, auth_method="password")
 
@@ -90,7 +82,7 @@ class SessionStoreTests(unittest.TestCase):
     def _new_session(self, auth_method: str = "local") -> str:
         with self._connect() as connection:
             if connection.execute("SELECT 1 FROM owner").fetchone() is None:
-                insert_owner(connection)
+                create_owner(connection)
             return create_session(connection, auth_method=auth_method)
 
     def test_session_past_absolute_expiry_does_not_resolve(self) -> None:
@@ -146,7 +138,7 @@ class SessionStoreTests(unittest.TestCase):
         just like resolve_session (parity for CSRF middleware fail-closed).
         """
         with self._connect() as connection:
-            insert_owner(connection)
+            create_owner(connection)
             token = create_session(connection, auth_method="local")
             self.assertIsNotNone(csrf_token_for(connection, token))
             self.assertIsNotNone(resolve_session(connection, token))
@@ -234,8 +226,8 @@ class SessionStoreTests(unittest.TestCase):
 
     def test_selected_vault_persists_across_resolves(self) -> None:
         with self._connect() as connection:
-            insert_owner(connection)
-            vault_id = insert_vault(connection)["id"]
+            create_owner(connection)
+            vault_id = seed_vault(connection)["id"]
             token = create_session(connection, auth_method="local")
             session = resolve_session(connection, token)
             set_session_vault(connection, session["id"], vault_id)
