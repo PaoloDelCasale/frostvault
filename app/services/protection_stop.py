@@ -16,10 +16,9 @@ from typing import Any
 
 from ..database import db
 from . import cloud_deletion, source_directories
+from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES
 from .audit_events import record_audit_event
 from .bulk_upload_admission import has_pending
-
-_TERMINAL = ("completed", "failed", "cancelled")
 
 
 def local_work_suspended(vault: dict[str, Any]) -> bool:
@@ -72,7 +71,7 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
                 for j in _group_jobs(connection, vault_id, group_id)]
         # What still waits can be cancelled, like ``cancel_cloud_deletion``:
         # the members a Retention Lock deferred after the rest ended (#749).
-        waiting = [j for j in jobs if j["status"] not in _TERMINAL]
+        waiting = [j for j in jobs if j["status"] not in TERMINAL_JOB_STATUSES]
         result.update(jobs=jobs,
                       cancellable=bool(waiting) and all(j["status"] == "pending_delay" for j in waiting),
                       pending_until=max((j["pending_until"] for j in jobs if j["pending_until"]),
@@ -82,8 +81,8 @@ def status(connection: Any, vault_id: int) -> dict[str, Any]:
 
 def _active_work(connection: Any, vault_id: int) -> bool:
     return connection.execute(
-        """SELECT 1 FROM jobs WHERE vault_id=%s
-             AND status NOT IN ('completed','failed','cancelled') LIMIT 1""",
+        f"""SELECT 1 FROM jobs WHERE vault_id=%s
+             AND {OPEN_JOB_SQL} LIMIT 1""",
         (vault_id,)).fetchone() is not None
 
 

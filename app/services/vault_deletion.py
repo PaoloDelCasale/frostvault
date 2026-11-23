@@ -63,6 +63,7 @@ from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .minimum_storage import class_entry, remaining_cost
 from .vault_moves import MINIMUM_DAYS
 from .vault_buckets import TAG_VAULT
+from .job_queue import OPEN_JOB_SQL
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT, KEY_LAYOUT_VAULT_PREFIX
 
 PROBLEM_EVENT = "vault_deletion_failed"
@@ -449,8 +450,8 @@ def request_deletion(connection: Any, *, vault_id: int, actor: str, confirmation
     if _request_row(connection, vault_id, lock=True):
         raise VaultDeletionError("A Vault Deletion is already requested", "already_requested")
     if connection.execute(
-            """SELECT 1 FROM jobs WHERE vault_id=%s
-                 AND status NOT IN ('completed','failed','cancelled') LIMIT 1""",
+            f"""SELECT 1 FROM jobs WHERE vault_id=%s
+                 AND {OPEN_JOB_SQL} LIMIT 1""",
             (vault_id,)).fetchone():
         raise VaultDeletionError("Wait for active Jobs of this Vault to end", "active_jobs")
     if preview_summary.get("prefix") != vault_prefix(vault):

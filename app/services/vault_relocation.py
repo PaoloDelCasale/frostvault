@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from . import bulk_upload_admission, source_directories, source_layout, source_identity, write_access
 from .directory_aggregates import request_vault_rebuild
+from .job_queue import TERMINAL_JOB_STATUSES
 from .audit_events import record_audit_event
 
 # v3 (#787, ADR-0055): on a FUSE Source Volume (shfs, mergerfs, any
@@ -34,7 +35,6 @@ LEGACY_ROOT_IDENTITY_VERSION = "linux-stat-dir-v1"
 RETIRED_ROOT_IDENTITY_VERSIONS = (LEGACY_ROOT_IDENTITY_VERSION, V2_ROOT_IDENTITY_VERSION)
 # Every anonymous device number the kernel can hand out: major 0, 20-bit minor.
 _ANONYMOUS_MINORS = 1 << 20
-_TERMINAL_JOB_STATES = ("completed", "failed", "cancelled")
 # Immediate in-process gate closes the validation window before the database
 # transaction publishes persistent scan_required state.
 _runtime_suspended_vaults: set[int] = set()
@@ -517,10 +517,10 @@ def _active_jobs(connection: Any, vault_id: int) -> bool:
     from .bulk_upload_admission import has_pending
     if has_pending(connection, vault_id):
         return True
-    placeholders = ",".join("%s" for _ in _TERMINAL_JOB_STATES)
+    placeholders = ",".join("%s" for _ in TERMINAL_JOB_STATUSES)
     row = connection.execute(
         f"SELECT 1 FROM jobs WHERE vault_id=%s AND status NOT IN ({placeholders}) LIMIT 1",
-        (vault_id, *_TERMINAL_JOB_STATES),
+        (vault_id, *TERMINAL_JOB_STATUSES),
     ).fetchone()
     return row is not None
 

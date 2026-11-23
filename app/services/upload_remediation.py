@@ -39,6 +39,7 @@ from typing import Any
 
 from . import root_pins
 from . import upload_provenance as provenance
+from .job_queue import OPEN_JOB_SQL, open_job_sql
 from .upload_retry import UPLOAD_RETRY_MAX_ATTEMPTS
 
 POLL_SECONDS = 10
@@ -50,8 +51,6 @@ SWEEP_STALE_SECONDS = 5 * POLL_SECONDS
 VAULT_BATCH = 10
 TARGET_BATCH = 10
 MAX_RETRIES = UPLOAD_RETRY_MAX_ATTEMPTS
-TERMINAL = ("completed", "failed", "cancelled")
-_TERMINAL_SQL = "('completed', 'failed', 'cancelled')"
 # Contradictory or missing evidence: the Owner investigates, nothing retries.
 FINAL_REASONS = frozenset({"proof_mismatch", "expected_evidence_missing", "target_superseded"})
 # Conditions the Owner cannot fix by asking for a retry.
@@ -84,7 +83,7 @@ SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.held_version_id,
        EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id
                  AND b.keeper_id IS NOT NULL) AS cleanup_open,
        EXISTS (SELECT 1 FROM jobs d WHERE d.file_id = f.id AND d.action = 'cloud-purge'
-                 AND d.status NOT IN {_TERMINAL_SQL}) AS pending_deletion,
+                 AND {open_job_sql("d")}) AS pending_deletion,
        EXISTS (SELECT 1 FROM archive_versions av WHERE av.file_id = f.id
                  AND av.id IS DISTINCT FROM f.current_version_id
                  AND av.id IS DISTINCT FROM f.replacing_version_id) AS superseded,
@@ -380,7 +379,7 @@ def admit(connection: Any, episode: dict[str, Any], vault: dict[str, Any], *, st
                 reason=row["reason"] if row["state"] == "blocked" else "retry_budget_exhausted")
         return None
     active = connection.execute(
-        f"SELECT id FROM jobs WHERE file_id=%s AND status NOT IN {_TERMINAL_SQL}",
+        f"SELECT id FROM jobs WHERE file_id=%s AND {OPEN_JOB_SQL}",
         (row["file_id"],)).fetchone()
     if active is not None:
         if active["id"] != row["current_job_id"]:
@@ -482,7 +481,7 @@ def _refusal_reason(connection: Any, episode_id: Any) -> str:
     if row["state"] == "resolved":
         return "already_resolved"
     busy = connection.execute(
-        f"SELECT 1 FROM jobs WHERE file_id=%s AND status NOT IN {_TERMINAL_SQL} LIMIT 1",
+        f"SELECT 1 FROM jobs WHERE file_id=%s AND {OPEN_JOB_SQL} LIMIT 1",
         (row["file_id"],)).fetchone()
     if busy or row["state"] in {"queued", "retrying"} or row["reason"] == "active_operation":
         return "active_operation"
@@ -525,7 +524,7 @@ def schedule_resume(connection: Any, *, vault: dict[str, Any], path: str, user_i
         if cancelled is not None and _same_work(cancelled, state):
             raise provenance.UploadBlocked("owner_cancelled")
         if connection.execute(
-                f"SELECT 1 FROM jobs WHERE file_id=%s AND status NOT IN {_TERMINAL_SQL}",
+                f"SELECT 1 FROM jobs WHERE file_id=%s AND {OPEN_JOB_SQL}",
                 (file["id"],)).fetchone():
             raise provenance.UploadBlocked("active_operation")
         # Open work no Job ended with (e.g. a scan-found block): its own episode.
@@ -545,7 +544,7 @@ def retry_vault(connection: Any, vault: dict[str, Any], user_id: int | None, sta
             AND COALESCE(r.reason, '') NOT IN ('proof_mismatch', 'expected_evidence_missing',
                                                 'target_superseded')
             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id=r.current_job_id
-                            AND j.status NOT IN {_TERMINAL_SQL})
+                            AND {open_job_sql("j")})
             ORDER BY r.updated_at, r.id LIMIT %s""", (vault["id"], TARGET_BATCH)).fetchall()
     return sum(bool(admit(connection, row, vault, stamp=stamp, automatic=False, explicit=True))
                for row in rows)
@@ -557,7 +556,7 @@ _DUE_SQL = f"""r.closed_at IS NULL AND (
     (r.state IN ('pending', 'suspended') AND r.due_at <= %(now)s::timestamptz)
     OR (r.state IN ('queued', 'retrying') AND NOT EXISTS (
         SELECT 1 FROM jobs current WHERE current.id = r.current_job_id
-          AND current.status NOT IN {_TERMINAL_SQL})))"""
+          AND {open_job_sql("current")})))"""
 
 
 def _settle_stale(connection: Any, row: dict[str, Any], stamp: Any) -> None:

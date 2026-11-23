@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
+from .job_queue import open_job_sql
 from .path_rules import (
     MAX_GLOBS_PER_POLICY, GlobSet, ParsedPath, UnsafeGlob, any_name_glob, name_matches,
     normalize_globs, path_matches, validate_glob,
@@ -66,7 +67,7 @@ def stopped_upload_sql(file: str) -> str:
     return f"""(
         NOT EXISTS (
             SELECT 1 FROM jobs stopped_active WHERE stopped_active.file_id={file}.id
-              AND stopped_active.status NOT IN ('completed', 'failed', 'cancelled')
+              AND {open_job_sql("stopped_active")}
         )
         AND EXISTS (
             SELECT 1 FROM jobs stopped_hold WHERE stopped_hold.file_id={file}.id
@@ -414,7 +415,7 @@ def queue_auto_uploads(
           )
           AND NOT EXISTS (
               SELECT 1 FROM jobs active_job WHERE active_job.file_id=f.id
-                AND active_job.status NOT IN ('completed', 'failed', 'cancelled')
+                AND {open_job_sql("active_job")}
           )
           AND (
               (%s AND (SELECT latest.status FROM jobs latest

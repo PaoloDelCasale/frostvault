@@ -29,20 +29,13 @@ from . import protection_stop as protection_stop_service
 from . import recovery_approval
 from . import vault_relocation as vault_relocation_service
 from . import write_access
+from .job_queue import open_job_sql
 from .cost_estimates import CostEstimate, PriceList, estimate_restore_cost, list_prices
 from .operation_policies import blocking_path_for, local_release_blocking_paths
 from .restore_estimates import is_high_impact_restore, normalize_restore_tier
 from .s3 import storage_class_requires_restore
 from .source_layout import vault_local_access
 from .vault_paths import safe_relative_path
-
-
-TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
-# A Job in one of these states is running and holds a live lease
-# (``job_leases``); every other non-terminal state waits for a claim.
-JOB_LEASE_HELD_STATUSES = frozenset(
-    {"downloading", "uploading", "verifying", "cleaning"}
-)
 
 
 def lock_vault(
@@ -263,7 +256,7 @@ def estimate_recovery(
                 WHERE f.vault_id=%s AND {scope_sql}
                   AND cur.integrity='verified' AND cur.availability='available'
                   AND NOT EXISTS (SELECT 1 FROM jobs pending WHERE pending.file_id=f.id
-                      AND pending.status NOT IN ('completed','failed','cancelled'))
+                      AND {open_job_sql("pending")})
                   AND coalesce(f.local_presence, 'missing')<>'present'
                 GROUP BY cur.storage_class, cur.restore_state
                 """,

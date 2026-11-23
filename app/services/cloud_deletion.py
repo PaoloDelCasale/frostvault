@@ -54,6 +54,7 @@ from psycopg.types.json import Jsonb
 
 from . import retention_lock, source_identity, source_layout, vault_relocation
 from .audit_events import record_audit_event
+from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
 from .vault_paths import object_prefix
 from .component_health import load_vault_health
 from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
@@ -61,7 +62,6 @@ from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE
                                 masked_state_sql, observation_is_unconfirmed)
 
 DELETION_DELAY_SECONDS = 7 * 24 * 60 * 60
-TERMINAL = ("completed", "failed", "cancelled")
 
 
 class CloudDeletionError(ValueError):
@@ -366,8 +366,8 @@ def _busy_files(connection: Any, file_ids: list[str], own_group: str | None) -> 
     if not file_ids:
         return set()
     rows = connection.execute(
-        """SELECT DISTINCT file_id FROM jobs WHERE file_id = ANY(%s::uuid[])
-             AND status NOT IN ('completed','failed','cancelled')
+        f"""SELECT DISTINCT file_id FROM jobs WHERE file_id = ANY(%s::uuid[])
+             AND {OPEN_JOB_SQL}
              AND (CAST(%s AS uuid) IS NULL OR group_id IS DISTINCT FROM CAST(%s AS uuid))""",
         (file_ids, own_group, own_group)).fetchall()
     return {str(r["file_id"]) for r in rows}
@@ -515,7 +515,7 @@ def _selection_sql(connection: Any, vault: dict[str, Any],
 # One row per selected file and why it is skipped, in SQL: no per-file Python
 # work for the (possibly huge) skipped part of a folder. The same facts as
 # _validate_files, which still revalidates the eligible set before consent.
-_CLASSIFY_SQL = """
+_CLASSIFY_SQL = f"""
 WITH c AS MATERIALIZED (
     SELECT f.id AS file_id, f.path, f.current_version_id, cur.size, f.local_seen_at,
       cur.storage_class, cur.storage_class_since, cur.created_at AS version_created_at,
@@ -527,7 +527,7 @@ WITH c AS MATERIALIZED (
           OR EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id = f.id AND a.settled_at IS NULL)
           OR EXISTS (SELECT 1 FROM copy_attempts p WHERE p.file_id = f.id AND p.settled_at IS NULL)
           OR EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = f.id
-                       AND j.status NOT IN ('completed','failed','cancelled'))
+                       AND {open_job_sql("j")})
           THEN 'pending_work'
         WHEN EXISTS (SELECT 1 FROM cleanup_batches b WHERE b.file_id = f.id)
           OR EXISTS (SELECT 1 FROM archive_versions other WHERE other.file_id = f.id
@@ -548,7 +548,7 @@ WITH c AS MATERIALIZED (
     LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
     LEFT JOIN upload_attempts att ON att.id = cur.upload_attempt_id
     LEFT JOIN copy_attempts cpy ON cpy.id = cur.copy_attempt_id
-    WHERE f.vault_id = %s AND f.path <> '' AND {selection}
+    WHERE f.vault_id = %s AND f.path <> '' AND {{selection}}
 )
 SELECT file_id, path, current_version_id, size, local_seen_at, storage_class,
        storage_class_since, version_created_at, copied, reason, NULL::bigint AS n
@@ -941,7 +941,7 @@ def cancel_cloud_deletion(connection: Any, *, vault_id: int, group_id: str,
     """Cancel what of a group still waits: before it starts, or the files a
     Retention Lock deferred after the rest was deleted (#736)."""
     lock_vault(connection, vault_id)
-    rows = [r for r in _group_jobs(connection, vault_id, group_id) if r["status"] not in TERMINAL]
+    rows = [r for r in _group_jobs(connection, vault_id, group_id) if r["status"] not in TERMINAL_JOB_STATUSES]
     if not rows or any(r["status"] != "pending_delay" or r["leased"] for r in rows):
         raise CloudDeletionError("Deletion has started or is no longer cancellable")
     _cancel_rows(connection, rows, at=cancelled_at, actor=actor,
@@ -955,9 +955,9 @@ def _cancel_rows(connection: Any, rows: list[dict[str, Any]], *, at: str,
         return
     ids = [int(r["id"]) for r in rows]
     connection.execute(
-        """UPDATE jobs SET status='cancelled', message=%s, message_key=NULL, message_params=NULL,
+        f"""UPDATE jobs SET status='cancelled', message=%s, message_key=NULL, message_params=NULL,
                updated_at=%s, finished_at=%s
-           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
+           WHERE id = ANY(%s::bigint[]) AND {OPEN_JOB_SQL}""",
         (reason, at, at, ids))
     revoke_grants(connection, group_id=str(rows[0]["group_id"]),
                   file_ids=[str(r["file_id"]) for r in rows])
@@ -1000,7 +1000,7 @@ def validate_execution(connection: Any, *, vault_id: int, group_id: str, at: str
     """
     vault = lock_vault(connection, vault_id)
     rows = _group_jobs(connection, vault_id, group_id)
-    active = [r for r in rows if r["status"] not in TERMINAL]
+    active = [r for r in rows if r["status"] not in TERMINAL_JOB_STATUSES]
     request = connection.execute(
         "SELECT * FROM cloud_purge_requests WHERE group_id=%s", (group_id,)).fetchone()
     try:
@@ -1090,9 +1090,9 @@ def _revoke_members(connection: Any, rows: list[dict[str, Any]], reasons: dict[s
         by_reason.setdefault(reasons[str(row["file_id"])], []).append(row)
     for reason, members in by_reason.items():
         connection.execute(
-            """UPDATE jobs SET status='cancelled', message=%s, message_key=NULL,
+            f"""UPDATE jobs SET status='cancelled', message=%s, message_key=NULL,
                    message_params=NULL, updated_at=%s, finished_at=%s
-               WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')""",
+               WHERE id = ANY(%s::bigint[]) AND {OPEN_JOB_SQL}""",
             (f"Skipped: {reason}"[:500], at, at, [int(r["id"]) for r in members]))
     revoke_grants(connection, group_id=str(rows[0]["group_id"]),
                   file_ids=[str(r["file_id"]) for r in rows])
@@ -1175,10 +1175,10 @@ def record_deleted(connection: Any, *, jobs: list[dict[str, Any]], at: str, acto
     connection.execute("DELETE FROM cleanup_batches WHERE id = ANY(%s::uuid[])", (batches,))
     ids = [int(j["id"]) for j in jobs]
     completed = connection.execute(
-        """UPDATE jobs SET status='completed', message='Cloud deletion completed',
+        f"""UPDATE jobs SET status='completed', message='Cloud deletion completed',
                message_key=NULL, message_params=NULL, transferred_bytes=total_bytes,
                updated_at=%s, finished_at=%s
-           WHERE id = ANY(%s::bigint[]) AND status NOT IN ('completed','failed','cancelled')
+           WHERE id = ANY(%s::bigint[]) AND {OPEN_JOB_SQL}
            RETURNING total_bytes""",
         (at, at, ids)).fetchall()
     _count_automatic_deletions(connection, vault_id=int(jobs[0]["vault_id"]),
@@ -1279,9 +1279,9 @@ def record_failed(connection: Any, *, failures: list[tuple[dict[str, Any], str]]
                   file_ids=[str(job["file_id"]) for job, _ in failures])
     for job, message in failures:
         connection.execute(
-            """UPDATE jobs SET status='failed', message=%s, message_key=NULL, message_params=NULL,
+            f"""UPDATE jobs SET status='failed', message=%s, message_key=NULL, message_params=NULL,
                    updated_at=%s, finished_at=%s
-               WHERE id=%s AND status NOT IN ('completed','failed','cancelled')""",
+               WHERE id=%s AND {OPEN_JOB_SQL}""",
             (f"Cloud deletion failed: {message}"[:500], at, at, int(job["id"])))
     record_audit_event(connection, event="cloud_deletion.partial_failure", actor=actor,
                        vault_id=int(failures[0][0]["vault_id"]), outcome="partial_failure",

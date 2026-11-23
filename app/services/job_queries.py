@@ -7,11 +7,11 @@ A Job row holds only its core; the read model joins its File (path), group
 from typing import Any
 
 from app.i18n import present_job_message, translate
+from .job_queue import OPEN_JOB_SQL, open_job_sql
 from .recovery_progress import origin_sql, ready_by
 from .upload_remediation import project_jobs
 
 PAGE_SIZE = 50
-TERMINAL = "('completed', 'failed', 'cancelled')"
 GROUP_KEY = "COALESCE(group_id::text, 'job-' || id::text)"
 JOB_COLUMNS = """id,path,action,status,message,message_key,message_params,requested_at,
     updated_at,group_id,group_path,total_bytes,transferred_bytes,pending_until,
@@ -54,7 +54,7 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         filters += " AND action=ANY(%s)"
         params.append(actions)
     if active_only:
-        filters += f" AND status NOT IN {TERMINAL}"
+        filters += f" AND {OPEN_JOB_SQL}"
     if path is not None:
         filters += " AND path=%s"
         params.append(path)
@@ -103,7 +103,7 @@ def list_jobs(connection: Any, *, vault_id: int, locale: str,
         ), active AS (
             SELECT DISTINCT ON (j.group_key) j.group_key,j.status
             FROM members j JOIN candidates c ON c.group_key=j.group_key
-            WHERE j.status NOT IN {TERMINAL}
+            WHERE {open_job_sql("j")}
             ORDER BY j.group_key,j.requested_at ASC,j.id ASC
         )
         SELECT t.*, representative.path, representative.group_path, representative.action,
@@ -164,7 +164,7 @@ def _resumed_restore_origins(connection: Any, vault_id: int, group_keys: list[st
         SELECT COALESCE(j.group_id::text, 'job-' || j.id::text) AS group_key,
             min(o.origin_requested_at) AS origin
         FROM jobs j CROSS JOIN LATERAL {origin_sql("j")} o
-        WHERE j.vault_id=%s AND j.action='recover' AND j.status NOT IN {TERMINAL}
+        WHERE j.vault_id=%s AND j.action='recover' AND {open_job_sql("j")}
           AND COALESCE(j.group_id::text, 'job-' || j.id::text) = ANY(%s)
         GROUP BY 1
         """, [vault_id, group_keys]).fetchall()

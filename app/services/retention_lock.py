@@ -55,6 +55,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from .job_queue import open_job_sql
 from .s3 import GONE_CODES, TRANSIENT_CODES, error_code, version_already_gone
 
 # The choices offered when a Vault is created; 180 when the Owner enables it.
@@ -378,7 +379,7 @@ def adopt_orphans(connection: Any, *, vault_id: int, days: int | None, prefix: s
     if not keys:
         return set()
     rows = connection.execute(
-        """
+        f"""
         INSERT INTO retained_versions(vault_id, object_key, provider_version_id, size,
                                       storage_class, retain_until)
         SELECT %(vault)s, item.object_key, item.version_id, item.size, item.storage_class,
@@ -399,12 +400,12 @@ def adopt_orphans(connection: Any, *, vault_id: int, days: int | None, prefix: s
                 LEFT JOIN jobs j ON j.id = a.job_id
                 WHERE s.vault_id = %(vault)s
                   AND vault_key_prefix(%(vault)s::bigint) || s.path = item.object_key
-                  AND (a.settled_at IS NULL OR j.status NOT IN ('completed','failed','cancelled')))
+                  AND (a.settled_at IS NULL OR {open_job_sql("j")}))
           AND NOT EXISTS (
                 SELECT 1 FROM copy_attempts c LEFT JOIN jobs j ON j.id = c.job_id
                 WHERE c.vault_id = %(vault)s
                   AND item.object_key IN (c.source_key, c.destination_key)
-                  AND (c.settled_at IS NULL OR j.status NOT IN ('completed','failed','cancelled')))
+                  AND (c.settled_at IS NULL OR {open_job_sql("j")}))
           AND NOT EXISTS (
                 SELECT 1 FROM upload_remediations m JOIN files f ON f.id = m.file_id
                 WHERE m.vault_id = %(vault)s AND m.closed_at IS NULL

@@ -23,6 +23,7 @@ from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
 from . import s3
 from .s3 import ProviderResponseError, object_version_entries
+from .job_queue import OPEN_JOB_SQL, open_job_sql
 from .vault_paths import expected_cloud_key, object_prefix
 
 TOKEN_KEY = "frostvault-upload"
@@ -284,11 +285,11 @@ def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
     lock = "SHARE" if shared else "NO KEY UPDATE"
     vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
     row = connection.execute(
-        """SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region, t.key_layout,
+        f"""SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region, t.key_layout,
                   j.status AS job_status, j.file_id AS job_file_id, j.vault_id AS job_vault_id,
                   j.action AS job_action,
                   EXISTS (SELECT 1 FROM jobs other WHERE other.file_id=f.id AND other.id<>%(job)s
-                          AND other.status NOT IN ('failed','cancelled','completed')) AS busy,
+                          AND {open_job_sql("other")}) AS busy,
                   EXISTS (SELECT 1 FROM copy_attempts c WHERE c.file_id=f.id
                           AND c.settled_at IS NULL) AS copying
            FROM files f
@@ -1160,7 +1161,7 @@ _OWNER_CANCELLED_SQL = """SELECT 1 FROM jobs j LEFT JOIN job_uploads u ON u.job_
                       AND a.send_started_at IS NOT NULL))
     LIMIT 1"""
 _ACTIVE_JOB_SQL = ("SELECT 1 FROM jobs WHERE file_id=%s "
-                   "AND status NOT IN ('failed','cancelled','completed') LIMIT 1")
+                   f"AND {OPEN_JOB_SQL} LIMIT 1")
 
 
 def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
