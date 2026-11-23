@@ -18,10 +18,10 @@ function setup(search: string, routes: { items?: unknown[]; disk?: unknown; prev
   configureApiClient({ fetch: vi.fn(async (input, init) => {
     const url = String(input); const method = init?.method ?? "GET";
     calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null });
-    if (url.startsWith("/api/vault/excluded-folders")) return jsonResponse(routes.disk ?? { directory: "", excluded_by: null, folders: [], entries: [], total_entries: 0, truncated: false });
-    if (url.startsWith("/api/vault/operation-policy")) return jsonResponse(policy);
-    if (url.startsWith("/api/vault/exclusions/inclusion-preview")) return jsonResponse(routes.preview);
-    if (url.startsWith("/api/vault/exclusions/")) return jsonResponse(policy);
+    if (url.startsWith("/api/vaults/3/excluded-folders")) return jsonResponse(routes.disk ?? { directory: "", excluded_by: null, folders: [], entries: [], total_entries: 0, truncated: false });
+    if (url.startsWith("/api/vaults/3/operation-policy")) return jsonResponse(policy);
+    if (url.startsWith("/api/vaults/3/exclusions/inclusion-preview")) return jsonResponse(routes.preview);
+    if (url.startsWith("/api/vaults/3/exclusions/")) return jsonResponse(policy);
     if (url.startsWith("/api/stats")) return jsonResponse({ states: {}, protection_state: "protected", storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
     const items = routes.items ?? [];
@@ -41,7 +41,7 @@ describe("exclusions in the Vault browser (#754)", () => {
     expect(within(row).getByRole("link", { name: /upload\/\*\*/ })).toHaveAttribute("href", "/vaults/3/settings#exclusions");
     expect(within(table()).getAllByText("library").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
-    expect(calls.find((call) => call.url.startsWith("/api/vault/excluded-folders"))?.url).toContain("vault_id=3");
+    expect(calls.find((call) => call.url.startsWith("/api/vaults/3/excluded-folders"))).toBeDefined();
   });
 
   it("lists an Excluded Folder from disk, each entry unprotected, folders navigable", async () => {
@@ -53,7 +53,7 @@ describe("exclusions in the Vault browser (#754)", () => {
     expect(within(table()).getAllByTestId("disk-entry-label")).toHaveLength(2);
     expect(screen.queryByTestId("file-list-empty")).not.toBeInTheDocument();
     await userEvent.setup().click(within(table()).getByRole("button", { name: "u1" }));
-    await waitFor(() => expect(calls.some((call) => call.url.startsWith("/api/vault/excluded-folders?directory=upload%2Fu1"))).toBe(true));
+    await waitFor(() => expect(calls.some((call) => call.url.startsWith("/api/vaults/3/excluded-folders?directory=upload%2Fu1"))).toBe(true));
   });
 
   it("excludes a file by its exact path after a confirmation that the cloud copies stay", async () => {
@@ -66,7 +66,7 @@ describe("exclusions in the Vault browser (#754)", () => {
     expect(dialog).toHaveTextContent("library/a.jpg");
     await user.click(within(dialog).getByRole("button", { name: "exclusions.exclude" }));
     await waitFor(() => expect(calls.find((call) => call.method === "POST")).toMatchObject({ body: { path: "library/a.jpg", is_directory: false } }));
-    expect(calls.find((call) => call.method === "POST")?.url).toMatch(/^\/api\/vault\/exclusions\/exclude\?vault_id=3$/);
+    expect(calls.find((call) => call.method === "POST")?.url).toBe("/api/vaults/3/exclusions/exclude");
   });
 
   it("disables «Exclude» for a name with glob characters and points to the panel", async () => {
@@ -100,7 +100,7 @@ describe("exclusions in the Vault browser (#754)", () => {
     expect(preview).toHaveTextContent("exclusions.system_folders");
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "exclusions.include" }));
     await waitFor(() => expect(calls.find((call) => call.method === "POST")).toMatchObject({ body: { path: "upload", is_directory: true } }));
-    expect(calls.find((call) => call.method === "POST")?.url).toContain("/api/vault/exclusions/include");
+    expect(calls.find((call) => call.method === "POST")?.url).toContain("/api/vaults/3/exclusions/include");
   });
 
   it("names a broader rule instead of removing it", async () => {
@@ -123,15 +123,15 @@ describe("Exclusions panel in the Vault settings (#754)", () => {
     let stored = { ...defaultPolicy, exclude_globs: ["upload/**"], include_globs: [] as string[], fixed_exclude_globs: ["._*", ".DS_Store"] };
     const edits: unknown[] = [];
     const fetchImpl = createVaultAccessFetch({
-      "GET /api/vault/operation-policy": () => jsonResponse(stored),
-      "POST /api/vault/operation-policy/globs": (init) => {
+      "GET /api/vaults/3/operation-policy": () => jsonResponse(stored),
+      "POST /api/vaults/3/operation-policy/globs": (init) => {
         const edit = JSON.parse(String(init?.body)) as { field: "exclude_globs" | "include_globs"; action: string; glob: string };
         edits.push(edit);
         const list = stored[edit.field];
         stored = { ...stored, [edit.field]: edit.action === "add" ? [...list, edit.glob] : list.filter((rule) => rule !== edit.glob) };
         return jsonResponse(stored);
       },
-      "POST /api/vault/operation-policy/preview-globs": () => jsonResponse({ included: ["library/a.jpg"], excluded: ["upload/b.jpg"] }),
+      "POST /api/vaults/3/operation-policy/preview-globs": () => jsonResponse({ included: ["library/a.jpg"], excluded: ["upload/b.jpg"] }),
     }, { locale: "it" });
     renderVaultAccess({ vaultId: 3, fetchImpl });
     const panel = await screen.findByTestId("exclusions-panel");

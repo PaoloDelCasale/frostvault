@@ -90,14 +90,14 @@ describe("request cadence (#800)", () => {
     expect(sorted(calls)).toEqual([
       "GET /api/general/vaults",
       "GET /api/jobs?action=storage-class&active_only=true&vault_id=1",
-      "GET /api/vault/lifecycle?vault_id=1",
-      "GET /api/vault/move?vault_id=1",
-      // One read for the four sections that show the policy: four before #800.
-      "GET /api/vault/operation-policy?vault_id=1",
       "GET /api/vaults/1/billed-cost",
       "GET /api/vaults/1/cloud-usage",
       "GET /api/vaults/1/duplicate-cleanup",
+      "GET /api/vaults/1/lifecycle",
       "GET /api/vaults/1/mirror-cleanup",
+      "GET /api/vaults/1/move",
+      // One read for the four sections that show the policy: four before #800.
+      "GET /api/vaults/1/operation-policy",
       "GET /api/vaults/1/retention-lock",
     ]);
 
@@ -190,9 +190,9 @@ describe("request cadence (#800)", () => {
       "GET /api/notifications?limit=50&status=unread",
       "GET /api/stats?vault_id=1",
       "GET /api/upload-activity",
-      "GET /api/vault/excluded-folders?directory=&vault_id=1",
-      "GET /api/vault/operation-policy?vault_id=1",
       "GET /api/vaults",
+      "GET /api/vaults/1/excluded-folders?directory=",
+      "GET /api/vaults/1/operation-policy",
     ]);
     // A blanket refresh (Overview, when a bucket becomes ready) reads the
     // lists again, never the sign-in bootstrap.
@@ -209,17 +209,17 @@ describe("request cadence (#800)", () => {
   it("Recover dialog: mount and a change of retrieval speed", async () => {
     const target: Target = { vaultId: 2, vaultName: "Second", item: { type: "file", name: "same.jpg", path: "same.jpg", state: "cloud_only" } };
     const calls = record({
-      "/api/vault/operation-policy": { local_release_after_days: 180 },
+      "/api/vaults/2/operation-policy": { local_release_after_days: 180 },
       "/api/recover/estimate": { archive_version_id: "v", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: "Bulk", days: 3 } },
     });
     const t = (key: string) => key;
     renderWithQueryClient(<RecoverSelection targets={[target]} t={t} onClose={vi.fn()} onDone={vi.fn()} />);
     const speed = await screen.findByRole("combobox");
-    expect(sorted(calls)).toEqual(["GET /api/vault/operation-policy?vault_id=2", "POST /api/recover/estimate?vault_id=2"]);
+    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/recover/estimate?vault_id=2"]);
     calls.length = 0;
     fireEvent.change(speed, { target: { value: "Standard" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "ui.row_action_recover" })).toBeEnabled());
-    expect(sorted(calls)).toEqual(["GET /api/vault/operation-policy?vault_id=2", "POST /api/recover/estimate?vault_id=2"]);
+    expect(sorted(calls)).toEqual(["GET /api/vaults/2/operation-policy", "POST /api/recover/estimate?vault_id=2"]);
   });
 
   it("Source directory browser: mount, a folder, back to the root", async () => {

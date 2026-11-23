@@ -16,8 +16,8 @@ describe("Vault-wide Move now in the storage plan section", () => {
     const user = userEvent.setup();
     let payload: unknown;
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [estimate, { ...estimate, target_class: "GLACIER_IR", eligible_count: 0 }] }),
-      "POST /api/vault/move": (init) => {
+      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 1, targets: [estimate, { ...estimate, target_class: "GLACIER_IR", eligible_count: 0 }] }),
+      "POST /api/vaults/1/move": (init) => {
         payload = JSON.parse(String(init?.body));
         return jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 });
       },
@@ -37,7 +37,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("checkbox", { name: /I understand the estimated costs/ }));
     await user.click(start);
-    await waitFor(() => expect(payload).toEqual({ vault_id: 1, target_class: "DEEP_ARCHIVE", acknowledge_costs: true }));
+    await waitFor(() => expect(payload).toEqual({ target_class: "DEEP_ARCHIVE", acknowledge_costs: true }));
     expect(await screen.findByText(/2 move Jobs queued/)).toBeInTheDocument();
   });
 
@@ -46,7 +46,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     const ia = { ...estimate, target_class: "STANDARD_IA", eligible_count: 593, total_bytes: 22172592158,
       estimated_monthly_eur: 0.270513, estimated_retrieval_eur: 0, pricing_effective_at: "2026-10-15T17:35:40Z" };
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [ia] }),
+      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 1, targets: [ia] }),
     }) });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     const summary = await screen.findByTestId("vault-move-estimate");
@@ -63,7 +63,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
     const ia = { ...estimate, target_class: "STANDARD_IA", eligible_count: 12593, total_bytes: 22172592158,
       estimated_monthly_eur: 0.270513, estimated_retrieval_eur: 0.004, pricing_effective_at: "2026-10-15T12:00:00Z" };
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [ia] }),
+      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 1, targets: [ia] }),
     }, { locale: "it" }) });
     await user.click(await screen.findByText(loadCatalog("it")["settings.plan_open"], { exact: true }));
     const summary = await screen.findByTestId("vault-move-estimate");
@@ -83,8 +83,8 @@ describe("Vault-wide Move now in the storage plan section", () => {
   it("keeps acknowledgement gated and reports an admission race honestly", async () => {
     const user = userEvent.setup();
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ vault_id: 1, targets: [estimate] }),
-      "POST /api/vault/move": () => jsonResponse({ detail: "No eligible files: pending work" }, 409),
+      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 1, targets: [estimate] }),
+      "POST /api/vaults/1/move": () => jsonResponse({ detail: "No eligible files: pending work" }, 409),
     }) });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("checkbox", { name: /I understand the estimated costs/ }));
@@ -95,7 +95,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
   it("reports an unavailable preview inline and keeps the rest of the plan usable (#718)", async () => {
     const user = userEvent.setup();
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ detail: "Internal Server Error" }, 500),
+      "GET /api/vaults/1/move": () => jsonResponse({ detail: "Internal Server Error" }, 500),
     }) });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     const notice = await screen.findByTestId("vault-move-preview-unavailable");
@@ -110,10 +110,10 @@ describe("Vault-wide Move now in the storage plan section", () => {
     const user = userEvent.setup();
     let previews = 0;
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => (previews++ === 0
+      "GET /api/vaults/1/move": () => (previews++ === 0
         ? jsonResponse({ vault_id: 1, targets: [estimate] })
         : jsonResponse({ detail: "Internal Server Error" }, 500)),
-      "POST /api/vault/move": () => jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 }),
+      "POST /api/vaults/1/move": () => jsonResponse({ ...estimate, group_id: "g", job_ids: [1, 2], item_count: 2 }),
     }) });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     await user.click(await screen.findByRole("checkbox", { name: /I understand the estimated costs/ }));
@@ -125,7 +125,7 @@ describe("Vault-wide Move now in the storage plan section", () => {
 
   it("refuses a stale page after the selected Vault changed in another tab", async () => {
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/move": () => jsonResponse({ vault_id: 2, targets: [estimate] }),
+      "GET /api/vaults/1/move": () => jsonResponse({ vault_id: 2, targets: [estimate] }),
     }) });
     expect(await screen.findByRole("alert", { hidden: true })).toHaveTextContent("The selected Vault changed");
     expect(screen.queryByRole("button", { name: "Move now in background", hidden: true })).not.toBeInTheDocument();

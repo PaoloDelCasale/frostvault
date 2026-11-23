@@ -1292,7 +1292,6 @@
   "api.vault_move.restore_first": "Lo spostamento non ripristina mai: ripristina prima esplicitamente la versione d'archivio",
   "api.vault_move.colder_only": "Lo spostamento va solo verso classi più fredde: la versione d'archivio è già in {storage_class}",
   "api.vault_move.never_restores": "Lo spostamento non ripristina mai: la versione d'archivio è in {storage_class}",
-  "api.vault_move.vault_changed": "Il Vault selezionato è cambiato; aggiorna l'anteprima dello spostamento",
   "api.upload_admission.request_reused": "Identificatore della richiesta di caricamento già usato per un ambito diverso",
   "api.upload_admission.not_ready": "Il Vault non è pronto ad accettare caricamenti",
   "api.upload_admission.not_found": "Richiesta di caricamento non trovata",

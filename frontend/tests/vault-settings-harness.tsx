@@ -180,10 +180,10 @@ export function createVaultAccessFetch(
     if (url.startsWith("/api/jobs?")) {
       return jsonResponse({ items: [], groups: [], next_groups_before_id: null });
     }
-    if (url === "/api/vault/operation-policy") {
+    if (/^\/api\/vaults\/\d+\/operation-policy$/.test(url)) {
       return jsonResponse(defaultPolicy);
     }
-    if (url === "/api/vault/lifecycle") {
+    if (/^\/api\/vaults\/\d+\/lifecycle$/.test(url)) {
       return jsonResponse(defaultLifecycle);
     }
     if (/^\/api\/vaults\/\d+\/duplicate-cleanup$/.test(url) && method === "GET") {
@@ -201,7 +201,7 @@ export function createVaultAccessFetch(
     if (/^\/api\/vaults\/\d+\/billed-cost$/.test(url) && method === "GET") {
       return jsonResponse(defaultVaultBilledCost);
     }
-    if (url === "/api/vault/move") {
+    if (/^\/api\/vaults\/\d+\/move$/.test(url)) {
       return jsonResponse({ vault_id: 1, targets: [] });
     }
     throw new Error(`Unexpected request: ${method} ${url}`);

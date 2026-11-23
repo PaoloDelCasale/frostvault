@@ -1292,7 +1292,6 @@
   "api.vault_move.restore_first": "Vault move never restores: restore the Archive Version explicitly first",
   "api.vault_move.colder_only": "Vault move is colder-only: the Archive Version is already {storage_class}",
   "api.vault_move.never_restores": "Vault move never restores: the Archive Version is in {storage_class}",
-  "api.vault_move.vault_changed": "Selected Vault changed; refresh the move preview",
   "api.upload_admission.request_reused": "Upload request identifier already used for a different scope",
   "api.upload_admission.not_ready": "Vault is not ready for upload admission",
   "api.upload_admission.not_found": "Upload admission not found",

@@ -37,19 +37,19 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
                 "SELECT detail FROM audit_events WHERE event=%s ORDER BY id", (event,)).fetchall()]
 
     def policy(self) -> dict:
-        response = self.client.get("/api/vault/operation-policy")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/operation-policy")
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def edit(self, field: str, action: str, glob: str):
-        return self.client.post("/api/vault/operation-policy/globs", headers=self.signed_in.csrf_headers,
+        return self.client.post(f"/api/vaults/{self.vault_id}/operation-policy/globs", headers=self.signed_in.csrf_headers,
                                 json={"field": field, "action": action, "glob": glob})
 
     def test_the_policy_lists_the_fixed_exclusions_read_only(self) -> None:
         self.assertIn("._*", self.policy()["fixed_exclude_globs"])
 
     def test_one_glob_is_added_and_removed_against_the_stored_policy(self) -> None:
-        put = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
+        put = self.client.put(f"/api/vaults/{self.vault_id}/operation-policy", headers=self.signed_in.csrf_headers,
                               json={"stability_seconds": 900, "exclude_globs": ["*.tmp"]})
         self.assertEqual(put.status_code, 200, put.text)
         added = self.edit("exclude_globs", "add", "thumbs/**")
@@ -74,13 +74,13 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
             scan.assert_called_once()
 
     def test_a_folder_is_excluded_by_its_own_rule_and_included_again(self) -> None:
-        excluded = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
+        excluded = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                     json={"path": "upload", "is_directory": True})
         self.assertEqual(excluded.status_code, 200, excluded.text)
         self.assertEqual(excluded.json()["exclude_globs"], ["upload/**"])
-        status = self.client.get("/api/vault/exclusions/item", params={"path": "upload", "is_directory": "true"}).json()
+        status = self.client.get(f"/api/vaults/{self.vault_id}/exclusions/item", params={"path": "upload", "is_directory": "true"}).json()
         self.assertEqual((status["own_rule"], status["own_rule_present"], status["excluded"]), ("upload/**", True, True))
-        preview = self.client.get("/api/vault/exclusions/inclusion-preview",
+        preview = self.client.get(f"/api/vaults/{self.vault_id}/exclusions/inclusion-preview",
                                   params={"path": "upload", "is_directory": "true"})
         self.assertEqual(preview.status_code, 200, preview.text)
         body = preview.json()
@@ -89,7 +89,7 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
         self.assertEqual((body["files"], body["bytes"], body["complete"]), (2, 50, True))
         self.assertEqual(body["estimate"]["size_bytes"], 50)
         with patch("app.routes.policy.request_full_scan"):
-            included = self.client.post("/api/vault/exclusions/include", headers=self.signed_in.csrf_headers,
+            included = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/include", headers=self.signed_in.csrf_headers,
                                         json={"path": "upload", "is_directory": True})
         self.assertEqual(included.status_code, 200, included.text)
         self.assertEqual(included.json()["exclude_globs"], [])
@@ -99,27 +99,27 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
         self.assertEqual(event["glob"], "upload/**")
 
     def test_a_file_gets_its_exact_path_and_glob_names_are_refused(self) -> None:
-        response = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
+        response = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                     json={"path": "library/a.jpg"})
         self.assertEqual(response.json()["exclude_globs"], ["library/a.jpg"])
-        refused = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
+        refused = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                    json={"path": "library/a[1].jpg"})
         self.assertEqual(refused.status_code, 422, refused.text)
         # A root file's rule would have no "/" and match the name in every folder.
-        root_file = self.client.post("/api/vault/exclusions/exclude", headers=self.signed_in.csrf_headers,
+        root_file = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/exclude", headers=self.signed_in.csrf_headers,
                                      json={"path": "notes.txt"})
         self.assertEqual(root_file.status_code, 422, root_file.text)
-        self.assertEqual(self.client.get("/api/vault/operation-policy").json()["exclude_globs"],
+        self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/operation-policy").json()["exclude_globs"],
                          ["library/a.jpg"])
 
     def test_a_broader_rule_is_shown_and_never_removed_from_an_item(self) -> None:
         self.edit("exclude_globs", "add", "**/u1/**")
-        preview = self.client.get("/api/vault/exclusions/inclusion-preview",
+        preview = self.client.get(f"/api/vaults/{self.vault_id}/exclusions/inclusion-preview",
                                   params={"path": "upload/u1", "is_directory": "true"}).json()
         self.assertFalse(preview["includable"])
         self.assertEqual(preview["rules"], ["**/u1/**"])
         self.assertIsNone(preview["files"])
-        refused = self.client.post("/api/vault/exclusions/include", headers=self.signed_in.csrf_headers,
+        refused = self.client.post(f"/api/vaults/{self.vault_id}/exclusions/include", headers=self.signed_in.csrf_headers,
                                    json={"path": "upload/u1", "is_directory": True})
         self.assertEqual(refused.status_code, 409, refused.text)
         self.assertEqual(self.policy()["exclude_globs"], ["**/u1/**"])
@@ -127,19 +127,19 @@ class VaultExclusionsHttpTests(FrostVaultTestCase):
     def test_the_browser_sees_excluded_folders_and_reads_inside_them_from_disk(self) -> None:
         self.edit("exclude_globs", "add", "upload/**")
         self.edit("exclude_globs", "add", "thumbs/**")
-        root = self.client.get("/api/vault/excluded-folders")
+        root = self.client.get(f"/api/vaults/{self.vault_id}/excluded-folders")
         self.assertEqual(root.status_code, 200, root.text)
         self.assertIsNone(root.json()["excluded_by"])
         self.assertEqual([(f["name"], f["rule"]) for f in root.json()["folders"]],
                          [("thumbs", "thumbs/**"), ("upload", "upload/**")])
-        inside = self.client.get("/api/vault/excluded-folders", params={"directory": "upload"}).json()
+        inside = self.client.get(f"/api/vaults/{self.vault_id}/excluded-folders", params={"directory": "upload"}).json()
         self.assertEqual(inside["excluded_by"], "upload/**")
         self.assertEqual([(e["name"], e["type"]) for e in inside["entries"]], [("u1", "directory"), ("c.jpg", "file")])
-        deeper = self.client.get("/api/vault/excluded-folders", params={"directory": "upload/u1"}).json()
+        deeper = self.client.get(f"/api/vaults/{self.vault_id}/excluded-folders", params={"directory": "upload/u1"}).json()
         self.assertEqual([e["path"] for e in deeper["entries"]], ["upload/u1/b.jpg"])
-        missing = self.client.get("/api/vault/excluded-folders", params={"directory": "upload/nope"})
+        missing = self.client.get(f"/api/vaults/{self.vault_id}/excluded-folders", params={"directory": "upload/nope"})
         self.assertEqual(missing.status_code, 404, missing.text)
-        escape = self.client.get("/api/vault/excluded-folders", params={"directory": "../x"})
+        escape = self.client.get(f"/api/vaults/{self.vault_id}/excluded-folders", params={"directory": "../x"})
         self.assertEqual(escape.status_code, 422, escape.text)
         # Nothing read from disk is catalogued.
         with self.database.connect() as connection:

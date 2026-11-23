@@ -1452,7 +1452,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/operation-policy": {
+    "/api/vaults/{vault_id}/operation-policy": {
         parameters: {
             query?: never;
             header?: never;
@@ -1460,9 +1460,9 @@ export interface paths {
             cookie?: never;
         };
         /** Own Vault Operation Policy */
-        get: operations["own_vault_operation_policy_api_vault_operation_policy_get"];
+        get: operations["own_vault_operation_policy_api_vaults__vault_id__operation_policy_get"];
         /** Update Vault Operation Policy */
-        put: operations["update_vault_operation_policy_api_vault_operation_policy_put"];
+        put: operations["update_vault_operation_policy_api_vaults__vault_id__operation_policy_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1470,7 +1470,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/operation-policy/globs": {
+    "/api/vaults/{vault_id}/operation-policy/globs": {
         parameters: {
             query?: never;
             header?: never;
@@ -1486,14 +1486,14 @@ export interface paths {
          *     Adding a glob already present changes nothing; removing one that is no
          *     longer there is refused with 409, so a stale view cannot replace the list.
          */
-        post: operations["edit_vault_operation_glob_api_vault_operation_policy_globs_post"];
+        post: operations["edit_vault_operation_glob_api_vaults__vault_id__operation_policy_globs_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/vault/excluded-folders": {
+    "/api/vaults/{vault_id}/excluded-folders": {
         parameters: {
             query?: never;
             header?: never;
@@ -1507,7 +1507,7 @@ export interface paths {
          *     Outside an Excluded Folder it lists the subfolders a folder rule covers;
          *     inside one it lists the level's entries, never catalogued nor fingerprinted.
          */
-        get: operations["vault_excluded_folders_api_vault_excluded_folders_get"];
+        get: operations["vault_excluded_folders_api_vaults__vault_id__excluded_folders_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1516,7 +1516,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/item": {
+    "/api/vaults/{vault_id}/exclusions/item": {
         parameters: {
             query?: never;
             header?: never;
@@ -1527,7 +1527,7 @@ export interface paths {
          * Vault Item Exclusion
          * @description Which rules exclude one item, and its own rule (#754).
          */
-        get: operations["vault_item_exclusion_api_vault_exclusions_item_get"];
+        get: operations["vault_item_exclusion_api_vaults__vault_id__exclusions_item_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1536,7 +1536,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/inclusion-preview": {
+    "/api/vaults/{vault_id}/exclusions/inclusion-preview": {
         parameters: {
             query?: never;
             header?: never;
@@ -1551,7 +1551,7 @@ export interface paths {
          *     policy without that rule and stop after a time budget (``complete`` false
          *     means a minimum). Otherwise only the broader rules are returned.
          */
-        get: operations["vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get"];
+        get: operations["vault_inclusion_preview_api_vaults__vault_id__exclusions_inclusion_preview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1560,7 +1560,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/exclude": {
+    "/api/vaults/{vault_id}/exclusions/exclude": {
         parameters: {
             query?: never;
             header?: never;
@@ -1576,14 +1576,14 @@ export interface paths {
          *     A folder gets ``path/**`` (an Excluded Folder), a file its exact path. Cloud
          *     copies stay; the files become Excluded.
          */
-        post: operations["exclude_vault_item_api_vault_exclusions_exclude_post"];
+        post: operations["exclude_vault_item_api_vaults__vault_id__exclusions_exclude_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/vault/exclusions/include": {
+    "/api/vaults/{vault_id}/exclusions/include": {
         parameters: {
             query?: never;
             header?: never;
@@ -1599,14 +1599,14 @@ export interface paths {
          *     A broader rule is never removed from here (409): it is edited in the
          *     Exclusions panel.
          */
-        post: operations["include_vault_item_api_vault_exclusions_include_post"];
+        post: operations["include_vault_item_api_vaults__vault_id__exclusions_include_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/vault/operation-policy/preview-globs": {
+    "/api/vaults/{vault_id}/operation-policy/preview-globs": {
         parameters: {
             query?: never;
             header?: never;
@@ -1616,7 +1616,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Preview Vault Operation Globs */
-        post: operations["preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post"];
+        post: operations["preview_vault_operation_globs_api_vaults__vault_id__operation_policy_preview_globs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1640,7 +1640,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vault/move": {
+    "/api/vaults/{vault_id}/move": {
         parameters: {
             query?: never;
             header?: never;
@@ -1648,17 +1648,17 @@ export interface paths {
             cookie?: never;
         };
         /** Preview Vault Move */
-        get: operations["preview_vault_move_api_vault_move_get"];
+        get: operations["preview_vault_move_api_vaults__vault_id__move_get"];
         put?: never;
         /** Move Vault */
-        post: operations["move_vault_api_vault_move_post"];
+        post: operations["move_vault_api_vaults__vault_id__move_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/vault/lifecycle": {
+    "/api/vaults/{vault_id}/lifecycle": {
         parameters: {
             query?: never;
             header?: never;
@@ -1666,9 +1666,9 @@ export interface paths {
             cookie?: never;
         };
         /** Own Vault Lifecycle */
-        get: operations["own_vault_lifecycle_api_vault_lifecycle_get"];
+        get: operations["own_vault_lifecycle_api_vaults__vault_id__lifecycle_get"];
         /** Update Vault Storage Plan */
-        put: operations["update_vault_storage_plan_api_vault_lifecycle_put"];
+        put: operations["update_vault_storage_plan_api_vaults__vault_id__lifecycle_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3169,8 +3169,6 @@ export interface components {
         };
         /** VaultMoveRequest */
         VaultMoveRequest: {
-            /** Vault Id */
-            vault_id: number;
             /** Target Class */
             target_class: string;
             /**
@@ -6201,13 +6199,13 @@ export interface operations {
             };
         };
     };
-    own_vault_operation_policy_api_vault_operation_policy_get: {
+    own_vault_operation_policy_api_vaults__vault_id__operation_policy_get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6232,13 +6230,13 @@ export interface operations {
             };
         };
     };
-    update_vault_operation_policy_api_vault_operation_policy_put: {
+    update_vault_operation_policy_api_vaults__vault_id__operation_policy_put: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6267,13 +6265,13 @@ export interface operations {
             };
         };
     };
-    edit_vault_operation_glob_api_vault_operation_policy_globs_post: {
+    edit_vault_operation_glob_api_vaults__vault_id__operation_policy_globs_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6302,14 +6300,15 @@ export interface operations {
             };
         };
     };
-    vault_excluded_folders_api_vault_excluded_folders_get: {
+    vault_excluded_folders_api_vaults__vault_id__excluded_folders_get: {
         parameters: {
             query?: {
                 directory?: string;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6334,15 +6333,16 @@ export interface operations {
             };
         };
     };
-    vault_item_exclusion_api_vault_exclusions_item_get: {
+    vault_item_exclusion_api_vaults__vault_id__exclusions_item_get: {
         parameters: {
             query: {
                 path: string;
                 is_directory?: boolean;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6367,15 +6367,16 @@ export interface operations {
             };
         };
     };
-    vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get: {
+    vault_inclusion_preview_api_vaults__vault_id__exclusions_inclusion_preview_get: {
         parameters: {
             query: {
                 path: string;
                 is_directory?: boolean;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6400,13 +6401,13 @@ export interface operations {
             };
         };
     };
-    exclude_vault_item_api_vault_exclusions_exclude_post: {
+    exclude_vault_item_api_vaults__vault_id__exclusions_exclude_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6435,13 +6436,13 @@ export interface operations {
             };
         };
     };
-    include_vault_item_api_vault_exclusions_include_post: {
+    include_vault_item_api_vaults__vault_id__exclusions_include_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6470,13 +6471,13 @@ export interface operations {
             };
         };
     };
-    preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post: {
+    preview_vault_operation_globs_api_vaults__vault_id__operation_policy_preview_globs_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6538,13 +6539,13 @@ export interface operations {
             };
         };
     };
-    preview_vault_move_api_vault_move_get: {
+    preview_vault_move_api_vaults__vault_id__move_get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6569,13 +6570,13 @@ export interface operations {
             };
         };
     };
-    move_vault_api_vault_move_post: {
+    move_vault_api_vaults__vault_id__move_post: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -6604,13 +6605,13 @@ export interface operations {
             };
         };
     };
-    own_vault_lifecycle_api_vault_lifecycle_get: {
+    own_vault_lifecycle_api_vaults__vault_id__lifecycle_get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6635,13 +6636,13 @@ export interface operations {
             };
         };
     };
-    update_vault_storage_plan_api_vault_lifecycle_put: {
+    update_vault_storage_plan_api_vaults__vault_id__lifecycle_put: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody: {

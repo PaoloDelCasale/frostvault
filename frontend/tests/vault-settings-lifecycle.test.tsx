@@ -13,7 +13,7 @@ describe("Vault storage plan in its collapsed section", () => {
     const user = userEvent.setup();
     let payload: unknown;
     const fetchImpl = createVaultAccessFetch({
-      "PUT /api/vault/lifecycle": (init) => {
+      "PUT /api/vaults/1/lifecycle": (init) => {
         payload = JSON.parse(String(init?.body));
         return jsonResponse({ ...defaultLifecycle, profile: defaultLifecycle.guided_profiles.economical });
       },
@@ -34,7 +34,7 @@ describe("Vault storage plan in its collapsed section", () => {
     const user = userEvent.setup();
     let payload: unknown;
     const fetchImpl = createVaultAccessFetch({
-      "PUT /api/vault/lifecycle": (init) => {
+      "PUT /api/vaults/1/lifecycle": (init) => {
         payload = JSON.parse(String(init?.body));
         return jsonResponse({ ...defaultLifecycle, profile: { transitions: [{ days: 1, storage_class: "DEEP_ARCHIVE" }] }, sync_pending: true });
       },

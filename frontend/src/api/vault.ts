@@ -74,23 +74,23 @@ export function vaultApi(vaultId: number) {
     fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(scoped(`/api/files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
     replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", scoped("/api/files/cloud-only-conflict/replace"), { path }),
 
-    policy: () => get<OperationPolicy>(scoped("/api/vault/operation-policy")),
-    updatePolicy: (policy: Partial<OperationPolicy>) => send<OperationPolicy>("PUT", scoped("/api/vault/operation-policy"), policy),
+    policy: () => get<OperationPolicy>(owned("operation-policy")),
+    updatePolicy: (policy: Partial<OperationPolicy>) => send<OperationPolicy>("PUT", owned("operation-policy"), policy),
     /** One level read from disk: Excluded Folders, or the entries inside one (#754). */
-    excludedFolders: (directory: string) => get<ExcludedFolderListing>(scoped(`/api/vault/excluded-folders?directory=${encodeURIComponent(directory)}`)),
+    excludedFolders: (directory: string) => get<ExcludedFolderListing>(owned(`excluded-folders?directory=${encodeURIComponent(directory)}`)),
     /** Adds or removes one glob against the stored policy; never replaces a list. */
-    editGlob: (edit: OperationPolicyGlobEdit) => send<OperationPolicy>("POST", scoped("/api/vault/operation-policy/globs"), edit),
-    previewGlobs: (payload: GlobPreviewRequest) => send<GlobPreviewResponse>("POST", scoped("/api/vault/operation-policy/preview-globs"), payload),
-    inclusionPreview: (path: string, isDirectory: boolean) => get<VaultInclusionPreview>(scoped(`/api/vault/exclusions/inclusion-preview?path=${encodeURIComponent(path)}&is_directory=${isDirectory}`)),
-    exclude: (path: string, isDirectory: boolean) => send<OperationPolicy>("POST", scoped("/api/vault/exclusions/exclude"), { path, is_directory: isDirectory }),
-    include: (path: string, isDirectory: boolean) => send<OperationPolicy>("POST", scoped("/api/vault/exclusions/include"), { path, is_directory: isDirectory }),
+    editGlob: (edit: OperationPolicyGlobEdit) => send<OperationPolicy>("POST", owned("operation-policy/globs"), edit),
+    previewGlobs: (payload: GlobPreviewRequest) => send<GlobPreviewResponse>("POST", owned("operation-policy/preview-globs"), payload),
+    inclusionPreview: (path: string, isDirectory: boolean) => get<VaultInclusionPreview>(owned(`exclusions/inclusion-preview?path=${encodeURIComponent(path)}&is_directory=${isDirectory}`)),
+    exclude: (path: string, isDirectory: boolean) => send<OperationPolicy>("POST", owned("exclusions/exclude"), { path, is_directory: isDirectory }),
+    include: (path: string, isDirectory: boolean) => send<OperationPolicy>("POST", owned("exclusions/include"), { path, is_directory: isDirectory }),
 
-    lifecycle: () => get<LifecycleResponse>(scoped("/api/vault/lifecycle")),
+    lifecycle: () => get<LifecycleResponse>(owned("lifecycle")),
     /** A guided profile by name, or a custom selection. */
-    updateLifecycle: (selection: string | LifecycleProfileSelection) => send<LifecycleResponse>("PUT", scoped("/api/vault/lifecycle"),
+    updateLifecycle: (selection: string | LifecycleProfileSelection) => send<LifecycleResponse>("PUT", owned("lifecycle"),
       typeof selection === "string" ? { guided_profile: selection } : selection),
-    move: () => get<VaultMovePreview>(scoped("/api/vault/move")),
-    startMove: (payload: Omit<VaultMoveRequest, "vault_id">) => send<VaultMoveResponse>("POST", scoped("/api/vault/move"), { vault_id: vaultId, ...payload }),
+    move: () => get<VaultMovePreview>(owned("move")),
+    startMove: (payload: VaultMoveRequest) => send<VaultMoveResponse>("POST", owned("move"), payload),
 
     jobs: (options: { actions?: string[]; activeOnly?: boolean; path?: string; groupsBeforeId?: number } = {}) => {
       const params = new URLSearchParams();

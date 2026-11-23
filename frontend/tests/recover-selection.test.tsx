@@ -14,7 +14,7 @@ describe("essential recovery", () => {
     configureApiClient({ fetch: vi.fn(async (input, init) => {
       const url = String(input); const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       if (init?.method === "POST") bodies.push({ url, body });
-      if (url.startsWith("/api/vault/operation-policy")) return jsonResponse({ local_release_after_days: 180 });
+      if (/^\/api\/vaults\/\d+\/operation-policy$/.test(url)) return jsonResponse({ local_release_after_days: 180 });
       if (url.startsWith("/api/recover/estimate")) return jsonResponse({ archive_version_id: "exact-snapshot", requires_restore: true, estimate: { estimated_cost_eur: 1, estimated_hours: 48, tier: body.restore_tier, days: 3 } });
       return jsonResponse({});
     }) });

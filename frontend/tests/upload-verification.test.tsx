@@ -11,8 +11,8 @@ afterEach(resetApiClientForTests);
 describe("new-upload verification choice", () => {
   it("shows inherited deployment and effective modes and updates only the scoped override", async () => {
     const fetch = createVaultAccessFetch({
-      "GET /api/vault/operation-policy": () => jsonResponse({ ...defaultPolicy, upload_verification: null, global_upload_verification: "s3_checksum", effective_upload_verification: "s3_checksum" }),
-      "PUT /api/vault/operation-policy": (init) => {
+      "GET /api/vaults/7/operation-policy": () => jsonResponse({ ...defaultPolicy, upload_verification: null, global_upload_verification: "s3_checksum", effective_upload_verification: "s3_checksum" }),
+      "PUT /api/vaults/7/operation-policy": (init) => {
         expect(JSON.parse(String(init?.body))).toEqual({ upload_verification: "read_back" });
         return jsonResponse({ ...defaultPolicy, upload_verification: "read_back", global_upload_verification: "s3_checksum", effective_upload_verification: "read_back" });
       },
@@ -29,13 +29,13 @@ describe("new-upload verification choice", () => {
     await user.click(save);
     expect(await screen.findByText("Effective for new uploads: Full SHA-256 read-back")).toBeInTheDocument();
     expect(save).toBeDisabled();
-    expect(fetch.mock.calls.some(([url, init]) => String(url) === "/api/vault/operation-policy?vault_id=7" && init?.method === "PUT")).toBe(true);
+    expect(fetch.mock.calls.some(([url, init]) => String(url) === "/api/vaults/7/operation-policy" && init?.method === "PUT")).toBe(true);
     expect(screen.getByText(/Only new uploads use this choice/)).toBeInTheDocument();
   });
   it("inherit sends null rather than a mutable global setting", async () => {
     const fetch = createVaultAccessFetch({
-      "GET /api/vault/operation-policy": () => jsonResponse({ ...defaultPolicy, upload_verification: "read_back", global_upload_verification: "s3_checksum", effective_upload_verification: "read_back" }),
-      "PUT /api/vault/operation-policy": (init) => {
+      "GET /api/vaults/1/operation-policy": () => jsonResponse({ ...defaultPolicy, upload_verification: "read_back", global_upload_verification: "s3_checksum", effective_upload_verification: "read_back" }),
+      "PUT /api/vaults/1/operation-policy": (init) => {
         expect(JSON.parse(String(init?.body))).toEqual({ upload_verification: null });
         return jsonResponse({ ...defaultPolicy, upload_verification: null, global_upload_verification: "s3_checksum", effective_upload_verification: "s3_checksum" });
       },

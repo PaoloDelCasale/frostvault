@@ -51,14 +51,14 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         self.connection.commit()
         csrf = client.get('/api/me').json()['csrf_token']
         # This tab displays 10 while another tab's session is selected on 9.
-        result = client.put('/api/vault/operation-policy?vault_id=10', headers={'X-CSRF-Token':csrf}, json={'local_release_after_days':180})
+        result = client.put('/api/vaults/10/operation-policy', headers={'X-CSRF-Token':csrf}, json={'local_release_after_days':180})
         self.assertEqual(result.status_code,200,result.text)
         self.assertEqual(get_policy(self.connection,10).local_release_after_days,180)
         self.assertIsNone(get_policy(self.connection,9).local_release_after_days)
         self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
-        denied = client.put('/api/vault/operation-policy?vault_id=10',json={'local_release_after_days':None})
+        denied = client.put('/api/vaults/10/operation-policy',json={'local_release_after_days':None})
         self.assertEqual(denied.status_code,403)
-        missing = client.get('/api/vault/operation-policy?vault_id=999')
+        missing = client.get('/api/vaults/999/operation-policy')
         self.assertEqual(missing.status_code,404)
         self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
 

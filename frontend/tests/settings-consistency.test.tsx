@@ -20,7 +20,7 @@ describe("settings save model", () => {
     const user = userEvent.setup();
     const updates: unknown[] = [];
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "PUT /api/vault/operation-policy": (init) => {
+      "PUT /api/vaults/1/operation-policy": (init) => {
         const body = JSON.parse(String(init?.body)) as { auto_upload: boolean };
         updates.push(body);
         return jsonResponse({ ...defaultPolicy, ...body });
@@ -40,7 +40,7 @@ describe("settings save model", () => {
   it("enables «Save plan» only after the plan changes", async () => {
     const user = userEvent.setup();
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/lifecycle": () => jsonResponse({ ...defaultLifecycle, profile: defaultLifecycle.guided_profiles.economical }),
+      "GET /api/vaults/1/lifecycle": () => jsonResponse({ ...defaultLifecycle, profile: defaultLifecycle.guided_profiles.economical }),
     }) });
     await user.click(await screen.findByText("Show plan and moves", { exact: true }));
     const save = await screen.findByRole("button", { name: "Save plan" });
