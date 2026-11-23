@@ -5,11 +5,11 @@ import re
 import unittest
 from unittest.mock import Mock, patch
 
-from fastapi.testclient import TestClient
 from app import main
 from app.routes.deps import current_user
 from app.services.path_rules import path_matches, sql_path_regex
 from app.services.upload_activity import upload_activity
+from tests.fixtures import http_client
 
 
 class UploadActivityTests(unittest.TestCase):
@@ -62,9 +62,15 @@ class UploadActivityTests(unittest.TestCase):
         self.assertEqual(connection.execute.call_count, 2)  # Vaults, stages
 
     def test_endpoint_requires_owner_and_is_installation_scoped(self):
-        client = TestClient(main.app)
+        client = http_client()
         self.assertEqual(client.get('/api/upload-activity').status_code, 401)
-        expected = {'observed_at': '2026-11-06', 'global': {}, 'vaults': []}
+        # What the aggregate answers for an installation without Vaults.
+        stage = {'files': 0, 'bytes': 0, 'transferred_bytes': 0}
+        aggregate = {'stability_wait': stage, 'queued': stage, 'uploading': stage, 'verifying': stage,
+                     'awaiting_admission_files': 0, 'next_stable_at': None,
+                     'bulk_admission': {'requests': 0, 'selected_files': 0, 'processed_files': 0,
+                                        'admitted_files': 0}}
+        expected = {'observed_at': '2026-11-06', 'global': dict(aggregate), 'vaults': []}
         # And since when a Vault with work has stopped (#759).
         annotated = {'throughput', 'expected_finish', 'stopped_since'}
         @contextmanager
@@ -78,7 +84,7 @@ class UploadActivityTests(unittest.TestCase):
             # Plus the installation-wide server priority (#713).
             body = response.json()
             # Plus the speeds and expected finish of the sampler (#755).
-            self.assertEqual(set(body['global']), annotated)
+            self.assertEqual(set(body['global']) - set(aggregate), annotated)
             self.assertIsNone(body['global']['expected_finish'])
             body['global'] = {}
             self.assertEqual(body, {'observed_at': '2026-11-06', 'global': {}, 'vaults': [],

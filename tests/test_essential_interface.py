@@ -4,13 +4,13 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.errors import NotFound
-from fastapi.testclient import TestClient
 from app import main
 from app.routes import deps
 from app.catalog import ArchiveCatalog
 from app.services import job_admission
 from app.services.notification_links import notification_path, notification_url
 from app.services.operation_policies import OperationPolicy
+from tests.fixtures import http_client
 
 
 class EssentialInterfaceTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class EssentialInterfaceTests(unittest.TestCase):
                     self.assertIn("vault_id", [p["name"] for p in operation.get("parameters", [])], (path, method))
 
     def test_new_global_endpoints_require_owner_and_retired_admin_apis_are_gone(self):
-        client = TestClient(main.app)
+        client = http_client()
         for path in ["/api/files/search", "/api/vaults/1/files/detail?path=photo.jpg", "/api/general", "/api/problems"]:
             self.assertEqual(client.get(path).status_code, 401, path)
         for path in main.app.openapi()["paths"]:

@@ -1800,6 +1800,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ArchiveListItem */
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         AuthMethod: string | null;
         /** @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure. */
@@ -1876,6 +1877,17 @@ export interface components {
                     };
                 }[];
             }[];
+        };
+        /** BulkUploadAdmissionActivity */
+        BulkUploadAdmissionActivity: {
+            /** Requests */
+            requests: number;
+            /** Selected Files */
+            selected_files: number;
+            /** Processed Files */
+            processed_files: number;
+            /** Admitted Files */
+            admitted_files: number;
         };
         BulkUploadAdmissionResponse: {
             group_id: string;
@@ -1992,6 +2004,18 @@ export interface components {
             /** Path */
             path: string;
         };
+        /** CloudPreflightSnapshot */
+        CloudPreflightSnapshot: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "unknown" | "ready" | "blocked";
+            /** Remediation */
+            remediation: string | null;
+            /** Next Probe At */
+            next_probe_at: string | null;
+        };
         /** CloudPurgeRequest */
         CloudPurgeRequest: {
             /** Path */
@@ -2017,6 +2041,51 @@ export interface components {
             reason: string;
             /** Fingerprint */
             fingerprint?: string | null;
+        };
+        /**
+         * DirectoryListItem
+         * @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.
+         */
+        DirectoryListItem: {
+            /** Last Known States */
+            last_known_states?: {
+                [key: string]: number;
+            };
+            /** Last Known At */
+            last_known_at?: string | null;
+            /** Available Actions */
+            available_actions?: {
+                [key: string]: number;
+            };
+            /** Cloud Size */
+            cloud_size?: number;
+            /** Item Count */
+            item_count: number;
+            /** Local Size */
+            local_size?: number;
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** State */
+            state: string;
+            /** State Counts */
+            state_counts?: {
+                [key: string]: number;
+            };
+            /** Storage Class */
+            storage_class?: string | null;
+            /** Storage Class Count */
+            storage_class_count?: number;
+            /** Total Size */
+            total_size: number;
+            /**
+             * Type
+             * @constant
+             */
+            type: "directory";
+        } & {
+            [key: string]: unknown;
         };
         DuplicateCleanupStatus: {
             enabled: boolean;
@@ -2113,6 +2182,21 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * ExpectedFinish
+         * @description The later of the active phases at their average speed, and the phase that limits it (#755).
+         */
+        ExpectedFinish: {
+            /** At */
+            at: string;
+            /** Seconds */
+            seconds: number;
+            /**
+             * Limited By
+             * @enum {string}
+             */
+            limited_by: "upload" | "verification";
+        };
         /** FileAction */
         FileAction: {
             /** Path */
@@ -2133,6 +2217,40 @@ export interface components {
             items: components["schemas"]["JobRecord"][];
             next_before_id: number | null;
         };
+        /**
+         * FileRecovery
+         * @description Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped.
+         */
+        FileRecovery: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "awaiting_approval" | "waiting_for_cloud" | "ready" | "downloading";
+            /**
+             * Active
+             * @description A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable.
+             */
+            active: boolean;
+            /** Tier */
+            tier: ("Expedited" | "Standard" | "Bulk") | null;
+            /** Days */
+            days: number | null;
+            /** Requested At */
+            requested_at: string | null;
+            /**
+             * Ready By
+             * @description Request instant plus the tier's restore hours; an estimate.
+             */
+            ready_by: string | null;
+            /**
+             * Expires At
+             * @description End of the readable restored copy.
+             */
+            expires_at: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         FileVersionsResponse: {
             reconciliation?: components["schemas"]["UploadReconciliation"];
             remediations?: components["schemas"]["UploadRemediation"][];
@@ -2146,48 +2264,73 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** FilesResponse */
         FilesResponse: {
+            /** Manual Upload */
             manual_upload?: boolean;
             /**
+             * Aggregate Status
              * @description Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).
              * @enum {string}
              */
             aggregate_status?: "ready" | "loading" | "stale";
+            /** Directory */
             directory: string;
+            /** Items */
             items: components["schemas"]["ArchiveListItem"][];
+            /** Mode */
             mode: string;
+            /** Page */
             page: number;
+            /** Total */
             total: number;
         } & {
             [key: string]: unknown;
         };
+        /** GeneralOverview */
         GeneralOverview: {
-            vaults?: {
-                id: number;
-                name: string;
-                monthly_estimate: number;
-                open_problem_count: number;
-                uuid: string;
-                /** @enum {string} */
-                lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            }[];
+            /** Vaults */
+            vaults?: components["schemas"]["GeneralOverviewVault"][];
+            /** Open Problem Count */
             open_problem_count?: number;
+            /** Monthly Estimate */
             monthly_estimate?: number;
+            /** Month */
             month?: string;
+            /** Currency */
             currency?: string;
+            /** Pricing Effective At */
             pricing_effective_at?: string;
+            /** Previous Month Delta */
             previous_month_delta?: number | null;
+            /** Email Configured */
             email_configured?: boolean;
+            /** Runs As Root */
             runs_as_root?: boolean;
+            /** Dac Override */
             dac_override?: boolean;
-            cloud_preflight?: {
-                /** @enum {string} */
-                status: "unknown" | "ready" | "blocked";
-                remediation: string | null;
-                next_probe_at: string | null;
-            };
+            cloud_preflight?: components["schemas"]["CloudPreflightSnapshot"];
+            /** Last Verified Backup */
             last_verified_backup?: string | null;
             metadata_backup_verification?: components["schemas"]["MetadataBackupVerification"];
+        };
+        /** GeneralOverviewVault */
+        GeneralOverviewVault: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Monthly Estimate */
+            monthly_estimate: number;
+            /** Open Problem Count */
+            open_problem_count: number;
+            /** Uuid */
+            uuid: string;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
         };
         GeneralVaultReconnectResponse: {
             full_scan_required: boolean;
@@ -2349,6 +2492,13 @@ export interface components {
             /** Password */
             password: string;
         };
+        /** MarkAllNotificationsReadResponse */
+        MarkAllNotificationsReadResponse: {
+            /** Marked Count */
+            marked_count: number;
+            /** Unread Count */
+            unread_count: number;
+        };
         /** MeResponse */
         MeResponse: {
             /** Id */
@@ -2400,10 +2550,121 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** MetadataBackupReference */
+        MetadataBackupReference: {
+            /** Id */
+            id: number;
+            /** Created At */
+            created_at: string | null;
+            /** Verified At */
+            verified_at: string | null;
+        };
+        /** MetadataBackupRun */
+        MetadataBackupRun: {
+            /** Id */
+            id: number;
+            /** Created At */
+            created_at: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Reason */
+            reason: string;
+            /** Backend */
+            backend: string;
+            /** Status */
+            status: string;
+            /** Digest Sha256 */
+            digest_sha256: string | null;
+            /** Database Sha256 */
+            database_sha256: string | null;
+            /** Local Path */
+            local_path: string | null;
+            /** S3 Key */
+            s3_key: string | null;
+            /**
+             * S3 Bucket
+             * @description Bucket of the off-host copy; null for local-only and pre-#734 runs.
+             */
+            s3_bucket: string | null;
+            /** Size Bytes */
+            size_bytes: number | null;
+            /** Error Message */
+            error_message: string | null;
+            /** Verified At */
+            verified_at: string | null;
+        };
         /** MetadataBackupRunAction */
         MetadataBackupRunAction: {
             /** Reason */
             reason: string;
+        };
+        /** MetadataBackupRunResult */
+        MetadataBackupRunResult: {
+            /** Ok */
+            ok: boolean;
+            /** Reason */
+            reason: string;
+            /** Path */
+            path: string;
+            /** Digest Sha256 */
+            digest_sha256: string;
+            /** Database Sha256 */
+            database_sha256: string;
+            /** Backend */
+            backend: string;
+            /** S3 Key */
+            s3_key: string | null;
+            /** S3 Bucket */
+            s3_bucket: string | null;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Filename */
+            filename: string;
+            /** Created At */
+            created_at: string;
+        };
+        /** MetadataBackupStatus */
+        MetadataBackupStatus: {
+            /** Last Status */
+            last_status: string;
+            last_run: components["schemas"]["MetadataBackupRun"] | null;
+            /** Succeeded Count */
+            succeeded_count: number;
+            /** Failed Count */
+            failed_count: number;
+            /** @description Last verified backup and next automatic verification (#648). */
+            verification: components["schemas"]["MetadataBackupVerification"];
+            /** @description Where off-host copies go; null while there is none (#734). */
+            system_bucket: components["schemas"]["SystemBucket"] | null;
+            /**
+             * Off Host
+             * @description Whether backups must also reach the System Bucket.
+             */
+            off_host: boolean;
+        };
+        /** MetadataBackupVerification */
+        MetadataBackupVerification: {
+            last_verified: components["schemas"]["MetadataBackupReference"] | null;
+            latest: components["schemas"]["MetadataBackupReference"] | null;
+            /** Pending Run Id */
+            pending_run_id: number | null;
+            /** Automatic */
+            automatic: boolean;
+            /** Next Verification At */
+            next_verification_at: string | null;
+        };
+        /** MetadataBackupsResponse */
+        MetadataBackupsResponse: {
+            status: components["schemas"]["MetadataBackupStatus"];
+            /** Runs */
+            runs: components["schemas"]["MetadataBackupRun"][];
+        };
+        /** MetadataRestoreNotice */
+        MetadataRestoreNotice: {
+            /** Backup Created At */
+            backup_created_at: string;
+            /** Updated Files */
+            updated_files: number;
         };
         /** @description Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices. */
         MinimumStorageSummary: {
@@ -2533,16 +2794,61 @@ export interface components {
             /** Beyond Minimum */
             beyond_minimum?: boolean | null;
         };
+        /** NotificationItem */
+        NotificationItem: {
+            /** Id */
+            id: number;
+            /** Vault Id */
+            vault_id: number | null;
+            /** Job Id */
+            job_id: number | null;
+            /** Event */
+            event: string;
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Title Key */
+            title_key: string | null;
+            /** Body Key */
+            body_key: string | null;
+            /** Message Params */
+            message_params: {
+                [key: string]: unknown;
+            };
+            /** In App Enabled */
+            in_app_enabled: boolean;
+            /** Dedupe Key */
+            dedupe_key: string | null;
+            /** Created At */
+            created_at: string;
+            /** Read */
+            read: boolean;
+            /** Read At */
+            read_at: string | null;
+            /** Problem Status */
+            problem_status: ("open" | "resolved") | null;
+            /** Resolved At */
+            resolved_at: string | null;
+            /** Resolving */
+            resolving?: "scan" | null;
+        };
         /** NotificationReadAction */
         NotificationReadAction: {
             /** Notification Id */
             notification_id: number;
         };
+        /** NotificationsResponse */
         NotificationsResponse: {
+            /** Items */
             items: components["schemas"]["NotificationItem"][];
+            /** Unread Count */
             unread_count: number;
+            /** Open Problem Count */
             open_problem_count: number;
+            /** Email Configured */
             email_configured: boolean;
+            /** Has More */
             has_more: boolean;
         };
         OperationPolicy: {
@@ -2615,6 +2921,16 @@ export interface components {
              * @default
              */
             path?: string;
+        };
+        /**
+         * ProblemsResponse
+         * @description One page of the open Problems and how many are open in all.
+         */
+        ProblemsResponse: {
+            /** Items */
+            items: components["schemas"]["NotificationItem"][];
+            /** Open Problem Count */
+            open_problem_count: number;
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -2689,25 +3005,24 @@ export interface components {
             /** Fingerprint */
             fingerprint: string;
         };
+        /** RecoveryKitStatus */
         RecoveryKitStatus: {
+            /** Configured */
             configured: boolean;
+            /** Fingerprint */
             fingerprint: string | null;
             /** @description The current System Bucket (#734), ready or not; null while there is none. */
-            system_bucket?: {
-                name: string;
-                region: string;
-                /** @enum {string} */
-                origin: "configured" | "created";
-                ready: boolean;
-            } | null;
-            /** @description A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734). */
+            system_bucket?: components["schemas"]["SystemBucket"] | null;
+            /**
+             * Awaiting Backup
+             * @description A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734).
+             */
             awaiting_backup?: boolean;
+            /** Custody Acknowledged */
             custody_acknowledged: boolean;
+            /** Acknowledged At */
             acknowledged_at: string | null;
-            metadata_restore: {
-                backup_created_at: string;
-                updated_files: number;
-            } | null;
+            metadata_restore: components["schemas"]["MetadataRestoreNotice"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -2757,6 +3072,13 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ServerPriority */
+        ServerPriority: {
+            /** Throttled */
+            throttled: boolean;
+            /** Since */
+            since: string | null;
+        };
         /**
          * SessionMessageResponse
          * @description What signing in and signing out answer.
@@ -2766,6 +3088,25 @@ export interface components {
             message: string;
             /** Message Key */
             message_key: string;
+        };
+        /** SourceDeviceReads */
+        SourceDeviceReads: {
+            /** Device */
+            device: string;
+            /** Reading */
+            reading: number;
+            /** Waiting */
+            waiting: number;
+            /**
+             * Limit
+             * @description Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766).
+             */
+            limit: number;
+            /**
+             * Bytes Per Second
+             * @description Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured.
+             */
+            bytes_per_second: number | null;
         };
         SourceDirectoryBrowseResponse: {
             items: components["schemas"]["SourceDirectoryEntry"][];
@@ -2779,71 +3120,36 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** StatsResponse */
         StatsResponse: {
+            /** Manual Upload */
             manual_upload?: boolean;
+            /** Protection State */
             protection_state?: string | null;
+            /** Last Known States */
             last_known_states?: {
                 [key: string]: number;
             };
+            /** Active Jobs */
             active_jobs: number;
-            runtime: {
-                last_error?: string | null;
-                scanning?: boolean;
-                scan_phase?: string | null;
-                verify_files_total?: number | null;
-                verify_files_done?: number | null;
-                verify_bytes_total?: number | null;
-                verify_bytes_done?: number | null;
-                traversal_files_seen?: number | null;
-                traversal_files_per_minute?: number | null;
-                traversal_files_expected?: number | null;
-                last_error_source_cause?: string | null;
-                traversal_lock_wait_seconds?: number | null;
-                traversal_probe_seconds?: number | null;
-                traversal_write_seconds?: number | null;
-                last_error_source?: string | null;
-                last_error_source_at?: string | null;
-                server_priority_enabled?: boolean;
-                server_priority_throttled?: boolean;
-                server_priority_throttled_since?: string | null;
-                source_device_read_limit?: number;
-                source_devices?: {
-                    device: string;
-                    reading: number;
-                    waiting: number;
-                    /** @description Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766). */
-                    limit: number;
-                    /** @description Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured. */
-                    bytes_per_second: number | null;
-                }[];
-                /** @description A requested full scan waits for the Vault (#759). */
-                scan_queued?: boolean;
-                scan_queued_at?: string | null;
-                /** @description The operation the queued scan waits for (null when the Vault is free). */
-                scan_waiting_for?: string | null;
-                /** @description Since when that operation holds the Vault. */
-                scan_waiting_since?: string | null;
-                /** @description Bytes read by the running verification, partial files included (#759). */
-                verify_bytes_read?: number | null;
-            } & {
-                [key: string]: unknown;
-            };
+            runtime: components["schemas"]["VaultRuntimeStatus"];
+            /** States */
             states: {
                 [key: string]: number;
             };
-            storage: {
-                cloud_bytes: number;
-                local_bytes: number;
-            } & {
-                [key: string]: unknown;
-            };
-            source_volume: {
-                alias: string | null;
-                health: string;
-                local_operations_allowed: boolean;
-            };
+            storage: components["schemas"]["VaultStorageBytes"];
+            source_volume: components["schemas"]["StatsSourceVolume"];
         } & {
             [key: string]: unknown;
+        };
+        /** StatsSourceVolume */
+        StatsSourceVolume: {
+            /** Alias */
+            alias: string | null;
+            /** Health */
+            health: string;
+            /** Local Operations Allowed */
+            local_operations_allowed: boolean;
         };
         /** StopProtectionRequest */
         StopProtectionRequest: {
@@ -2903,6 +3209,32 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * SystemBucket
+         * @description The installation's System Bucket for metadata backups (#734).
+         */
+        SystemBucket: {
+            /** Name */
+            name: string;
+            /** Region */
+            region: string;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "configured" | "created";
+            /** Ready */
+            ready: boolean;
+        };
+        /** ThroughputSample */
+        ThroughputSample: {
+            /** At */
+            at: string;
+            /** Upload Bytes Per Second */
+            upload_bytes_per_second: number;
+            /** Verification Bytes Per Second */
+            verification_bytes_per_second: number;
+        };
         /** UploadAction */
         UploadAction: {
             /** Path */
@@ -2921,18 +3253,76 @@ export interface components {
             /** Request Id */
             request_id?: string | null;
         };
+        /** UploadActivityResponse */
         UploadActivityResponse: {
+            /** Observed At */
             observed_at: string;
             global: components["schemas"]["UploadActivitySummary"];
-            vaults: (components["schemas"]["UploadActivitySummary"] & {
-                vault_id: number;
-                vault_name: string;
-                paused: boolean;
-            })[];
-            server_priority?: {
-                throttled: boolean;
-                since: string | null;
-            };
+            /** Vaults */
+            vaults: components["schemas"]["UploadActivityVault"][];
+            server_priority?: components["schemas"]["ServerPriority"];
+        };
+        /** UploadActivityStage */
+        UploadActivityStage: {
+            /** Files */
+            files: number;
+            /** Bytes */
+            bytes: number;
+            /** Transferred Bytes */
+            transferred_bytes: number;
+        };
+        /** UploadActivitySummary */
+        UploadActivitySummary: {
+            stability_wait: components["schemas"]["UploadActivityStage"];
+            queued: components["schemas"]["UploadActivityStage"];
+            uploading: components["schemas"]["UploadActivityStage"];
+            verifying: components["schemas"]["UploadActivityStage"];
+            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
+            /** Awaiting Admission Files */
+            awaiting_admission_files: number;
+            /** Next Stable At */
+            next_stable_at: string | null;
+            throughput: components["schemas"]["UploadThroughput"];
+            expected_finish: components["schemas"]["ExpectedFinish"] | null;
+            /**
+             * Stopped Since
+             * @description When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759).
+             */
+            stopped_since: string | null;
+        };
+        /** UploadActivityVault */
+        UploadActivityVault: {
+            stability_wait: components["schemas"]["UploadActivityStage"];
+            queued: components["schemas"]["UploadActivityStage"];
+            uploading: components["schemas"]["UploadActivityStage"];
+            verifying: components["schemas"]["UploadActivityStage"];
+            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
+            /** Awaiting Admission Files */
+            awaiting_admission_files: number;
+            /** Next Stable At */
+            next_stable_at: string | null;
+            throughput: components["schemas"]["UploadThroughput"];
+            expected_finish: components["schemas"]["ExpectedFinish"] | null;
+            /**
+             * Stopped Since
+             * @description When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759).
+             */
+            stopped_since: string | null;
+            /** Vault Id */
+            vault_id: number;
+            /** Vault Name */
+            vault_name: string;
+            /** Paused */
+            paused: boolean;
+        };
+        /** UploadPhaseSpeed */
+        UploadPhaseSpeed: {
+            /** Bytes Per Second */
+            bytes_per_second: number | null;
+            /** Files Per Second */
+            files_per_second: number | null;
+            /** Average Bytes Per Second */
+            average_bytes_per_second: number | null;
         };
         /** UploadReconciliationAction */
         UploadReconciliationAction: {
@@ -2949,6 +3339,24 @@ export interface components {
         UploadReconciliationResponse: {
             job_id: number;
             group_id: string;
+        };
+        /**
+         * UploadThroughput
+         * @description Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured.
+         */
+        UploadThroughput: {
+            /** Sample Seconds */
+            sample_seconds: number;
+            /** Instant Seconds */
+            instant_seconds: number;
+            /** Average Seconds */
+            average_seconds: number;
+            /** History Seconds */
+            history_seconds: number;
+            upload: components["schemas"]["UploadPhaseSpeed"];
+            verification: components["schemas"]["VerificationPhaseSpeed"];
+            /** History */
+            history: components["schemas"]["ThroughputSample"][];
         };
         /** ValidationError */
         ValidationError: {
@@ -3190,6 +3598,99 @@ export interface components {
                 delete_bucket?: boolean;
             } | null;
         };
+        /**
+         * VaultFileListItem
+         * @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem).
+         */
+        VaultFileListItem: {
+            /** Upload Verification Requested */
+            upload_verification_requested?: ("s3_checksum" | "read_back") | null;
+            /** Verification Method */
+            verification_method?: ("s3_checksum" | "read_back") | null;
+            /** Verification Fallback Reason */
+            verification_fallback_reason?: string | null;
+            /** Verification Egress Bytes */
+            verification_egress_bytes?: number | null;
+            /** Last Known State */
+            last_known_state?: string;
+            /** Last Known At */
+            last_known_at?: string | null;
+            /** Previous Snapshot Protected */
+            previous_snapshot_protected?: boolean;
+            /** Availability */
+            availability?: string | null;
+            /** Cleanup Eligible */
+            cleanup_eligible?: boolean;
+            /** Cloud Exists */
+            cloud_exists?: number | boolean;
+            /** Cloud Size */
+            cloud_size?: number | null;
+            /** Integrity */
+            integrity?: string | null;
+            /** Local Exists */
+            local_exists?: number | boolean;
+            /** Local File Type */
+            local_file_type?: string | null;
+            /** Local Size */
+            local_size?: number | null;
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Recover Eligible */
+            recover_eligible?: boolean;
+            /** State */
+            state: string;
+            /** Storage Class */
+            storage_class?: string | null;
+            /**
+             * Type
+             * @constant
+             */
+            type: "file";
+            /** Upload Eligible */
+            upload_eligible?: boolean;
+            /** Modified At */
+            modified_at?: string | null;
+            /** Vault Id */
+            vault_id?: number;
+            /** Vault Name */
+            vault_name?: string;
+            /** Cloud Only Conflict */
+            cloud_only_conflict?: boolean;
+            /**
+             * In Excluded Folder
+             * @description The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed.
+             */
+            in_excluded_folder?: boolean;
+            /** Id */
+            id?: string;
+            /**
+             * Current Version Id
+             * @description Explicit Current Snapshot reference; null when the file has none.
+             */
+            current_version_id?: string | null;
+            /**
+             * Pending Version Id
+             * @description Explicit replacement in progress; never recoverable.
+             */
+            pending_version_id?: string | null;
+            /**
+             * Recoverable
+             * @description Current exists, is verified and available.
+             */
+            recoverable?: boolean;
+            /** Reconciliation Block */
+            reconciliation_block?: string | null;
+            /**
+             * Cleanup
+             * @description Exact cleanup of superseded versions.
+             */
+            cleanup?: ("waiting" | "in_progress" | "blocked") | null;
+            recovery?: components["schemas"]["FileRecovery"] | null;
+        } & {
+            [key: string]: unknown;
+        };
         VaultInclusionPreview: {
             path: string;
             is_directory: boolean;
@@ -3288,6 +3789,75 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** VaultRuntimeStatus */
+        VaultRuntimeStatus: {
+            /** Last Error */
+            last_error?: string | null;
+            /** Scanning */
+            scanning?: boolean;
+            /** Scan Phase */
+            scan_phase?: string | null;
+            /** Verify Files Total */
+            verify_files_total?: number | null;
+            /** Verify Files Done */
+            verify_files_done?: number | null;
+            /** Verify Bytes Total */
+            verify_bytes_total?: number | null;
+            /** Verify Bytes Done */
+            verify_bytes_done?: number | null;
+            /** Traversal Files Seen */
+            traversal_files_seen?: number | null;
+            /** Traversal Files Per Minute */
+            traversal_files_per_minute?: number | null;
+            /** Traversal Files Expected */
+            traversal_files_expected?: number | null;
+            /** Last Error Source Cause */
+            last_error_source_cause?: string | null;
+            /** Traversal Lock Wait Seconds */
+            traversal_lock_wait_seconds?: number | null;
+            /** Traversal Probe Seconds */
+            traversal_probe_seconds?: number | null;
+            /** Traversal Write Seconds */
+            traversal_write_seconds?: number | null;
+            /** Last Error Source */
+            last_error_source?: string | null;
+            /** Last Error Source At */
+            last_error_source_at?: string | null;
+            /** Server Priority Enabled */
+            server_priority_enabled?: boolean;
+            /** Server Priority Throttled */
+            server_priority_throttled?: boolean;
+            /** Server Priority Throttled Since */
+            server_priority_throttled_since?: string | null;
+            /** Source Device Read Limit */
+            source_device_read_limit?: number;
+            /** Source Devices */
+            source_devices?: components["schemas"]["SourceDeviceReads"][];
+            /**
+             * Scan Queued
+             * @description A requested full scan waits for the Vault (#759).
+             */
+            scan_queued?: boolean;
+            /** Scan Queued At */
+            scan_queued_at?: string | null;
+            /**
+             * Scan Waiting For
+             * @description The operation the queued scan waits for (null when the Vault is free).
+             */
+            scan_waiting_for?: string | null;
+            /**
+             * Scan Waiting Since
+             * @description Since when that operation holds the Vault.
+             */
+            scan_waiting_since?: string | null;
+            /**
+             * Verify Bytes Read
+             * @description Bytes read by the running verification, partial files included (#759).
+             */
+            verify_bytes_read?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
         VaultSelectResponse: {
             vault_id: number;
         } & {
@@ -3321,10 +3891,26 @@ export interface components {
             /** Retention Lock Days */
             retention_lock_days?: (30 | 90 | 180 | 365) | null;
         };
+        /** VaultStorageBytes */
+        VaultStorageBytes: {
+            /** Cloud Bytes */
+            cloud_bytes: number;
+            /** Local Bytes */
+            local_bytes: number;
+        } & {
+            [key: string]: unknown;
+        };
         VaultsResponse: {
             items: components["schemas"]["VaultListItem"][];
         } & {
             [key: string]: unknown;
+        };
+        /** VerificationPhaseSpeed */
+        VerificationPhaseSpeed: {
+            /** Bytes Per Second */
+            bytes_per_second: number | null;
+            /** Average Bytes Per Second */
+            average_bytes_per_second: number | null;
         };
         VaultMoveEstimate: {
             target_class: string;
@@ -3339,30 +3925,6 @@ export interface components {
             pricing_effective_at: string;
             region: string;
             assumptions: string;
-        };
-        NotificationItem: {
-            id: number;
-            user_id: number;
-            vault_id: number | null;
-            job_id: number | null;
-            event: string;
-            title: string;
-            body: string;
-            title_key: string | null;
-            body_key: string | null;
-            message_params: {
-                [key: string]: unknown;
-            };
-            in_app_enabled: boolean;
-            dedupe_key: string | null;
-            created_at: string;
-            read: boolean;
-            read_at: string | null;
-            /** @enum {string|null} */
-            problem_status: "open" | "resolved" | null;
-            resolved_at: string | null;
-            /** @enum {string|null} */
-            resolving?: "scan" | null;
         };
         GeneralVault: {
             paused?: boolean;
@@ -3423,32 +3985,6 @@ export interface components {
             expected_storage_class?: string | null;
             /** @description When the Minimum Storage Duration of the class ends; null for a class without one. */
             minimum_storage_until?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed. */
-        DirectoryListItem: {
-            last_known_states?: {
-                [key: string]: number;
-            };
-            last_known_at?: string | null;
-            available_actions?: {
-                [key: string]: number;
-            };
-            cloud_size?: number;
-            item_count: number;
-            local_size?: number;
-            name: string;
-            path: string;
-            state: string;
-            state_counts?: {
-                [key: string]: number;
-            };
-            storage_class?: string | null;
-            storage_class_count?: number;
-            total_size: number;
-            /** @constant */
-            type: "directory";
         } & {
             [key: string]: unknown;
         };
@@ -3581,56 +4117,6 @@ export interface components {
         };
         /** @enum {string} */
         VaultCreationMode: "empty" | "adopt";
-        /** @description Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem). */
-        VaultFileListItem: {
-            /** @enum {string|null} */
-            upload_verification_requested?: "s3_checksum" | "read_back" | null;
-            /** @enum {string|null} */
-            verification_method?: "s3_checksum" | "read_back" | null;
-            verification_fallback_reason?: string | null;
-            verification_egress_bytes?: number | null;
-            last_known_state?: string;
-            last_known_at?: string | null;
-            previous_snapshot_protected?: boolean;
-            availability?: string | null;
-            cleanup_eligible?: boolean;
-            cloud_exists?: number | boolean;
-            cloud_size?: number | null;
-            integrity?: string | null;
-            local_exists?: number | boolean;
-            local_file_type?: string | null;
-            local_size?: number | null;
-            name: string;
-            path: string;
-            recover_eligible?: boolean;
-            state: string;
-            storage_class?: string | null;
-            /** @constant */
-            type: "file";
-            upload_eligible?: boolean;
-            modified_at?: string | null;
-            vault_id?: number;
-            vault_name?: string;
-            cloud_only_conflict?: boolean;
-            /** @description The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed. */
-            in_excluded_folder?: boolean;
-            id?: string;
-            /** @description Explicit Current Snapshot reference; null when the file has none. */
-            current_version_id?: string | null;
-            /** @description Explicit replacement in progress; never recoverable. */
-            pending_version_id?: string | null;
-            /** @description Current exists, is verified and available. */
-            recoverable?: boolean;
-            reconciliation_block?: string | null;
-            /**
-             * @description Exact cleanup of superseded versions.
-             * @enum {string|null}
-             */
-            cleanup?: "waiting" | "in_progress" | "blocked" | null;
-            recovery?: components["schemas"]["FileRecovery"] | null;
-        } & {
-            [key: string]: unknown;
-        };
         VaultListItem: {
             paused?: boolean;
             id: number;
@@ -3638,90 +4124,6 @@ export interface components {
             uuid: string;
             /** @enum {string} */
             lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-        } & {
-            [key: string]: unknown;
-        };
-        BulkUploadAdmissionActivity: {
-            requests: number;
-            selected_files: number;
-            processed_files: number;
-            admitted_files: number;
-        };
-        UploadActivityStage: {
-            files: number;
-            bytes: number;
-            transferred_bytes: number;
-        };
-        UploadActivitySummary: {
-            stability_wait: components["schemas"]["UploadActivityStage"];
-            queued: components["schemas"]["UploadActivityStage"];
-            uploading: components["schemas"]["UploadActivityStage"];
-            verifying: components["schemas"]["UploadActivityStage"];
-            bulk_admission?: components["schemas"]["BulkUploadAdmissionActivity"];
-            awaiting_admission_files: number;
-            next_stable_at: string | null;
-            throughput: components["schemas"]["UploadThroughput"];
-            expected_finish: components["schemas"]["ExpectedFinish"] | null;
-            /** @description When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759). */
-            stopped_since: string | null;
-        };
-        /** @description Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured. */
-        UploadThroughput: {
-            sample_seconds: number;
-            instant_seconds: number;
-            average_seconds: number;
-            history_seconds: number;
-            upload: {
-                bytes_per_second: number | null;
-                files_per_second: number | null;
-                average_bytes_per_second: number | null;
-            };
-            verification: {
-                bytes_per_second: number | null;
-                average_bytes_per_second: number | null;
-            };
-            history: {
-                at: string;
-                upload_bytes_per_second: number;
-                verification_bytes_per_second: number;
-            }[];
-        };
-        /** @description The later of the active phases at their average speed, and the phase that limits it (#755). */
-        ExpectedFinish: {
-            at: string;
-            seconds: number;
-            /** @enum {string} */
-            limited_by: "upload" | "verification";
-        };
-        MetadataBackupVerification: {
-            last_verified: {
-                id: number;
-                created_at: string | null;
-                verified_at: string | null;
-            } | null;
-            latest: {
-                id: number;
-                created_at: string | null;
-                verified_at: string | null;
-            } | null;
-            pending_run_id: number | null;
-            automatic: boolean;
-            next_verification_at: string | null;
-        };
-        /** @description Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped. */
-        FileRecovery: {
-            /** @enum {string} */
-            state: "queued" | "awaiting_approval" | "waiting_for_cloud" | "ready" | "downloading";
-            /** @description A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable. */
-            active: boolean;
-            /** @enum {string|null} */
-            tier: "Expedited" | "Standard" | "Bulk" | null;
-            days: number | null;
-            requested_at: string | null;
-            /** @description Request instant plus the tier's restore hours; an estimate. */
-            ready_by: string | null;
-            /** @description End of the readable restored copy. */
-            expires_at: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -5064,7 +5466,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NotificationsResponse"];
+                    "application/json": components["schemas"]["ProblemsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5161,7 +5563,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["NotificationItem"];
                 };
             };
             /** @description Validation Error */
@@ -5190,7 +5592,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["MarkAllNotificationsReadResponse"];
                 };
             };
         };
@@ -5283,7 +5685,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["MetadataBackupsResponse"];
                 };
             };
         };
@@ -5307,7 +5709,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["MetadataBackupRunResult"];
                 };
             };
             /** @description Validation Error */

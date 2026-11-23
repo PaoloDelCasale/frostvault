@@ -42,13 +42,11 @@ export {
 export type {
   NotificationListStatus,
   FetchNotificationsParams,
-  MarkAllNotificationsReadResponse,
   MetadataBackupRun,
   MetadataBackupRunResult,
   MetadataBackupStatus,
   MetadataBackupsResponse,
   MetadataBackupDownload,
-  SystemBucket,
 } from "./endpoints";
 
 export { vaultApi } from "./vault";

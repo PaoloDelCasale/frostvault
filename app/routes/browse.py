@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import MISSING, BaseModel, ConfigDict, Field, RootModel
 
-from ..api_models import JsonObjectResponse, response_model
+from ..api_models import passthrough
 from ..config import settings
 from ..i18n import translate
 from ..database import db
@@ -53,9 +53,109 @@ def _protection_observation(connection: Any, vault: dict[str, Any], access: Any)
     return unconfirmed, manual_upload
 
 
+# -- Response models (ADR-0056) -------------------------------------------------
+#
+# A route's answer is declared with ``passthrough(Model)``: production neither
+# validates nor filters with it, the tests' HTTP client does. A field that is
+# not in every answer is ``MISSING`` by default, so the document says "optional"
+# without inventing a value. A model is closed where its keys are fixed here or
+# in one service function; it stays open where the catalog adds keys.
+
+
+class FileRecovery(BaseModel):
+    """Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped."""
+
+    model_config = ConfigDict(extra="allow")
+    state: Literal["queued", "awaiting_approval", "waiting_for_cloud", "ready", "downloading"]
+    active: bool = Field(description="A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable.")
+    tier: Literal["Expedited", "Standard", "Bulk"] | None
+    days: int | None
+    requested_at: str | None
+    ready_by: str | None = Field(description="Request instant plus the tier's restore hours; an estimate.")
+    expires_at: str | None = Field(description="End of the readable restored copy.")
+
+
+class VaultFileListItem(BaseModel):
+    """Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem)."""
+
+    # Open: the protection projection (``project_file``) adds its own keys.
+    model_config = ConfigDict(extra="allow")
+    upload_verification_requested: Literal["s3_checksum", "read_back"] | None | MISSING = MISSING
+    verification_method: Literal["s3_checksum", "read_back"] | None | MISSING = MISSING
+    verification_fallback_reason: str | None | MISSING = MISSING
+    verification_egress_bytes: int | None | MISSING = MISSING
+    last_known_state: str | MISSING = MISSING
+    last_known_at: str | None | MISSING = MISSING
+    previous_snapshot_protected: bool | MISSING = MISSING
+    availability: str | None | MISSING = MISSING
+    cleanup_eligible: bool | MISSING = MISSING
+    cloud_exists: float | bool | MISSING = MISSING
+    cloud_size: float | None | MISSING = MISSING
+    integrity: str | None | MISSING = MISSING
+    local_exists: float | bool | MISSING = MISSING
+    local_file_type: str | None | MISSING = MISSING
+    local_size: float | None | MISSING = MISSING
+    name: str
+    path: str
+    recover_eligible: bool | MISSING = MISSING
+    state: str
+    storage_class: str | None | MISSING = MISSING
+    type: Literal["file"]
+    upload_eligible: bool | MISSING = MISSING
+    modified_at: str | None | MISSING = MISSING
+    vault_id: int | MISSING = MISSING
+    vault_name: str | MISSING = MISSING
+    cloud_only_conflict: bool | MISSING = MISSING
+    in_excluded_folder: bool | MISSING = Field(default=MISSING, description="The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed.")
+    id: str | MISSING = MISSING
+    current_version_id: str | None | MISSING = Field(default=MISSING, description="Explicit Current Snapshot reference; null when the file has none.")
+    pending_version_id: str | None | MISSING = Field(default=MISSING, description="Explicit replacement in progress; never recoverable.")
+    recoverable: bool | MISSING = Field(default=MISSING, description="Current exists, is verified and available.")
+    reconciliation_block: str | None | MISSING = MISSING
+    cleanup: Literal["waiting", "in_progress", "blocked"] | None | MISSING = Field(default=MISSING, description="Exact cleanup of superseded versions.")
+    recovery: FileRecovery | None | MISSING = MISSING
+
+
+class DirectoryListItem(BaseModel):
+    """Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed."""
+
+    # Open: the directory aggregates add their own counters.
+    model_config = ConfigDict(extra="allow")
+    last_known_states: dict[str, float] | MISSING = MISSING
+    last_known_at: str | None | MISSING = MISSING
+    available_actions: dict[str, float] | MISSING = MISSING
+    cloud_size: float | MISSING = MISSING
+    item_count: float
+    local_size: float | MISSING = MISSING
+    name: str
+    path: str
+    state: str
+    state_counts: dict[str, float] | MISSING = MISSING
+    storage_class: str | None | MISSING = MISSING
+    storage_class_count: float | MISSING = MISSING
+    total_size: float
+    type: Literal["directory"]
+
+
+class ArchiveListItem(RootModel[VaultFileListItem | DirectoryListItem]):
+    pass
+
+
+class FilesResponse(BaseModel):
+    # Open: the search answer is the catalog's own dictionary.
+    model_config = ConfigDict(extra="allow")
+    manual_upload: bool | MISSING = MISSING
+    aggregate_status: Literal["ready", "loading", "stale"] | MISSING = Field(default=MISSING, description="Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).")
+    directory: str
+    items: list[ArchiveListItem]
+    mode: str
+    page: float
+    total: float
+
+
 @router.get(
     "/api/vaults/{vault_id}/files",
-    response_model=response_model("FilesResponse"),
+    response_model=passthrough(FilesResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def list_files(
@@ -93,7 +193,7 @@ def list_files(
     }
 
 
-@router.get("/api/vaults/{vault_id}/files/detail", response_model=response_model("ArchiveListItem"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+@router.get("/api/vaults/{vault_id}/files/detail", response_model=passthrough(ArchiveListItem), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def file_detail(path: str, vault: dict[str, Any] = Depends(vault_in_path)):
     path = safe_relative_path(path).as_posix()
     with db() as connection:
@@ -105,7 +205,7 @@ def file_detail(path: str, vault: dict[str, Any] = Depends(vault_in_path)):
         return item
 
 
-@router.get("/api/files/search", response_model=response_model("FilesResponse"))
+@router.get("/api/files/search", response_model=passthrough(FilesResponse))
 def search_all_files(
     q: str = "", state: str = "", page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
@@ -124,7 +224,98 @@ def search_all_files(
         )
 
 
-@router.get("/api/upload-activity", response_model=response_model("UploadActivityResponse"))
+class UploadActivityStage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    files: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    transferred_bytes: int = Field(ge=0)
+
+
+class BulkUploadAdmissionActivity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requests: int = Field(ge=0)
+    selected_files: int = Field(ge=0)
+    processed_files: int = Field(ge=0)
+    admitted_files: int = Field(ge=0)
+
+
+class UploadPhaseSpeed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bytes_per_second: float | None = Field(ge=0)
+    files_per_second: float | None = Field(ge=0)
+    average_bytes_per_second: float | None = Field(ge=0)
+
+
+class VerificationPhaseSpeed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bytes_per_second: float | None = Field(ge=0)
+    average_bytes_per_second: float | None = Field(ge=0)
+
+
+class ThroughputSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    at: str
+    upload_bytes_per_second: float = Field(ge=0)
+    verification_bytes_per_second: float = Field(ge=0)
+
+
+class UploadThroughput(BaseModel):
+    """Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured."""
+
+    model_config = ConfigDict(extra="forbid")
+    sample_seconds: int = Field(ge=1)
+    instant_seconds: int = Field(ge=1)
+    average_seconds: int = Field(ge=1)
+    history_seconds: int = Field(ge=1)
+    upload: UploadPhaseSpeed
+    verification: VerificationPhaseSpeed
+    history: list[ThroughputSample]
+
+
+class ExpectedFinish(BaseModel):
+    """The later of the active phases at their average speed, and the phase that limits it (#755)."""
+
+    model_config = ConfigDict(extra="forbid")
+    at: str
+    seconds: int = Field(ge=0)
+    limited_by: Literal["upload", "verification"]
+
+
+class UploadActivitySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stability_wait: UploadActivityStage
+    queued: UploadActivityStage
+    uploading: UploadActivityStage
+    verifying: UploadActivityStage
+    bulk_admission: BulkUploadAdmissionActivity | MISSING = MISSING
+    awaiting_admission_files: int = Field(ge=0)
+    next_stable_at: str | None
+    throughput: UploadThroughput
+    expected_finish: ExpectedFinish | None
+    stopped_since: str | None = Field(description="When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759).")
+
+
+class UploadActivityVault(UploadActivitySummary):
+    vault_id: int
+    vault_name: str
+    paused: bool
+
+
+class ServerPriority(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    throttled: bool
+    since: str | None
+
+
+class UploadActivityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    observed_at: str
+    global_: UploadActivitySummary = Field(alias="global")
+    vaults: list[UploadActivityVault]
+    server_priority: ServerPriority | MISSING = MISSING
+
+
+@router.get("/api/upload-activity", response_model=passthrough(UploadActivityResponse))
 def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
     from ..services import source_devices, throughput
     from ..services.upload_activity import upload_activity
@@ -138,14 +329,93 @@ def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
                                           "since": priority["since"]}}
 
 
-@router.get("/api/general", response_model=response_model("GeneralOverview"))
+class GeneralOverviewVault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    name: str
+    monthly_estimate: float
+    open_problem_count: int
+    uuid: str
+    lifecycle: Literal["provisioning", "active", "reconnect_required", "stopping", "tombstone"]
+
+
+class CloudPreflightSnapshot(BaseModel):
+    # Not closed: the gate answers with its whole stored row.
+    status: Literal["unknown", "ready", "blocked"]
+    remediation: str | None
+    next_probe_at: str | None
+
+
+class MetadataBackupReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    created_at: str | None
+    verified_at: str | None
+
+
+class MetadataBackupVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    last_verified: MetadataBackupReference | None
+    latest: MetadataBackupReference | None
+    pending_run_id: int | None
+    automatic: bool
+    next_verification_at: str | None
+
+
+class GeneralOverview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vaults: list[GeneralOverviewVault] | MISSING = MISSING
+    open_problem_count: float | MISSING = MISSING
+    monthly_estimate: float | MISSING = MISSING
+    month: str | MISSING = MISSING
+    currency: str | MISSING = MISSING
+    pricing_effective_at: str | MISSING = MISSING
+    previous_month_delta: float | None | MISSING = MISSING
+    email_configured: bool | MISSING = MISSING
+    runs_as_root: bool | MISSING = MISSING
+    dac_override: bool | MISSING = MISSING
+    cloud_preflight: CloudPreflightSnapshot | MISSING = MISSING
+    last_verified_backup: str | None | MISSING = MISSING
+    metadata_backup_verification: MetadataBackupVerification | MISSING = MISSING
+
+
+@router.get("/api/general", response_model=passthrough(GeneralOverview))
 def general_overview(request: Request, user: dict[str, Any] = Depends(current_user)):
     from ..services.essential_interface import overview
     with db() as connection:
         return overview(connection, locale=_request_locale(request))
 
 
-@router.get("/api/problems", response_model=response_model("NotificationsResponse"))
+class NotificationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    vault_id: int | None
+    job_id: int | None
+    event: str
+    title: str
+    body: str
+    title_key: str | None
+    body_key: str | None
+    message_params: dict[str, Any]
+    in_app_enabled: bool
+    dedupe_key: str | None
+    created_at: str
+    read: bool
+    read_at: str | None
+    problem_status: Literal["open", "resolved"] | None
+    resolved_at: str | None
+    resolving: Literal["scan"] | None | MISSING = MISSING
+
+
+class ProblemsResponse(BaseModel):
+    """One page of the open Problems and how many are open in all."""
+
+    model_config = ConfigDict(extra="forbid")
+    items: list[NotificationItem]
+    open_problem_count: int
+
+
+@router.get("/api/problems", response_model=passthrough(ProblemsResponse))
 def open_problems(request: Request, page: int = Query(1, ge=1),
                   user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
@@ -171,7 +441,73 @@ def _problem_resolving(item: dict[str, Any]) -> str | None:
     return "scan" if scanning else None
 
 
-@router.get("/api/vaults/{vault_id}/stats", response_model=response_model("StatsResponse"))
+class SourceDeviceReads(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device: str
+    reading: int
+    waiting: int
+    limit: int = Field(description="Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766).")
+    bytes_per_second: int | None = Field(description="Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured.")
+
+
+class VaultRuntimeStatus(BaseModel):
+    # Open: the scan, the component health and the audit add their own fields.
+    model_config = ConfigDict(extra="allow")
+    last_error: str | None | MISSING = MISSING
+    scanning: bool | MISSING = MISSING
+    scan_phase: str | None | MISSING = MISSING
+    verify_files_total: float | None | MISSING = MISSING
+    verify_files_done: float | None | MISSING = MISSING
+    verify_bytes_total: float | None | MISSING = MISSING
+    verify_bytes_done: float | None | MISSING = MISSING
+    traversal_files_seen: float | None | MISSING = MISSING
+    traversal_files_per_minute: float | None | MISSING = MISSING
+    traversal_files_expected: float | None | MISSING = MISSING
+    last_error_source_cause: str | None | MISSING = MISSING
+    traversal_lock_wait_seconds: float | None | MISSING = MISSING
+    traversal_probe_seconds: float | None | MISSING = MISSING
+    traversal_write_seconds: float | None | MISSING = MISSING
+    last_error_source: str | None | MISSING = MISSING
+    last_error_source_at: str | None | MISSING = MISSING
+    server_priority_enabled: bool | MISSING = MISSING
+    server_priority_throttled: bool | MISSING = MISSING
+    server_priority_throttled_since: str | None | MISSING = MISSING
+    source_device_read_limit: int | MISSING = MISSING
+    source_devices: list[SourceDeviceReads] | MISSING = MISSING
+    scan_queued: bool | MISSING = Field(default=MISSING, description="A requested full scan waits for the Vault (#759).")
+    scan_queued_at: str | None | MISSING = MISSING
+    scan_waiting_for: str | None | MISSING = Field(default=MISSING, description="The operation the queued scan waits for (null when the Vault is free).")
+    scan_waiting_since: str | None | MISSING = Field(default=MISSING, description="Since when that operation holds the Vault.")
+    verify_bytes_read: float | None | MISSING = Field(default=MISSING, description="Bytes read by the running verification, partial files included (#759).")
+
+
+class VaultStorageBytes(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    cloud_bytes: float
+    local_bytes: float
+
+
+class StatsSourceVolume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str | None
+    health: str
+    local_operations_allowed: bool
+
+
+class StatsResponse(BaseModel):
+    # Open: the catalog summary is spread into the answer.
+    model_config = ConfigDict(extra="allow")
+    manual_upload: bool | MISSING = MISSING
+    protection_state: str | None | MISSING = MISSING
+    last_known_states: dict[str, float] | MISSING = MISSING
+    active_jobs: float
+    runtime: VaultRuntimeStatus
+    states: dict[str, float]
+    storage: VaultStorageBytes
+    source_volume: StatsSourceVolume
+
+
+@router.get("/api/vaults/{vault_id}/stats", response_model=passthrough(StatsResponse))
 def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = None):  # type: ignore[assignment]
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
@@ -235,7 +571,16 @@ def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = Non
     }
 
 
-@router.get("/api/notifications", response_model=response_model("NotificationsResponse"))
+class NotificationsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[NotificationItem]
+    unread_count: int
+    open_problem_count: int
+    email_configured: bool
+    has_more: bool
+
+
+@router.get("/api/notifications", response_model=passthrough(NotificationsResponse))
 def list_notifications(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
@@ -273,7 +618,7 @@ class NotificationReadAction(BaseModel):
     notification_id: int
 
 
-@router.post("/api/notifications/read", response_model=JsonObjectResponse)
+@router.post("/api/notifications/read", response_model=passthrough(NotificationItem))
 def mark_notification_read(
     action: NotificationReadAction,
     request: Request,
@@ -290,7 +635,13 @@ def mark_notification_read(
     return item
 
 
-@router.post("/api/notifications/read-all", response_model=JsonObjectResponse)
+class MarkAllNotificationsReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    marked_count: int
+    unread_count: int
+
+
+@router.post("/api/notifications/read-all", response_model=passthrough(MarkAllNotificationsReadResponse))
 def mark_all_notifications_read(
     user: dict[str, Any] = Depends(current_user),
 ):
@@ -313,7 +664,34 @@ class RecoveryKitCustody(BaseModel):
     fingerprint: str = Field(min_length=24, max_length=24, pattern="^[0-9a-f]+$")
 
 
-@router.get("/api/recovery-kit", response_model=response_model("RecoveryKitStatus"))
+class SystemBucket(BaseModel):
+    """The installation's System Bucket for metadata backups (#734)."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    region: str
+    origin: Literal["configured", "created"]
+    ready: bool
+
+
+class MetadataRestoreNotice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backup_created_at: str
+    updated_files: int
+
+
+class RecoveryKitStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    configured: bool
+    fingerprint: str | None
+    system_bucket: SystemBucket | None | MISSING = Field(default=MISSING, description="The current System Bucket (#734), ready or not; null while there is none.")
+    awaiting_backup: bool | MISSING = Field(default=MISSING, description="A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734).")
+    custody_acknowledged: bool
+    acknowledged_at: str | None
+    metadata_restore: MetadataRestoreNotice | None
+
+
+@router.get("/api/recovery-kit", response_model=passthrough(RecoveryKitStatus))
 def recovery_kit_status(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return recovery_kit_service.kit_status(connection)
@@ -340,7 +718,7 @@ def download_recovery_kit(
     })
 
 
-@router.post("/api/recovery-kit/custody", response_model=response_model("RecoveryKitStatus"))
+@router.post("/api/recovery-kit/custody", response_model=passthrough(RecoveryKitStatus))
 def acknowledge_recovery_kit(
     action: RecoveryKitCustody,
     request: Request,
@@ -354,7 +732,42 @@ def acknowledge_recovery_kit(
         return recovery_kit_service.kit_status(connection)
 
 
-@router.get("/api/general/metadata-backups", response_model=JsonObjectResponse)
+class MetadataBackupRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    created_at: str
+    finished_at: str | None
+    reason: str
+    backend: str
+    status: str
+    digest_sha256: str | None
+    database_sha256: str | None
+    local_path: str | None
+    s3_key: str | None
+    s3_bucket: str | None = Field(description="Bucket of the off-host copy; null for local-only and pre-#734 runs.")
+    size_bytes: int | None
+    error_message: str | None
+    verified_at: str | None
+
+
+class MetadataBackupStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    last_status: str
+    last_run: MetadataBackupRun | None
+    succeeded_count: int
+    failed_count: int
+    verification: MetadataBackupVerification = Field(description="Last verified backup and next automatic verification (#648).")
+    system_bucket: SystemBucket | None = Field(description="Where off-host copies go; null while there is none (#734).")
+    off_host: bool = Field(description="Whether backups must also reach the System Bucket.")
+
+
+class MetadataBackupsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: MetadataBackupStatus
+    runs: list[MetadataBackupRun]
+
+
+@router.get("/api/general/metadata-backups", response_model=passthrough(MetadataBackupsResponse))
 def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         status = metadata_backup_service.backup_status(connection)
@@ -362,7 +775,22 @@ def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     return {"status": status, "runs": runs}
 
 
-@router.post("/api/general/metadata-backups/run", response_model=JsonObjectResponse)
+class MetadataBackupRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: bool
+    reason: str
+    path: str
+    digest_sha256: str
+    database_sha256: str
+    backend: str
+    s3_key: str | None
+    s3_bucket: str | None
+    size_bytes: int
+    filename: str
+    created_at: str
+
+
+@router.post("/api/general/metadata-backups/run", response_model=passthrough(MetadataBackupRunResult))
 def run_metadata_backup(
     action: MetadataBackupRunAction,
     request: Request,
