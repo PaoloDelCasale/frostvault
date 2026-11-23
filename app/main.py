@@ -214,7 +214,6 @@ def _spa_index_response() -> FileResponse:
 async def lifespan(_: FastAPI):
     shutdown_state.reset()
     validate_settings()
-    warn_removed_settings()
     if os.geteuid() == 0:
         # #679: PUID=0 is an explicit choice; the entrypoint already checked
         # that root holds no capability that bypasses file permissions, or
