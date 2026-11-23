@@ -118,6 +118,7 @@ from .services import vault_deletion as vault_deletion_service
 from .services import duplicate_cleanup as duplicate_cleanup_service
 from .services import mirror_cleanup as mirror_cleanup_service
 from .services import bucket_metrics as bucket_metrics_service
+from .services import background_scheduler, periodic_workers
 from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
@@ -2560,6 +2561,30 @@ def _note_worker_ok(component: str, vault_id: int | None = None) -> None:
     if _resolve_worker_error(component, vault_id):
         with _workers_known_ok_lock:
             _workers_known_ok.add(key)
+
+
+class _WorkerHealth:
+    """Production Adapter of ``periodic_workers.WorkerHealth`` (#795).
+
+    Stateless and built once: each method resolves the storage function when
+    it is called, so a patched ``app.storage.X`` is the one that runs.
+    """
+
+    __slots__ = ()
+
+    def report_error(self, worker: str, exc: BaseException) -> None:
+        _report_worker_error(worker, exc)
+
+    def note_ok(self, worker: str) -> None:
+        _note_worker_ok(worker)
+
+
+worker_health = _WorkerHealth()
+
+
+def run_periodic_worker(worker: periodic_workers.PeriodicWorker) -> None:
+    """One pass of a declared periodic worker, on the calling thread."""
+    periodic_workers.run_once(worker, worker_health)
 
 
 # A watcher batch is a complete DB unit plus read-only filesystem inspection.
@@ -6239,15 +6264,16 @@ def _submit_maintenance(name: str, func: Callable[..., Any], *args: Any) -> None
         _maintenance_futures[name] = _maintenance_pool_locked().submit(func, *args)
 
 
+# Its own component (#711): a failing fold is not the loop failing, and the
+# loop's clean cycles must not close the fold's problem.
+_DIRECTORY_AGGREGATES_WORKER = periodic_workers.PeriodicWorker(
+    "directory_aggregates", (lambda: process_directory_aggregate_maintenance(),),
+    lambda: DIRECTORY_AGGREGATE_BATCH_SECONDS,
+)
+
+
 def _run_directory_aggregates() -> None:
-    # Its own component (#711): a failing fold is not the loop failing, and
-    # the loop's clean cycles must not close the fold's problem.
-    try:
-        process_directory_aggregate_maintenance()
-    except Exception as exc:
-        _report_worker_error("directory_aggregates", exc)
-    else:
-        _note_worker_ok("directory_aggregates")
+    run_periodic_worker(_DIRECTORY_AGGREGATES_WORKER)
 
 
 def _submit_directory_aggregates() -> None:
@@ -7090,80 +7116,79 @@ def reprobe_cloud_readiness_once() -> None:
             _submit_maintenance("cloud_recovery_scan", recover_vaults_after_cloud_ready)
 
 
+def _upload_remediation() -> Any:
+    from .services import upload_remediation
+    return upload_remediation
+
+
+def _history_retention() -> Any:
+    from .services import history_retention
+    return history_retention
+
+
+def _bulk_upload_admission() -> Any:
+    from .services import bulk_upload_admission
+    return bulk_upload_admission
+
+
+# The workers that pace themselves (#795), each one task of the server loop
+# run by ``periodic_workers.run_forever``. A declaration says what one pass
+# runs, how long the worker waits, and what sets it apart from the others.
+_CLOUD_PREFLIGHT_WORKER = periodic_workers.PeriodicWorker(
+    "cloud_preflight", (lambda: reprobe_cloud_readiness_once(),), lambda: 1,
+    reports_on_loop=True,
+)
+# Dedicated DB-only thread: neither long transfers, mount probes nor the
+# singleton maintenance executor can delay discovery/admission ticks. A clean
+# pass is not noted: the worker has never closed a problem of its own.
+_UPLOAD_REMEDIATION_WORKER = periodic_workers.PeriodicWorker(
+    "upload_remediation",
+    (lambda: _upload_remediation().sweep(db), lambda: _upload_remediation().observe(db)),
+    lambda: _upload_remediation().POLL_SECONDS,
+    thread="upload-remediation", notes_ok=False,
+)
+# Retention of closed history (#596): short keyset batches on a dedicated
+# DB-only thread; it deletes database rows only.
+_HISTORY_RETENTION_WORKER = periodic_workers.PeriodicWorker(
+    "history_retention", (lambda: _history_retention().collect(db),),
+    lambda: _history_retention().POLL_SECONDS,
+    thread="history-retention",
+)
+# Durable state lives in PostgreSQL, not this thread. One tick advances
+# bounded transactions independently of transfer slots/cloud readiness.
+# Stopping waits: a committing batch must not outlive shutdown/pool closure.
+_BULK_UPLOAD_ADMISSION_WORKER = periodic_workers.PeriodicWorker(
+    "bulk_upload_admission", (lambda: _bulk_upload_admission().tick(db),),
+    lambda: _bulk_upload_admission().POLL_SECONDS,
+    thread="bulk-upload-admission", drains_on_stop=True,
+)
+# Separate from scanning and cloud maintenance, including when a long scan
+# or lifecycle request occupies their worker. Catalog observations persist.
+# Each Vault notes itself healthy inside the pass (``queue_vault_auto_uploads``).
+_AUTO_UPLOAD_WORKER = periodic_workers.PeriodicWorker(
+    "auto_upload_queue", (lambda: queue_all_auto_uploads_once(),),
+    lambda: AUTO_UPLOAD_POLL_SECONDS, notes_ok=False,
+)
+
+
 async def cloud_preflight_loop() -> None:
-    while True:
-        try:
-            await asyncio.to_thread(reprobe_cloud_readiness_once)
-            await asyncio.to_thread(_note_worker_ok, "cloud_preflight")
-        except Exception as exc:
-            _report_worker_error("cloud_preflight", exc)
-        await asyncio.sleep(1)
+    await periodic_workers.run_forever(_CLOUD_PREFLIGHT_WORKER, worker_health)
 
 
 async def upload_remediation_loop() -> None:
-    # Dedicated DB-only executor: neither long transfers, mount probes nor the
-    # singleton maintenance executor can delay discovery/admission ticks.
-    from .services import upload_remediation
-    loop = asyncio.get_running_loop()
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload-remediation")
-    try:
-        while True:
-            try:
-                await loop.run_in_executor(executor, upload_remediation.sweep, db)
-                await loop.run_in_executor(executor, upload_remediation.observe, db)
-            except Exception as exc:
-                await asyncio.to_thread(_report_worker_error, "upload_remediation", exc)
-            await asyncio.sleep(upload_remediation.POLL_SECONDS)
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    await periodic_workers.run_forever(_UPLOAD_REMEDIATION_WORKER, worker_health)
 
 
 async def history_retention_loop() -> None:
-    # Retention of closed history (#596): short keyset batches on a dedicated
-    # DB-only executor; it deletes database rows only.
-    from .services import history_retention
-    loop = asyncio.get_running_loop()
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-retention")
-    try:
-        while True:
-            try:
-                await loop.run_in_executor(executor, history_retention.collect, db)
-                await loop.run_in_executor(executor, _note_worker_ok, "history_retention")
-            except Exception as exc:
-                await asyncio.to_thread(_report_worker_error, "history_retention", exc)
-            await asyncio.sleep(history_retention.POLL_SECONDS)
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    await periodic_workers.run_forever(_HISTORY_RETENTION_WORKER, worker_health)
 
 
 async def bulk_upload_admission_loop() -> None:
-    # Durable state lives in PostgreSQL, not this executor. One tick advances
-    # bounded transactions independently of transfer slots/cloud readiness.
-    from .services import bulk_upload_admission
-    loop = asyncio.get_running_loop()
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bulk-upload-admission")
-    try:
-        while True:
-            try:
-                await loop.run_in_executor(executor, bulk_upload_admission.tick, db)
-                await loop.run_in_executor(executor, _note_worker_ok, "bulk_upload_admission")
-            except Exception as exc:
-                await asyncio.to_thread(_report_worker_error, "bulk_upload_admission", exc)
-            await asyncio.sleep(bulk_upload_admission.POLL_SECONDS)
-    finally:
-        # Do not let a committing batch outlive shutdown/pool closure.
-        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+    await periodic_workers.run_forever(_BULK_UPLOAD_ADMISSION_WORKER, worker_health)
 
 
 async def auto_upload_loop() -> None:
-    # Separate from scanning and cloud maintenance, including when a long scan
-    # or lifecycle request occupies their worker. Catalog observations persist.
-    while True:
-        try:
-            await asyncio.to_thread(queue_all_auto_uploads_once)
-        except Exception as exc:
-            await asyncio.to_thread(_report_worker_error, "auto_upload_queue", exc)
-        await asyncio.sleep(AUTO_UPLOAD_POLL_SECONDS)
+    await periodic_workers.run_forever(_AUTO_UPLOAD_WORKER, worker_health)
 
 
 def _filesystem_watch_filter(_: Change, path: str) -> bool:
@@ -8158,18 +8183,22 @@ def ensure_system_bucket_once() -> None:
     again; an operator-supplied METADATA_BACKUP_BUCKET is left to them. With
     scheduled backups off, a manual backup creates it.
     """
-    try:
-        if (settings.metadata_backup_interval_seconds <= 0
-                or not metadata_backup_service.off_host_backup_configured()
-                or system_bucket_service.configured_bucket() is not None):
-            return
-        saved = system_bucket_service.DatabaseStore().load()
-        if saved is None or not saved.ready:
-            system_bucket_service.ensure()
-    except Exception as exc:
-        _report_worker_error("system_bucket", exc)
-    else:
-        _note_worker_ok("system_bucket")
+    run_periodic_worker(_SYSTEM_BUCKET_WORKER)
+
+
+def _ensure_system_bucket() -> Any:
+    if (settings.metadata_backup_interval_seconds <= 0
+            or not metadata_backup_service.off_host_backup_configured()
+            or system_bucket_service.configured_bucket() is not None):
+        return periodic_workers.NOT_RUN
+    saved = system_bucket_service.DatabaseStore().load()
+    if saved is None or not saved.ready:
+        system_bucket_service.ensure()
+
+
+_SYSTEM_BUCKET_WORKER = periodic_workers.PeriodicWorker(
+    "system_bucket", (_ensure_system_bucket,), lambda: SYSTEM_BUCKET_POLL_SECONDS,
+)
 
 
 def read_billed_cost_once() -> None:
@@ -8315,99 +8344,26 @@ def _verify_latest_metadata_backup_once() -> None:
             pass
 
 
-MAINTENANCE_TASKS = ("scan", "audit", "backup", "backup_verify")
-
-
-def _seconds_since(value: Any, *, now: datetime | None = None) -> float | None:
-    parsed = _parse_iso_datetime(value)
-    if parsed is None:
-        return None
-    current = now or datetime.now(timezone.utc)
-    return max(0.0, (current - parsed).total_seconds())
+# The background scheduler lives in ``services/background_scheduler.py``
+# (#795). These names stay here for ``app.main`` and for what reads the
+# schedule through storage.
+MAINTENANCE_TASKS = background_scheduler.MAINTENANCE_TASKS
+BACKGROUND_LOOP_OK_CYCLES = background_scheduler.BACKGROUND_LOOP_OK_CYCLES
+initial_maintenance_marks = background_scheduler.initial_maintenance_marks
 
 
 def persisted_maintenance_ages(
     *, now: datetime | None = None
 ) -> dict[str, float | None]:
-    """Return seconds since each maintenance task last ran, or None when never.
-
-    The full scan is always due at startup: it is the reconciliation net for
-    events missed while the process was down.  Audit, scheduled backup, and
-    restore verification are read back from their durable records so a
-    restart neither skips an overdue run nor repeats a recent one.
-    """
-    ages: dict[str, float | None] = {name: None for name in MAINTENANCE_TASKS}
-    with db() as connection:
-        vaults = connection.execute(
-            """
-            SELECT id FROM vaults WHERE lifecycle='active'
-            """
-        ).fetchall()
-        audit_ages: list[float] = []
-        for vault in vaults:
-            # From the last success: a failed audit has not run, and a Vault
-            # it left unconfirmed is audited again at startup (#620).
-            row = connection.execute(
-                """
-                SELECT last_success_at, last_error FROM vault_component_health
-                WHERE vault_id=%s AND component='audit'
-                """,
-                (int(vault["id"]),),
-            ).fetchone()
-            age = (
-                _seconds_since(row["last_success_at"], now=now)
-                if row and not row["last_error"] else None
-            )
-            if age is None:
-                audit_ages = []
-                break
-            audit_ages.append(age)
-        if vaults and audit_ages:
-            # The Vault audited longest ago decides when the next pass is due.
-            ages["audit"] = max(audit_ages)
-        backup = connection.execute(
-            """
-            SELECT MAX(created_at) AS at FROM metadata_backup_runs
-            WHERE reason='scheduled'
-            """
-        ).fetchone()
-        ages["backup"] = _seconds_since(backup["at"], now=now) if backup else None
-        verify = connection.execute(
-            "SELECT MAX(verified_at) AS at FROM metadata_backup_runs"
-        ).fetchone()
-        ages["backup_verify"] = (
-            _seconds_since(verify["at"], now=now) if verify else None
-        )
-    return ages
-
-
-def initial_maintenance_marks(
-    current: float, ages: Mapping[str, float | None]
-) -> dict[str, float]:
-    """Translate persisted ages into loop-clock marks for ``background_loop``.
-
-    ``loop.time()`` is a monotonic clock whose zero is arbitrary (seconds
-    since boot on Linux), so a literal ``0.0`` mark would tie every schedule
-    to host uptime.  A task that never ran gets ``-inf`` and is due at once.
-    """
-    marks: dict[str, float] = {}
-    for name in MAINTENANCE_TASKS:
-        age = ages.get(name)
-        marks[name] = float("-inf") if age is None else float(current) - float(age)
-    return marks
+    return background_scheduler.persisted_maintenance_ages(db, _parse_iso_datetime, now=now)
 
 
 async def background_loop() -> None:
-    await asyncio.sleep(5)
-    loop = asyncio.get_running_loop()
-    with _operation_completion_event(loop) as wakeup:
-        await _background_loop(loop, wakeup)
+    await background_scheduler.run(scheduler_host)
 
 
-# Clean cycles in a row that close the loop's internal-error problem (#711):
-# more than one, so an error that recurs every few cycles stays one episode
-# instead of reopening (and emailing) again each time.
-BACKGROUND_LOOP_OK_CYCLES = 3
+async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Event) -> None:
+    await background_scheduler.run_cycles(scheduler_host, loop, wakeup)
 
 
 def _background_loop_closes_problem(clean: bool, streak: int) -> tuple[int, bool]:
@@ -8421,68 +8377,6 @@ def _background_loop_closes_problem(clean: bool, streak: int) -> tuple[int, bool
     with _workers_known_ok_lock:
         known_ok = ("background_loop", None) in _workers_known_ok
     return streak, streak >= BACKGROUND_LOOP_OK_CYCLES and not known_ok
-
-
-def run_vault_deletions_once() -> int:
-    """Run every elapsed Vault Deletion (#717); a failure is its own Problem."""
-    try:
-        completed = vault_deletion_service.run_due(db, s3_client)
-    except Exception as exc:
-        _report_worker_error("vault_deletion", exc)
-        return 0
-    _note_worker_ok("vault_deletion")
-    return completed
-
-
-def run_retained_versions_once() -> int:
-    """Delete the retained versions whose Retention Lock ended (#736)."""
-    try:
-        outcomes = retention_lock_service.run_due(db, s3_client)
-    except Exception as exc:
-        _report_worker_error("retained_versions", exc)
-        return 0
-    _note_worker_ok("retained_versions")
-    return int(outcomes.get("deleted", 0))
-
-
-def run_duplicate_cleanup_once() -> int:
-    """Run the due Automatic Duplicate Cleanups (#726); returns how many Vaults ran."""
-    try:
-        ran = duplicate_cleanup_service.run_due(db)
-    except Exception as exc:
-        _report_worker_error("duplicate_cleanup", exc)
-        return 0
-    _note_worker_ok("duplicate_cleanup")
-    return ran
-
-
-def run_mirror_cleanup_once() -> int:
-    """Run the due Mirror Cleanups (#771); returns how many Vaults ran."""
-    try:
-        ran = mirror_cleanup_service.run_due(db)
-    except Exception as exc:
-        _report_worker_error("mirror_cleanup", exc)
-        return 0
-    _note_worker_ok("mirror_cleanup")
-    return ran
-
-
-def read_bucket_metrics_once() -> int:
-    """Read the CloudWatch sizes of every due Vault Bucket (#737); returns how many.
-
-    AWS errors (no cloudwatch:GetMetricStatistics among them) are recorded on
-    their Vault and shown on its page, never a Problem; an unexpected error is
-    recorded on its Vault too (so it waits its retry cadence) and reported as
-    this worker's. A pass stops on shutdown, after its time budget or at the
-    first connection error.
-    """
-    try:
-        read = bucket_metrics_service.run_due(db, should_stop=lambda: shutdown_state.requested)
-    except Exception as exc:
-        _report_worker_error("bucket_metrics", exc)
-        return 0
-    _note_worker_ok("bucket_metrics")
-    return read
 
 
 def _record_background_loop_error(exc: Exception) -> None:
@@ -8501,194 +8395,150 @@ def _record_background_loop_error(exc: Exception) -> None:
     metrics_service.set_gauge("worker_up", 0)
 
 
-async def _background_loop(loop: asyncio.AbstractEventLoop, wakeup: asyncio.Event) -> None:
-    try:
-        ages = await asyncio.to_thread(persisted_maintenance_ages)
-    except Exception:
-        ages = {}
-    marks = initial_maintenance_marks(loop.time(), ages)
-    # A new loop starts from the persisted ages, not from an earlier retry.
-    _note_audit_outcome(False)
-    last_scan = marks["scan"]
-    last_audit = marks["audit"]
-    last_backup = marks["backup"]
-    last_backup_verify = marks["backup_verify"]
-    backlog_observed_at: float | None = None
-    backlog_runnable = 0
-    last_aggregates: float | None = None
-    last_vault_deletions: float | None = None
-    last_retained_versions: float | None = None
-    last_duplicate_cleanup: float | None = None
-    last_mirror_cleanup: float | None = None
-    last_system_bucket: float | None = None
-    last_vault_buckets: float | None = None
-    last_bucket_metrics: float | None = None
-    last_billed_cost: float | None = None
-    clean_cycles = 0
-    try:
-        while True:
-            # Clear before dispatch, not before waiting: a completion arriving
-            # during the normal cycle must still trigger a prompt refill.
-            wakeup.clear()
-            runnable_count = 0
-            clean = True
-            runtime = settings
-            health_service.mark_worker_heartbeat()
-            metrics_service.set_gauge("worker_up", 1)
-            try:
-                # Reconcile Source Volume identity even when filesystem watchers are
-                # disabled, before workers or scheduled scans can touch local data.
-                await asyncio.to_thread(source_layout.verify_mounts_once)
-                # A v1 root identity left while its Source Volume was down (#784).
-                await asyncio.to_thread(vault_relocation.upgrade_pending_legacy_root_identities)
-                await asyncio.to_thread(process_jobs_once, wait=False)
-                await asyncio.to_thread(_deliver_notifications_once)
-                # Converge durable directory aggregate dirty/rebuild work off the
-                # /api/files request path (issue #229), one batch per interval
-                # rather than one per cycle (#622), on its own thread: a large
-                # Vault's fold takes seconds, and this loop must keep refilling
-                # the operation slots meanwhile (#696).
-                if (last_aggregates is None
-                        or loop.time() - last_aggregates >= DIRECTORY_AGGREGATE_BATCH_SECONDS):
-                    last_aggregates = loop.time()
-                    _submit_directory_aggregates()
-                await asyncio.to_thread(protection_stop_service.reconcile_all)
-                # Elapsed Vault Deletions run off the loop, one run at a time.
-                if (last_vault_deletions is None
-                        or loop.time() - last_vault_deletions >= vault_deletion_service.POLL_SECONDS):
-                    last_vault_deletions = loop.time()
-                    _submit_maintenance("vault_deletion", run_vault_deletions_once)
-                # Superseded versions a Retention Lock held back (#736).
-                if (last_retained_versions is None
-                        or loop.time() - last_retained_versions >= retention_lock_service.POLL_SECONDS):
-                    last_retained_versions = loop.time()
-                    _submit_maintenance("retained_versions", run_retained_versions_once)
-                # Automatic Duplicate Cleanup (#726): each Vault runs once a day
-                # from its persisted last run; the poll only looks for due ones.
-                if (last_duplicate_cleanup is None
-                        or loop.time() - last_duplicate_cleanup >= duplicate_cleanup_service.POLL_SECONDS):
-                    last_duplicate_cleanup = loop.time()
-                    _submit_maintenance("duplicate_cleanup", run_duplicate_cleanup_once)
-                # Mirror Cleanup (#771): the same daily cadence, its own last run.
-                if (last_mirror_cleanup is None
-                        or loop.time() - last_mirror_cleanup >= mirror_cleanup_service.POLL_SECONDS):
-                    last_mirror_cleanup = loop.time()
-                    _submit_maintenance("mirror_cleanup", run_mirror_cleanup_once)
-                if (last_system_bucket is None
-                        or loop.time() - last_system_bucket >= SYSTEM_BUCKET_POLL_SECONDS):
-                    last_system_bucket = loop.time()
-                    _submit_maintenance("system_bucket", ensure_system_bucket_once)
-                # Unfinished Vault Bucket creations resume soon after a start.
-                if (last_vault_buckets is None
-                        or loop.time() - last_vault_buckets >= VAULT_BUCKET_POLL_SECONDS):
-                    last_vault_buckets = loop.time()
-                    _submit_maintenance("vault_buckets", ensure_vault_buckets_once)
-                # CloudWatch sizes of the Vault Buckets (#737): each Vault is read
-                # once a day from its persisted last read; the poll finds due ones.
-                if (last_bucket_metrics is None
-                        or loop.time() - last_bucket_metrics >= bucket_metrics_service.POLL_SECONDS):
-                    last_bucket_metrics = loop.time()
-                    _submit_maintenance("bucket_metrics", read_bucket_metrics_once)
-                # Billed Cost (#738): the export is read at most once a day,
-                # from the persisted last look; the poll only asks if one is due.
-                if (last_billed_cost is None
-                        or loop.time() - last_billed_cost >= BILLED_COST_POLL_SECONDS):
-                    last_billed_cost = loop.time()
-                    _submit_maintenance("billed_cost", read_billed_cost_once)
-                # Backlog is measured independently from the selected batch: an
-                # active lease is no longer claimable, while every remaining due
-                # queued row is visible even when concurrency is small. Stuck
-                # intermediate Jobs with expired leases are a separate series.
-                # Each of these counts reads the whole backlog. While the queue
-                # is deep the loop spins every 100 ms, so counting on every
-                # cycle costs more the more work is waiting. A deep queue is
-                # sampled; a short one is still counted exactly every cycle.
-                current = loop.time()
-                if (
-                    backlog_observed_at is None
-                    or backlog_runnable < max(10, runtime.operation_concurrency * 10)
-                    or current - backlog_observed_at >= BACKLOG_OBSERVE_SECONDS
-                ):
-                    queued_count = await asyncio.to_thread(claimable_queue_depth)
-                    metrics_service.set_gauge("queue_depth", float(queued_count))
-                    runnable_count = await asyncio.to_thread(
-                        claimable_queue_depth, exclude_deferred=True
-                    )
-                    await asyncio.to_thread(observe_queue_stall, runnable_count)
-                    # Here, not in the thread doing the work: a Vault held by
-                    # stuck background work is still noticed (#759).
-                    await asyncio.to_thread(observe_vault_stalls)
-                    stuck_count, stuck_age = await asyncio.to_thread(
-                        observe_stuck_lease_jobs
-                    )
-                    metrics_service.set_gauge("jobs_stuck", float(stuck_count))
-                    metrics_service.set_gauge(
-                        "jobs_stuck_oldest_age_seconds", stuck_age
-                    )
-                    failed_count, failed_age = await asyncio.to_thread(
-                        observe_failed_job_backlog
-                    )
-                    metrics_service.set_gauge(
-                        "jobs_failed_backlog", float(failed_count)
-                    )
-                    metrics_service.set_gauge(
-                        "jobs_failed_oldest_age_seconds", failed_age
-                    )
-                    backlog_observed_at, backlog_runnable = current, runnable_count
-                else:
-                    runnable_count = backlog_runnable
-                current = loop.time()
-                if current - last_scan >= runtime.scan_interval:
-                    _submit_maintenance("scan", scan_all_vaults)
-                    last_scan = current
-                if current - last_audit >= runtime.audit_interval:
-                    _submit_maintenance("audit", audit_all_vaults)
-                    last_audit = current
-                elif audit_retry_due():
-                    _submit_maintenance("audit_retry", audit_vaults_with_error)
-                if (
-                    runtime.metadata_backup_interval_seconds > 0
-                    and current - last_backup
-                    >= runtime.metadata_backup_interval_seconds
-                ):
-                    _submit_maintenance(
-                        "backup", _run_scheduled_metadata_backup_once
-                    )
-                    last_backup = current
-                if (
-                    runtime.metadata_backup_verify_interval_seconds > 0
-                    and current - last_backup_verify
-                    >= runtime.metadata_backup_verify_interval_seconds
-                ):
-                    _submit_maintenance(
-                        "backup_verify", _verify_latest_metadata_backup_once
-                    )
-                    last_backup_verify = current
-                    metadata_backup_service.mark_verification_attempt()
-                await asyncio.to_thread(_deliver_notifications_once)
-            except Exception as exc:
-                clean = False
-                await asyncio.to_thread(_record_background_loop_error, exc)
-            batch_size = max(10, runtime.operation_concurrency * 10)
-            # Poll fast only for work the worker can start now: Jobs set aside as
-            # not runnable must not keep the loop spinning every 100 ms (#493).
-            delay = (
-                0.1
-                if runnable_count >= batch_size
-                else min(
-                    NOTIFICATION_MAX_LATENCY_SECONDS,
-                    max(0.1, float(runtime.queue_poll_interval or 2)),
-                )
-            )
-            try:
-                await _refill_until_deadline(wakeup, delay)
-            except Exception as exc:
-                clean = False
-                await asyncio.to_thread(_record_background_loop_error, exc)
-            clean_cycles, close = _background_loop_closes_problem(clean, clean_cycles)
-            if close:
-                await asyncio.to_thread(_note_worker_ok, "background_loop")
-    except asyncio.CancelledError:
-        # Lifespan owns pool draining after all producers have been cancelled.
-        # Detaching here would lose the running futures before they can drain.
-        raise
+# The periodic workers the scheduler submits to the maintenance pool (#795),
+# in the order of a cycle. Each runs off the loop, one run of it at a time;
+# a failed run is the worker's own Problem and a clean one closes it.
+_SCHEDULED_WORKERS = (
+    # Elapsed Vault Deletions (#717).
+    periodic_workers.PeriodicWorker(
+        "vault_deletion", (lambda: vault_deletion_service.run_due(db, s3_client),),
+        lambda: vault_deletion_service.POLL_SECONDS,
+    ),
+    # Superseded versions a Retention Lock held back (#736).
+    periodic_workers.PeriodicWorker(
+        "retained_versions", (lambda: retention_lock_service.run_due(db, s3_client),),
+        lambda: retention_lock_service.POLL_SECONDS,
+    ),
+    # Automatic Duplicate Cleanup (#726): each Vault runs once a day from its
+    # persisted last run; the poll only looks for due ones.
+    periodic_workers.PeriodicWorker(
+        "duplicate_cleanup", (lambda: duplicate_cleanup_service.run_due(db),),
+        lambda: duplicate_cleanup_service.POLL_SECONDS,
+    ),
+    # Mirror Cleanup (#771): the same daily cadence, its own last run.
+    periodic_workers.PeriodicWorker(
+        "mirror_cleanup", (lambda: mirror_cleanup_service.run_due(db),),
+        lambda: mirror_cleanup_service.POLL_SECONDS,
+    ),
+    _SYSTEM_BUCKET_WORKER,
+    # Unfinished Vault Bucket creations resume soon after a start. Each
+    # failure is recorded on its own Vault, inside the pass.
+    periodic_workers.PeriodicWorker(
+        "vault_buckets", (lambda: ensure_vault_buckets_once(),),
+        lambda: VAULT_BUCKET_POLL_SECONDS, own_health=True,
+    ),
+    # CloudWatch sizes of the Vault Buckets (#737): each Vault is read once a
+    # day from its persisted last read; the poll finds due ones. AWS errors
+    # are recorded on their Vault and shown on its page, never a Problem; an
+    # unexpected error is recorded on its Vault too (so it waits its retry
+    # cadence) and reported as this worker's. A pass stops on shutdown, after
+    # its time budget or at the first connection error.
+    periodic_workers.PeriodicWorker(
+        "bucket_metrics",
+        (lambda: bucket_metrics_service.run_due(db, should_stop=lambda: shutdown_state.requested),),
+        lambda: bucket_metrics_service.POLL_SECONDS,
+    ),
+    # Billed Cost (#738): the export is read at most once a day, from the
+    # persisted last look; the poll only asks if one is due. Never a Problem:
+    # the pass only logs.
+    periodic_workers.PeriodicWorker(
+        "billed_cost", (lambda: read_billed_cost_once(),),
+        lambda: BILLED_COST_POLL_SECONDS, own_health=True,
+    ),
+)
+
+
+class _SchedulerHost:
+    """Production Adapter of ``background_scheduler.SchedulerHost`` (#795).
+
+    Stateless and built once: every member resolves the storage name when it
+    is used, so a patched ``app.storage.X`` is the one that runs.
+    """
+
+    __slots__ = ()
+
+    workers = _SCHEDULED_WORKERS
+
+    @property
+    def directory_aggregate_seconds(self) -> float:
+        return DIRECTORY_AGGREGATE_BATCH_SECONDS
+
+    @property
+    def backlog_observe_seconds(self) -> float:
+        return BACKLOG_OBSERVE_SECONDS
+
+    @property
+    def notification_max_latency_seconds(self) -> float:
+        return NOTIFICATION_MAX_LATENCY_SECONDS
+
+    def maintenance_ages(self) -> Mapping[str, float | None]:
+        return persisted_maintenance_ages()
+
+    def forget_audit_retry(self) -> None:
+        _note_audit_outcome(False)
+
+    def completion_event(self, loop: asyncio.AbstractEventLoop) -> Any:
+        return _operation_completion_event(loop)
+
+    def dispatch_jobs(self) -> None:
+        process_jobs_once(wait=False)
+
+    def deliver_notifications(self) -> None:
+        _deliver_notifications_once()
+
+    def submit_directory_aggregates(self) -> None:
+        _submit_directory_aggregates()
+
+    def submit(self, name: str, func: Callable[[], Any]) -> None:
+        _submit_maintenance(name, func)
+
+    def run_worker(self, worker: periodic_workers.PeriodicWorker) -> None:
+        run_periodic_worker(worker)
+
+    def claimable_queue_depth(self, **filters: Any) -> int:
+        return claimable_queue_depth(**filters)
+
+    def observe_queue_stall(self, runnable: int) -> None:
+        observe_queue_stall(runnable)
+
+    def observe_vault_stalls(self) -> None:
+        observe_vault_stalls()
+
+    def observe_stuck_lease_jobs(self) -> tuple[int, float]:
+        return observe_stuck_lease_jobs()
+
+    def observe_failed_job_backlog(self) -> tuple[int, float]:
+        return observe_failed_job_backlog()
+
+    def scan_all_vaults(self) -> None:
+        scan_all_vaults()
+
+    def audit_all_vaults(self) -> None:
+        audit_all_vaults()
+
+    def audit_retry_due(self) -> bool:
+        return audit_retry_due()
+
+    def audit_vaults_with_error(self) -> None:
+        audit_vaults_with_error()
+
+    def run_scheduled_metadata_backup(self) -> None:
+        _run_scheduled_metadata_backup_once()
+
+    def verify_latest_metadata_backup(self) -> None:
+        _verify_latest_metadata_backup_once()
+
+    async def refill_until_deadline(self, wakeup: asyncio.Event, delay: float) -> None:
+        await _refill_until_deadline(wakeup, delay)
+
+    def record_error(self, exc: Exception) -> None:
+        _record_background_loop_error(exc)
+
+    def closes_problem(self, clean: bool, streak: int) -> tuple[int, bool]:
+        return _background_loop_closes_problem(clean, streak)
+
+    def note_ok(self) -> None:
+        _note_worker_ok("background_loop")
+
+
+scheduler_host = _SchedulerHost()
