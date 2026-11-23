@@ -16,8 +16,8 @@ describe("VaultSettingsPanel — per-Vault local release", () => {
   function setup(initial: number | null = null) {
     const updates: unknown[] = [];
     renderVaultAccess({ fetchImpl: createVaultAccessFetch({
-      "GET /api/vault/operation-policy": () => jsonResponse({ ...defaultPolicy, local_release_after_days: initial }),
-      "PUT /api/vault/operation-policy": (init) => {
+      "GET /api/vaults/1/operation-policy": () => jsonResponse({ ...defaultPolicy, local_release_after_days: initial }),
+      "PUT /api/vaults/1/operation-policy": (init) => {
         const body = JSON.parse(String(init?.body ?? "{}"));
         updates.push(body);
         return jsonResponse(body);

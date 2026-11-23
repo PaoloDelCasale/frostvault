@@ -42,7 +42,7 @@ class EssentialInterfaceTests(unittest.TestCase):
 
     def test_all_vault_scoped_contracts_accept_explicit_identity(self):
         paths = main.app.openapi()["paths"]
-        for path in ["/api/files", "/api/files/detail", "/api/files/versions", "/api/recover", "/api/free-space", "/api/cloud-purge", "/api/jobs/cancel", "/api/vault/operation-policy", "/api/vault/lifecycle", "/api/vault/move"]:
+        for path in ["/api/files", "/api/files/detail", "/api/files/versions", "/api/recover", "/api/free-space", "/api/cloud-purge", "/api/jobs/cancel", "/api/vaults/{vault_id}/operation-policy", "/api/vaults/{vault_id}/lifecycle", "/api/vaults/{vault_id}/move"]:
             for method, operation in paths[path].items():
                 if method in {"get", "post", "put"}:
                     self.assertIn("vault_id", [p["name"] for p in operation.get("parameters", [])], (path, method))

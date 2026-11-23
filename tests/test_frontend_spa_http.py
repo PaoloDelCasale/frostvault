@@ -64,11 +64,11 @@ class FrontendSpaHttpTests(FrostVaultTestCase):
 
     def test_authentication_still_enforced_on_api(self) -> None:
         """Seam 2: the API still requires a session; the SPA does not gate it."""
-        denied = self.client.get("/api/vault/operation-policy")
+        denied = self.client.get(f"/api/vaults/{self.vault_id}/operation-policy")
         self.assertEqual(denied.status_code, 401, denied.text)
 
         self.sign_in()
-        allowed = self.client.get("/api/vault/operation-policy")
+        allowed = self.client.get(f"/api/vaults/{self.vault_id}/operation-policy")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_api_me_not_swallowed_by_spa_fallback(self) -> None:

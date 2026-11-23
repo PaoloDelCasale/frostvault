@@ -31,7 +31,7 @@ from .deps import (
     LOGICAL_PATH_ERROR_RESPONSES,
     _actor,
     current_user,
-    current_vault,
+    vault_in_path,
     normalize_directory,
 )
 
@@ -79,8 +79,8 @@ class GlobPreviewRequest(BaseModel):
     exclude_globs: list[str] = Field(default_factory=list)
 
 
-@router.get("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
-def own_vault_operation_policy(vault: dict[str, Any] = Depends(current_vault)):
+@router.get("/api/vaults/{vault_id}/operation-policy", response_model=response_model("OperationPolicy"))
+def own_vault_operation_policy(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         policy = get_policy(connection, vault["id"])
     return _operation_policy_response(policy)
@@ -147,11 +147,11 @@ def _operation_policy_response(policy: OperationPolicy) -> dict[str, Any]:
             "fixed_exclude_globs": list(AUTO_UPLOAD_EXCLUSIONS)}
 
 
-@router.put("/api/vault/operation-policy", response_model=response_model("OperationPolicy"))
+@router.put("/api/vaults/{vault_id}/operation-policy", response_model=response_model("OperationPolicy"))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
     user: dict[str, Any] = Depends(current_user),
 ):
     update = action.model_dump(exclude_unset=True)
@@ -162,11 +162,11 @@ def update_vault_operation_policy(
     return _operation_policy_response(_save_operation_policy(vault, request, change))
 
 
-@router.post("/api/vault/operation-policy/globs", response_model=response_model("OperationPolicy"))
+@router.post("/api/vaults/{vault_id}/operation-policy/globs", response_model=response_model("OperationPolicy"))
 def edit_vault_operation_glob(
     action: OperationPolicyGlobEdit,
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """Add or remove one include/exclude glob against the stored policy (#754).
 
@@ -189,13 +189,13 @@ def _vault_item_path(path: str) -> str:
 
 
 @router.get(
-    "/api/vault/excluded-folders",
+    "/api/vaults/{vault_id}/excluded-folders",
     response_model=response_model("ExcludedFolderListing"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_excluded_folders(
     directory: str = "",
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """One Vault level read from disk for its Excluded Folders (#754, ADR-0044).
 
@@ -225,14 +225,14 @@ def _item_exclusion(policy: OperationPolicy, path: str, is_directory: bool) -> d
 
 
 @router.get(
-    "/api/vault/exclusions/item",
+    "/api/vaults/{vault_id}/exclusions/item",
     response_model=response_model("VaultItemExclusionStatus"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_item_exclusion(
     path: str,
     is_directory: bool = False,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """Which rules exclude one item, and its own rule (#754)."""
     path = _vault_item_path(path)
@@ -242,14 +242,14 @@ def vault_item_exclusion(
 
 
 @router.get(
-    "/api/vault/exclusions/inclusion-preview",
+    "/api/vaults/{vault_id}/exclusions/inclusion-preview",
     response_model=response_model("VaultInclusionPreview"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_inclusion_preview(
     path: str,
     is_directory: bool = False,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """What «Include again» would upload, counted from disk now (#754).
 
@@ -284,14 +284,14 @@ def vault_inclusion_preview(
 
 
 @router.post(
-    "/api/vault/exclusions/exclude",
+    "/api/vaults/{vault_id}/exclusions/exclude",
     response_model=response_model("OperationPolicy"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def exclude_vault_item(
     action: VaultItemExclusion,
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """«Exclude from the Vault»: add the item's own rule (#754).
 
@@ -317,14 +317,14 @@ def exclude_vault_item(
 
 
 @router.post(
-    "/api/vault/exclusions/include",
+    "/api/vaults/{vault_id}/exclusions/include",
     response_model=response_model("OperationPolicy"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def include_vault_item(
     action: VaultItemExclusion,
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     """«Include again»: remove the item's own rule, and only that (#754).
 
@@ -346,10 +346,10 @@ def include_vault_item(
     return _operation_policy_response(stored)
 
 
-@router.post("/api/vault/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))
+@router.post("/api/vaults/{vault_id}/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))
 def preview_vault_operation_globs(
     action: GlobPreviewRequest,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
     return preview_glob_rules(
         paths=action.paths,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, Query, Request, Response
+from fastapi import Depends, Path, Query, Request, Response
 
 from ..config import settings
 from ..errors import Conflict, Forbidden, Invalid, NotFound, ReauthRequired, Unauthenticated
@@ -230,6 +230,25 @@ def current_vault(
                 # older process overwrite the newer persisted transition.
                 raise Conflict("api.session_changed")
             session.update(updated)
+    return vault
+
+
+def vault_in_path(
+    vault_id: int = Path(ge=1), user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """The operational Vault of ``/api/vaults/{vault_id}/…`` (ADR-0056).
+
+    The path is the whole address: the Session's Vault is neither read nor
+    written, and any other id answers 404.
+    """
+    del user  # authentication gate only
+    with db() as connection:
+        vault = connection.execute(
+            f"{VAULT_ROW_SQL} WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
+            (vault_id,),
+        ).fetchone()
+    if not vault:
+        raise NotFound("api.protected_vault_not_found")
     return vault
 
 

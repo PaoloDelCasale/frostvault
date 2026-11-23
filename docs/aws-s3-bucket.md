@@ -328,7 +328,7 @@ normal authorized metadata migration/upgrade procedure.
 ## Vault storage plans
 
 The Owner chooses one plan in **Vault settings → Advanced** (GET/PUT
-`/api/vault/lifecycle`). `vaults.storage_plan_json` stores only an ordered chain
+`/api/vaults/{vault_id}/lifecycle`). `vaults.storage_plan_json` stores only an ordered chain
 of current-version transitions. There are no folder assignments, pins, manual
 per-file class changes, expiration or noncurrent-version actions.
 

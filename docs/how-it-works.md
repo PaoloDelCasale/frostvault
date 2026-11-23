@@ -105,7 +105,7 @@ content. None of these display states authorizes deleting a Local Copy or cloud
 content; operation-specific safety checks remain mandatory.
 
 New Vaults enable automatic upload by default. The per-Vault **Enable automatic
-upload** switch (or `PUT /api/vault/operation-policy`, `auto_upload`) enables or
+upload** switch (or `PUT /api/vaults/{vault_id}/operation-policy`, `auto_upload`) enables or
 disables that policy only. Disabling holds queued automatic uploads; an already
 uploaded Archive Version still finishes verification. Explicit manual uploads
 remain available.

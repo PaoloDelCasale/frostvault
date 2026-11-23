@@ -11,7 +11,7 @@ from ..api_models import response_model
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
-from ..errors import BadRequest, Conflict, VaultNotFound
+from ..errors import BadRequest, VaultNotFound
 from ..services.cost_estimates import estimate_storage_month, list_prices
 from ..services.lifecycle_policies import (
     load_vault_plan,
@@ -28,7 +28,7 @@ from ..services.lifecycle_profiles import (
 )
 from ..services import vault_moves
 from ..storage import now_iso, s3_client
-from .deps import _actor, current_user, current_vault
+from .deps import _actor, current_user, vault_in_path
 
 
 router = APIRouter()
@@ -145,38 +145,35 @@ def _lifecycle_payload(connection: Any, vault: dict[str, Any]) -> dict[str, Any]
 
 class VaultMoveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    vault_id: int = Field(gt=0)
     target_class: str = Field(min_length=1, max_length=40)
     acknowledge_costs: bool = False
 
 
-@router.get("/api/vault/move", response_model=response_model("VaultMovePreview"))
-def preview_vault_move(vault: dict[str, Any] = Depends(current_vault)):
+@router.get("/api/vaults/{vault_id}/move", response_model=response_model("VaultMovePreview"))
+def preview_vault_move(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         return vault_moves.preview(connection, vault["id"])
 
 
-@router.post("/api/vault/move", response_model=response_model("VaultMoveResponse"))
-def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(current_vault),
+@router.post("/api/vaults/{vault_id}/move", response_model=response_model("VaultMoveResponse"))
+def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(vault_in_path),
                user: dict[str, Any] = Depends(current_user)):
-    if action.vault_id != vault["id"]:
-        raise Conflict("api.vault_move.vault_changed")
     with db() as connection:
         return vault_moves.schedule(connection, vault_id=vault["id"], target=action.target_class,
             user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
 
 
-@router.get("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
-def own_vault_lifecycle(vault: dict[str, Any] = Depends(current_vault)):
+@router.get("/api/vaults/{vault_id}/lifecycle", response_model=response_model("LifecycleResponse"))
+def own_vault_lifecycle(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         return _lifecycle_payload(connection, vault)
 
 
-@router.put("/api/vault/lifecycle", response_model=response_model("LifecycleResponse"))
+@router.put("/api/vaults/{vault_id}/lifecycle", response_model=response_model("LifecycleResponse"))
 def update_vault_storage_plan(
     action: LifecycleProfileSelection,
     request: Request,
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
     user: dict[str, Any] = Depends(current_user),
 ):
     profile, guided_name = _selected_lifecycle_profile(action)

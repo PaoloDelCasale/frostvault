@@ -18,7 +18,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
 
     def test_owner_reads_default_automatic_policy(self) -> None:
         self.sign_in()
-        response = self.client.get("/api/vault/operation-policy")
+        response = self.client.get(f"/api/vaults/{self.vault_id}/operation-policy")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertTrue(body["auto_upload"])
@@ -30,7 +30,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
     def test_owner_can_update_policy_and_preview_globs(self) -> None:
         self.sign_in()
         update = self.client.put(
-            "/api/vault/operation-policy",
+            f"/api/vaults/{self.vault_id}/operation-policy",
             headers=self.signed_in.csrf_headers,
             json={
                 "auto_upload": True,
@@ -46,7 +46,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         self.assertTrue(update.json()["auto_upload"])
         self.assertEqual(update.json()["local_release_after_days"], 90)
         preview = self.client.post(
-            "/api/vault/operation-policy/preview-globs",
+            f"/api/vaults/{self.vault_id}/operation-policy/preview-globs",
             headers=self.signed_in.csrf_headers,
             json={
                 "paths": ["a.txt", "tmp/x.txt", "photo.jpg"],
@@ -72,7 +72,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
                 return connection.execute("SELECT status FROM directory_aggregate_status WHERE vault_id=%s",
                                           (self.vault_id,)).fetchone()["status"]
 
-        endpoint = "/api/vault/operation-policy"
+        endpoint = f"/api/vaults/{self.vault_id}/operation-policy"
         self.assertEqual(status(), "ready")
         self.assertEqual(self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"stability_seconds": 900}).status_code, 200)
         self.assertEqual(status(), "ready")
@@ -85,7 +85,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
 
     def test_globs_postgresql_cannot_read_are_refused_with_422_and_supported_ones_saved(self) -> None:
         self.sign_in()
-        endpoint = "/api/vault/operation-policy"
+        endpoint = f"/api/vaults/{self.vault_id}/operation-policy"
         for field in ("exclude_globs", "include_globs"):
             for glob in ("[z-a]*", "a\u0000b"):
                 with self.subTest(field=field, glob=glob):
@@ -107,7 +107,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
             connection.execute(
                 "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
                 "VALUES (%s, TRUE, 300, '[]', '[\"[z-a]*\"]')", (self.vault_id,))
-        endpoint = "/api/vault/operation-policy"
+        endpoint = f"/api/vaults/{self.vault_id}/operation-policy"
         response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"stability_seconds": 600})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["exclude_globs"], ["[z-a]*"])
@@ -118,7 +118,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         """#688: a narrowed folder exclusion requests a full scan; adding one does not."""
         from app.services import watch_plan
         self.sign_in()
-        endpoint = "/api/vault/operation-policy"
+        endpoint = f"/api/vaults/{self.vault_id}/operation-policy"
         self.addCleanup(watch_plan.forget, self.vault_id)
         with patch("app.routes.policy.request_full_scan") as request:
             for globs in (["backups/**", "*.tmp"], ["backups/**"], ["backups/**", "**/cache/**"]):
@@ -137,19 +137,19 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         self.sign_in()
         for period in (None, 90, 180, 365, 730):
             with self.subTest(period=period):
-                response = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
+                response = self.client.put(f"/api/vaults/{self.vault_id}/operation-policy", headers=self.signed_in.csrf_headers,
                                            json={"local_release_after_days": period})
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["local_release_after_days"], period)
         for period in (-1, 0, 1, 30, 91, 181, 366, 731, True, "six months"):
             with self.subTest(invalid=period):
-                response = self.client.put("/api/vault/operation-policy", headers=self.signed_in.csrf_headers,
+                response = self.client.put(f"/api/vaults/{self.vault_id}/operation-policy", headers=self.signed_in.csrf_headers,
                                            json={"local_release_after_days": period})
                 self.assertEqual(response.status_code, 422, response.text)
 
     def test_independent_upload_panel_cannot_reenable_or_disable_local_release(self) -> None:
         self.sign_in()
-        endpoint = "/api/vault/operation-policy"
+        endpoint = f"/api/vaults/{self.vault_id}/operation-policy"
         for period in (180, None):
             response = self.client.put(endpoint, headers=self.signed_in.csrf_headers, json={"local_release_after_days": period})
             self.assertEqual(response.status_code, 200, response.text)
@@ -182,7 +182,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         ):
             with self.subTest(field=field):
                 response = self.client.put(
-                    "/api/vault/operation-policy",
+                    f"/api/vaults/{self.vault_id}/operation-policy",
                     headers=self.signed_in.csrf_headers,
                     json={"auto_upload": True, field: value},
                 )

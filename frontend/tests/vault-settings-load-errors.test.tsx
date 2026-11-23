@@ -11,7 +11,7 @@ describe("Settings panels show loading errors inline (#656)", () => {
   it("keeps the operation-policy loading error inside the panels, not in a toast", async () => {
     const fetchImpl = createVaultAccessFetch({
       "GET /api/general/vaults": () => jsonResponse({ items: [] }),
-      "GET /api/vault/operation-policy": () => jsonResponse({ detail: "Policy unavailable" }, 500),
+      "GET /api/vaults/1/operation-policy": () => jsonResponse({ detail: "Policy unavailable" }, 500),
     });
     renderVaultAccess({ fetchImpl });
     const panel = await screen.findByTestId("vault-settings");

@@ -3535,25 +3535,18 @@
         }
       }
     },
-    "/api/vault/operation-policy": {
+    "/api/vaults/{vault_id}/operation-policy": {
       "get": {
         "summary": "Own Vault Operation Policy",
-        "operationId": "own_vault_operation_policy_api_vault_operation_policy_get",
+        "operationId": "own_vault_operation_policy_api_vaults__vault_id__operation_policy_get",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3583,22 +3576,15 @@
       },
       "put": {
         "summary": "Update Vault Operation Policy",
-        "operationId": "update_vault_operation_policy_api_vault_operation_policy_put",
+        "operationId": "update_vault_operation_policy_api_vaults__vault_id__operation_policy_put",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3637,26 +3623,19 @@
         }
       }
     },
-    "/api/vault/operation-policy/globs": {
+    "/api/vaults/{vault_id}/operation-policy/globs": {
       "post": {
         "summary": "Edit Vault Operation Glob",
         "description": "Add or remove one include/exclude glob against the stored policy (#754).\n\nAdding a glob already present changes nothing; removing one that is no\nlonger there is refused with 409, so a stale view cannot replace the list.",
-        "operationId": "edit_vault_operation_glob_api_vault_operation_policy_globs_post",
+        "operationId": "edit_vault_operation_glob_api_vaults__vault_id__operation_policy_globs_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3695,12 +3674,22 @@
         }
       }
     },
-    "/api/vault/excluded-folders": {
+    "/api/vaults/{vault_id}/excluded-folders": {
       "get": {
         "summary": "Vault Excluded Folders",
         "description": "One Vault level read from disk for its Excluded Folders (#754, ADR-0044).\n\nOutside an Excluded Folder it lists the subfolders a folder rule covers;\ninside one it lists the level's entries, never catalogued nor fingerprinted.",
-        "operationId": "vault_excluded_folders_api_vault_excluded_folders_get",
+        "operationId": "vault_excluded_folders_api_vaults__vault_id__excluded_folders_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "directory",
             "in": "query",
@@ -3709,23 +3698,6 @@
               "type": "string",
               "default": "",
               "title": "Directory"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -3753,12 +3725,22 @@
         }
       }
     },
-    "/api/vault/exclusions/item": {
+    "/api/vaults/{vault_id}/exclusions/item": {
       "get": {
         "summary": "Vault Item Exclusion",
         "description": "Which rules exclude one item, and its own rule (#754).",
-        "operationId": "vault_item_exclusion_api_vault_exclusions_item_get",
+        "operationId": "vault_item_exclusion_api_vaults__vault_id__exclusions_item_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "path",
             "in": "query",
@@ -3776,23 +3758,6 @@
               "type": "boolean",
               "default": false,
               "title": "Is Directory"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -3820,12 +3785,22 @@
         }
       }
     },
-    "/api/vault/exclusions/inclusion-preview": {
+    "/api/vaults/{vault_id}/exclusions/inclusion-preview": {
       "get": {
         "summary": "Vault Inclusion Preview",
         "description": "What \u00abInclude again\u00bb would upload, counted from disk now (#754).\n\nOnly when the item's own rule is what excludes it: the counts honour the\npolicy without that rule and stop after a time budget (``complete`` false\nmeans a minimum). Otherwise only the broader rules are returned.",
-        "operationId": "vault_inclusion_preview_api_vault_exclusions_inclusion_preview_get",
+        "operationId": "vault_inclusion_preview_api_vaults__vault_id__exclusions_inclusion_preview_get",
         "parameters": [
+          {
+            "name": "vault_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Vault Id"
+            }
+          },
           {
             "name": "path",
             "in": "query",
@@ -3843,23 +3818,6 @@
               "type": "boolean",
               "default": false,
               "title": "Is Directory"
-            }
-          },
-          {
-            "name": "vault_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vault Id"
             }
           }
         ],
@@ -3887,26 +3845,19 @@
         }
       }
     },
-    "/api/vault/exclusions/exclude": {
+    "/api/vaults/{vault_id}/exclusions/exclude": {
       "post": {
         "summary": "Exclude Vault Item",
         "description": "\u00abExclude from the Vault\u00bb: add the item's own rule (#754).\n\nA folder gets ``path/**`` (an Excluded Folder), a file its exact path. Cloud\ncopies stay; the files become Excluded.",
-        "operationId": "exclude_vault_item_api_vault_exclusions_exclude_post",
+        "operationId": "exclude_vault_item_api_vaults__vault_id__exclusions_exclude_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -3945,26 +3896,19 @@
         }
       }
     },
-    "/api/vault/exclusions/include": {
+    "/api/vaults/{vault_id}/exclusions/include": {
       "post": {
         "summary": "Include Vault Item",
         "description": "\u00abInclude again\u00bb: remove the item's own rule, and only that (#754).\n\nA broader rule is never removed from here (409): it is edited in the\nExclusions panel.",
-        "operationId": "include_vault_item_api_vault_exclusions_include_post",
+        "operationId": "include_vault_item_api_vaults__vault_id__exclusions_include_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -4003,25 +3947,18 @@
         }
       }
     },
-    "/api/vault/operation-policy/preview-globs": {
+    "/api/vaults/{vault_id}/operation-policy/preview-globs": {
       "post": {
         "summary": "Preview Vault Operation Globs",
-        "operationId": "preview_vault_operation_globs_api_vault_operation_policy_preview_globs_post",
+        "operationId": "preview_vault_operation_globs_api_vaults__vault_id__operation_policy_preview_globs_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -4098,25 +4035,18 @@
         }
       }
     },
-    "/api/vault/move": {
+    "/api/vaults/{vault_id}/move": {
       "get": {
         "summary": "Preview Vault Move",
-        "operationId": "preview_vault_move_api_vault_move_get",
+        "operationId": "preview_vault_move_api_vaults__vault_id__move_get",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -4146,22 +4076,15 @@
       },
       "post": {
         "summary": "Move Vault",
-        "operationId": "move_vault_api_vault_move_post",
+        "operationId": "move_vault_api_vaults__vault_id__move_post",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -4200,25 +4123,18 @@
         }
       }
     },
-    "/api/vault/lifecycle": {
+    "/api/vaults/{vault_id}/lifecycle": {
       "get": {
         "summary": "Own Vault Lifecycle",
-        "operationId": "own_vault_lifecycle_api_vault_lifecycle_get",
+        "operationId": "own_vault_lifecycle_api_vaults__vault_id__lifecycle_get",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -4248,22 +4164,15 @@
       },
       "put": {
         "summary": "Update Vault Storage Plan",
-        "operationId": "update_vault_storage_plan_api_vault_lifecycle_put",
+        "operationId": "update_vault_storage_plan_api_vaults__vault_id__lifecycle_put",
         "parameters": [
           {
             "name": "vault_id",
-            "in": "query",
-            "required": false,
+            "in": "path",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "minimum": 1,
               "title": "Vault Id"
             }
           }
@@ -9640,11 +9549,6 @@
       },
       "VaultMoveRequest": {
         "properties": {
-          "vault_id": {
-            "type": "integer",
-            "exclusiveMinimum": 0.0,
-            "title": "Vault Id"
-          },
           "target_class": {
             "type": "string",
             "maxLength": 40,
@@ -9660,7 +9564,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "vault_id",
           "target_class"
         ],
         "title": "VaultMoveRequest"

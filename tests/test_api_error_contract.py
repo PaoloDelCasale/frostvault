@@ -344,7 +344,7 @@ class BrowseErrors(ApiErrorCase):
 
 class StoragePlanErrors(ApiErrorCase):
     def test_storage_plan(self) -> None:
-        url = "/api/vault/lifecycle"
+        url = "/api/vaults/1/lifecycle"
         self.check("PUT", url, {"guided_profile": "made_up"},
                    400, problem("api.storage_plan.unknown", name="made_up"))
         self.check("PUT", url, {"profile": {"transitions": [
@@ -358,32 +358,100 @@ class StoragePlanErrors(ApiErrorCase):
                          errors="Unsupported transition from DEEP_ARCHIVE to GLACIER_IR"))
 
     def test_vault_move(self) -> None:
-        move = {"vault_id": 1, "target_class": "DEEP_ARCHIVE"}
-        self.check("POST", "/api/vault/move", {**move, "vault_id": 2},
-                   409, problem("api.vault_move.vault_changed"))
-        self.check("POST", "/api/vault/move", move,
+        move = {"target_class": "DEEP_ARCHIVE"}
+        self.check("POST", "/api/vaults/1/move", move,
                    409, problem("api.vault_move.acknowledge_costs"))
-        self.check("POST", "/api/vault/move", {**move, "acknowledge_costs": True},
+        self.check("POST", "/api/vaults/1/move", {**move, "acknowledge_costs": True},
                    409, problem("api.vault_move.choose_colder"))
         with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=1")
-        self.check("GET", "/api/vault/move", X,
+        self.check("GET", "/api/vaults/1/move", X,
                    409, problem("api.vault_move.not_ready"))
+
+
+class VaultSettingsAddress(ApiErrorCase):
+    """The 13 Vault settings operations take their Vault from the path (ADR-0056)."""
+
+    OPERATIONS = (
+        ("GET", "operation-policy", X),
+        ("PUT", "operation-policy", {}),
+        ("POST", "operation-policy/globs",
+         {"field": "exclude_globs", "action": "add", "glob": "*.tmp"}),
+        ("POST", "operation-policy/preview-globs", {}),
+        ("GET", "excluded-folders", X),
+        ("GET", "exclusions/item?path=a", X),
+        ("GET", "exclusions/inclusion-preview?path=a", X),
+        ("POST", "exclusions/exclude", {"path": "a", "is_directory": True}),
+        ("POST", "exclusions/include", {"path": "a", "is_directory": True}),
+        ("GET", "move", X),
+        ("POST", "move", {"target_class": "DEEP_ARCHIVE"}),
+        ("GET", "lifecycle", X),
+        ("PUT", "lifecycle", {"guided_profile": "standard_only"}),
+    )
+
+    def session_vault(self) -> Any:
+        with self.database.connect() as connection:
+            return connection.execute("SELECT vault_id FROM sessions").fetchone()["vault_id"]
+
+    def test_only_an_operational_vault_in_the_path_is_accepted(self) -> None:
+        absent = problem("api.protected_vault_not_found")
+        for method, suffix, body in self.OPERATIONS:
+            # A Tombstone, a Vault still being created, an unknown id.
+            for vault_id in (2, 3, 99):
+                self.check(method, f"/api/vaults/{vault_id}/{suffix}", body, 404, absent)
+            with self.subTest(method=method, suffix=suffix, vault_id=0):
+                response = self.client.request(method, f"/api/vaults/0/{suffix}", json=body)
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertIsNone(self.session_vault())
+
+    def test_the_session_vault_is_neither_an_address_nor_written(self) -> None:
+        with self.database.connect() as connection:
+            seed_vault(connection, id=4, name="Second", source_root="/sources/managed/second")
+        for pinned in (None, 4):
+            with self.database.connect() as connection:
+                connection.execute("UPDATE sessions SET vault_id=%s", (pinned,))
+            saved = self.client.put("/api/vaults/1/operation-policy",
+                                    json={"stability_seconds": 900 if pinned else 600})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertEqual(self.client.get("/api/vaults/1/operation-policy").json()
+                             ["stability_seconds"], 900 if pinned else 600)
+            self.assertEqual(self.client.get("/api/vaults/4/operation-policy").json()
+                             ["stability_seconds"], 300)
+            self.assertEqual(self.session_vault(), pinned)
+
+    def test_the_old_addresses_are_gone_without_an_alias(self) -> None:
+        paths = self.client.app.openapi()["paths"]
+        self.assertFalse([path for path in paths if path.startswith("/api/vault/")])
+        for method, suffix, body in self.OPERATIONS:
+            with self.subTest(method=method, suffix=suffix):
+                separator = "&" if "?" in suffix else "?"
+                response = self.client.request(
+                    method, f"/api/vault/{suffix}{separator}vault_id=1", json=body)
+                self.assertIn(response.status_code, (404, 405), response.text)
+
+    def test_each_new_address_is_matched_by_its_own_route(self) -> None:
+        from starlette.routing import Match
+        routes = self.client.app.router.routes
+        for method, suffix, _body in self.OPERATIONS:
+            path = f"/api/vaults/1/{suffix.partition('?')[0]}"
+            scope = {"type": "http", "method": method, "path": path}
+            first = next(route for route in routes if route.matches(scope)[0] is Match.FULL)
+            self.assertEqual(first.path, f"/api/vaults/{{vault_id}}/{suffix.partition('?')[0]}")
 
 
 class PolicyErrors(ApiErrorCase):
     def test_operation_policy(self) -> None:
         glob = {"field": "exclude_globs", "action": "remove", "glob": "*.tmp"}
         gone = problem("api.policy.rule_gone")
-        self.check("POST", "/api/vault/operation-policy/globs", glob, 409, gone)
-        self.check("POST", "/api/vault/operation-policy/globs",
+        self.check("POST", "/api/vaults/1/operation-policy/globs", glob, 409, gone)
+        self.check("POST", "/api/vaults/1/operation-policy/globs",
                    {**glob, "action": "add", "glob": "  "}, 422, problem("api.policy.glob_empty"))
-        self.check("PUT", "/api/vault/operation-policy", {"exclude_globs": ["/absolute"]},
+        self.check("PUT", "/api/vaults/1/operation-policy", {"exclude_globs": ["/absolute"]},
                    422, problem("api.policy.glob_absolute"))
-        self.check("POST", "/api/vault/operation-policy/preview-globs",
+        self.check("POST", "/api/vaults/1/operation-policy/preview-globs",
                    {"paths": ["a.txt"], "include_globs": ["/absolute"], "exclude_globs": []},
                    422, problem("api.policy.glob_absolute"))
-        exclude, include = "/api/vault/exclusions/exclude", "/api/vault/exclusions/include"
+        exclude, include = "/api/vaults/1/exclusions/exclude", "/api/vaults/1/exclusions/include"
         self.check("POST", exclude, {"path": "a*", "is_directory": True},
                    422, problem("api.policy.glob_characters"))
         self.check("POST", exclude, {"path": "a.txt", "is_directory": False},
@@ -401,7 +469,7 @@ class PolicyErrors(ApiErrorCase):
         ):
             error = operation_policies.VaultUnavailable(reason)
             with patch.object(policy, "lock_vault_policy", side_effect=error):
-                self.check("PUT", f"/api/vault/operation-policy?case={reason}", {},
+                self.check("PUT", f"/api/vaults/1/operation-policy?case={reason}", {},
                            status, payload)
 
     def test_disk_of_an_excluded_folder(self) -> None:
@@ -414,7 +482,7 @@ class PolicyErrors(ApiErrorCase):
         ):
             with patch.object(vault_exclusions, "directory_listing",
                               side_effect=vault_exclusions.DiskReadError(reason)):
-                self.check("GET", f"/api/vault/excluded-folders?directory={reason}", X,
+                self.check("GET", f"/api/vaults/1/excluded-folders?directory={reason}", X,
                            status, payload)
 
 
